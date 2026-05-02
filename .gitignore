@@ -1,0 +1,74 @@
+# Build folders
+build/
+bin/
+out/
+dist/
+Debug/
+Release/
+x64/
+x86/
+
+# Object / compiled files
+*.o
+*.obj
+*.lo
+*.la
+*.al
+*.ilk
+*.pch
+*.pdb
+*.idb
+*.dSYM/
+
+# Static / dynamic libraries
+*.a
+*.lib
+*.so
+*.so.*
+*.dll
+*.dylib
+
+# Executables
+*.exe
+*.out
+*.app
+
+# CMake
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
+CTestTestfile.cmake
+Testing/
+
+# Make
+Makefile
+makedep*
+*.make
+
+# Ninja
+.ninja_deps
+.ninja_log
+build.ninja
+
+# IDEs / Editors
+.vscode/
+.idea/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Logs
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+*.swp
+*~

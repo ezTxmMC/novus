@@ -1,0 +1,123 @@
+package syntax
+
+import http
+import json
+import path
+
+private final NAME = "Syntaxprogramm"
+
+method main {
+  println "Starting programm ${NAME}"
+}
+
+method main(array<str> args) {
+  println "Starting programm ${NAME} with args: ${args}"
+  var tom = Person{
+    name="Tom Handrick",
+    age=18,
+    friends=[]
+  }
+  var fabi = Person{
+    name="Fabi K.",
+    age=21,
+    friends=[]
+  }
+  var jason = Person{
+    name="Jason E.",
+    age=19,
+    friends=[]
+  }
+  tom.friends().append(fabi, jason)
+  fabi.friends().append(tom)
+  jason.friends().append(tom)
+  var personObject = json.parse(tom)
+  var peoplePath = path.join(path.absolute, "people")
+  json.save(personObject, peoplePath, "person.json")
+}
+
+define class Person based IPerson {
+  private final string name: get
+  private final integer age: get, set
+  private final array<Person> friends: get, set
+
+  construct(string name, integer age, array<Person> friends) {
+    this.name = name
+    this.age = age
+    this.friends = friends
+  }
+
+  @Interface
+  sendPacket() {
+
+  }
+}
+
+define class Person(string name, integer age, array<Person> friends) {
+  private final string name: get
+  private final integer age: get, set
+  private final array<Person> friends: get, set
+}
+
+define enum Gender {
+  MALE("männlich"),
+  FEMALE("weiblich"),
+  NONE_BINARY("non binär");
+
+  private final str text: get
+
+  private construct(str text) {
+    this.text = text;
+  }
+}
+
+define interface IPerson {
+  sendPacket()
+}
+
+define abstract Shopping {
+  private final array<Item> items: get, set
+
+  abstract method buy(): bool
+}
+
+define class WeekShopping(array<Item> items) based Shopping {
+  private final array<Item> items
+  private final double sum
+
+  @Deprecated{
+    text="This method is signed as removal and will removed in a later version. Please use WeekShopping#collect(items) to prevent unexpected errors!",
+    since="0.3.5"
+  }
+  method collect(Item item) {
+    items.append(item)
+  }
+
+  method collect(array<Item> items) {
+    items.append(items)
+  }
+
+  @Abstract
+  method buy(): bool {
+    var itemObjects = []
+    for (item in items) {
+      sum + item.price()
+      itemObjects.append(json.parse(item))
+    }
+    http.post("127.0.0.1/buy", {
+      "items": itemObjects,
+      "sum": sum
+    })
+  }
+}
+
+define class Item(string name, doub price, image icon) {
+  private final string name: get
+  private final doub price: get, set
+  private final image icon: get, set
+}
+
+define annotation Deprecated {
+  @Warning
+  text(): string
+  since(): string
+}

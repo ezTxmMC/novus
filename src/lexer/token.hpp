@@ -8,8 +8,35 @@ enum class TokenType
     Package,
 
     Identifier,
-    Number,
+    Integer,
+    Float,
     String,
+
+    Private,
+    Final,
+
+    // Type Keywords
+    StringType,
+    IntegerType,
+    FloatType,
+    ArrayType,
+
+    // Operators & Delimiters
+    Colon,
+    Comma,
+    Dot,
+    LAngle,
+    RAngle,
+    Assign,
+
+    // Control Flow
+    If,
+    For,
+    While,
+    Return,
+
+    // Modifiers
+    Void,
 
     Method,
     Var,
@@ -23,6 +50,9 @@ enum class TokenType
     Equal,
     Plus,
     Minus,
+    Star,
+    Slash,
+    Percent,
 
     EndOfFile
 };

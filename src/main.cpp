@@ -3,36 +3,10 @@
 #include "lexer/lexer.hpp"
 #include "logger/logger.hpp"
 #include "parser/parser.hpp"
+#include "interpreter/interpreter.hpp"
 #include "util/file.hpp"
 
 using namespace std;
-
-void execute(Node *node)
-{
-    if (auto print = dynamic_cast<PrintNode *>(node))
-    {
-        std::cout << print->value << "\n";
-    }
-
-    if (auto method = dynamic_cast<MethodNode *>(node))
-    {
-        if (method->name == "main")
-        {
-            for (auto &stmt : method->body)
-            {
-                execute(stmt.get());
-            }
-        }
-    }
-
-    if (auto program = dynamic_cast<ProgramNode *>(node))
-    {
-        for (auto &m : program->methods)
-        {
-            execute(m.get());
-        }
-    }
-}
 
 int main(int argc, char **argv)
 {
@@ -61,7 +35,8 @@ int main(int argc, char **argv)
         Parser parser(tokens);
         auto ast = parser.parse();
 
-        execute(ast.get());
+        Interpreter interpreter;
+        interpreter.interpret(ast);
     }
     catch (const exception &exception)
     {

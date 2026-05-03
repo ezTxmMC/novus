@@ -64,6 +64,41 @@ Token Lexer::readIdentifier()
         return {TokenType::Println, value};
     }
 
+    if (value == "private")
+    {
+        return {TokenType::Private, value};
+    }
+
+    if (value == "final")
+    {
+        return {TokenType::Final, value};
+    }
+
+    if (value == "string")
+    {
+        return {TokenType::StringType, value};
+    }
+
+    if (value == "integer")
+    {
+        return {TokenType::IntegerType, value};
+    }
+
+    if (value == "float")
+    {
+        return {TokenType::FloatType, value};
+    }
+
+    if (value == "void")
+    {
+        return {TokenType::Void, value};
+    }
+
+    if (value == "return")
+    {
+        return {TokenType::Return, value};
+    }
+
     return {TokenType::Identifier, value};
 }
 
@@ -77,7 +112,21 @@ Token Lexer::readNumber()
         advance();
     }
 
-    return {TokenType::Number, value};
+    if (current() == '.' && isdigit((unsigned char)peek()))
+    {
+        value += current();
+        advance();
+
+        while (isdigit((unsigned char)current()))
+        {
+            value += current();
+            advance();
+        }
+
+        return {TokenType::Float, value};
+    }
+
+    return {TokenType::Integer, value};
 }
 
 Token Lexer::readString()
@@ -152,6 +201,38 @@ vector<Token> Lexer::tokenize()
             break;
         case '-':
             tokens.push_back({TokenType::Minus, "-"});
+            break;
+
+        case '*':
+            tokens.push_back({TokenType::Star, "*"});
+            break;
+
+        case '/':
+            tokens.push_back({TokenType::Slash, "/"});
+            break;
+
+        case '%':
+            tokens.push_back({TokenType::Percent, "%"});
+            break;
+
+        case ':':
+            tokens.push_back({TokenType::Colon, ":"});
+            break;
+
+        case ',':
+            tokens.push_back({TokenType::Comma, ","});
+            break;
+
+        case '.':
+            tokens.push_back({TokenType::Dot, "."});
+            break;
+
+        case '<':
+            tokens.push_back({TokenType::LAngle, "<"});
+            break;
+
+        case '>':
+            tokens.push_back({TokenType::RAngle, ">"});
             break;
 
         default:

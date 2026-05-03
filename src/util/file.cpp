@@ -4,7 +4,7 @@
 
 using namespace std;
 
-string readFile(const string& path)
+string readFile(const string &path)
 {
     ifstream file(path);
 

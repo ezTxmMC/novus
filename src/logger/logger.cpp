@@ -7,7 +7,7 @@ using std::cout;
 using std::endl;
 using std::string;
 
-static inline const char* getTimeString()
+static inline const char *getTimeString()
 {
     static char buffer[32];
 
@@ -22,10 +22,9 @@ static inline const char* getTimeString()
 }
 
 static inline void logMessage(
-    const char* color,
-    const char* level,
-    const string& text
-)
+    const char *color,
+    const char *level,
+    const string &text)
 {
     cout
         << color
@@ -35,17 +34,17 @@ static inline void logMessage(
         << '\n';
 }
 
-void logInfo(const string& text)
+void logInfo(const string &text)
 {
     logMessage("", "INFO", text);
 }
 
-void logWarn(const string& text)
+void logWarn(const string &text)
 {
     logMessage(YELLOW, "WARN", text);
 }
 
-void logError(const string& text)
+void logError(const string &text)
 {
     logMessage(RED, "ERROR", text);
 }

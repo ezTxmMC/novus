@@ -1,0 +1,9 @@
+package app
+
+method main {
+  Shape s = Circle{ radius=2.0 }
+  println s.area()
+  var c = Color.RED
+  println json.stringify(s)
+  println c
+}

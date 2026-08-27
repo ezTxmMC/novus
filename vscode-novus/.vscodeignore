@@ -1,0 +1,10 @@
+.vscode/**
+src/**
+test/**
+out/test/**
+out/**/*.map
+tsconfig.json
+node_modules/@types/**
+node_modules/typescript/**
+node_modules/@vscode/vsce/**
+**/*.vsix

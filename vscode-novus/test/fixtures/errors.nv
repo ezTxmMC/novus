@@ -1,0 +1,14 @@
+package broken
+
+method main {
+  var x = 1
+  println undefinedName
+  println "unterminated
+  var x = 2
+  foo(
+}
+
+method noBody(): integer
+
+define class A based Missing {
+}

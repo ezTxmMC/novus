@@ -1,0 +1,26 @@
+package shapes
+
+define interface Shape {
+  area(): float
+}
+
+/// A circle.
+define class Circle based Shape {
+  private final float radius: get
+
+  construct(float radius) {
+    this.radius = radius
+  }
+
+  method area(): float {
+    return 3.14 * radius * radius
+  }
+}
+
+define enum Color {
+  RED, GREEN;
+}
+
+define annotation Marker {
+  note(): string
+}

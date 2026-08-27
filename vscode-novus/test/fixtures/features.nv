@@ -1,0 +1,78 @@
+package fixtures
+
+import json
+
+/// Greeting used by main.
+private final GREETING = "Hello"
+
+/**
+ * Entry point.
+ */
+method main {
+  var total = add(1, 2)
+  var ratio = 3.5 * total
+  var names = ["a", "b"]
+  var counter = Counter{ value=0 }
+  counter.increment()
+  counter.increment(5)
+  println "${GREETING}: ${total} ${ratio}"
+  println names
+  if (total > 2 && ratio != 0) {
+    println "big"
+  } else if (total == 0) {
+    println "zero"
+  } else {
+    println "small"
+  }
+  for (name in names) {
+    println name
+  }
+  for (var i = 0; i < 3; i = i + 1) {
+    println i
+  }
+  var n = 3
+  while (n > 0) {
+    n = n - 1
+    if (n == 1) { break }
+  }
+  println counter.value()
+  println Color.RED
+  println json.stringify(counter)
+  println (1 + 2) * 3
+}
+
+method add(integer a, integer b): integer {
+  return a + b
+}
+
+define interface ICounter {
+  increment()
+}
+
+define class Counter based ICounter {
+  private final integer value: get, set
+
+  construct(integer value) {
+    this.value = value
+  }
+
+  @Interface
+  method increment() {
+    this.value = this.value + 1
+  }
+
+  method increment(integer by) {
+    this.value = this.value + by
+  }
+}
+
+define enum Color {
+  RED("red"),
+  GREEN("green");
+
+  private final string text: get
+
+  private construct(string text) {
+    this.text = text
+  }
+}

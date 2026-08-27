@@ -1,0 +1,435 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Novus",
+  "scopeName": "source.novus",
+  "fileTypes": ["nv"],
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#package" },
+    { "include": "#import" },
+    { "include": "#define" },
+    { "include": "#based" },
+    { "include": "#method-declaration" },
+    { "include": "#construct-declaration" },
+    { "include": "#annotation" },
+    { "include": "#field-declaration" },
+    { "include": "#constant-declaration" },
+    { "include": "#var-declaration" },
+    { "include": "#return-type" },
+    { "include": "#accessors" },
+    { "include": "#keywords" },
+    { "include": "#types" },
+    { "include": "#numbers" },
+    { "include": "#generic" },
+    { "include": "#struct-init" },
+    { "include": "#enum-constant" },
+    { "include": "#object" },
+    { "include": "#member-access" },
+    { "include": "#function-call" },
+    { "include": "#operators" },
+    { "include": "#block" },
+    { "include": "#punctuation" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.block.documentation.novus",
+          "begin": "/\\*\\*(?!/)",
+          "end": "\\*/",
+          "captures": { "0": { "name": "punctuation.definition.comment.novus" } }
+        },
+        {
+          "name": "comment.block.novus",
+          "begin": "/\\*",
+          "end": "\\*/",
+          "captures": { "0": { "name": "punctuation.definition.comment.novus" } }
+        },
+        {
+          "name": "comment.line.triple-slash.documentation.novus",
+          "match": "(///).*$",
+          "captures": { "1": { "name": "punctuation.definition.comment.novus" } }
+        },
+        {
+          "name": "comment.line.double-slash.novus",
+          "match": "(//).*$",
+          "captures": { "1": { "name": "punctuation.definition.comment.novus" } }
+        }
+      ]
+    },
+    "strings": {
+      "name": "string.quoted.double.novus",
+      "begin": "\"",
+      "end": "\"",
+      "beginCaptures": { "0": { "name": "punctuation.definition.string.begin.novus" } },
+      "endCaptures": { "0": { "name": "punctuation.definition.string.end.novus" } },
+      "patterns": [
+        { "name": "constant.character.escape.novus", "match": "\\\\." },
+        {
+          "name": "meta.embedded.line.novus",
+          "begin": "\\$\\{",
+          "end": "\\}",
+          "beginCaptures": { "0": { "name": "punctuation.section.embedded.begin.novus" } },
+          "endCaptures": { "0": { "name": "punctuation.section.embedded.end.novus" } },
+          "patterns": [{ "include": "#expression" }]
+        }
+      ]
+    },
+    "expression": {
+      "patterns": [
+        { "include": "#comments" },
+        { "include": "#strings" },
+        { "include": "#annotation" },
+        { "include": "#keywords" },
+        { "include": "#types" },
+        { "include": "#numbers" },
+        { "include": "#generic" },
+        { "include": "#struct-init" },
+        { "include": "#enum-constant" },
+        { "include": "#object" },
+        { "include": "#member-access" },
+        { "include": "#function-call" },
+        { "include": "#operators" },
+        { "include": "#block" },
+        { "include": "#punctuation" }
+      ]
+    },
+    "package": {
+      "name": "meta.package.novus",
+      "match": "^\\s*(package)\\s+([A-Za-z_][\\w.]*)",
+      "captures": {
+        "1": { "name": "keyword.other.package.novus" },
+        "2": { "name": "entity.name.namespace.novus" }
+      }
+    },
+    "import": {
+      "name": "meta.import.novus",
+      "match": "^\\s*(import)\\s+([A-Za-z_][\\w.]*)",
+      "captures": {
+        "1": { "name": "keyword.control.import.novus" },
+        "2": { "name": "entity.name.namespace.novus" }
+      }
+    },
+    "define": {
+      "patterns": [
+        {
+          "name": "meta.definition.novus",
+          "begin": "\\b(define)\\s+(class|enum|interface|abstract|annotation)\\s+([A-Za-z_]\\w*)\\s*(\\()",
+          "end": "\\)",
+          "beginCaptures": {
+            "1": { "name": "keyword.other.define.novus" },
+            "2": { "name": "storage.type.class.novus" },
+            "3": { "name": "entity.name.type.class.novus" },
+            "4": { "name": "punctuation.definition.parameters.begin.novus" }
+          },
+          "endCaptures": { "0": { "name": "punctuation.definition.parameters.end.novus" } },
+          "patterns": [{ "include": "#parameters" }]
+        },
+        {
+          "name": "meta.definition.novus",
+          "match": "\\b(define)\\s+(class|enum|interface|abstract|annotation)\\s+([A-Za-z_]\\w*)",
+          "captures": {
+            "1": { "name": "keyword.other.define.novus" },
+            "2": { "name": "storage.type.class.novus" },
+            "3": { "name": "entity.name.type.class.novus" }
+          }
+        },
+        {
+          "match": "\\b(define)\\s+(class|enum|interface|abstract|annotation)\\b",
+          "captures": {
+            "1": { "name": "keyword.other.define.novus" },
+            "2": { "name": "storage.type.class.novus" }
+          }
+        },
+        { "match": "\\b(define)\\b", "name": "keyword.other.define.novus" }
+      ]
+    },
+    "based": {
+      "begin": "\\b(based)\\b",
+      "end": "(?=\\{|$)",
+      "beginCaptures": { "1": { "name": "storage.modifier.based.novus" } },
+      "patterns": [
+        { "include": "#comments" },
+        { "include": "#generic" },
+        { "match": "[A-Za-z_]\\w*", "name": "entity.other.inherited-class.novus" },
+        { "match": ",", "name": "punctuation.separator.comma.novus" }
+      ]
+    },
+    "method-declaration": {
+      "patterns": [
+        {
+          "name": "meta.method.declaration.novus",
+          "begin": "\\b(method)\\s+([A-Za-z_]\\w*)\\s*(\\()",
+          "end": "\\)",
+          "beginCaptures": {
+            "1": { "name": "storage.type.method.novus" },
+            "2": { "name": "entity.name.function.novus" },
+            "3": { "name": "punctuation.definition.parameters.begin.novus" }
+          },
+          "endCaptures": { "0": { "name": "punctuation.definition.parameters.end.novus" } },
+          "patterns": [{ "include": "#parameters" }]
+        },
+        {
+          "name": "meta.method.declaration.novus",
+          "match": "\\b(method)\\s+([A-Za-z_]\\w*)",
+          "captures": {
+            "1": { "name": "storage.type.method.novus" },
+            "2": { "name": "entity.name.function.novus" }
+          }
+        },
+        { "match": "\\b(method)\\b", "name": "storage.type.method.novus" }
+      ]
+    },
+    "construct-declaration": {
+      "patterns": [
+        {
+          "name": "meta.method.constructor.novus",
+          "begin": "\\b(construct)\\s*(\\()",
+          "end": "\\)",
+          "beginCaptures": {
+            "1": { "name": "storage.type.constructor.novus" },
+            "2": { "name": "punctuation.definition.parameters.begin.novus" }
+          },
+          "endCaptures": { "0": { "name": "punctuation.definition.parameters.end.novus" } },
+          "patterns": [{ "include": "#parameters" }]
+        },
+        { "match": "\\b(construct)\\b", "name": "storage.type.constructor.novus" }
+      ]
+    },
+    "parameters": {
+      "patterns": [
+        { "include": "#comments" },
+        {
+          "match": "([A-Za-z_]\\w*)\\s*(<[^<>]*(?:<[^<>]*>[^<>]*)*>)?\\s+([A-Za-z_]\\w*)",
+          "captures": {
+            "1": { "patterns": [{ "include": "#type-name" }] },
+            "2": { "patterns": [{ "include": "#generic-args" }] },
+            "3": { "name": "variable.parameter.novus" }
+          }
+        },
+        { "match": ",", "name": "punctuation.separator.parameter.novus" },
+        { "match": "=", "name": "keyword.operator.assignment.novus" },
+        { "include": "#expression" }
+      ]
+    },
+    "type-name": {
+      "patterns": [
+        {
+          "match": "\\b(string|str|integer|int|float|double|doub|bool|boolean|void|array|image)\\b",
+          "name": "support.type.primitive.novus"
+        },
+        { "match": "\\b[A-Za-z_]\\w*\\b", "name": "entity.name.type.novus" }
+      ]
+    },
+    "generic-args": {
+      "patterns": [
+        { "match": "<", "name": "punctuation.definition.generic.begin.novus" },
+        { "match": ">", "name": "punctuation.definition.generic.end.novus" },
+        { "match": ",", "name": "punctuation.separator.comma.novus" },
+        { "include": "#type-name" }
+      ]
+    },
+    "annotation": {
+      "patterns": [
+        {
+          "name": "meta.annotation.novus",
+          "begin": "(@)([A-Za-z_]\\w*)\\s*(\\{)",
+          "end": "\\}",
+          "beginCaptures": {
+            "1": { "name": "punctuation.definition.annotation.novus" },
+            "2": { "name": "storage.type.annotation.novus" },
+            "3": { "name": "punctuation.section.braces.begin.novus" }
+          },
+          "endCaptures": { "0": { "name": "punctuation.section.braces.end.novus" } },
+          "patterns": [{ "include": "#named-arguments" }]
+        },
+        {
+          "name": "meta.annotation.novus",
+          "begin": "(@)([A-Za-z_]\\w*)\\s*(\\()",
+          "end": "\\)",
+          "beginCaptures": {
+            "1": { "name": "punctuation.definition.annotation.novus" },
+            "2": { "name": "storage.type.annotation.novus" },
+            "3": { "name": "punctuation.definition.arguments.begin.novus" }
+          },
+          "endCaptures": { "0": { "name": "punctuation.definition.arguments.end.novus" } },
+          "patterns": [{ "include": "#named-arguments" }]
+        },
+        {
+          "name": "meta.annotation.novus",
+          "match": "(@)([A-Za-z_]\\w*)",
+          "captures": {
+            "1": { "name": "punctuation.definition.annotation.novus" },
+            "2": { "name": "storage.type.annotation.novus" }
+          }
+        }
+      ]
+    },
+    "named-arguments": {
+      "patterns": [
+        {
+          "match": "\\b([A-Za-z_]\\w*)\\s*(=)(?!=)",
+          "captures": {
+            "1": { "name": "variable.other.property.novus" },
+            "2": { "name": "keyword.operator.assignment.novus" }
+          }
+        },
+        { "include": "#expression" }
+      ]
+    },
+    "modifiers": {
+      "match": "\\b(private|public|protected|final|static|abstract)\\b",
+      "name": "storage.modifier.novus"
+    },
+    "field-declaration": {
+      "name": "meta.field.novus",
+      "match": "^\\s*((?:(?:private|public|protected|final|static|abstract)\\s+)*)(?!(?:method|var|construct|define|return|println|package|import|if|else|for|while|in|based|this|true|false|null|break|continue|private|public|protected|final|static|abstract)\\b)([A-Za-z_]\\w*)\\s*(<[^<>]*(?:<[^<>]*>[^<>]*)*>)?\\s+(?!(?:in|based)\\b)([A-Za-z_]\\w*)\\b\\s*(?=:|=(?!=)|;|//|/\\*|$)",
+      "captures": {
+        "1": { "patterns": [{ "include": "#modifiers" }] },
+        "2": { "patterns": [{ "include": "#type-name" }] },
+        "3": { "patterns": [{ "include": "#generic-args" }] },
+        "4": { "name": "variable.other.member.novus" }
+      }
+    },
+    "constant-declaration": {
+      "name": "meta.constant.novus",
+      "match": "^\\s*((?:(?:private|public|protected|final|static)\\s+)+)([A-Za-z_]\\w*)\\s*(?==(?!=))",
+      "captures": {
+        "1": { "patterns": [{ "include": "#modifiers" }] },
+        "2": { "name": "variable.other.constant.novus" }
+      }
+    },
+    "var-declaration": {
+      "name": "meta.var.novus",
+      "match": "\\b(var)\\s+([A-Za-z_]\\w*)\\s*(?:(:)\\s*([A-Za-z_]\\w*)\\s*(<[^<>]*(?:<[^<>]*>[^<>]*)*>)?)?",
+      "captures": {
+        "1": { "name": "storage.type.var.novus" },
+        "2": { "name": "variable.other.declaration.novus" },
+        "3": { "name": "punctuation.separator.type.novus" },
+        "4": { "patterns": [{ "include": "#type-name" }] },
+        "5": { "patterns": [{ "include": "#generic-args" }] }
+      }
+    },
+    "return-type": {
+      "match": "(?<=\\))\\s*(:)\\s*([A-Za-z_]\\w*)\\s*(<[^<>]*(?:<[^<>]*>[^<>]*)*>)?",
+      "captures": {
+        "1": { "name": "punctuation.separator.type.novus" },
+        "2": { "patterns": [{ "include": "#type-name" }] },
+        "3": { "patterns": [{ "include": "#generic-args" }] }
+      }
+    },
+    "accessors": {
+      "match": "(:)\\s*((?:get|set)\\b(?:\\s*,\\s*(?:get|set)\\b)*)",
+      "captures": {
+        "1": { "name": "punctuation.separator.accessor.novus" },
+        "2": { "patterns": [{ "match": "get|set", "name": "keyword.other.accessor.novus" }] }
+      }
+    },
+    "keywords": {
+      "patterns": [
+        { "match": "\\b(if|else|for|while|in|return|break|continue)\\b", "name": "keyword.control.novus" },
+        { "include": "#modifiers" },
+        { "match": "\\b(this|super)\\b", "name": "variable.language.novus" },
+        { "match": "\\b(true|false|null)\\b", "name": "constant.language.novus" },
+        { "match": "\\b(println)\\b", "name": "support.function.builtin.novus" },
+        { "match": "\\b(package|import|class|enum|interface|annotation|based|construct|var)\\b", "name": "keyword.other.novus" }
+      ]
+    },
+    "types": {
+      "match": "\\b(string|str|integer|int|float|double|doub|bool|boolean|void|array|image)\\b",
+      "name": "support.type.primitive.novus"
+    },
+    "numbers": {
+      "patterns": [
+        { "match": "\\b\\d+\\.\\d+\\b", "name": "constant.numeric.float.novus" },
+        { "match": "\\b\\d+\\b", "name": "constant.numeric.integer.novus" }
+      ]
+    },
+    "generic": {
+      "name": "meta.generic.novus",
+      "begin": "\\b([A-Za-z_]\\w*)(<)(?=\\s*[A-Za-z_])",
+      "end": ">",
+      "beginCaptures": {
+        "1": { "patterns": [{ "include": "#type-name" }] },
+        "2": { "name": "punctuation.definition.generic.begin.novus" }
+      },
+      "endCaptures": { "0": { "name": "punctuation.definition.generic.end.novus" } },
+      "patterns": [
+        { "include": "#generic" },
+        { "include": "#type-name" },
+        { "match": ",", "name": "punctuation.separator.comma.novus" }
+      ]
+    },
+    "struct-init": {
+      "name": "meta.struct-init.novus",
+      "begin": "\\b([A-Z]\\w*)\\s*(\\{)",
+      "end": "\\}",
+      "beginCaptures": {
+        "1": { "name": "entity.name.type.novus" },
+        "2": { "name": "punctuation.section.braces.begin.novus" }
+      },
+      "endCaptures": { "0": { "name": "punctuation.section.braces.end.novus" } },
+      "patterns": [{ "include": "#named-arguments" }]
+    },
+    "enum-constant": {
+      "match": "\\b[A-Z][A-Z0-9_]+\\b",
+      "name": "constant.other.novus"
+    },
+    "object": {
+      "match": "\\b([A-Za-z_]\\w*)(?=\\s*\\.\\s*[A-Za-z_])",
+      "captures": { "1": { "name": "variable.other.object.novus" } }
+    },
+    "member-access": {
+      "patterns": [
+        {
+          "match": "(\\.)\\s*([A-Za-z_]\\w*)(?=\\s*\\()",
+          "captures": {
+            "1": { "name": "punctuation.accessor.novus" },
+            "2": { "name": "entity.name.function.member.novus" }
+          }
+        },
+        {
+          "match": "(\\.)\\s*([A-Za-z_]\\w*)",
+          "captures": {
+            "1": { "name": "punctuation.accessor.novus" },
+            "2": { "name": "variable.other.property.novus" }
+          }
+        }
+      ]
+    },
+    "function-call": {
+      "match": "\\b([A-Za-z_]\\w*)\\s*(?=\\()",
+      "captures": { "1": { "name": "entity.name.function.novus" } }
+    },
+    "operators": {
+      "patterns": [
+        { "match": "==|!=|<=|>=", "name": "keyword.operator.comparison.novus" },
+        { "match": "&&|\\|\\||!", "name": "keyword.operator.logical.novus" },
+        { "match": "[+\\-*/%]", "name": "keyword.operator.arithmetic.novus" },
+        { "match": "=", "name": "keyword.operator.assignment.novus" },
+        { "match": "[<>]", "name": "keyword.operator.comparison.novus" }
+      ]
+    },
+    "block": {
+      "name": "meta.block.novus",
+      "begin": "\\{",
+      "end": "\\}",
+      "beginCaptures": { "0": { "name": "punctuation.section.block.begin.novus" } },
+      "endCaptures": { "0": { "name": "punctuation.section.block.end.novus" } },
+      "patterns": [{ "include": "$self" }]
+    },
+    "punctuation": {
+      "patterns": [
+        { "match": "\\(", "name": "punctuation.section.parens.begin.novus" },
+        { "match": "\\)", "name": "punctuation.section.parens.end.novus" },
+        { "match": "\\[", "name": "punctuation.section.brackets.begin.novus" },
+        { "match": "\\]", "name": "punctuation.section.brackets.end.novus" },
+        { "match": ",", "name": "punctuation.separator.comma.novus" },
+        { "match": ";", "name": "punctuation.terminator.statement.novus" },
+        { "match": ":", "name": "punctuation.separator.colon.novus" },
+        { "match": "\\.", "name": "punctuation.accessor.novus" }
+      ]
+    }
+  }
+}

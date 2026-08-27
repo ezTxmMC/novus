@@ -1,0 +1,5 @@
+package app
+
+method helper(): integer {
+  return 1
+}

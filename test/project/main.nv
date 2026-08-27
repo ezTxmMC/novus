@@ -1,0 +1,15 @@
+import test
+
+method main {
+    Key key = Key{
+        field="1",
+        field2="2",
+        field3="3"
+    }
+
+    println "Key field: ${key.field()}"
+
+    key.field("value2")
+
+    println "Updated key field: ${key.field()}"
+}

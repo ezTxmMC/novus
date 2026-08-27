@@ -1,248 +1,213 @@
-#include <cctype>
 #include "lexer.hpp"
+#include <cctype>
 
 Lexer::Lexer(const string &input) : src(input) {}
 
-char Lexer::current()
-{
-    if (pos >= src.size())
-    {
-        return '\0';
-    }
-    return src[pos];
+char Lexer::current() {
+  if (pos >= src.size()) {
+    return '\0';
+  }
+  return src[pos];
 }
 
-char Lexer::peek()
-{
-    if (pos + 1 >= src.size())
-    {
-        return '\0';
-    }
-    return src[pos + 1];
+char Lexer::peek() {
+  if (pos + 1 >= src.size()) {
+    return '\0';
+  }
+  return src[pos + 1];
 }
 
-void Lexer::advance()
-{
-    pos++;
+void Lexer::advance() { pos++; }
+
+void Lexer::skipWhitespace() {
+  while (isspace((unsigned char)current())) {
+    advance();
+  }
 }
 
-void Lexer::skipWhitespace()
-{
-    while (isspace((unsigned char)current()))
-    {
-        advance();
-    }
+Token Lexer::readIdentifier() {
+  string value;
+
+  while (isalnum((unsigned char)current()) || current() == '_') {
+    value += current();
+    advance();
+  }
+
+  if (value == "package") {
+    return {TokenType::Package, value};
+  }
+
+  if (value == "method") {
+    return {TokenType::Method, value};
+  }
+
+  if (value == "var") {
+    return {TokenType::Var, value};
+  }
+
+  if (value == "println") {
+    return {TokenType::Println, value};
+  }
+
+  if (value == "private") {
+    return {TokenType::Private, value};
+  }
+
+  if (value == "final") {
+    return {TokenType::Final, value};
+  }
+
+  if (value == "string") {
+    return {TokenType::StringType, value};
+  }
+
+  if (value == "integer") {
+    return {TokenType::IntegerType, value};
+  }
+
+  if (value == "float") {
+    return {TokenType::FloatType, value};
+  }
+
+  if (value == "void") {
+    return {TokenType::Void, value};
+  }
+
+  if (value == "return") {
+    return {TokenType::Return, value};
+  }
+
+  return {TokenType::Identifier, value};
 }
 
-Token Lexer::readIdentifier()
-{
-    string value;
+Token Lexer::readNumber() {
+  string value;
 
-    while (isalnum((unsigned char)current()) || current() == '_')
-    {
-        value += current();
-        advance();
-    }
+  while (isdigit((unsigned char)current())) {
+    value += current();
+    advance();
+  }
 
-    if (value == "package")
-    {
-        return {TokenType::Package, value};
-    }
-
-    if (value == "method")
-    {
-        return {TokenType::Method, value};
-    }
-
-    if (value == "var")
-    {
-        return {TokenType::Var, value};
-    }
-
-    if (value == "println")
-    {
-        return {TokenType::Println, value};
-    }
-
-    if (value == "private")
-    {
-        return {TokenType::Private, value};
-    }
-
-    if (value == "final")
-    {
-        return {TokenType::Final, value};
-    }
-
-    if (value == "string")
-    {
-        return {TokenType::StringType, value};
-    }
-
-    if (value == "integer")
-    {
-        return {TokenType::IntegerType, value};
-    }
-
-    if (value == "float")
-    {
-        return {TokenType::FloatType, value};
-    }
-
-    if (value == "void")
-    {
-        return {TokenType::Void, value};
-    }
-
-    if (value == "return")
-    {
-        return {TokenType::Return, value};
-    }
-
-    return {TokenType::Identifier, value};
-}
-
-Token Lexer::readNumber()
-{
-    string value;
-
-    while (isdigit((unsigned char)current()))
-    {
-        value += current();
-        advance();
-    }
-
-    if (current() == '.' && isdigit((unsigned char)peek()))
-    {
-        value += current();
-        advance();
-
-        while (isdigit((unsigned char)current()))
-        {
-            value += current();
-            advance();
-        }
-
-        return {TokenType::Float, value};
-    }
-
-    return {TokenType::Integer, value};
-}
-
-Token Lexer::readString()
-{
+  if (current() == '.' && isdigit((unsigned char)peek())) {
+    value += current();
     advance();
 
-    string value;
+    while (isdigit((unsigned char)current())) {
+      value += current();
+      advance();
+    }
 
-    while (current() != '"' && current() != '\0')
-    {
-        value += current();
-        advance();
+    return {TokenType::Float, value};
+  }
+
+  return {TokenType::Integer, value};
+}
+
+Token Lexer::readString() {
+  advance();
+
+  string value;
+
+  while (current() != '"' && current() != '\0') {
+    value += current();
+    advance();
+  }
+
+  advance();
+
+  return {TokenType::String, value};
+}
+
+vector<Token> Lexer::tokenize() {
+  vector<Token> tokens;
+
+  while (current() != '\0') {
+    skipWhitespace();
+
+    if (current() == '\0') {
+      break;
+    }
+
+    if (isalpha((unsigned char)current())) {
+      tokens.push_back(readIdentifier());
+      continue;
+    }
+
+    if (isdigit(current())) {
+      tokens.push_back(readNumber());
+      continue;
+    }
+
+    if (current() == '"') {
+      tokens.push_back(readString());
+      continue;
+    }
+
+    switch (current()) {
+    case '{':
+      tokens.push_back({TokenType::LBrace, "{"});
+      break;
+    case '}':
+      tokens.push_back({TokenType::RBrace, "}"});
+      break;
+
+    case '(':
+      tokens.push_back({TokenType::LParen, "("});
+      break;
+    case ')':
+      tokens.push_back({TokenType::RParen, ")"});
+      break;
+
+    case '=':
+      tokens.push_back({TokenType::Equal, "="});
+      break;
+    case '+':
+      tokens.push_back({TokenType::Plus, "+"});
+      break;
+    case '-':
+      tokens.push_back({TokenType::Minus, "-"});
+      break;
+
+    case '*':
+      tokens.push_back({TokenType::Star, "*"});
+      break;
+
+    case '/':
+      tokens.push_back({TokenType::Slash, "/"});
+      break;
+
+    case '%':
+      tokens.push_back({TokenType::Percent, "%"});
+      break;
+
+    case ':':
+      tokens.push_back({TokenType::Colon, ":"});
+      break;
+
+    case ',':
+      tokens.push_back({TokenType::Comma, ","});
+      break;
+
+    case '.':
+      tokens.push_back({TokenType::Dot, "."});
+      break;
+
+    case '<':
+      tokens.push_back({TokenType::LAngle, "<"});
+      break;
+
+    case '>':
+      tokens.push_back({TokenType::RAngle, ">"});
+      break;
+
+    default:
+      advance();
+      continue;
     }
 
     advance();
+  }
 
-    return {TokenType::String, value};
-}
-
-vector<Token> Lexer::tokenize()
-{
-    vector<Token> tokens;
-
-    while (current() != '\0')
-    {
-        skipWhitespace();
-
-        if (current() == '\0')
-        {
-            break;
-        }
-
-        if (isalpha((unsigned char)current()))
-        {
-            tokens.push_back(readIdentifier());
-            continue;
-        }
-
-        if (isdigit(current()))
-        {
-            tokens.push_back(readNumber());
-            continue;
-        }
-
-        if (current() == '"')
-        {
-            tokens.push_back(readString());
-            continue;
-        }
-
-        switch (current())
-        {
-        case '{':
-            tokens.push_back({TokenType::LBrace, "{"});
-            break;
-        case '}':
-            tokens.push_back({TokenType::RBrace, "}"});
-            break;
-
-        case '(':
-            tokens.push_back({TokenType::LParen, "("});
-            break;
-        case ')':
-            tokens.push_back({TokenType::RParen, ")"});
-            break;
-
-        case '=':
-            tokens.push_back({TokenType::Equal, "="});
-            break;
-        case '+':
-            tokens.push_back({TokenType::Plus, "+"});
-            break;
-        case '-':
-            tokens.push_back({TokenType::Minus, "-"});
-            break;
-
-        case '*':
-            tokens.push_back({TokenType::Star, "*"});
-            break;
-
-        case '/':
-            tokens.push_back({TokenType::Slash, "/"});
-            break;
-
-        case '%':
-            tokens.push_back({TokenType::Percent, "%"});
-            break;
-
-        case ':':
-            tokens.push_back({TokenType::Colon, ":"});
-            break;
-
-        case ',':
-            tokens.push_back({TokenType::Comma, ","});
-            break;
-
-        case '.':
-            tokens.push_back({TokenType::Dot, "."});
-            break;
-
-        case '<':
-            tokens.push_back({TokenType::LAngle, "<"});
-            break;
-
-        case '>':
-            tokens.push_back({TokenType::RAngle, ">"});
-            break;
-
-        default:
-            advance();
-            continue;
-        }
-
-        advance();
-    }
-
-    tokens.push_back({TokenType::EndOfFile, ""});
-    return tokens;
+  tokens.push_back({TokenType::EndOfFile, ""});
+  return tokens;
 }

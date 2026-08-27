@@ -54,6 +54,7 @@ build.ninja
 
 # IDEs / Editors
 .vscode/
+!vscode-novus/.vscode/
 .idea/
 *.suo
 *.user

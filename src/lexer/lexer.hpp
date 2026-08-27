@@ -1,24 +1,23 @@
 #pragma
-#include <vector>
 #include "token.hpp"
+#include <vector>
 
-class Lexer
-{
+class Lexer {
 public:
-    Lexer(const string &input);
-    vector<Token> tokenize();
+  Lexer(const string &input);
+  vector<Token> tokenize();
 
 private:
-    string src;
-    size_t pos = 0;
+  string src;
+  size_t pos = 0;
 
-    char current();
-    char peek();
-    void advance();
+  char current();
+  char peek();
+  void advance();
 
-    void skipWhitespace();
+  void skipWhitespace();
 
-    Token readIdentifier();
-    Token readNumber();
-    Token readString();
+  Token readIdentifier();
+  Token readNumber();
+  Token readString();
 };

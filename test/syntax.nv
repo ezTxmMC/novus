@@ -1,5 +1,3 @@
-package syntax
-
 import http
 import json
 import path
@@ -48,14 +46,7 @@ define class Person based IPerson {
 
   @Interface
   sendPacket() {
-
   }
-}
-
-define class Person(string name, integer age, array<Person> friends) {
-  private final string name: get
-  private final integer age: get, set
-  private final array<Person> friends: get, set
 }
 
 define enum Gender {

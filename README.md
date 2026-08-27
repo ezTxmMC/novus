@@ -27,3 +27,9 @@ method main {
     println "Hello"
 }
 ```
+
+---
+
+## 🧩 Editor support
+
+A VS Code extension with syntax highlighting, a language server (completion, diagnostics, navigation) and a run command lives in [vscode-novus/](vscode-novus/README.md).

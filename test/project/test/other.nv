@@ -1,0 +1,13 @@
+package test
+
+define class Key {
+    private final str field: get, set
+    private final str field2: get, set
+    private final str field3: get, set
+
+    construct(str field, str field2, str field3) {
+        this.field = field
+        this.field2 = field2
+        this.field3 = field3
+    }
+}

@@ -3,62 +3,60 @@
 
 using namespace std;
 
-enum class TokenType
-{
-    Package,
+enum class TokenType {
+  Package,
 
-    Identifier,
-    Integer,
-    Float,
-    String,
+  Identifier,
+  Integer,
+  Float,
+  String,
 
-    Private,
-    Final,
+  Private,
+  Final,
 
-    // Type Keywords
-    StringType,
-    IntegerType,
-    FloatType,
-    ArrayType,
+  // Type Keywords
+  StringType,
+  IntegerType,
+  FloatType,
+  ArrayType,
 
-    // Operators & Delimiters
-    Colon,
-    Comma,
-    Dot,
-    LAngle,
-    RAngle,
-    Assign,
+  // Operators & Delimiters
+  Colon,
+  Comma,
+  Dot,
+  LAngle,
+  RAngle,
+  Assign,
 
-    // Control Flow
-    If,
-    For,
-    While,
-    Return,
+  // Control Flow
+  If,
+  For,
+  While,
+  Return,
 
-    // Modifiers
-    Void,
+  // Modifiers
+  Void,
 
-    Method,
-    Var,
-    Println,
+  Method,
+  Var,
+  Println,
 
-    LBrace,
-    RBrace,
-    LParen,
-    RParen,
+  LBrace,
+  RBrace,
+  LParen,
+  RParen,
 
-    Equal,
-    Plus,
-    Minus,
-    Star,
-    Slash,
-    Percent,
+  Equal,
+  Plus,
+  Minus,
+  Star,
+  Slash,
+  Percent,
 
-    EndOfFile
+  EndOfFile
 };
 
-struct Token
-{
-    TokenType type;
-    string value;
+struct Token {
+  TokenType type;
+  string value;
 };

@@ -254,6 +254,22 @@ export class Parser {
 
   private parseImport(): ast.ImportDecl {
     const kw = this.advance();
+    if (this.cur.kind === TokenKind.String && !this.cur.newlineBefore) {
+      // File import: import "path/file.nv" - the imported file's symbols are
+      // resolved via its package (usually named after the file).
+      const tok = this.advance();
+      const file = tok.value.split(/[\\/]/).pop() ?? tok.value;
+      const name = file.replace(/\.nv$/, '');
+      return {
+        kind: 'Import',
+        name,
+        isFile: true,
+        path: tok.value,
+        nameSpan: { start: tok.start, end: tok.end },
+        start: kw.start,
+        end: this.prevEnd(),
+      };
+    }
     const { name, nameSpan } = this.parseDottedName('module name');
     return { kind: 'Import', name, nameSpan, start: kw.start, end: this.prevEnd() };
   }

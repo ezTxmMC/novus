@@ -1,0 +1,290 @@
+package parsecore
+
+import "lexcore.nv"
+
+method tokenValue(string token): string {
+    var i = 0
+    while (token.charAt(i) != " ") {
+        i = i + 1
+    }
+    return token.substring(i + 1, token.length())
+}
+
+method tokenKind(string token): string {
+    var i = 0
+    while (token.charAt(i) != " ") {
+        i = i + 1
+    }
+    return token.substring(0, i)
+}
+
+method precedenceOf(string op): integer {
+    var precs = { "||": 1, "&&": 2, "==": 3, "!=": 3, "<": 4, ">": 4,
+        "<=": 4, ">=": 4, "+": 5, "-": 5, "*": 6, "/": 6, "%": 6 }
+    if (precs.has(op)) {
+        return parseInt(precs[op])
+    }
+    return 0 - 1
+}
+
+method parsePrimary(array<string> tokens, integer pos): map<string, string> {
+    var t = tokens[pos]
+    var kind = tokenKind(t)
+    if (kind == "LPAREN") {
+        var inner = parseExpr(tokens, pos + 1, 0)
+        return parsePostfixNv(tokens, inner["node"], parseInt(inner["pos"]) + 1)
+    }
+    if (kind == "NOT") {
+        var operand = parsePrimary(tokens, pos + 1)
+        return { "node": "(! " + operand["node"] + ")", "pos": parseInt(operand["pos"]) }
+    }
+    if (kind == "LBRACKET") {
+        var node = "(arr"
+        var p = pos + 1
+        while (tokenKind(tokens[p]) != "RBRACKET") {
+            var e = parseExpr(tokens, p, 0)
+            node = node + " " + e["node"]
+            p = parseInt(e["pos"])
+            if (tokenKind(tokens[p]) == "COMMA") {
+                p = p + 1
+            }
+        }
+        return parsePostfixNv(tokens, node + ")", p + 1)
+    }
+    if (kind == "LBRACE") {
+        var mnode = "(mapl"
+        var mp = pos + 1
+        while (tokenKind(tokens[mp]) != "RBRACE") {
+            var k = parseExpr(tokens, mp, 0)
+            mnode = mnode + " " + k["node"]
+            mp = parseInt(k["pos"]) + 1
+            var v = parseExpr(tokens, mp, 0)
+            mnode = mnode + " " + v["node"]
+            mp = parseInt(v["pos"])
+            if (tokenKind(tokens[mp]) == "COMMA") {
+                mp = mp + 1
+            }
+        }
+        return parsePostfixNv(tokens, mnode + ")", mp + 1)
+    }
+    if (kind == "STRING") {
+        var q = chr(34)
+        return { "node": "(str " + q + tokenValue(t) + q + ")", "pos": pos + 1 }
+    }
+    if (kind == "IDENT" && pos + 1 < tokens.length() && tokenKind(tokens[pos + 1]) == "LPAREN") {
+        var node = "(call " + tokenValue(t)
+        var p = pos + 2
+        while (tokenKind(tokens[p]) != "RPAREN") {
+            var arg = parseExpr(tokens, p, 0)
+            node = node + " " + arg["node"]
+            p = parseInt(arg["pos"])
+            if (tokenKind(tokens[p]) == "COMMA") {
+                p = p + 1
+            }
+        }
+        return parsePostfixNv(tokens, node + ")", p + 1)
+    }
+    return parsePostfixNv(tokens, tokenValue(t), pos + 1)
+}
+
+method parseExpr(array<string> tokens, integer pos, integer minPrec): map<string, string> {
+    var left = parsePrimary(tokens, pos)
+    var node = left["node"]
+    var p = parseInt(left["pos"])
+    while (p < tokens.length()) {
+        var op = tokenValue(tokens[p])
+        var prec = precedenceOf(op)
+        if (prec < minPrec) {
+            break
+        }
+        var right = parseExpr(tokens, p + 1, prec + 1)
+        node = "(" + op + " " + node + " " + right["node"] + ")"
+        p = parseInt(right["pos"])
+    }
+    return { "node": node, "pos": p }
+}
+
+method parseBlock(array<string> tokens, integer pos): map<string, string> {
+    var p = pos + 1
+    var node = "(block"
+    while (tokenKind(tokens[p]) != "RBRACE") {
+        var s = parseStatement(tokens, p)
+        node = node + " " + s["node"]
+        p = parseInt(s["pos"])
+    }
+    return { "node": node + ")", "pos": p + 1 }
+}
+
+method parseIf(array<string> tokens, integer pos): map<string, string> {
+    var c = parseExpr(tokens, pos + 2, 0)
+    var thenBlock = parseBlock(tokens, parseInt(c["pos"]) + 1)
+    var node = "(if " + c["node"] + " " + thenBlock["node"]
+    var p = parseInt(thenBlock["pos"])
+    if (p < tokens.length() && tokenValue(tokens[p]) == "else") {
+        if (tokenValue(tokens[p + 1]) == "if") {
+            var elseIf = parseIf(tokens, p + 1)
+            node = node + " " + elseIf["node"]
+            p = parseInt(elseIf["pos"])
+        } else {
+            var elseBlock = parseBlock(tokens, p + 1)
+            node = node + " " + elseBlock["node"]
+            p = parseInt(elseBlock["pos"])
+        }
+    }
+    return { "node": node + ")", "pos": p }
+}
+
+method parseStatement(array<string> tokens, integer pos): map<string, string> {
+    var kind = tokenKind(tokens[pos])
+    var val = tokenValue(tokens[pos])
+    if (kind == "KEYWORD") {
+        if (val == "var") {
+            var name = tokenValue(tokens[pos + 1])
+            if (tokenKind(tokens[pos + 2]) == "EQUAL") {
+                var e = parseExpr(tokens, pos + 3, 0)
+                return { "node": "(var " + name + " " + e["node"] + ")", "pos": parseInt(e["pos"]) }
+            }
+            return { "node": "(var " + name + ")", "pos": pos + 2 }
+        }
+        if (val == "return") {
+            var e = parseExpr(tokens, pos + 1, 0)
+            return { "node": "(return " + e["node"] + ")", "pos": parseInt(e["pos"]) }
+        }
+        if (val == "println") {
+            var e = parseExpr(tokens, pos + 1, 0)
+            return { "node": "(println " + e["node"] + ")", "pos": parseInt(e["pos"]) }
+        }
+        if (val == "if") {
+            return parseIf(tokens, pos)
+        }
+        if (val == "while") {
+            var c = parseExpr(tokens, pos + 2, 0)
+            var b = parseBlock(tokens, parseInt(c["pos"]) + 1)
+            return { "node": "(while " + c["node"] + " " + b["node"] + ")", "pos": parseInt(b["pos"]) }
+        }
+        if (val == "for") {
+            var name = tokenValue(tokens[pos + 2])
+            var iterable = parseExpr(tokens, pos + 4, 0)
+            var b = parseBlock(tokens, parseInt(iterable["pos"]) + 1)
+            return { "node": "(forin " + name + " " + iterable["node"] + " " + b["node"] + ")", "pos": parseInt(b["pos"]) }
+        }
+        if (val == "break") {
+            return { "node": "(break)", "pos": pos + 1 }
+        }
+        if (val == "continue") {
+            return { "node": "(continue)", "pos": pos + 1 }
+        }
+    }
+    if (kind == "IDENT" && tokenKind(tokens[pos + 1]) == "EQUAL") {
+        var e = parseExpr(tokens, pos + 2, 0)
+        return { "node": "(assign " + val + " " + e["node"] + ")", "pos": parseInt(e["pos"]) }
+    }
+    var e = parseExpr(tokens, pos, 0)
+    if (parseInt(e["pos"]) < tokens.length() && tokenKind(tokens[parseInt(e["pos"])]) == "EQUAL") {
+        var rhs = parseExpr(tokens, parseInt(e["pos"]) + 1, 0)
+        return { "node": "(setexpr " + e["node"] + " " + rhs["node"] + ")", "pos": parseInt(rhs["pos"]) }
+    }
+    return { "node": e["node"], "pos": parseInt(e["pos"]) }
+}
+
+method parseMethodDecl(array<string> tokens, integer pos): map<string, string> {
+    var name = tokenValue(tokens[pos + 1])
+    var p = pos + 2
+    var params = ""
+    if (tokenKind(tokens[p]) == "LPAREN") {
+        p = p + 1
+        var typeAcc = ""
+        var depth = 0
+        while (tokenKind(tokens[p]) != "RPAREN") {
+            var kind = tokenKind(tokens[p])
+            if (kind == "COMMA" && depth == 0) {
+                p = p + 1
+            } else {
+                var tv = tokenValue(tokens[p])
+                if (kind == "LANGLE") {
+                    depth = depth + 1
+                }
+                if (kind == "RANGLE") {
+                    depth = depth - 1
+                }
+                var nextKind = tokenKind(tokens[p + 1])
+                if (depth == 0 && (nextKind == "COMMA" || nextKind == "RPAREN")) {
+                    params = params + " (p " + typeAcc + " " + tv + ")"
+                    typeAcc = ""
+                } else {
+                    typeAcc = typeAcc + tv
+                }
+                p = p + 1
+            }
+        }
+        p = p + 1
+    }
+    var ret = "void"
+    if (tokenKind(tokens[p]) == "COLON") {
+        p = p + 1
+        ret = ""
+        while (tokenKind(tokens[p]) != "LBRACE") {
+            ret = ret + tokenValue(tokens[p])
+            p = p + 1
+        }
+    }
+    while (tokenKind(tokens[p]) != "LBRACE") {
+        p = p + 1
+    }
+    var b = parseBlock(tokens, p)
+    var node = "(method " + name + " " + ret
+    if (params != "") {
+        node = node + " (params" + params + ")"
+    }
+    node = node + " " + b["node"] + ")"
+    return { "node": node, "pos": parseInt(b["pos"]) }
+}
+
+method parseProgram(string source): array<string> {
+    var tokens = lex(source)
+    var methodsOut = []
+    var p = 0
+    var n = tokens.length()
+    while (p < n) {
+        if (tokenValue(tokens[p]) == "method") {
+            var m = parseMethodDecl(tokens, p)
+            methodsOut.append(m["node"])
+            p = parseInt(m["pos"])
+        } else {
+            p = p + 1
+        }
+    }
+    return methodsOut
+}
+
+method parsePostfixNv(array<string> tokens, string node, integer pos): map<string, string> {
+    while (true) {
+        if (pos < tokens.length() && tokenKind(tokens[pos]) == "LBRACKET") {
+            var idxE = parseExpr(tokens, pos + 1, 0)
+            node = "(idx " + node + " " + idxE["node"] + ")"
+            pos = parseInt(idxE["pos"]) + 1
+        } else if (pos < tokens.length() && tokenKind(tokens[pos]) == "DOT") {
+            var name = tokenValue(tokens[pos + 1])
+            pos = pos + 2
+            if (pos < tokens.length() && tokenKind(tokens[pos]) == "LPAREN") {
+                var callNode = "(mcall " + node + " " + name
+                pos = pos + 1
+                while (tokenKind(tokens[pos]) != "RPAREN") {
+                    var arg = parseExpr(tokens, pos, 0)
+                    callNode = callNode + " " + arg["node"]
+                    pos = parseInt(arg["pos"])
+                    if (tokenKind(tokens[pos]) == "COMMA") {
+                        pos = pos + 1
+                    }
+                }
+                node = callNode + ")"
+                pos = pos + 1
+            } else {
+                node = "(mget " + node + " " + name + ")"
+            }
+        } else {
+            break
+        }
+    }
+    return { "node": node, "pos": pos }
+}

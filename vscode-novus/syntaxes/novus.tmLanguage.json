@@ -216,7 +216,7 @@
     "type-name": {
       "patterns": [
         {
-          "match": "\\b(string|str|integer|int|float|double|doub|bool|boolean|void|array|image)\\b",
+          "match": "\\b(string|str|integer|int|float|double|doub|bool|boolean|void|array|map|image)\\b",
           "name": "support.type.primitive.novus"
         },
         { "match": "\\b[A-Za-z_]\\w*\\b", "name": "entity.name.type.novus" }
@@ -337,7 +337,7 @@
       ]
     },
     "types": {
-      "match": "\\b(string|str|integer|int|float|double|doub|bool|boolean|void|array|image)\\b",
+      "match": "\\b(string|str|integer|int|float|double|doub|bool|boolean|void|array|map|image)\\b",
       "name": "support.type.primitive.novus"
     },
     "numbers": {

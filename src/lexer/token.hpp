@@ -5,6 +5,7 @@ using namespace std;
 
 enum class TokenType {
   Package,
+  Import,
 
   Identifier,
   Integer,
@@ -17,11 +18,13 @@ enum class TokenType {
   // Type Keywords
   StringType,
   IntegerType,
+  BooleanType,
   FloatType,
   ArrayType,
 
   // Operators & Delimiters
   Colon,
+  Semicolon,
   Comma,
   Dot,
   LAngle,
@@ -31,8 +34,16 @@ enum class TokenType {
   // Control Flow
   If,
   For,
+  In,
   While,
   Return,
+  Else,
+  Break,
+  Continue,
+
+  // Boolean
+  True,
+  False,
 
   // Modifiers
   Void,
@@ -40,11 +51,14 @@ enum class TokenType {
   Method,
   Var,
   Println,
+  Print,
 
   LBrace,
   RBrace,
   LParen,
   RParen,
+  LBracket,
+  RBracket,
 
   Equal,
   Plus,
@@ -53,10 +67,24 @@ enum class TokenType {
   Slash,
   Percent,
 
+  At, // @
+
+  EqualEqual,   // ==
+  NotEqual,     // !=
+  EqualLess,    // =>
+  LessEqual,    // <=
+  EqualGreater, // =<
+  GreaterEqual, // >=
+  AndAnd,       // &&
+  OrOr,         // ||
+  Not,          // !
+
   EndOfFile
 };
 
 struct Token {
   TokenType type;
   string value;
+  int line = 0;
+  int column = 0;
 };

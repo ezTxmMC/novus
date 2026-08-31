@@ -8,7 +8,7 @@ import {
 } from 'vscode-languageserver/node';
 import { Analysis, Scope } from './analyzer';
 import { findNodePath } from './ast';
-import { BUILTIN_ANNOTATIONS, KEYWORDS, KEYWORD_MAP, PRIMITIVE_TYPES } from './builtins';
+import { BUILTIN_ANNOTATIONS, builtinGlobals, KEYWORDS, KEYWORD_MAP, PRIMITIVE_TYPES } from './builtins';
 import { RESERVED_WORDS } from './lexer';
 import { createImportEdit } from './imports';
 import { CLASS_LIKE, NSymbol, describe, mkType, typeToString } from './symbols';
@@ -103,6 +103,8 @@ export function complete(ws: Workspace, analysis: Analysis, offset: number): Com
     case 'statement':
       STATEMENT_KEYWORDS.forEach(k => items.push(keywordItem(k, '3')));
       EXPRESSION_KEYWORDS.forEach(k => items.push(keywordItem(k, '3')));
+      items.push(...builtinFunctionItems());
+      items.push(...builtinFunctionItems());
       items.push(...symbolItems(analysis, ws, offset, scope, { valuesOnly: false }));
       break;
     case 'expression':
@@ -196,6 +198,18 @@ function contextAt(analysis: Analysis, offset: number, before: string): Context 
     if (!atStart) return 'expression';
   }
   return context;
+}
+
+function builtinFunctionItems(): CompletionItem[] {
+  return builtinGlobals().map(g => ({
+    label: g.name,
+    kind: CompletionItemKind.Function,
+    detail: `${g.name}(${(g.params ?? []).map(p => `${p.type ? p.type.name + ' ' : ''}${p.name}`).join(', ')})`,
+    documentation: g.doc ? { kind: MarkupKind.Markdown, value: g.doc } : undefined,
+    insertText: (g.params ?? []).length ? `${g.name}($1)` : `${g.name}()`,
+    insertTextFormat: InsertTextFormat.Snippet,
+    sortText: '4' + g.name,
+  }));
 }
 
 function keywordItem(name: string, sort: string): CompletionItem {

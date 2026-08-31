@@ -73,3 +73,5 @@ Thumbs.db
 *.temp
 *.swp
 *~
+
+*.expected

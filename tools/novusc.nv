@@ -1,0 +1,16 @@
+package main
+
+import "gencore.nv"
+
+method main(array<string> arguments) {
+    if (arguments.length() < 1) {
+        println "Usage: novusc <file.nv> [more.nv ...]"
+        return 0
+    }
+    var source = ""
+    for (f in arguments) {
+        source = source + readFile(f) + chr(10)
+    }
+    println generateC(source)
+    return 0
+}

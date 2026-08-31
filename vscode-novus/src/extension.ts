@@ -12,7 +12,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   context.subscriptions.push(outputChannel);
 
   context.subscriptions.push(
-    vscode.commands.registerCommand('novus.runFile', runCurrentFile),
+    vscode.commands.registerCommand('novus.runFile', () => executeCurrentFile('run')),
+    vscode.commands.registerCommand('novus.buildFile', () => executeCurrentFile('build')),
     vscode.commands.registerCommand('novus.restartServer', async () => {
       if (client) {
         await client.restart();
@@ -93,7 +94,7 @@ function resolveExecutable(document: vscode.TextDocument): { command: string; fo
   return { command: 'novus' + exe, found: false };
 }
 
-async function runCurrentFile(): Promise<void> {
+async function executeCurrentFile(mode: 'run' | 'build'): Promise<void> {
   const editor = vscode.window.activeTextEditor;
   if (!editor || editor.document.languageId !== 'novus') {
     void vscode.window.showInformationMessage('Open a Novus (.nv) file to run it.');
@@ -127,7 +128,12 @@ async function runCurrentFile(): Promise<void> {
   const cwd = vscode.workspace.getWorkspaceFolder(document.uri)?.uri.fsPath ?? path.dirname(document.uri.fsPath);
   const terminal = vscode.window.terminals.find(t => t.name === 'Novus') ?? vscode.window.createTerminal({ name: 'Novus', cwd });
   terminal.show(true);
-  terminal.sendText(`${quote(command)} run ${quote(document.uri.fsPath)}`);
+  if (mode === 'build') {
+    const output = document.uri.fsPath.replace(/\.nv$/, '');
+    terminal.sendText(`${quote(command)} build ${quote(document.uri.fsPath)} -o ${quote(output)}`);
+  } else {
+    terminal.sendText(`${quote(command)} run ${quote(document.uri.fsPath)}`);
+  }
 }
 
 function quote(value: string): string {

@@ -49,6 +49,10 @@ export interface ImportDecl extends Span {
   kind: 'Import';
   name: string;
   nameSpan: Span;
+  /** Set for file imports: `import "file.nv"`. */
+  isFile?: boolean;
+  /** The raw path of a file import. */
+  path?: string;
 }
 
 export interface DeclBase extends Span {

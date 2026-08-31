@@ -1,0 +1,15 @@
+package main
+
+import "lexcore.nv"
+
+method main {
+    var arguments = args()
+    if (arguments.length() < 1) {
+        println "Usage: novus run tools/lexer.nv <file.nv>"
+    } else {
+        var tokens = lex(readFile(arguments[0]))
+        for (t in tokens) {
+            println t
+        }
+    }
+}

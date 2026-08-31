@@ -1,0 +1,55 @@
+package main
+
+// Word frequency counter.
+// Works interpreted (novus run) AND compiled (novus build) with
+// identical output - it sticks to the self-hosting subset.
+
+method main(array<string> arguments) {
+    if (arguments.length() < 1) {
+        println "Usage: wordcount <textfile>"
+        return 0
+    }
+    var text = readFile(arguments[0])
+    var words = splitWords(text)
+    var counts = {}
+    for (w in words) {
+        if (counts.has(w)) {
+            counts[w] = parseInt(counts[w]) + 1
+        } else {
+            counts[w] = 1
+        }
+    }
+    println "total words: " + words.length()
+    println "unique words: " + counts.length()
+    for (k in counts.keys()) {
+        println k + ": " + counts[k]
+    }
+    return 0
+}
+
+method splitWords(string text): array<string> {
+    var words = []
+    var current = ""
+    var i = 0
+    var n = text.length()
+    while (i < n) {
+        var c = text.charAt(i)
+        if (isLetter(c)) {
+            current = current + c
+        } else {
+            if (current != "") {
+                words.append(current)
+            }
+            current = ""
+        }
+        i = i + 1
+    }
+    if (current != "") {
+        words.append(current)
+    }
+    return words
+}
+
+method isLetter(string c): bool {
+    return (c >= "a" && c <= "z") || (c >= "A" && c <= "Z")
+}

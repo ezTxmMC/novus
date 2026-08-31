@@ -3,7 +3,7 @@
  * inference and diagnostics for a single Novus document.
  */
 import * as ast from './ast';
-import { BUILTIN_ANNOTATIONS, builtinMembers, isBoolType, isFloatType, isPrimitive, isStringType } from './builtins';
+import { BUILTIN_ANNOTATIONS, builtinGlobals, builtinMembers, isBoolType, isFloatType, isPrimitive, isStringType } from './builtins';
 import { Comment, Span } from './lexer';
 import { LineMap, ParseError, parse } from './parser';
 import { CLASS_LIKE, NSymbol, TYPE_LIKE, mkType, newSymbol, sameType, semanticTokenModifiers, semanticTokenType, typeToString } from './symbols';
@@ -193,6 +193,11 @@ export class Analysis {
     const all = [...this.opts.globalLookup(name, this.uri)];
     const builtin = this.opts.builtinModule(name);
     if (builtin) all.push(builtin);
+    if (all.length === 0) {
+      for (const g of builtinGlobals()) {
+        if (g.name === name) all.push(g);
+      }
+    }
     const visible = all.filter(s => this.isVisible(s));
     return visible.length ? visible : all;
   }

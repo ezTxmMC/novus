@@ -1012,7 +1012,10 @@ export class Analysis {
         return undefined;
       }
       case 'Unary':
-        return expr.op === '!' ? mkType('bool') : this.typeOf(expr.operand, scope);
+        if (expr.op === '!') return mkType('bool');
+        // a spawn hands back a task handle, not the value the call produces
+        if (expr.op === 'thread' || expr.op === 'virtual') return mkType('integer');
+        return this.typeOf(expr.operand, scope);
       case 'Binary': {
         if (['==', '!=', '<', '>', '<=', '>=', '&&', '||'].includes(expr.op)) return mkType('bool');
         const l = this.typeOf(expr.left, scope);

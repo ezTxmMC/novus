@@ -328,12 +328,12 @@
     },
     "keywords": {
       "patterns": [
-        { "match": "\\b(if|else|for|while|in|return|break|continue)\\b", "name": "keyword.control.novus" },
+        { "match": "\\b(if|else|for|while|in|return|break|continue|await|sync)\\b", "name": "keyword.control.novus" },
         { "include": "#modifiers" },
         { "match": "\\b(this|super)\\b", "name": "variable.language.novus" },
         { "match": "\\b(true|false|null)\\b", "name": "constant.language.novus" },
         { "match": "\\b(println|print|eprintln)\\b", "name": "support.function.builtin.novus" },
-        { "match": "\\b(package|import|class|enum|interface|annotation|based|construct|var)\\b", "name": "keyword.other.novus" }
+        { "match": "\\b(package|import|class|enum|interface|annotation|based|construct|var|async|thread|virtual)\\b", "name": "keyword.other.novus" }
       ]
     },
     "types": {

@@ -51,8 +51,8 @@ export interface FormattedLine {
   text: string;
 }
 
-const CONTROL_KW = new Set(['if', 'for', 'while', 'return', 'println', 'print', 'eprintln', 'else', 'in']);
-const HEAD_KW = new Set(['method', 'define', 'construct', 'abstract', 'else', 'if', 'for', 'while']);
+const CONTROL_KW = new Set(['if', 'for', 'while', 'return', 'println', 'print', 'eprintln', 'else', 'in', 'sync', 'await']);
+const HEAD_KW = new Set(['method', 'define', 'construct', 'abstract', 'else', 'if', 'for', 'while', 'sync', 'async']);
 const MODIFIERS = new Set(['private', 'public', 'protected', 'final', 'static', 'abstract']);
 const BINARY = new Set(['+', '-', '*', '/', '%', '==', '!=', '<', '>', '<=', '>=', '&&', '||', '=']);
 const OPENERS: Record<string, string> = { '{': '}', '(': ')', '[': ']' };

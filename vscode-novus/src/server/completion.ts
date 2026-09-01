@@ -15,7 +15,7 @@ import { CLASS_LIKE, NSymbol, describe, mkType, typeToString } from './symbols';
 import { Workspace } from './workspace';
 
 const MODIFIERS = ['private', 'public', 'protected', 'final', 'static', 'abstract'];
-const STATEMENT_KEYWORDS = ['var', 'println', 'print', 'eprintln', 'return', 'if', 'else', 'for', 'while', 'break', 'continue'];
+const STATEMENT_KEYWORDS = ['var', 'println', 'print', 'eprintln', 'return', 'if', 'else', 'for', 'while', 'break', 'continue', 'sync', 'await', 'thread', 'virtual'];
 const TOP_LEVEL_KEYWORDS = ['package', 'import', 'method', 'define', 'var', 'println', 'private', 'final'];
 const CLASS_BODY_KEYWORDS = ['method', 'construct', 'define', 'abstract', ...MODIFIERS];
 const EXPRESSION_KEYWORDS = ['this', 'true', 'false', 'null'];

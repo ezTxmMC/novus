@@ -3,6 +3,7 @@ package fixtures
 import json
 import os
 import path
+import thread
 
 /// Greeting used by main.
 private final GREETING = "Hello"
@@ -87,4 +88,55 @@ define enum Color {
   private construct(string text) {
     this.text = text
   }
+}
+
+// concurrency: threads, virtual threads, await, sync
+
+var totalSeen = 0
+var totalLock = 0
+
+method piece(integer n): integer {
+  return n * 2
+}
+
+async method fetchName(string id): string {
+  return "name of ${id}"
+}
+
+method tally(integer times) {
+  var i = 0
+  while (i < times) {
+    sync {
+      totalSeen = totalSeen + 1
+    }
+    i = i + 1
+  }
+}
+
+method concurrency(): integer {
+  var counted = thread.counter(0)
+  var work = thread.channel(4)
+  totalLock = thread.mutex()
+
+  var one = virtual piece(21)
+  var two = thread piece(2)
+  var named = await fetchName("x")
+  println named
+
+  sync (totalLock) {
+    totalSeen = totalSeen + 1
+  }
+
+  var tasks = [virtual piece(1), virtual piece(2)]
+  var results = thread.joinAll(tasks)
+  println results
+
+  thread.send(work, 1)
+  var item = thread.recv(work)
+  println item
+  thread.close(work)
+  thread.add(counted, 1)
+  thread.sleep(1)
+
+  return await one + await two
 }

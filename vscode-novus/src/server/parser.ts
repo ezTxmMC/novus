@@ -230,6 +230,10 @@ export class Parser {
     const annotations = this.parseAnnotations();
     const modifiers = this.parseModifiers();
 
+    // `async method f(...)`: calls start it on a virtual thread and hand back
+    // a task, so only the call sites differ - the declaration is the method
+    // it was written as.
+    if (this.isKw('async') && this.isKw('method', this.peek())) this.advance();
     if (this.isKw('method')) return this.parseMethod(declStart, annotations, modifiers, true, false);
     if (this.isKw('construct')) return this.parseMethod(declStart, annotations, modifiers, true, true);
     if (this.isKw('define')) return this.parseDefine(declStart, annotations, modifiers);
@@ -816,6 +820,17 @@ export class Parser {
       this.error(`Expected 'var' after modifier`);
       return undefined;
     }
+    // sync { ... } and sync (lock) { ... }: the body is an ordinary block
+    // that happens to run under a lock.
+    if (this.isKw('sync') && (this.isPunct('{', this.peek()) || this.isPunct('(', this.peek()))) {
+      this.advance();
+      if (this.isPunct('(')) {
+        this.advance();
+        if (!this.parseExpression()) this.error('Expected a lock expression');
+        this.expectPunct(')', "to close the lock of 'sync'");
+      }
+      return this.parseBlock();
+    }
     if (this.isKw('println') || this.isKw('print') || this.isKw('eprintln')) {
       const kw = this.advance();
       const variant = kw.value as 'println' | 'print' | 'eprintln';
@@ -997,7 +1012,30 @@ export class Parser {
     return left;
   }
 
+  /** Can the token begin an expression? */
+  private startsExpression(t: Token): boolean {
+    if (t.kind === TokenKind.Identifier || t.kind === TokenKind.Integer
+      || t.kind === TokenKind.Float || t.kind === TokenKind.String) return true;
+    return t.kind === TokenKind.Punct && ['(', '[', '{', '-', '!'].includes(t.value);
+  }
+
   private parseUnary(): ast.Expr | undefined {
+    // `await expr` waits for a task, `thread call(...)` and `virtual call(...)`
+    // start one. All three are contextual: the word is only the operator when
+    // something it can operate on follows it.
+    if (this.isKw('await') && this.startsExpression(this.peek())) {
+      const t = this.advance();
+      const operand = this.parseUnary();
+      if (!operand) this.error("Expected an expression after 'await'");
+      return { kind: 'Unary', op: 'await', operand, start: t.start, end: this.prevEnd() };
+    }
+    if ((this.isKw('thread') || this.isKw('virtual')) && this.peek().kind === TokenKind.Identifier) {
+      const t = this.advance();
+      const operand = this.parseUnary();
+      if (!operand) this.error(`Expected a method call after '${t.value}'`);
+      else if (operand.kind !== 'Call') this.error(`'${t.value}' runs a method call: ${t.value} work(...)`, t);
+      return { kind: 'Unary', op: t.value, operand, start: t.start, end: this.prevEnd() };
+    }
     if (this.isPunct('-') || this.isPunct('!')) {
       const t = this.advance();
       const operand = this.parseUnary();

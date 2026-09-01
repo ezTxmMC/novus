@@ -9,7 +9,8 @@
     "build": "bun run sync && tsc -b --noEmit && vite build && cp dist/index.html dist/404.html",
     "preview": "vite preview",
     "check": "tsc -b --noEmit",
-    "smoke": "bun run sync && bun scripts/smoke.tsx"
+    "smoke": "bun run sync && bun scripts/smoke.tsx",
+    "ui-test": "bun scripts/ui-test.mjs"
   },
   "dependencies": {
     "react": "^19.2.8",
@@ -27,6 +28,7 @@
     "@types/react-dom": "^19.2.5",
     "@vitejs/plugin-react": "^6.1.1",
     "happy-dom": "^20.12.0",
+    "playwright-core": "^1.62.1",
     "rehype-slug": "^6.0.0",
     "remark-frontmatter": "^5.0.0",
     "remark-gfm": "^4.0.1",

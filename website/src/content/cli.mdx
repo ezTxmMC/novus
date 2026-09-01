@@ -67,6 +67,13 @@ novusc deps update                # re-fetch everything
 | `--keep-c` | keep the generated `.c` file next to the binary |
 | `--no-runtime` | `#include "novus_rt.h"` instead of embedding the runtime |
 
+<Callout type="tip">
+The C compiler matters more than one might expect: `gcc -O2` optimizes the
+generated tagged-integer code markedly better than clang (8 ms versus 25 ms on
+a ten million iteration loop, same C). `novusc` prefers `gcc` when it is
+installed; `NOVUS_CC` overrides that.
+</Callout>
+
 ## Exit codes
 
 `novusc` returns 0 on success and 1 on a compile error. `novusc run` returns

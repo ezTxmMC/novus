@@ -121,6 +121,32 @@ for (const file of readdirSync(join(root, 'std')).sort()) {
 }
 writeFileSync(join(generated, 'stdlib.json'), JSON.stringify(modules));
 
+// --- benchmarks -------------------------------------------------------------
+const benchFile = join(root, 'benchmarks', 'results.json');
+if (existsSync(benchFile)) {
+  const results = JSON.parse(readFileSync(benchFile, 'utf8'));
+  const EXTENSION: Record<string, string> = {
+    novus: 'nv', cpp: 'cpp', rust: 'rs', go: 'go',
+    crystal: 'cr', java: 'java', node: 'js', python: 'py',
+  };
+  const JAVA_CLASS: Record<string, string> = {
+    fib: 'Fib', loop: 'Loop', primes: 'Primes', mandelbrot: 'Mandelbrot',
+    array: 'Arr', sort: 'Sort', strings: 'Str', map: 'MapB',
+    objects: 'Obj', wordfreq: 'WordFreq',
+  };
+  // the sources are shown next to the numbers, so nobody has to trust them
+  results.sources = {};
+  for (const workload of results.workloads) {
+    results.sources[workload.name] = {};
+    for (const language of Object.keys(results.languages)) {
+      const base = language === 'java' ? JAVA_CLASS[workload.name] : workload.name;
+      const file = join(root, 'benchmarks', language, `${base}.${EXTENSION[language]}`);
+      if (existsSync(file)) results.sources[workload.name][language] = readFileSync(file, 'utf8');
+    }
+  }
+  writeFileSync(join(generated, 'benchmarks.json'), JSON.stringify(results));
+}
+
 // --- numbers for the landing page -------------------------------------------
 const countLines = (file: string) => readFileSync(file, 'utf8').split('\n').length;
 function walk(dir: string, out: string[] = []): string[] {

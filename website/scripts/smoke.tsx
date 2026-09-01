@@ -6,6 +6,7 @@ import { StaticRouter } from 'react-router';
 import Home from '../src/routes/Home';
 import Examples from '../src/routes/Examples';
 import Stdlib from '../src/routes/Stdlib';
+import Benchmarks from '../src/routes/Benchmarks';
 
 // minimal browser shims used by ThemeToggle / Layout
 globalThis.document = { documentElement: { classList: { contains: () => true, toggle: () => {} } } } as never;
@@ -25,5 +26,6 @@ let failures = 0;
 failures += render('home', <Home />, ['compiles itself', 'Get started', 'Why Novus', 'std functions', 'Bootstrapping']);
 failures += render('examples', <Examples />, ['Examples', 'hello-world', 'stack-machine', 'Algorithms']);
 failures += render('stdlib', <Stdlib />, ['Standard library', 'mkdir(string path)', 'repeat(string s', 'native']);
+failures += render('bench', <Benchmarks />, ['Benchmarks', 'Mandelbrot', 'Novus', 'Rust', 'Python', 'ms']);
 console.log(failures ? `${failures} check(s) failed` : 'all components render');
 process.exit(failures ? 1 : 0);

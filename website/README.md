@@ -26,6 +26,18 @@ Prose lives in `src/content/**/*.mdx`; the sidebar, prev/next links and the
 search index come from `src/lib/nav.ts`. Code blocks in MDX are highlighted at
 build time (rehype + shiki), everything else lazily in the browser.
 
+## Tests
+
+```bash
+bun run smoke      # renders the pages without a DOM (catches white screens)
+bun run ui-test    # clicks through the built site in Chrome
+```
+
+`ui-test` starts its own preview server, walks the sidebar, switches the
+benchmark languages, filters examples and the standard library, toggles the
+theme and uses the search. It skips itself when no Chrome is installed, so it
+never blocks a build.
+
 ## Deploying
 
 The output in `dist/` is a static site. `404.html` is a copy of `index.html`,

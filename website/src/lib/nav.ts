@@ -36,6 +36,7 @@ export const NAV: NavSection[] = [
     items: [
       { title: 'Standard library', path: '/stdlib', summary: 'Every module and function of std/' },
       { title: 'Examples', path: '/examples', summary: '250 programs from hello world to a VM' },
+      { title: 'Benchmarks', path: '/benchmarks', summary: 'Ten workloads across eight languages' },
       { title: 'Architecture', path: '/docs/architecture', summary: 'How the compiler is put together' },
       { title: 'Bootstrapping', path: '/docs/bootstrapping', summary: 'The self-hosting ladder and the fixpoint' },
     ],

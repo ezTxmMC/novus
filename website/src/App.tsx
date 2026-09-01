@@ -9,6 +9,7 @@ import DocPage from './routes/DocPage';
 const Examples = lazy(() => import('./routes/Examples'));
 const ExampleDetail = lazy(() => import('./routes/ExampleDetail'));
 const Stdlib = lazy(() => import('./routes/Stdlib'));
+const Benchmarks = lazy(() => import('./routes/Benchmarks'));
 
 function Loading() {
   return <div className="py-20 text-center text-sm text-slate-500">Loading...</div>;
@@ -34,6 +35,7 @@ export default function App() {
           <Route path="/examples" element={<Examples />} />
           <Route path="/examples/:chapter/:name" element={<ExampleDetail />} />
           <Route path="/stdlib" element={<Stdlib />} />
+          <Route path="/benchmarks" element={<Benchmarks />} />
           <Route path="*" element={<NotFound />} />
         </Routes>
       </Suspense>

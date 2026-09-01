@@ -91,6 +91,9 @@ export function Layout({ children, wide = false }: { children: ReactNode; wide?:
               <NavLink to="/examples" className="hover:text-brand-600 dark:hover:text-brand-400">
                 Examples
               </NavLink>
+              <NavLink to="/benchmarks" className="hover:text-brand-600 dark:hover:text-brand-400">
+                Benchmarks
+              </NavLink>
             </nav>
             <Search />
             <ThemeToggle />

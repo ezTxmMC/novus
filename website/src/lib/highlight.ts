@@ -33,7 +33,40 @@ export async function getHighlighter(): Promise<HighlighterCore> {
   return highlighter;
 }
 
+/**
+ * Grammars beyond the built-in ones, loaded the first time they show up.
+ * Listed explicitly: a dynamic import with a variable path makes the bundler
+ * ship every grammar shiki has (11 MB instead of a few hundred kilobytes).
+ */
+const EXTRA_LANGUAGES: Record<string, () => Promise<{ default: unknown }>> = {
+  cpp: () => import('shiki/langs/cpp.mjs'),
+  rust: () => import('shiki/langs/rust.mjs'),
+  go: () => import('shiki/langs/go.mjs'),
+  ruby: () => import('shiki/langs/ruby.mjs'),
+  java: () => import('shiki/langs/java.mjs'),
+  javascript: () => import('shiki/langs/javascript.mjs'),
+  python: () => import('shiki/langs/python.mjs'),
+};
+
+async function ensureLanguage(shiki: HighlighterCore, lang: string): Promise<boolean> {
+  if (shiki.getLoadedLanguages().includes(lang)) return true;
+  const load = EXTRA_LANGUAGES[lang];
+  if (!load) return false;
+  try {
+    const grammar = await load();
+    await shiki.loadLanguage(grammar.default as never);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function highlight(code: string, lang = 'novus'): Promise<string> {
   const shiki = await getHighlighter();
-  return shiki.codeToHtml(code, { lang, themes: THEMES, defaultColor: false });
+  const known = await ensureLanguage(shiki, lang);
+  return shiki.codeToHtml(code, {
+    lang: known ? lang : 'text',
+    themes: THEMES,
+    defaultColor: false,
+  });
 }

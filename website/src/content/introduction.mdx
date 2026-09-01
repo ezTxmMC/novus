@@ -74,6 +74,15 @@ wrong argument counts *are* compile-time errors. Everything else surfaces at
 run time with a file and line.
 </Callout>
 
+## How fast is it
+
+Novus compiles to C, so numeric code runs at native speed: the compiler proves
+which locals are integers or floats and emits plain `long long` and `double`
+arithmetic. In the [benchmarks](/benchmarks) it matches C++, Rust, Go and
+Crystal on integer loops, primes and mandelbrot - with the smallest memory
+footprint of the eight languages - while sorting, allocation heavy code and
+hash maps still trail the native compilers.
+
 ## Where to go next
 
 - [Installation](/docs/installation) - three stages, a few seconds

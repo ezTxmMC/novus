@@ -1,4 +1,4 @@
-import { Suspense, lazy, useMemo, type ComponentType } from 'react';
+import { Suspense, lazy, type ComponentType } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { Layout } from '../components/Layout';
 import { TableOfContents } from '../components/TableOfContents';
@@ -11,16 +11,25 @@ const PAGES = import.meta.glob('../content/**/*.mdx') as Record<
   () => Promise<{ default: ComponentType }>
 >;
 
-function pageFor(slug: string) {
-  const key = `../content/${slug}.mdx`;
-  return PAGES[key];
+// The lazy component per page is cached outside of rendering. Creating it
+// during a render makes every attempt suspend with a fresh component, so
+// React keeps discarding the update and the old page stays on screen.
+const COMPONENTS = new Map<string, ComponentType>();
+
+function pageFor(slug: string): ComponentType | undefined {
+  const cached = COMPONENTS.get(slug);
+  if (cached) return cached;
+  const loader = PAGES[`../content/${slug}.mdx`];
+  if (!loader) return undefined;
+  const component = lazy(loader);
+  COMPONENTS.set(slug, component);
+  return component;
 }
 
 export default function DocPage() {
   const location = useLocation();
-  const slug = location.pathname.replace(/^\/docs\/?/, '').replace(/\/$/, '');
-  const loader = pageFor(slug || 'introduction');
-  const Content = useMemo(() => (loader ? lazy(loader) : undefined), [loader]);
+  const slug = location.pathname.replace(/^\/docs\/?/, '').replace(/\/$/, '') || 'introduction';
+  const Content = pageFor(slug);
   const { previous, next } = neighbours(location.pathname);
   const current = FLAT_NAV.find((item) => item.path === location.pathname);
 
@@ -48,7 +57,7 @@ export default function DocPage() {
               {current.summary}
             </div>
           )}
-          <Suspense fallback={<div className="py-10 text-sm text-slate-500">Loading...</div>}>
+          <Suspense key={slug} fallback={<div className="py-10 text-sm text-slate-500">Loading...</div>}>
             <Content />
           </Suspense>
 

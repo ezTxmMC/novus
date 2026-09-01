@@ -27,8 +27,10 @@ run_case() { # name, source, golden, rc-file, args-file, workdir
     case "$source" in
         "$dir"/*) rel="${source#"$dir"/}" ;;
     esac
-    (cd "$dir" && "$NOVUSC" run "$rel" "${args[@]}") > "$WORK/actual" 2>&1
+    # ${args[@]+...}: bash 3.2 (macOS) treats an empty array as unbound under set -u
+    (cd "$dir" && "$NOVUSC" run "$rel" ${args[@]+"${args[@]}"}) > "$WORK/raw" 2>&1
     local rc=$?
+    tr -d '\r' < "$WORK/raw" > "$WORK/actual"   # tolerate CRLF (Windows tools, git autocrlf)
     if [ "$rc" != "$expected_rc" ]; then
         echo "FAIL $name (exit code $rc, expected $expected_rc)"
         head -20 "$WORK/actual"
@@ -72,7 +74,7 @@ if [[ -z "$FILTER" || "examples/todo" == *"$FILTER"* ]]; then
     rm -f "$WORK/todo.json"
     ( cd "$WORK" && for cmd in 'add "buy milk"' 'add "walk dog"' 'list' 'done 0' 'list' ''; do
         eval "\"$NOVUSC\" run \"$ROOT/examples/todo/main.nv\" $cmd"
-    done ) > "$WORK/todo.actual" 2>&1
+    done ) 2>&1 | tr -d '\r' > "$WORK/todo.actual"
     if diff -u "$ROOT/examples/todo/main.golden" "$WORK/todo.actual" > "$WORK/diff"; then
         echo "ok   examples/todo"; pass=$((pass + 1))
     else

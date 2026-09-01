@@ -1,0 +1,6 @@
+# Sources, goldens and scripts are always checked out with LF (the test
+# runner compares program output byte for byte).
+* text=auto eol=lf
+*.vsix binary
+*.png binary
+*.jar binary

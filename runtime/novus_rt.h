@@ -43,6 +43,7 @@
 #define NOMINMAX
 #endif
 #include <direct.h>
+#include <fcntl.h>
 #include <io.h>
 #include <process.h>
 #include <windows.h>
@@ -1558,6 +1559,11 @@ static nv nv_args_global = 0;
 
 static void nv_init_args(int argc, char **argv) {
     int i;
+#ifdef _WIN32
+    /* LF line endings on every platform (no CRLF translation) */
+    _setmode(_fileno(stdout), _O_BINARY);
+    _setmode(_fileno(stderr), _O_BINARY);
+#endif
     for (i = 0; i < 256; i++) {
         char c = (char)i;
         nv v = nv_new(NV_STR);
@@ -1760,12 +1766,28 @@ static nv nv_path_join(int n, ...) {
     return nv_path_join_args(args, n);
 }
 
+/* Paths reported by the runtime use forward slashes on every platform. */
+static nv nv_path_slashes(const char *s) {
+#ifdef _WIN32
+    char *buf = nv_strndup(s, strlen(s));
+    char *p;
+    for (p = buf; *p; p++) {
+        if (*p == '\\') {
+            *p = '/';
+        }
+    }
+    return nv_str_own(buf, (int)strlen(buf));
+#else
+    return nv_str(s);
+#endif
+}
+
 static nv nv_path_absolute(void) {
     char buf[4096];
     if (!NV_GETCWD(buf, sizeof(buf))) {
         return nv_str(".");
     }
-    return nv_str(buf);
+    return nv_path_slashes(buf);
 }
 
 static nv nv_path_exists(nv p) { return nv_bool(nv_path_exists_c(nv_display(p))); }
@@ -1818,7 +1840,7 @@ static nv nv_path_temp(void) {
     if (!t || !t[0]) {
         t = "/tmp";
     }
-    return nv_str(t);
+    return nv_path_slashes(t);
 }
 
 static nv nv_path_extension(nv p) {
@@ -2178,7 +2200,7 @@ static nv nv_os_home(void) {
     if (!h || !h[0]) {
         h = getenv("USERPROFILE");
     }
-    return nv_str(h ? h : "");
+    return nv_path_slashes(h ? h : "");
 }
 
 static nv nv_os_pid(void) { return nv_int((long long)NV_GETPID()); }
@@ -2264,7 +2286,8 @@ static nv nv_http_request(nv method, nv url, nv body, nv headers) {
     nv_sb_add(&cmd, nv_shell_quote(nv_cstr(hdrFile)));
     nv_sb_add(&cmd, " --stderr ");
     nv_sb_add(&cmd, nv_shell_quote(nv_cstr(errFile)));
-    nv_sb_add(&cmd, " --write-out %{http_code}");
+    nv_sb_add(&cmd, " --write-out ");
+    nv_sb_add(&cmd, nv_shell_quote("%{http_code}"));
     if (headers && headers->type == NV_MAP) {
         for (i = 0; i < headers->m->len; i++) {
             nv line = nv_concat(nv_concat(nv_str(headers->m->items[i].key), nv_str(": ")), headers->m->items[i].val);
@@ -2280,7 +2303,8 @@ static nv nv_http_request(nv method, nv url, nv body, nv headers) {
         if (body->type == NV_MAP || body->type == NV_ARR || body->type == NV_OBJ) {
             text = nv_json_stringify(body);
             if (!hasContentType) {
-                nv_sb_add(&cmd, " -H 'Content-Type: application/json'");
+                nv_sb_add(&cmd, " -H ");
+                nv_sb_add(&cmd, nv_shell_quote("Content-Type: application/json"));
             }
         }
         bodyFile = nv_http_temp_name("request");

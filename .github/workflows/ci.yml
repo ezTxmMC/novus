@@ -27,7 +27,7 @@ jobs:
         with:
           msystem: MINGW64
           update: false
-          install: mingw-w64-x86_64-gcc
+          install: mingw-w64-x86_64-gcc diffutils
 
       - name: Bootstrap and test (unix)
         if: runner.os != 'Windows'

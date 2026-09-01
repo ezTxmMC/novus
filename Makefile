@@ -6,10 +6,11 @@
 #   make snapshot   regenerate bootstrap/novusc.c after compiler changes
 #   make cross      cross compile for all platforms (needs zig)
 #   make stats      language statistics of the repository (like GitHub's bar)
+#   make bench      run the cross language benchmarks (writes benchmarks/results.json)
 #   make install    copy build/novusc to $(PREFIX)/bin
 PREFIX ?= /usr/local
 
-.PHONY: all test examples snapshot cross stats install clean
+.PHONY: all test examples snapshot cross stats bench install clean
 
 all: build/novusc
 
@@ -34,6 +35,9 @@ cross: build/novusc
 
 stats: build/novusc
 	build/novusc run tools/langstats.nv
+
+bench: build/novusc
+	cd benchmarks && python3 run.py
 
 install: build/novusc
 	install -d $(DESTDIR)$(PREFIX)/bin

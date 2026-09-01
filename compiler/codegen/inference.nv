@@ -1,0 +1,279 @@
+package codegen
+
+import "../ast/sexp.nv"
+import "../parser/types.nv"
+import "common.nv"
+import "expressions.nv"
+
+// Type inference for local variables.
+//
+// A local that only ever holds integers is generated as a C `long long`
+// instead of an `nv`, so loops and counters stay in registers. The analysis
+// is deliberately conservative: a name qualifies only when every declaration
+// and every assignment in the method is an integer expression, and it starts
+// from the assumption that all candidates qualify, dropping them until the
+// set is stable.
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+// Names of locals that are unboxed integers are stored in the same map the
+// C names live in, under an "int:" prefix.
+method markInt(map<string, string> locals, string name) {
+    locals["int:" + name] = "1"
+}
+
+method isIntLocal(map<string, string> locals, string name): bool {
+    return locals.has("int:" + name)
+}
+
+// Floats work the same way, under a "float:" prefix.
+method markFloat(map<string, string> locals, string name) {
+    locals["float:" + name] = "1"
+}
+
+method isFloatLocal(map<string, string> locals, string name): bool {
+    return locals.has("float:" + name)
+}
+
+// Code generation view: an expression that always produces a float. Mixed
+// arithmetic counts as long as the other side is an integer expression - the
+// generator casts it.
+method isFloatValue(string node, map<string, string> locals): bool {
+    if (isList(node) == false) {
+        if (isNumberAtom(node)) {
+            return hasDot(node)
+        }
+        return isFloatLocal(locals, node)
+    }
+    var head = nodeHead(node)
+    if (head == "neg") {
+        return isFloatValue(nodeChild(node, 1), locals)
+    }
+    var arithmetic = {"+": true, "-": true, "*": true, "/": true, "%": true}
+    if (arithmetic.has(head) && nodeCount(node) == 3) {
+        var left = nodeChild(node, 1)
+        var right = nodeChild(node, 2)
+        var leftOk = isFloatValue(left, locals) || isIntValue(left, locals)
+        var rightOk = isFloatValue(right, locals) || isIntValue(right, locals)
+        return leftOk && rightOk && (isFloatValue(left, locals) || isFloatValue(right, locals))
+    }
+    return false
+}
+
+// Analysis view of the same question (plain name sets).
+method isFloatExpr(string node, map<string, string> floats, map<string, string> ints): bool {
+    if (isList(node) == false) {
+        if (isNumberAtom(node)) {
+            return hasDot(node)
+        }
+        return floats.has(node)
+    }
+    var head = nodeHead(node)
+    if (head == "neg") {
+        return isFloatExpr(nodeChild(node, 1), floats, ints)
+    }
+    var arithmetic = {"+": true, "-": true, "*": true, "/": true, "%": true}
+    if (arithmetic.has(head) && nodeCount(node) == 3) {
+        var left = nodeChild(node, 1)
+        var right = nodeChild(node, 2)
+        var leftOk = isFloatExpr(left, floats, ints) || isIntExpr(left, ints)
+        var rightOk = isFloatExpr(right, floats, ints) || isIntExpr(right, ints)
+        return leftOk && rightOk && (isFloatExpr(left, floats, ints) || isFloatExpr(right, floats, ints))
+    }
+    return false
+}
+
+// Code generation view of the same question: locals carry their "int:" marks
+// (the analysis below works on a plain name set instead).
+method isIntValue(string node, map<string, string> locals): bool {
+    if (isList(node) == false) {
+        if (isNumberAtom(node)) {
+            return hasDot(node) == false
+        }
+        return isIntLocal(locals, node)
+    }
+    var head = nodeHead(node)
+    if (head == "neg") {
+        return isIntValue(nodeChild(node, 1), locals)
+    }
+    var arithmetic = {"+": true, "-": true, "*": true, "/": true, "%": true}
+    if (arithmetic.has(head) && nodeCount(node) == 3) {
+        return isIntValue(nodeChild(node, 1), locals) && isIntValue(nodeChild(node, 2), locals)
+    }
+    return false
+}
+
+// Is `node` an expression that always produces an integer, given the set of
+// names currently believed to be integers?
+method isIntExpr(string node, map<string, string> ints): bool {
+    if (isList(node) == false) {
+        if (isNumberAtom(node)) {
+            return hasDot(node) == false
+        }
+        return ints.has(node)
+    }
+    var head = nodeHead(node)
+    if (head == "neg") {
+        return isIntExpr(nodeChild(node, 1), ints)
+    }
+    var arithmetic = {"+": true, "-": true, "*": true, "/": true, "%": true}
+    if (arithmetic.has(head) && nodeCount(node) == 3) {
+        return isIntExpr(nodeChild(node, 1), ints) && isIntExpr(nodeChild(node, 2), ints)
+    }
+    return false
+}
+
+// Collects the assignments of a method body: every assigned name into
+// `names`, the assigned expression into `values`, plus flags for names that
+// are declared locally ("declared:") or bound by a loop ("loop:").
+method collectAssignments(string node, array<string> names, array<string> values, map<string, string> flags) {
+    var head = nodeHead(node)
+    if (head == "at") {
+        collectAssignments(nodeChild(node, 2), names, values, flags)
+        return
+    }
+    if (head == "block") {
+        var i = 1
+        while (i < nodeCount(node)) {
+            collectAssignments(nodeChild(node, i), names, values, flags)
+            i = i + 1
+        }
+        return
+    }
+    if (head == "if") {
+        collectAssignments(nodeChild(node, 2), names, values, flags)
+        if (nodeCount(node) > 3) {
+            collectAssignments(nodeChild(node, 3), names, values, flags)
+        }
+        return
+    }
+    if (head == "while") {
+        collectAssignments(nodeChild(node, 2), names, values, flags)
+        return
+    }
+    if (head == "forin") {
+        flags["loop:" + nodeChild(node, 1)] = "1"     // holds arbitrary elements
+        collectAssignments(nodeChild(node, 3), names, values, flags)
+        return
+    }
+    if (head == "var" || head == "assign") {
+        var name = nodeChild(node, 1)
+        names.append(name)
+        if (nodeCount(node) > 2) {
+            values.append(nodeChild(node, 2))
+        } else {
+            values.append("(none)")
+        }
+        if (head == "var") {
+            flags["declared:" + name] = "1"           // a bare assignment may target a global
+        }
+        return
+    }
+    if (head == "tvar") {
+        var tname = nodeChild(node, 2)
+        names.append(tname)
+        if (nodeCount(node) > 3) {
+            values.append(nodeChild(node, 3))
+        } else {
+            values.append("(none)")
+        }
+        flags["declared:" + tname] = "1"
+        // a declared type decides the representation and must be honoured:
+        // `integer x = 2.9` truncates, so x can never be an unboxed double
+        var declared = normType(nodeChild(node, 1))
+        if (flags.has("type:" + tname) && flags["type:" + tname] != declared) {
+            declared = "mixed"
+        }
+        flags["type:" + tname] = declared
+    }
+}
+
+// The locals (and integer parameters) of a method body that can be unboxed.
+// `parameters` are the names bound by the signature, `intCandidates` those of
+// them declared `integer`.
+method inferIntLocals(string body, map<string, string> parameters, map<string, string> intCandidates): map<string, string> {
+    var names = []
+    var values = []
+    var flags = {}
+    collectAssignments(body, names, values, flags)
+    var ints = {}
+    for (name in intCandidates) {
+        ints[name] = "1"
+    }
+    var i = 0
+    while (i < names.length()) {
+        var name = names[i]
+        var typed = flags.has("type:" + name) == false || flags["type:" + name] == "integer"
+        if (flags.has("declared:" + name) && flags.has("loop:" + name) == false && parameters.has(name) == false && typed) {
+            ints[name] = "1"
+        }
+        if (flags.has("loop:" + name) || typed == false) {
+            ints.remove(name)
+        }
+        i = i + 1
+    }
+    // drop candidates whose assignments are not integer expressions, until
+    // the set is stable
+    var changed = true
+    var rounds = 0
+    while (changed && rounds < 16) {
+        changed = false
+        rounds = rounds + 1
+        var k = 0
+        while (k < names.length()) {
+            var candidate = names[k]
+            if (ints.has(candidate) && isIntExpr(values[k], ints) == false) {
+                ints.remove(candidate)
+                changed = true
+            }
+            k = k + 1
+        }
+    }
+    return ints
+}
+
+// The locals (and float parameters) that can be unboxed doubles. `ints` are
+// the names already claimed by the integer pass.
+method inferFloatLocals(string body, map<string, string> parameters, map<string, string> floatCandidates, map<string, string> ints): map<string, string> {
+    var names = []
+    var values = []
+    var flags = {}
+    collectAssignments(body, names, values, flags)
+    var floats = {}
+    for (name in floatCandidates) {
+        floats[name] = "1"
+    }
+    var i = 0
+    while (i < names.length()) {
+        var name = names[i]
+        var typed = flags.has("type:" + name) == false || flags["type:" + name] == "float"
+        var local = flags.has("declared:" + name) && flags.has("loop:" + name) == false
+        if (local && parameters.has(name) == false && ints.has(name) == false && typed) {
+            floats[name] = "1"
+        }
+        if (flags.has("loop:" + name) || ints.has(name) || typed == false) {
+            floats.remove(name)
+        }
+        i = i + 1
+    }
+    var changed = true
+    var rounds = 0
+    while (changed && rounds < 16) {
+        changed = false
+        rounds = rounds + 1
+        var k = 0
+        while (k < names.length()) {
+            var candidate = names[k]
+            // a `float` declaration also accepts integer expressions (cast)
+            var declaredFloat = flags.has("type:" + candidate) && flags["type:" + candidate] == "float"
+            var ok = isFloatExpr(values[k], floats, ints) || (declaredFloat && isIntExpr(values[k], ints))
+            if (floats.has(candidate) && ok == false) {
+                floats.remove(candidate)
+                changed = true
+            }
+            k = k + 1
+        }
+    }
+    return floats
+}

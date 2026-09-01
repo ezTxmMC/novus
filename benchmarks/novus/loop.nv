@@ -1,0 +1,14 @@
+package main
+
+// Ten million iterations of integer arithmetic. The modulo keeps the loop
+// from being folded into a closed form by the optimizer.
+
+method main {
+    var sum = 0
+    var i = 0
+    while (i < 10000000) {
+        sum = sum + i % 7
+        i = i + 1
+    }
+    println sum
+}

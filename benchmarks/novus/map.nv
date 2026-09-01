@@ -1,0 +1,19 @@
+package main
+
+// Inserting and looking up 300000 entries in a hash map.
+
+method main {
+    var counts = {}
+    var i = 0
+    while (i < 300000) {
+        counts["key" + i] = i
+        i = i + 1
+    }
+    var sum = 0
+    i = 0
+    while (i < 300000) {
+        sum = sum + counts["key" + i]
+        i = i + 1
+    }
+    println "" + counts.length() + " " + sum
+}

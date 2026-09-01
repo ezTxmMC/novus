@@ -1,0 +1,18 @@
+package main
+
+import arrays
+
+// Sorting 300000 pseudo random integers with the standard library.
+
+method main {
+    var values = []
+    var seed = 12345
+    var i = 0
+    while (i < 300000) {
+        seed = seed * 48271 % 2147483647
+        values.append(seed % 1000000)
+        i = i + 1
+    }
+    var sorted = arrays.sort(values)
+    println "" + sorted[0] + " " + sorted[sorted.length() / 2] + " " + sorted[sorted.length() - 1]
+}

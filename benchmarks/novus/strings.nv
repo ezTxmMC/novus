@@ -1,0 +1,16 @@
+package main
+
+// Building a large string, then splitting and joining it again.
+
+method main {
+    var text = ""
+    var i = 0
+    while (i < 200000) {
+        text = text + "word" + i % 10 + " "
+        i = i + 1
+    }
+    text = text.trim()
+    var words = text.split(" ")
+    var joined = words.join("-")
+    println "" + text.length() + " " + words.length() + " " + joined.length()
+}

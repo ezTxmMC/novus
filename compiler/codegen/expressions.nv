@@ -7,6 +7,7 @@ import "../std/stdlib.nv"
 import "calls.nv"
 import "common.nv"
 import "index.nv"
+import "inference.nv"
 
 // Expressions -> C.
 //
@@ -59,6 +60,65 @@ method resolveVar(string name, map<string, string> prog, map<string, string> ctx
     return ""
 }
 
+// The C expression for a node that isFloatValue() accepted: plain double
+// arithmetic. Integer sub-expressions are cast.
+method genFloat(string node, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    if (isList(node) == false) {
+        if (isNumberAtom(node)) {
+            return node
+        }
+        return locals[node]
+    }
+    var head = nodeHead(node)
+    if (head == "neg") {
+        return "(-" + genFloat(nodeChild(node, 1), prog, ctx, locals) + ")"
+    }
+    var left = nodeChild(node, 1)
+    var right = nodeChild(node, 2)
+    var l = genFloat(left, prog, ctx, locals)
+    var r = genFloat(right, prog, ctx, locals)
+    if (isFloatValue(left, locals) == false) {
+        l = "(double)(" + genInt(left, prog, ctx, locals) + ")"
+    }
+    if (isFloatValue(right, locals) == false) {
+        r = "(double)(" + genInt(right, prog, ctx, locals) + ")"
+    }
+    if (head == "/") {
+        return "nv_fdiv(" + l + ", " + r + ")"
+    }
+    if (head == "%") {
+        return "nv_fmod_(" + l + ", " + r + ")"
+    }
+    return "(" + l + " " + head + " " + r + ")"
+}
+
+// The C expression for a node that isIntExpr() accepted: plain long long
+// arithmetic, no boxing at all.
+method genInt(string node, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    if (isList(node) == false) {
+        if (isNumberAtom(node)) {
+            return node + "LL"
+        }
+        if (locals.has(node) == false) {
+            fail("internal: '" + node + "' inferred as an integer but not a local", ctx["pos"])
+        }
+        return locals[node]
+    }
+    var head = nodeHead(node)
+    if (head == "neg") {
+        return "(-" + genInt(nodeChild(node, 1), prog, ctx, locals) + ")"
+    }
+    var left = genInt(nodeChild(node, 1), prog, ctx, locals)
+    var right = genInt(nodeChild(node, 2), prog, ctx, locals)
+    if (head == "/") {
+        return "nv_idiv(" + left + ", " + right + ")"
+    }
+    if (head == "%") {
+        return "nv_imod(" + left + ", " + right + ")"
+    }
+    return "(" + left + " " + head + " " + right + ")"
+}
+
 // Error for an identifier that names a module but is used like a value.
 method failModuleUse(string name, map<string, string> prog, map<string, string> ctx): integer {
     if (prog.has("pkg:" + name)) {
@@ -82,12 +142,26 @@ method genCondition(string node, map<string, string> prog, map<string, string> c
         return "(" + genCondition(nodeChild(node, 1), prog, ctx, locals) + " || " + genCondition(nodeChild(node, 2), prog, ctx, locals) + ")"
     }
     if (head == "!") {
-        return "(!" + genCondition(nodeChild(node, 1), prog, ctx, locals) + ")"
+        return "(!(" + genCondition(nodeChild(node, 1), prog, ctx, locals) + "))"
     }
     var bools = {"<": "nv_lt_bool", ">": "nv_gt_bool", "<=": "nv_le_bool", ">=": "nv_ge_bool",
         "==": "nv_eq_bool", "!=": "nv_ne_bool"}
     if (bools.has(head) && nodeCount(node) == 3) {
-        return bools[head] + "(" + genExpr(nodeChild(node, 1), prog, ctx, locals) + ", " + genExpr(nodeChild(node, 2), prog, ctx, locals) + ")"
+        var left = nodeChild(node, 1)
+        var right = nodeChild(node, 2)
+        if (isIntValue(left, locals) && isIntValue(right, locals)) {
+            // both sides are unboxed integers: compare them directly (no outer
+            // parentheses - comparisons bind tighter than && and ||)
+            return genInt(left, prog, ctx, locals) + " " + head + " " + genInt(right, prog, ctx, locals)
+        }
+        if (isFloatValue(left, locals) || isFloatValue(right, locals)) {
+            var numeric = isFloatValue(left, locals) || isIntValue(left, locals)
+            numeric = numeric && (isFloatValue(right, locals) || isIntValue(right, locals))
+            if (numeric) {
+                return genFloatOperand(left, prog, ctx, locals) + " " + head + " " + genFloatOperand(right, prog, ctx, locals)
+            }
+        }
+        return bools[head] + "(" + genExpr(left, prog, ctx, locals) + ", " + genExpr(right, prog, ctx, locals) + ")"
     }
     if (node == "true") {
         return "1"
@@ -96,6 +170,14 @@ method genCondition(string node, map<string, string> prog, map<string, string> c
         return "0"
     }
     return "nv_truthy(" + genExpr(node, prog, ctx, locals) + ")"
+}
+
+// A comparison operand as a double, casting an integer side.
+method genFloatOperand(string node, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    if (isFloatValue(node, locals)) {
+        return genFloat(node, prog, ctx, locals)
+    }
+    return "(double)(" + genInt(node, prog, ctx, locals) + ")"
 }
 
 method genExpr(string node, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
@@ -114,10 +196,17 @@ method genExpr(string node, map<string, string> prog, map<string, string> ctx, m
         }
         var v = resolveVar(node, prog, ctx, locals)
         if (v != "") {
+            if (isIntLocal(locals, node)) {
+                return "nv_int(" + v + ")"     // unboxed local entering a boxed context
+            }
+            if (isFloatLocal(locals, node)) {
+                return "nv_float(" + v + ")"
+            }
             return v
         }
         if (isImplicitField(node, prog, ctx, locals)) {
-            return "nv_get_member(self, " + cstr(node) + ")"
+            // the slot is known at compile time - no name lookup at run time
+            return "nv_fields(self->o)[" + fieldSlot(prog, ctx["class"], node) + "]"
         }
         if (isClassLike(prog, node)) {
             fail("'" + node + "' is a type, not a value", ctx["pos"])
@@ -202,6 +291,9 @@ method genExpr(string node, map<string, string> prog, map<string, string> ctx, m
             failModuleUse(target, prog, ctx)
             fail("unknown variable '" + target + "'", ctx["pos"])
         }
+        if (target == "this" && ctx["class"] != "" && fieldSlot(prog, ctx["class"], member) >= 0) {
+            return "nv_fields(self->o)[" + fieldSlot(prog, ctx["class"], member) + "]"
+        }
         return "nv_get_member(" + genExpr(target, prog, ctx, locals) + ", " + cstr(member) + ")"
     }
     if (head == "mcall") {
@@ -225,12 +317,26 @@ method genExpr(string node, map<string, string> prog, map<string, string> ctx, m
             fail("unknown variable '" + mtarget + "'", ctx["pos"])
         }
         if (nargs == 0) {
-            return "nv_invoke0(" + genExpr(mtarget, prog, ctx, locals) + ", " + cstr(mname) + ")"
+            if (mtarget == "this" && ctx["class"] != "" && fieldSlot(prog, ctx["class"], mname) >= 0) {
+                return "nv_fields(self->o)[" + fieldSlot(prog, ctx["class"], mname) + "]"
+            }
+            return invokeCall0(genExpr(mtarget, prog, ctx, locals), mname)
         }
-        return "nv_invoke(" + genExpr(mtarget, prog, ctx, locals) + ", " + cstr(mname) + ", " + nargs + ", " + genArgs(node, 3, prog, ctx, locals) + ")"
+        return invokeCall(genExpr(mtarget, prog, ctx, locals), mname, nargs, genArgs(node, 3, prog, ctx, locals))
     }
     if (head == "call") {
         return genCall(node, prog, ctx, locals)
+    }
+    // A sub-expression that can only be numeric is computed unboxed and
+    // boxed once at the end, instead of boxing every intermediate result.
+    if (isIntValue(node, locals)) {
+        return "nv_int(" + genInt(node, prog, ctx, locals) + ")"
+    }
+    if (isFloatValue(node, locals)) {
+        return "nv_float(" + genFloat(node, prog, ctx, locals) + ")"
+    }
+    if (head == "+" && isList(nodeChild(node, 1)) && nodeHead(nodeChild(node, 1)) == "+") {
+        return genAddChain(node, prog, ctx, locals)
     }
     var l = genExpr(nodeChild(node, 1), prog, ctx, locals)
     var r = genExpr(nodeChild(node, 2), prog, ctx, locals)
@@ -247,4 +353,27 @@ method genExpr(string node, map<string, string> prog, map<string, string> ctx, m
         fail("unsupported expression '" + head + "'", ctx["pos"])
     }
     return ops[head] + "(" + l + ", " + r + ")"
+}
+
+// `a + b + c + ...` becomes one runtime call. Chains like this are how
+// strings are built, and every step of the nested form allocates a value and
+// walks the accumulated text again; the fused call fills one buffer.
+method genAddChain(string node, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    var parts = []
+    var walk = node
+    while (isList(walk) && nodeHead(walk) == "+" && nodeCount(walk) == 3 && parts.length() < 15) {
+        parts.append(nodeChild(walk, 2))
+        walk = nodeChild(walk, 1)
+    }
+    parts.append(walk)
+    var args = ""
+    var i = parts.length()
+    while (i > 0) {
+        if (args != "") {
+            args = args + ", "
+        }
+        args = args + genExpr(parts[i - 1], prog, ctx, locals)
+        i = i - 1
+    }
+    return "nv_add_chain(" + parts.length() + ", " + args + ")"
 }

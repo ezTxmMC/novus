@@ -1,0 +1,14 @@
+package main
+
+// Recursive Fibonacci - measures function call overhead.
+
+method fib(integer n): integer {
+    if (n < 2) {
+        return n
+    }
+    return fib(n - 1) + fib(n - 2)
+}
+
+method main {
+    println fib(30)
+}

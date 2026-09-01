@@ -124,6 +124,47 @@ method findMethod(map<string, string> prog, string cls, string name): string {
     return ""
 }
 
+// Number of fields of a class including its bases.
+method classFieldCount(map<string, string> prog, string cls): integer {
+    var node = typeNode(prog, cls)
+    if (node == "") {
+        return 0
+    }
+    var count = nodeCount(classFields(node)) - 1
+    var base = classBase(node)
+    if (base != "" && isClassLike(prog, base)) {
+        count = count + classFieldCount(prog, base)
+    }
+    return count
+}
+
+// Index of `name` in the object's field slots, -1 when it is not a field.
+// The layout is base classes first, which is why a slot stays valid for
+// every subclass (see nv_field_index in the runtime).
+method fieldSlot(map<string, string> prog, string cls, string name): integer {
+    var node = typeNode(prog, cls)
+    if (node == "") {
+        return -1
+    }
+    var base = classBase(node)
+    var offset = 0
+    if (base != "" && isClassLike(prog, base)) {
+        offset = classFieldCount(prog, base)
+    }
+    var fields = classFields(node)
+    var i = 1
+    while (i < nodeCount(fields)) {
+        if (nodeChild(nodeChild(fields, i), 2) == name) {
+            return offset + i - 1
+        }
+        i = i + 1
+    }
+    if (base != "" && isClassLike(prog, base)) {
+        return fieldSlot(prog, base, name)
+    }
+    return -1
+}
+
 // Is `name` a field of class `cls` or one of its bases?
 method classHasField(map<string, string> prog, string cls, string name): bool {
     var current = cls

@@ -53,24 +53,7 @@ method lines(string s): array<string> {
 }
 
 // Words separated by any run of whitespace.
-method words(string s): array<string> {
-    var out = []
-    var current = ""
-    for (c in s) {
-        if (isSpace(c)) {
-            if (current != "") {
-                out.append(current)
-            }
-            current = ""
-            continue
-        }
-        current = current + c
-    }
-    if (current != "") {
-        out.append(current)
-    }
-    return out
-}
+method words(string s): array<string> native "nv_str_words"
 
 method count(string s, string sub): integer {
     if (sub == "") {

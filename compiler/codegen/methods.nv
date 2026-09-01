@@ -3,6 +3,7 @@ package codegen
 import "../ast/sexp.nv"
 import "../parser/types.nv"
 import "common.nv"
+import "inference.nv"
 import "statements.nv"
 
 // Method bodies, constructors and overload dispatchers -> C.
@@ -96,13 +97,48 @@ method genFreeMethod(string m, string cname, map<string, string> prog): string {
     var ctx = {"class": "", "pkg": packageOf(name), "func": name, "ret": methodRet(m), "pos": "method " + name}
     var locals = {}
     var params = paramsNode(m)
-    var out = "static nv " + cname + "(" + cParamList(m) + ") {" + nl()
+    var parameters = {}
+    var candidates = {}
     var i = 1
     while (i < nodeCount(params)) {
         var p = nodeChild(params, i)
         var pname = nodeChild(p, 2)
-        out = out + "    nv l_" + pname + " = " + coerceCode("a" + (i - 1), nodeChild(p, 1)) + ";" + nl()
+        parameters[pname] = "1"
+        if (normType(nodeChild(p, 1)) == "integer") {
+            candidates[pname] = "1"
+        }
         locals[pname] = "l_" + pname
+        i = i + 1
+    }
+    var ints = inferIntLocals(nodeChild(m, 5), parameters, candidates)
+    for (name in ints) {
+        markInt(locals, name)
+    }
+    var floatCandidates = {}
+    i = 1
+    while (i < nodeCount(params)) {
+        var fp = nodeChild(params, i)
+        if (normType(nodeChild(fp, 1)) == "float") {
+            floatCandidates[nodeChild(fp, 2)] = "1"
+        }
+        i = i + 1
+    }
+    var floats = inferFloatLocals(nodeChild(m, 5), parameters, floatCandidates, ints)
+    for (name in floats) {
+        markFloat(locals, name)
+    }
+    var out = "static nv " + cname + "(" + cParamList(m) + ") {" + nl()
+    i = 1
+    while (i < nodeCount(params)) {
+        var p = nodeChild(params, i)
+        var pname = nodeChild(p, 2)
+        if (ints.has(pname)) {
+            out = out + "    long long l_" + pname + " = nv_as_int(a" + (i - 1) + ");" + nl()
+        } else if (floats.has(pname)) {
+            out = out + "    double l_" + pname + " = nv_as_double(a" + (i - 1) + ");" + nl()
+        } else {
+            out = out + "    nv l_" + pname + " = " + coerceCode("a" + (i - 1), nodeChild(p, 1)) + ";" + nl()
+        }
         i = i + 1
     }
     var dep = deprecationCode(m, "    ", "dep_" + cname)
@@ -152,6 +188,13 @@ method genClassMethod(string cls, string m, string cname, map<string, string> pr
     var locals = {}
     var out = "static nv " + cname + "(nv self, nv *args, int n) {" + nl()
     out = out + bindArrayParams(m, "    ", locals)
+    var ints = inferIntLocals(nodeChild(m, 5), locals, {})
+    for (name in ints) {
+        markInt(locals, name)
+    }
+    for (name in inferFloatLocals(nodeChild(m, 5), locals, {}, ints)) {
+        markFloat(locals, name)
+    }
     var dep = deprecationCode(m, "    ", "dep_" + cname)
     if (dep != "") {
         out = "static int dep_" + cname + " = 0;" + nl() + out + dep
@@ -176,6 +219,13 @@ method genCtor(string cls, string ctor, map<string, string> prog): string {
         i = i + 1
     }
     out = out + "    (void)n;" + nl()
+    var ctorInts = inferIntLocals(nodeChild(ctor, 2), locals, {})
+    for (name in ctorInts) {
+        markInt(locals, name)
+    }
+    for (name in inferFloatLocals(nodeChild(ctor, 2), locals, {}, ctorInts)) {
+        markFloat(locals, name)
+    }
     out = out + genBlock(nodeChild(ctor, 2), "    ", prog, ctx, locals)
     return out + "    return nv_nil;" + nl() + "}" + nl()
 }

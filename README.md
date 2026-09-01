@@ -60,6 +60,10 @@ defaults to `$NOVUS_CC`, then `cc` (`gcc` on Windows); `$NOVUS_CFLAGS` adds
 flags. Programs are single, self-contained C files: `novusc emit` output can
 be handed to any C compiler on any platform.
 
+Which C compiler is used matters: `gcc -O2` optimizes the generated code
+noticeably better than clang (8 ms vs 25 ms on a ten million iteration loop),
+so `novusc` picks `gcc` when it is installed. Override with `NOVUS_CC`.
+
 ## Projects and dependencies
 
 A directory with a `project.nv` is a project. The manifest has its own
@@ -108,8 +112,10 @@ inheritance with polymorphism, interfaces, abstract classes, enums with
 constructors, annotations (`@Deprecated{...}` warns at call time), top-level
 constants, and the stdlib modules `os`, `path`, `json` and `http`.
 
-Values are dynamically typed at run time; arrays, maps and objects are
-passed by reference. Integers are 64 bit and never allocated (tagged
+Values are dynamically typed at run time, but the compiler proves which
+locals are always integers and generates them as unboxed 64-bit values, so
+counting loops and numeric code compile to plain C. Arrays, maps and objects
+are passed by reference. Integers are 64 bit and never allocated (tagged
 pointers), objects are one block of header plus field slots (~48 bytes for a
 one-field class), maps are hash indexed but always iterate in key order.
 Missing interface/abstract implementations, unknown names and unknown fields
@@ -203,6 +209,27 @@ start using it (see [BOOTSTRAP.md](BOOTSTRAP.md)).
 `make stats` (`novusc run tools/langstats.nv [dir] [--all] [--lines]`) prints
 which languages make up the tree, GitHub-style - Novus included, generated
 files and data/prose listed separately.
+
+## Benchmarks
+
+Ten workloads implemented in eight languages, measured on one machine and
+rendered on the [benchmarks page](website/src/routes/Benchmarks.tsx) of the
+site. Sources, runner and raw results live in [benchmarks/](benchmarks/README.md).
+
+```sh
+make bench
+```
+
+Novus matches the native compilers on unboxed arithmetic (integer loop,
+primes, mandelbrot) and uses the least memory of all of them there. On
+sorting, object allocation, dynamic arrays and hash maps it is within a few
+percent of C++ and Crystal and ahead of Go. It still trails them where a lot
+of small strings are built and hashed (string building, word frequency),
+which is where the dynamic value representation costs the most. It is faster
+than Java, Node and Python on every one of the ten workloads.
+
+A language whose toolchain is not installed on the measuring machine is left
+out of `results.json` and of the site rather than shown as an empty column.
 
 ## Documentation site
 

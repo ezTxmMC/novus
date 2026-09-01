@@ -59,3 +59,10 @@ website/src/lib/novus.tmLanguage.json
 .idea/
 .DS_Store
 Thumbs.db
+
+# Benchmarks: sources, runner and results are tracked, build output is not.
+# (This used to ignore benchmarks/ entirely - the website reads results.json
+# and the sources, so they have to be in the repository.)
+benchmarks/.build/
+benchmarks/input.txt
+benchmarks/java/*.class

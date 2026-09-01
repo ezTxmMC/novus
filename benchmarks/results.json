@@ -1,0 +1,526 @@
+{
+  "languages": {
+    "novus": {
+      "label": "Novus",
+      "version": "novusc 0.1.0-pre.alpha.3"
+    },
+    "cpp": {
+      "label": "C++",
+      "version": "g++ (GCC) 16.2.1 20260810"
+    },
+    "go": {
+      "label": "Go",
+      "version": "go version go1.27.0-X:nodwarf5 linux/amd64"
+    },
+    "crystal": {
+      "label": "Crystal",
+      "version": "Crystal 1.21.0 (2026-07-23)"
+    },
+    "java": {
+      "label": "Java",
+      "version": "openjdk version \"26.0.2\" 2026-07-21"
+    },
+    "node": {
+      "label": "Node.js",
+      "version": "v26.8.1"
+    },
+    "python": {
+      "label": "Python",
+      "version": "Python 3.14.7"
+    }
+  },
+  "workloads": [
+    {
+      "name": "fib",
+      "title": "Recursive Fibonacci",
+      "description": "fib(30) - function call overhead, nothing else"
+    },
+    {
+      "name": "loop",
+      "title": "Integer loop",
+      "description": "10 million iterations of add and modulo"
+    },
+    {
+      "name": "primes",
+      "title": "Primes by trial division",
+      "description": "counting primes below 200,000"
+    },
+    {
+      "name": "mandelbrot",
+      "title": "Mandelbrot",
+      "description": "400x400 grid, 50 iterations - floating point"
+    },
+    {
+      "name": "array",
+      "title": "Dynamic array",
+      "description": "two million appends, then a sum"
+    },
+    {
+      "name": "sort",
+      "title": "Sorting",
+      "description": "300,000 integers through the standard sort"
+    },
+    {
+      "name": "strings",
+      "title": "String building",
+      "description": "200,000 pieces, then split and join"
+    },
+    {
+      "name": "map",
+      "title": "Hash map",
+      "description": "300,000 string keys inserted and read back"
+    },
+    {
+      "name": "objects",
+      "title": "Object allocation",
+      "description": "one million small objects, then a field read"
+    },
+    {
+      "name": "wordfreq",
+      "title": "Word frequency",
+      "description": "read a file, count words, rank them"
+    }
+  ],
+  "runs": {
+    "fib": {
+      "novus": {
+        "ms": 3.2,
+        "mb": 1.6,
+        "output": "832040",
+        "agrees": true
+      },
+      "cpp": {
+        "ms": 1.0,
+        "mb": 4.0,
+        "output": "832040",
+        "agrees": true
+      },
+      "go": {
+        "ms": 2.9,
+        "mb": 5.6,
+        "output": "832040",
+        "agrees": true
+      },
+      "crystal": {
+        "ms": 3.2,
+        "mb": 3.1,
+        "output": "832040",
+        "agrees": true
+      },
+      "java": {
+        "ms": 10.8,
+        "mb": 50.5,
+        "output": "832040",
+        "agrees": true
+      },
+      "node": {
+        "ms": 19.5,
+        "mb": 59.8,
+        "output": "832040",
+        "agrees": true
+      },
+      "python": {
+        "ms": 51.7,
+        "mb": 11.2,
+        "output": "832040",
+        "agrees": true
+      }
+    },
+    "loop": {
+      "novus": {
+        "ms": 5.3,
+        "mb": 2.0,
+        "output": "29999994",
+        "agrees": true
+      },
+      "cpp": {
+        "ms": 5.5,
+        "mb": 3.9,
+        "output": "29999994",
+        "agrees": true
+      },
+      "go": {
+        "ms": 5.0,
+        "mb": 5.5,
+        "output": "29999994",
+        "agrees": true
+      },
+      "crystal": {
+        "ms": 6.1,
+        "mb": 3.1,
+        "output": "29999994",
+        "agrees": true
+      },
+      "java": {
+        "ms": 15.5,
+        "mb": 49.4,
+        "output": "29999994",
+        "agrees": true
+      },
+      "node": {
+        "ms": 24.7,
+        "mb": 58.1,
+        "output": "29999994",
+        "agrees": true
+      },
+      "python": {
+        "ms": 452.6,
+        "mb": 10.9,
+        "output": "29999994",
+        "agrees": true
+      }
+    },
+    "primes": {
+      "novus": {
+        "ms": 9.9,
+        "mb": 1.8,
+        "output": "17984",
+        "agrees": true
+      },
+      "cpp": {
+        "ms": 10.2,
+        "mb": 4.0,
+        "output": "17984",
+        "agrees": true
+      },
+      "go": {
+        "ms": 10.2,
+        "mb": 3.2,
+        "output": "17984",
+        "agrees": true
+      },
+      "crystal": {
+        "ms": 10.4,
+        "mb": 3.2,
+        "output": "17984",
+        "agrees": true
+      },
+      "java": {
+        "ms": 20.2,
+        "mb": 51.2,
+        "output": "17984",
+        "agrees": true
+      },
+      "node": {
+        "ms": 22.7,
+        "mb": 60.0,
+        "output": "17984",
+        "agrees": true
+      },
+      "python": {
+        "ms": 190.6,
+        "mb": 10.2,
+        "output": "17984",
+        "agrees": true
+      }
+    },
+    "mandelbrot": {
+      "novus": {
+        "ms": 4.7,
+        "mb": 1.9,
+        "output": "42461",
+        "agrees": true
+      },
+      "cpp": {
+        "ms": 5.0,
+        "mb": 3.9,
+        "output": "42461",
+        "agrees": true
+      },
+      "go": {
+        "ms": 4.9,
+        "mb": 3.5,
+        "output": "42461",
+        "agrees": true
+      },
+      "crystal": {
+        "ms": 5.1,
+        "mb": 2.9,
+        "output": "42461",
+        "agrees": true
+      },
+      "java": {
+        "ms": 15.5,
+        "mb": 50.6,
+        "output": "42461",
+        "agrees": true
+      },
+      "node": {
+        "ms": 24.0,
+        "mb": 61.4,
+        "output": "42461",
+        "agrees": true
+      },
+      "python": {
+        "ms": 489.6,
+        "mb": 10.9,
+        "output": "42461",
+        "agrees": true
+      }
+    },
+    "array": {
+      "novus": {
+        "ms": 5.9,
+        "mb": 17.7,
+        "output": "1999999000000",
+        "agrees": true
+      },
+      "cpp": {
+        "ms": 3.2,
+        "mb": 19.5,
+        "output": "1999999000000",
+        "agrees": true
+      },
+      "go": {
+        "ms": 6.8,
+        "mb": 39.1,
+        "output": "1999999000000",
+        "agrees": true
+      },
+      "crystal": {
+        "ms": 7.6,
+        "mb": 51.5,
+        "output": "1999999000000",
+        "agrees": true
+      },
+      "java": {
+        "ms": 52.0,
+        "mb": 166.5,
+        "output": "1999999000000",
+        "agrees": true
+      },
+      "node": {
+        "ms": 50.6,
+        "mb": 145.8,
+        "output": "1999999000000",
+        "agrees": true
+      },
+      "python": {
+        "ms": 89.9,
+        "mb": 86.7,
+        "output": "1999999000000",
+        "agrees": true
+      }
+    },
+    "sort": {
+      "novus": {
+        "ms": 15.5,
+        "mb": 8.9,
+        "output": "23 500454 999999",
+        "agrees": true
+      },
+      "cpp": {
+        "ms": 14.4,
+        "mb": 8.8,
+        "output": "23 500454 999999",
+        "agrees": true
+      },
+      "go": {
+        "ms": 26.9,
+        "mb": 15.8,
+        "output": "23 500454 999999",
+        "agrees": true
+      },
+      "crystal": {
+        "ms": 15.2,
+        "mb": 10.0,
+        "output": "23 500454 999999",
+        "agrees": true
+      },
+      "java": {
+        "ms": 39.5,
+        "mb": 54.1,
+        "output": "23 500454 999999",
+        "agrees": true
+      },
+      "node": {
+        "ms": 82.8,
+        "mb": 76.3,
+        "output": "23 500454 999999",
+        "agrees": true
+      },
+      "python": {
+        "ms": 77.0,
+        "mb": 23.3,
+        "output": "23 500454 999999",
+        "agrees": true
+      }
+    },
+    "strings": {
+      "novus": {
+        "ms": 11.0,
+        "mb": 30.4,
+        "output": "1199999 200000 1199999",
+        "agrees": true
+      },
+      "cpp": {
+        "ms": 6.4,
+        "mb": 15.6,
+        "output": "1199999 200000 1199999",
+        "agrees": true
+      },
+      "go": {
+        "ms": 3.9,
+        "mb": 13.1,
+        "output": "1199999 200000 1199999",
+        "agrees": true
+      },
+      "crystal": {
+        "ms": 7.5,
+        "mb": 13.9,
+        "output": "1199999 200000 1199999",
+        "agrees": true
+      },
+      "java": {
+        "ms": 41.8,
+        "mb": 77.5,
+        "output": "1199999 200000 1199999",
+        "agrees": true
+      },
+      "node": {
+        "ms": 47.9,
+        "mb": 87.2,
+        "output": "1199999 200000 1199999",
+        "agrees": true
+      },
+      "python": {
+        "ms": 37.2,
+        "mb": 34.2,
+        "output": "1199999 200000 1199999",
+        "agrees": true
+      }
+    },
+    "map": {
+      "novus": {
+        "ms": 50.1,
+        "mb": 80.2,
+        "output": "300000 44999850000",
+        "agrees": true
+      },
+      "cpp": {
+        "ms": 61.3,
+        "mb": 24.4,
+        "output": "300000 44999850000",
+        "agrees": true
+      },
+      "go": {
+        "ms": 58.6,
+        "mb": 29.8,
+        "output": "300000 44999850000",
+        "agrees": true
+      },
+      "crystal": {
+        "ms": 47.5,
+        "mb": 40.1,
+        "output": "300000 44999850000",
+        "agrees": true
+      },
+      "java": {
+        "ms": 69.7,
+        "mb": 127.9,
+        "output": "300000 44999850000",
+        "agrees": true
+      },
+      "node": {
+        "ms": 114.2,
+        "mb": 103.2,
+        "output": "300000 44999850000",
+        "agrees": true
+      },
+      "python": {
+        "ms": 110.4,
+        "mb": 44.6,
+        "output": "300000 44999850000",
+        "agrees": true
+      }
+    },
+    "objects": {
+      "novus": {
+        "ms": 17.9,
+        "mb": 70.5,
+        "output": "1499998500000",
+        "agrees": true
+      },
+      "cpp": {
+        "ms": 19.3,
+        "mb": 41.9,
+        "output": "1499998500000",
+        "agrees": true
+      },
+      "go": {
+        "ms": 24.3,
+        "mb": 46.1,
+        "output": "1499998500000",
+        "agrees": true
+      },
+      "crystal": {
+        "ms": 16.9,
+        "mb": 58.6,
+        "output": "1499998500000",
+        "agrees": true
+      },
+      "java": {
+        "ms": 32.1,
+        "mb": 103.9,
+        "output": "1499998500000",
+        "agrees": true
+      },
+      "node": {
+        "ms": 99.9,
+        "mb": 216.2,
+        "output": "1499998500000",
+        "agrees": true
+      },
+      "python": {
+        "ms": 321.9,
+        "mb": 124.9,
+        "output": "1499998500000",
+        "agrees": true
+      }
+    },
+    "wordfreq": {
+      "novus": {
+        "ms": 17.4,
+        "mb": 22.1,
+        "output": "66668 epsilon\n66667 gamma\n66666 eta\n8 unique",
+        "agrees": true
+      },
+      "cpp": {
+        "ms": 9.6,
+        "mb": 11.4,
+        "output": "66668 epsilon\n66667 gamma\n66666 eta\n8 unique",
+        "agrees": true
+      },
+      "go": {
+        "ms": 7.2,
+        "mb": 17.9,
+        "output": "66668 epsilon\n66667 gamma\n66666 eta\n8 unique",
+        "agrees": true
+      },
+      "crystal": {
+        "ms": 11.0,
+        "mb": 7.2,
+        "output": "66668 epsilon\n66667 gamma\n66666 eta\n8 unique",
+        "agrees": true
+      },
+      "java": {
+        "ms": 78.6,
+        "mb": 119.3,
+        "output": "66668 epsilon\n66667 gamma\n66666 eta\n8 unique",
+        "agrees": true
+      },
+      "node": {
+        "ms": 65.5,
+        "mb": 104.7,
+        "output": "66668 epsilon\n66667 gamma\n66666 eta\n8 unique",
+        "agrees": true
+      },
+      "python": {
+        "ms": 44.6,
+        "mb": 37.6,
+        "output": "66668 epsilon\n66667 gamma\n66666 eta\n8 unique",
+        "agrees": true
+      }
+    }
+  }
+}

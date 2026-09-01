@@ -6,6 +6,7 @@ import "../parser/errors.nv"
 import "../parser/types.nv"
 import "common.nv"
 import "expressions.nv"
+import "inference.nv"
 import "index.nv"
 
 // Statements and blocks -> C.
@@ -32,12 +33,30 @@ method genBlock(string block, string indent, map<string, string> prog, map<strin
 }
 
 method declareLocal(string name, string init, string indent, map<string, string> locals, map<string, string> blockVars): string {
+    var type = "nv "
+    if (isIntLocal(locals, name)) {
+        type = "long long "
+    }
+    if (isFloatLocal(locals, name)) {
+        type = "double "
+    }
     if (blockVars.has(name)) {
         return indent + "l_" + name + " = " + init + ";" + nl()
     }
     locals[name] = "l_" + name
     blockVars[name] = "1"
-    return indent + "nv l_" + name + " = " + init + ";" + nl()
+    return indent + type + "l_" + name + " = " + init + ";" + nl()
+}
+
+// Initializer or assigned value, unboxed when the local is an integer.
+method genValueFor(string name, string node, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    if (isIntLocal(locals, name)) {
+        return genInt(node, prog, ctx, locals)
+    }
+    if (isFloatLocal(locals, name)) {
+        return genFloat(node, prog, ctx, locals)
+    }
+    return genExpr(node, prog, ctx, locals)
 }
 
 method genStatement(string node, string indent, map<string, string> prog, map<string, string> ctx, map<string, string> locals, map<string, string> blockVars): string {
@@ -51,7 +70,13 @@ method genStatement(string node, string indent, map<string, string> prog, map<st
     if (head == "var") {
         var name = nodeChild(node, 1)
         if (nodeCount(node) > 2) {
-            return declareLocal(name, genExpr(nodeChild(node, 2), prog, ctx, locals), indent, locals, blockVars)
+            return declareLocal(name, genValueFor(name, nodeChild(node, 2), prog, ctx, locals), indent, locals, blockVars)
+        }
+        if (isIntLocal(locals, name)) {
+            return declareLocal(name, "0", indent, locals, blockVars)
+        }
+        if (isFloatLocal(locals, name)) {
+            return declareLocal(name, "0.0", indent, locals, blockVars)
         }
         return declareLocal(name, "nv_nil", indent, locals, blockVars)
     }
@@ -59,6 +84,12 @@ method genStatement(string node, string indent, map<string, string> prog, map<st
         var tname = nodeChild(node, 2)
         var ttype = nodeChild(node, 1)
         if (nodeCount(node) > 3) {
+            if (isIntLocal(locals, tname)) {
+                return declareLocal(tname, genInt(nodeChild(node, 3), prog, ctx, locals), indent, locals, blockVars)
+            }
+            if (isFloatLocal(locals, tname)) {
+                return declareLocal(tname, genFloat(nodeChild(node, 3), prog, ctx, locals), indent, locals, blockVars)
+            }
             return declareLocal(tname, coerceCode(genExpr(nodeChild(node, 3), prog, ctx, locals), ttype), indent, locals, blockVars)
         }
         return declareLocal(tname, defaultCode(ttype), indent, locals, blockVars)
@@ -67,12 +98,12 @@ method genStatement(string node, string indent, map<string, string> prog, map<st
         var target = nodeChild(node, 1)
         var cname = resolveVar(target, prog, ctx, locals)
         if (cname == "" && isImplicitField(target, prog, ctx, locals)) {
-            return indent + "nv_set_member(self, " + cstr(target) + ", " + genExpr(nodeChild(node, 2), prog, ctx, locals) + ");" + nl()
+            return indent + "nv_fields(self->o)[" + fieldSlot(prog, ctx["class"], target) + "] = " + genExpr(nodeChild(node, 2), prog, ctx, locals) + ";" + nl()
         }
         if (cname == "" || cname == "self") {
             fail("unknown variable '" + target + "'", ctx["pos"])
         }
-        return indent + cname + " = " + genExpr(nodeChild(node, 2), prog, ctx, locals) + ";" + nl()
+        return indent + cname + " = " + genValueFor(target, nodeChild(node, 2), prog, ctx, locals) + ";" + nl()
     }
     if (head == "setexpr") {
         var lhs = nodeChild(node, 1)
@@ -81,7 +112,12 @@ method genStatement(string node, string indent, map<string, string> prog, map<st
             return indent + "nv_index_set(" + genExpr(nodeChild(lhs, 1), prog, ctx, locals) + ", " + genExpr(nodeChild(lhs, 2), prog, ctx, locals) + ", " + value + ");" + nl()
         }
         if (nodeHead(lhs) == "mget") {
-            return indent + "nv_set_member(" + genExpr(nodeChild(lhs, 1), prog, ctx, locals) + ", " + cstr(nodeChild(lhs, 2)) + ", " + value + ");" + nl()
+            var receiver = nodeChild(lhs, 1)
+            var member = nodeChild(lhs, 2)
+            if (receiver == "this" && ctx["class"] != "" && fieldSlot(prog, ctx["class"], member) >= 0) {
+                return indent + "nv_fields(self->o)[" + fieldSlot(prog, ctx["class"], member) + "] = " + value + ";" + nl()
+            }
+            return indent + "nv_set_member(" + genExpr(receiver, prog, ctx, locals) + ", " + cstr(member) + ", " + value + ");" + nl()
         }
         fail("invalid assignment target", ctx["pos"])
     }
@@ -123,8 +159,9 @@ method genStatement(string node, string indent, map<string, string> prog, map<st
         var iter = genExpr(nodeChild(node, 2), prog, ctx, locals)
         var inner = indent + "    "
         var fout = indent + "{" + nl()
-        fout = fout + inner + "NvArr *it_" + v + " = nv_iter(" + iter + ");" + nl()
-        fout = fout + inner + "for (int i_" + v + " = 0; i_" + v + " < it_" + v + "->len; i_" + v + "++) {" + nl()
+        fout = fout + inner + "NvArr *it_" + v + " = " + iterCall(nodeChild(node, 3), iter) + ";" + nl()
+        fout = fout + inner + "int n_" + v + " = it_" + v + "->len;" + nl()
+        fout = fout + inner + "for (int i_" + v + " = 0; i_" + v + " < n_" + v + "; i_" + v + "++) {" + nl()
         fout = fout + inner + "    nv l_" + v + " = it_" + v + "->items[i_" + v + "];" + nl()
         var bodyLocals = copyMap(locals)
         bodyLocals[v] = "l_" + v

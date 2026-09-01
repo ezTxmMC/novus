@@ -1,0 +1,30 @@
+package main
+
+// Mandelbrot set on a 400x400 grid - pure floating point work.
+
+method main {
+    var inside = 0
+    var py = 0
+    while (py < 400) {
+        var y = (py * 1.0 / 400.0) * 2.0 - 1.0
+        var px = 0
+        while (px < 400) {
+            var x = (px * 1.0 / 400.0) * 3.0 - 2.0
+            var zx = 0.0
+            var zy = 0.0
+            var i = 0
+            while (i < 50 && zx * zx + zy * zy <= 4.0) {
+                var t = zx * zx - zy * zy + x
+                zy = 2.0 * zx * zy + y
+                zx = t
+                i = i + 1
+            }
+            if (i == 50) {
+                inside = inside + 1
+            }
+            px = px + 1
+        }
+        py = py + 1
+    }
+    println inside
+}

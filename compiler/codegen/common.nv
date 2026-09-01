@@ -104,3 +104,37 @@ method isNativeMethod(string m): bool {
 method intToStr(integer i): string {
     return "" + i
 }
+
+// How a dynamic `target.name(args)` call is emitted. Arities up to three
+// skip the runtime's va_list, and appending to an array is one push.
+method invokeCall(string receiver, string name, integer nargs, string args): string {
+    if (nargs == 1 && name == "has") {
+        return "nv_has_key(" + receiver + ", " + cstr(name) + ", " + args + ")"
+    }
+    if (nargs == 1 && (name == "append" || name == "push")) {
+        return "nv_append(" + receiver + ", " + cstr(name) + ", " + args + ")"
+    }
+    if (nargs > 0 && nargs < 4) {
+        return "nv_invoke" + nargs + "(" + receiver + ", " + cstr(name) + ", " + args + ")"
+    }
+    return "nv_invoke(" + receiver + ", " + cstr(name) + ", " + nargs + ", " + args + ")"
+}
+
+// How the collection of a `for (x in xs)` loop is obtained. A body that
+// contains no call and no property assignment cannot change the collection,
+// so the loop can walk it directly instead of a snapshot copy. Anything that
+// looks like a call - even inside a string literal - takes the safe path.
+method iterCall(string body, string iter): string {
+    if (body.contains("(mcall") || body.contains("(call") || body.contains("(setexpr")) {
+        return "nv_iter(" + iter + ")"
+    }
+    return "nv_iter_live(" + iter + ")"
+}
+
+// The no-argument form of invokeCall().
+method invokeCall0(string receiver, string name): string {
+    if (name == "length") {
+        return "nv_length_of(" + receiver + ", " + cstr(name) + ")"
+    }
+    return "nv_invoke0(" + receiver + ", " + cstr(name) + ")"
+}

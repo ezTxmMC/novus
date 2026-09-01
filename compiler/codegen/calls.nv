@@ -77,9 +77,12 @@ method genCall(string node, map<string, string> prog, map<string, string> ctx, m
     if (ctx["class"] != "" && findMethod(prog, ctx["class"], name) != "") {
         // inside a class a bare call means this.name(...); own methods win
         if (nargs == 0) {
-            return "nv_invoke0(self, " + cstr(name) + ")"
+            if (fieldSlot(prog, ctx["class"], name) >= 0) {
+                return "nv_fields(self->o)[" + fieldSlot(prog, ctx["class"], name) + "]"
+            }
+            return invokeCall0("self", name)
         }
-        return "nv_invoke(self, " + cstr(name) + ", " + nargs + ", " + genArgs(node, 2, prog, ctx, locals) + ")"
+        return invokeCall("self", name, nargs, genArgs(node, 2, prog, ctx, locals))
     }
     if (isCoreBuiltin(name) || (prog.has("hasfunc:" + name) == false && isClassLike(prog, name) == false)) {
         var builtin = genBuiltinCall(name, nargs, genArgs(node, 2, prog, ctx, locals), ctx)

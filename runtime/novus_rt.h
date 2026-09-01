@@ -176,6 +176,8 @@ struct NvClass {
     NvMap *constants; /* enum constants */
     NvArr *constantOrder;
     int *order;       /* field indices sorted by name, built on demand */
+    const char **flatTypes;  /* field types in slot order, built on demand */
+    signed char *flatKinds;  /* 1 integer, 2 float, 3 string, 0 anything else */
     int totalFields;  /* fields of this class and its bases, -1 until counted */
     nv *defaults;     /* default value per field, built with totalFields */
 };
@@ -197,7 +199,7 @@ static size_t nv_arena_left = 0;
 
 static void *nv_alloc(size_t n) {
     void *p;
-    n = (n + 15) & ~(size_t)15;
+    n = (n + 7) & ~(size_t)7;   /* every value in the runtime is 8-aligned */
     if (n > 256 * 1024) {
         p = malloc(n);
         if (!p) {
@@ -630,10 +632,27 @@ static const char *nv_type_name(nv v) {
     }
 }
 
+/* Digits back to front into a stack buffer, then one arena copy. sprintf()
+ * showed up in every profile of code that puts numbers into strings. */
 static const char *nv_fmt_int(long long i) {
-    char buf[32];
-    sprintf(buf, "%lld", i);
-    return nv_strndup(buf, strlen(buf));
+    char buf[24];
+    char *end = buf + sizeof(buf);
+    char *p = end;
+    unsigned long long u = i < 0 ? 0ULL - (unsigned long long)i : (unsigned long long)i;
+    char *out;
+    size_t len;
+    *--p = 0;
+    do {
+        *--p = (char)('0' + (int)(u % 10ULL));
+        u /= 10ULL;
+    } while (u);
+    if (i < 0) {
+        *--p = '-';
+    }
+    len = (size_t)(end - p);
+    out = (char *)nv_alloc(len);
+    memcpy(out, p, len);
+    return out;
 }
 
 static const char *nv_fmt_float(double f) {
@@ -945,6 +964,84 @@ static nv nv_concat(nv l, nv r) {
     return v;
 }
 
+static nv nv_add(nv l, nv r);
+
+/* `a + b + c + ...` as a single call. The chain is left associative, so the
+ * operands before the first string are added arithmetically and everything
+ * from there on goes into one buffer - instead of one string value, one
+ * length walk and one copy per step. */
+static nv nv_add_chain(int n, ...) {
+    nv parts[16];
+    const char *strs[16];
+    size_t lens[16];
+    va_list ap;
+    int i, j, first = -1, m = 0;
+    nv acc;
+    size_t total = 0, at, cap;
+    char *buf;
+    nv v;
+    va_start(ap, n);
+    for (i = 0; i < n; i++) {
+        parts[i] = va_arg(ap, nv);
+    }
+    va_end(ap);
+    for (i = 0; i < n; i++) {
+        if (nv_type_of(parts[i]) == NV_STR) {
+            first = i;
+            break;
+        }
+    }
+    acc = parts[0];
+    if (first < 0) {
+        for (i = 1; i < n; i++) {
+            acc = nv_add(acc, parts[i]);
+        }
+        return acc;
+    }
+    for (i = 1; i <= first; i++) {
+        acc = nv_add(acc, parts[i]);
+    }
+    if (nv_type_of(acc) != NV_STR) {
+        for (i = first + 1; i < n; i++) {
+            acc = nv_add(acc, parts[i]);
+        }
+        return acc;
+    }
+    for (i = first + 1; i < n; i++) {
+        if (nv_type_of(parts[i]) == NV_STR) {
+            strs[m] = parts[i]->s;
+            lens[m] = (size_t)parts[i]->slen;
+        } else {
+            strs[m] = nv_display(parts[i]);
+            lens[m] = strlen(strs[m]);
+        }
+        total += lens[m];
+        m++;
+    }
+    if (total == 0) {
+        return acc;
+    }
+    at = (size_t)acc->slen;
+    if (acc->scap > 0 && acc->s[acc->slen] == 0 && (size_t)acc->scap > at + total) {
+        buf = (char *)acc->s;             /* still owns the end of its buffer */
+        cap = (size_t)acc->scap;
+    } else {
+        cap = (at + total) * 2 + 16;
+        buf = (char *)nv_alloc(cap);
+        memcpy(buf, acc->s, at);
+    }
+    for (j = 0; j < m; j++) {
+        memmove(buf + at, strs[j], lens[j]);   /* a part may live in buf */
+        at += lens[j];
+    }
+    buf[at] = 0;
+    v = nv_new(NV_STR);
+    v->s = buf;
+    v->slen = (int)at;
+    v->scap = (int)cap;
+    return v;
+}
+
 static void nv_arith_check(nv l, nv r, const char *op) {
     if (!nv_is_num(l) || !nv_is_num(r)) {
         nv_error("cannot apply '%s' to %s and %s", op, nv_type_name(l), nv_type_name(r));
@@ -1076,6 +1173,14 @@ static inline nv nv_tag(long long v) {
 }
 
 static inline int nv_both_tagged(nv l, nv r) { return ((uintptr_t)l & (uintptr_t)r & 1u) != 0; }
+
+/* Unboxed float helpers: division by zero is 0.0 in Novus, not infinity. */
+static inline double nv_fdiv(double a, double b) { return b != 0.0 ? a / b : 0.0; }
+static inline double nv_fmod_(double a, double b) { return b != 0.0 ? fmod(a, b) : 0.0; }
+
+/* Unboxed integer helpers: division by zero is 0 in Novus, not a trap. */
+static inline long long nv_idiv(long long a, long long b) { return b ? a / b : 0; }
+static inline long long nv_imod(long long a, long long b) { return b ? a % b : 0; }
 
 static inline nv nv_add_fast(nv l, nv r) {
     if (nv_both_tagged(l, r)) {
@@ -1417,6 +1522,55 @@ static nv *nv_class_defaults(NvClass *c) {
     return c->defaults;
 }
 
+/* Coercion by type name costs a normalize plus up to three strcmp. The kind
+ * is the same for every object of a class, so it is computed once. */
+static signed char nv_type_kind(const char *t) {
+    t = nv_normalize_type(t);
+    if (strcmp(t, "integer") == 0) {
+        return 1;
+    }
+    if (strcmp(t, "float") == 0) {
+        return 2;
+    }
+    if (strcmp(t, "string") == 0) {
+        return 3;
+    }
+    return 0;
+}
+
+static inline nv nv_coerce_kind(nv v, signed char kind, const char *type) {
+    if (kind == 0) {
+        return v;
+    }
+    if (kind == 1 && nv_type_of(v) != NV_FLOAT) {
+        return v;
+    }
+    if (kind == 3 && nv_type_of(v) == NV_STR) {
+        return v;
+    }
+    return nv_coerce(v, type);
+}
+
+/* Field types and kinds in slot order (base class first). */
+static void nv_class_layout(NvClass *c) {
+    int count, i;
+    if (c->flatKinds) {
+        return;
+    }
+    count = nv_class_field_count(c);
+    if (count < 1) {
+        count = 1;
+    }
+    c->flatTypes = (const char **)nv_alloc(sizeof(const char *) * (size_t)count);
+    c->flatKinds = (signed char *)nv_alloc(sizeof(signed char) * (size_t)count);
+    for (i = 0; i < nv_class_field_count(c); i++) {
+        const char *type = 0;
+        nv_field_name_at(c, i, &type);
+        c->flatTypes[i] = type;
+        c->flatKinds[i] = type ? nv_type_kind(type) : 0;
+    }
+}
+
 /* Value, object header and field slots live in one arena block. */
 typedef struct NvObjBlock {
     NvVal val;
@@ -1482,16 +1636,12 @@ static nv nv_construct_obj(nv obj, nv *args, int n) {
     }
     /* no constructor: positional field initialization (base fields first) */
     {
-        NvClass *chain[64];
-        int depth = 0, i, k = 0;
-        for (c = obj->o->cls; c && depth < 64; c = nv_class_base(c)) {
-            chain[depth++] = c;
-        }
-        for (i = depth - 1; i >= 0; i--) {
-            int j;
-            for (j = 0; j < chain[i]->nfields && k < n; j++, k++) {
-                nv_fields(obj->o)[k] = nv_coerce(args[k], chain[i]->fieldTypes[j]);
-            }
+        int count = nv_class_field_count(c);
+        nv *slots = nv_fields(obj->o);
+        int k;
+        nv_class_layout(c);
+        for (k = 0; k < n && k < count; k++) {
+            slots[k] = nv_coerce_kind(args[k], c->flatKinds[k], c->flatTypes[k]);
         }
     }
     return obj;
@@ -1687,6 +1837,27 @@ static nv nv_str_split(nv s, nv sep) {
     return out;
 }
 
+/* Splits on runs of whitespace - the hot path of most text processing. */
+static nv nv_str_words(nv s) {
+    nv out = nv_arr();
+    const char *text = nv_cstr(s);
+    int i = 0, start;
+    while (text[i]) {
+        while (text[i] && isspace((unsigned char)text[i])) {
+            i++;
+        }
+        if (!text[i]) {
+            break;
+        }
+        start = i;
+        while (text[i] && !isspace((unsigned char)text[i])) {
+            i++;
+        }
+        nv_arr_push(out->a, nv_strn(text + start, i - start));
+    }
+    return out;
+}
+
 static nv nv_str_replace(nv s, nv from, nv to) {
     NvSb sb;
     const char *f = nv_display(from);
@@ -1759,22 +1930,71 @@ static long long nv_arr_index_of(nv a, nv v) {
 /* Method calls on any value                                           */
 /* ------------------------------------------------------------------ */
 
+/* Resolving a member means walking field names and method names with strcmp,
+ * and the same (class, name) pair is asked for over and over. This cache is
+ * keyed on the *pointers*: every name comes from a string literal in the
+ * generated C, so a hit costs two compares and no string work. Classes are
+ * fully registered before the first call runs, so entries never go stale. */
+#define NV_MCACHE 2048
+typedef struct NvMember {
+    NvClass *cls;
+    const char *name;
+    int arity;
+    int slot;          /* >= 0: field slot, -1: method */
+    const char *ftype; /* declared field type, for setter coercion */
+    signed char kind;  /* nv_type_kind of ftype */
+    NvMethodFn fn;
+} NvMember;
+static NvMember nv_mcache[NV_MCACHE];
+
+/* The resolved member, or 0 when the class has neither field nor method. */
+static NvMember *nv_resolve_member(NvClass *c, const char *name, int arity) {
+    size_t h = (((size_t)(uintptr_t)c >> 4) ^ ((size_t)(uintptr_t)name >> 2)
+                ^ (size_t)(arity * 31)) & (size_t)(NV_MCACHE - 1);
+    NvMember *e = &nv_mcache[h];
+    NvMethod *m;
+    int at;
+    if (e->cls == c && e->name == name && e->arity == arity) {
+        return e;
+    }
+    at = nv_field_index(c, name);
+    if (at >= 0) {
+        const char *ftype = 0;
+        nv_field_name_at(c, at, &ftype);
+        e->cls = c;
+        e->name = name;
+        e->arity = arity;
+        e->slot = at;
+        e->ftype = ftype;
+        e->kind = ftype ? nv_type_kind(ftype) : 0;
+        e->fn = 0;
+        return e;
+    }
+    m = nv_class_find_method(c, name, arity);
+    if (!m) {
+        return 0;
+    }
+    e->cls = c;
+    e->name = name;
+    e->arity = arity;
+    e->slot = -1;
+    e->ftype = 0;
+    e->fn = m->fn;
+    return e;
+}
+
 static nv nv_invoke_args(nv t, const char *name, nv *args, int n) {
     if (nv_type_of(t) == NV_OBJ) {
-        NvMethod *m;
-        int at = nv_field_index(t->o->cls, name);
-        if (at >= 0) {
-            const char *ftype = 0;
-            if (n == 0) {
-                return nv_fields(t->o)[at];      /* getter */
+        NvMember *e = nv_resolve_member(t->o->cls, name, n);
+        if (e) {
+            if (e->slot < 0) {
+                return e->fn(t, args, n);
             }
-            nv_field_name_at(t->o->cls, at, &ftype);
-            nv_fields(t->o)[at] = ftype ? nv_coerce(args[0], ftype) : args[0];
-            return nv_nil;                     /* setter */
-        }
-        m = nv_class_find_method(t->o->cls, name, n);
-        if (m) {
-            return m->fn(t, args, n);
+            if (n == 0) {
+                return nv_fields(t->o)[e->slot];   /* getter */
+            }
+            nv_fields(t->o)[e->slot] = nv_coerce_kind(args[0], e->kind, e->ftype);
+            return nv_nil;                         /* setter */
         }
         nv_error("unknown member '%s' on %s", name, t->o->cls->name);
     }
@@ -1928,12 +2148,68 @@ static nv nv_invoke_args(nv t, const char *name, nv *args, int n) {
 /* `obj.field()` and `obj.method()` without building an argument array. */
 static inline nv nv_invoke0(nv t, const char *name) {
     if (nv_type_of(t) == NV_OBJ) {
-        int at = nv_field_index(t->o->cls, name);
-        if (at >= 0) {
-            return nv_fields(t->o)[at];
+        NvMember *e = nv_resolve_member(t->o->cls, name, 0);
+        if (e) {
+            return e->slot >= 0 ? nv_fields(t->o)[e->slot] : e->fn(t, 0, 0);
         }
     }
     return nv_invoke_args(t, name, 0, 0);
+}
+
+/* Calls with a known small arity skip the va_list: the arguments go into a
+ * stack array directly. `nv_invoke` stays for the variadic cases. */
+static inline nv nv_invoke1(nv t, const char *name, nv a) {
+    nv args[1];
+    args[0] = a;
+    return nv_invoke_args(t, name, args, 1);
+}
+
+static inline nv nv_invoke2(nv t, const char *name, nv a, nv b) {
+    nv args[2];
+    args[0] = a;
+    args[1] = b;
+    return nv_invoke_args(t, name, args, 2);
+}
+
+static inline nv nv_invoke3(nv t, const char *name, nv a, nv b, nv c) {
+    nv args[3];
+    args[0] = a;
+    args[1] = b;
+    args[2] = c;
+    return nv_invoke_args(t, name, args, 3);
+}
+
+/* `x.length()` and `x.has(k)` are, after append, the most frequent dynamic
+ * calls; going straight to the collection skips the dispatch chain. */
+static inline nv nv_length_of(nv t, const char *name) {
+    int type = nv_type_of(t);
+    if (type == NV_ARR) {
+        return nv_int(t->a->len);
+    }
+    if (type == NV_MAP) {
+        return nv_int(t->m->len);
+    }
+    if (type == NV_STR) {
+        return nv_int(t->slen);
+    }
+    return nv_invoke0(t, name);
+}
+
+static inline nv nv_has_key(nv t, const char *name, nv key) {
+    if (nv_type_of(t) == NV_MAP) {
+        return nv_bool(nv_map_has(t->m, nv_display(key)));
+    }
+    return nv_invoke1(t, name, key);
+}
+
+/* `x.append(v)` is the hottest dynamic call there is: on an array it is a
+ * push, everything else takes the general path. */
+static inline nv nv_append(nv t, const char *name, nv v) {
+    if (nv_type_of(t) == NV_ARR) {
+        nv_arr_push(t->a, v);
+        return nv_nil;
+    }
+    return nv_invoke1(t, name, v);
 }
 
 static nv nv_invoke(nv t, const char *name, int n, ...) {
@@ -1969,6 +2245,18 @@ static NvArr *nv_arr_with_capacity(int cap) {
         a->items = (nv *)nv_alloc(sizeof(nv) * (size_t)a->cap);
     }
     return a;
+}
+
+static NvArr *nv_iter(nv v);
+
+/* `for (x in xs)` walks a snapshot so the collection can be modified inside
+ * the loop. When the body cannot call anything, nothing can modify it and
+ * the array itself is walked - no copy of up to millions of slots. */
+static NvArr *nv_iter_live(nv v) {
+    if (nv_type_of(v) == NV_ARR) {
+        return v->a;
+    }
+    return nv_iter(v);
 }
 
 static NvArr *nv_iter(nv v) {
@@ -2808,18 +3096,112 @@ static int nv_sort_cmp(const void *a, const void *b) {
     return strcmp(nv_data(l), nv_data(r));
 }
 
+/* Specialised comparators: no type dispatch and no string materialisation
+ * per comparison, which is most of the work when sorting a large array. */
+static int nv_sort_cmp_tagged(const void *a, const void *b) {
+    long long x = nv_ival(*(const nv *)a);
+    long long y = nv_ival(*(const nv *)b);
+    return x < y ? -1 : (x > y ? 1 : 0);
+}
+
+static int nv_sort_cmp_text(const void *a, const void *b) {
+    return strcmp(nv_cstr(*(const nv *)a), nv_cstr(*(const nv *)b));
+}
+
+/* Introsort over raw 64-bit values: no indirect call per comparison, which
+ * is what makes the generic qsort path slow for large integer arrays. */
+static void nv_sort_ll(long long *values, int left, int right) {
+    while (right - left > 12) {
+        long long pivot, tmp;
+        int i = left, j = right, middle = left + (right - left) / 2;
+        if (values[middle] < values[left]) {
+            tmp = values[middle]; values[middle] = values[left]; values[left] = tmp;
+        }
+        if (values[right] < values[left]) {
+            tmp = values[right]; values[right] = values[left]; values[left] = tmp;
+        }
+        if (values[right] < values[middle]) {
+            tmp = values[right]; values[right] = values[middle]; values[middle] = tmp;
+        }
+        pivot = values[middle];
+        while (i <= j) {
+            while (values[i] < pivot) {
+                i++;
+            }
+            while (values[j] > pivot) {
+                j--;
+            }
+            if (i <= j) {
+                tmp = values[i]; values[i] = values[j]; values[j] = tmp;
+                i++; j--;
+            }
+        }
+        /* recurse into the smaller side, loop on the larger one */
+        if (j - left < right - i) {
+            nv_sort_ll(values, left, j);
+            left = i;
+        } else {
+            nv_sort_ll(values, i, right);
+            right = j;
+        }
+    }
+    {
+        int i;
+        for (i = left + 1; i <= right; i++) {
+            long long value = values[i];
+            int j = i - 1;
+            while (j >= left && values[j] > value) {
+                values[j + 1] = values[j];
+                j--;
+            }
+            values[j + 1] = value;
+        }
+    }
+}
+
 /* A sorted copy (numbers numerically, everything else by text). */
 static nv nv_arr_sorted(nv a) {
-    nv out = nv_arr();
-    int i;
+    nv out;
+    int i, tagged = 1, text = 1;
     if (nv_type_of(a) != NV_ARR) {
         nv_error("sort() needs an array");
     }
-    for (i = 0; i < a->a->len; i++) {
-        nv_arr_push(out->a, a->a->items[i]);
+    out = nv_new(NV_ARR);
+    out->a = nv_arr_with_capacity(a->a->len);
+    memcpy(out->a->items, a->a->items, sizeof(nv) * (size_t)a->a->len);
+    out->a->len = a->a->len;
+    for (i = 0; i < out->a->len; i++) {
+        nv value = out->a->items[i];
+        if (!nv_is_tagged(value)) {
+            tagged = 0;
+            if (nv_type_of(value) != NV_STR) {
+                text = 0;
+            }
+        } else {
+            text = 0;
+        }
+        if (!tagged && !text) {
+            break;
+        }
     }
     if (out->a->len > 1) {
-        qsort(out->a->items, (size_t)out->a->len, sizeof(nv), nv_sort_cmp);
+        if (tagged) {
+            /* unbox, sort as plain integers, tag again */
+            long long *values = (long long *)malloc(sizeof(long long) * (size_t)out->a->len);
+            if (!values) {
+                nv_error("out of memory");
+            }
+            for (i = 0; i < out->a->len; i++) {
+                values[i] = nv_ival(out->a->items[i]);
+            }
+            nv_sort_ll(values, 0, out->a->len - 1);
+            for (i = 0; i < out->a->len; i++) {
+                out->a->items[i] = nv_int(values[i]);
+            }
+            free(values);
+            return out;
+        }
+        qsort(out->a->items, (size_t)out->a->len, sizeof(nv), text ? nv_sort_cmp_text : nv_sort_cmp);
     }
     return out;
 }

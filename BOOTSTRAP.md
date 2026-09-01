@@ -103,7 +103,34 @@ slot per field, addressed by index (`nv_field_index`) - the names live in the
 class. Maps keep entries in insertion order with a hash index and sort on
 demand, so iteration stays in key order (the fixpoint depends on it).
 Arithmetic and comparisons go through the inline `*_fast` / `*_bool` wrappers,
-conditions never box a bool. Locals are `l_name`, top-level constants
+conditions never box a bool.
+
+The code generator avoids the dynamic lookups wherever it already knows the
+answer. Inside a class method a field access is the slot itself
+(`nv_fields(self->o)[2]`), because fields are laid out base class first and a
+subclass keeps the indices of its base. Member lookups on other values go
+through a cache keyed on the class and the *name pointer* (every name is a
+string literal, so a hit is two compares). Calls with up to three arguments
+skip the runtime's `va_list`, `x.append(v)`, `x.length()` and `x.has(k)` go
+straight to the collection, `a + b + c + ...` becomes one `nv_add_chain` that
+fills a single buffer, and a `for (x in xs)` loop whose body contains no call
+walks the array itself instead of a snapshot copy.
+
+`codegen/inference.nv` finds locals (and parameters declared `integer`) that
+can only ever hold integers and generates them as C `long long`, boxing only
+where the value crosses into a dynamic context. A counting loop then compiles
+to plain C:
+
+```c
+long long l_i = 0LL;
+while (l_i < 10000000LL) { l_sum = (l_sum + l_i); l_i = (l_i + 1LL); }
+```
+
+The analysis is conservative: a name qualifies only if every declaration and
+assignment in the method is an integer expression, loop variables and names
+that are only assigned (possibly globals) never qualify.
+
+Locals are `l_name`, top-level constants
 `g_NAME`, free methods `f_name_N` (N = arity; same-arity overloads become
 `f_name_N_vK` plus a dispatcher that tests parameter types), class methods
 `m_Class_name_N(nv self, nv *args, int n)`, constructors `c_Class`. Classes

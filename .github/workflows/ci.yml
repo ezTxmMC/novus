@@ -94,3 +94,6 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           files: release/*
+          # tags like v0.1.0-pre.alpha.1 become GitHub pre-releases
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          generate_release_notes: true

@@ -1,0 +1,63 @@
+package codegen
+
+import "../ast/sexp.nv"
+import "../parser/errors.nv"
+import "../parser/types.nv"
+
+// Small helpers shared by the code generator files.
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+method nl(): string {
+    return chr(10)
+}
+
+method cstr(string text): string {
+    return q() + text + q()
+}
+
+method copyMap(map<string, string> m): map<string, string> {
+    var out = {}
+    for (k in m.keys()) {
+        out[k] = m[k]
+    }
+    return out
+}
+
+method isPrimitiveType(string t): bool {
+    var n = normType(t)
+    return n == "integer" || n == "float" || n == "string"
+}
+
+// nv_coerce(...) for declared primitive types, the expression otherwise.
+method coerceCode(string expr, string t): string {
+    if (isPrimitiveType(t)) {
+        return "nv_coerce(" + expr + ", " + cstr(normType(t)) + ")"
+    }
+    return expr
+}
+
+method paramsNode(string m): string {
+    return nodeChild(m, 3)
+}
+
+method arityOf(string m): integer {
+    return nodeCount(paramsNode(m)) - 1
+}
+
+method isAbstractMethod(string m): bool {
+    return nodeChild(m, 5) == "(abstract)"
+}
+
+method methodName(string m): string {
+    return nodeChild(m, 1)
+}
+
+method methodRet(string m): string {
+    return nodeChild(m, 2)
+}
+
+method intToStr(integer i): string {
+    return "" + i
+}

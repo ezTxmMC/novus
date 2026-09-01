@@ -1,0 +1,39 @@
+package lexer
+
+// Token encoding: "KIND file:line value".
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+method tokKind(string token): string {
+    var i = 0
+    while (token.charAt(i) != " ") {
+        i = i + 1
+    }
+    return token.substring(0, i)
+}
+
+method tokPos(string token): string {
+    var i = 0
+    while (token.charAt(i) != " ") {
+        i = i + 1
+    }
+    var start = i + 1
+    i = start
+    while (token.charAt(i) != " ") {
+        i = i + 1
+    }
+    return token.substring(start, i)
+}
+
+method tokVal(string token): string {
+    var i = 0
+    while (token.charAt(i) != " ") {
+        i = i + 1
+    }
+    i = i + 1
+    while (token.charAt(i) != " ") {
+        i = i + 1
+    }
+    return token.substring(i + 1, token.length())
+}

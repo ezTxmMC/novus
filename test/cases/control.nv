@@ -1,0 +1,66 @@
+package main
+
+// if / else if / else, while, for, break, continue.
+
+method main {
+    var i = 0
+    while (i < 10) {
+        i = i + 1
+        if (i % 2 == 0) {
+            continue
+        }
+        if (i > 7) {
+            break
+        }
+        println "odd ${i}"
+    }
+    for (n in [1, 2, 3]) {
+        if (n == 1) {
+            println "one"
+        } else if (n == 2) {
+            println "two"
+        } else {
+            println "many"
+        }
+    }
+    var m = { "b": 2, "a": 1, "c": 3 }
+    for (k in m) {
+        println k + "=" + m[k]
+    }
+    for (x in [1, 2]) {
+        for (y in [10, 20]) {
+            if (y == 20 && x == 1) {
+                break
+            }
+            println x + y
+        }
+    }
+    println classify(5) + " " + classify(-5) + " " + classify(0)
+    var count = 0
+    while (true) {
+        count = count + 1
+        if (count == 3) {
+            break
+        }
+    }
+    println count
+    if (isSmall(1)) {
+        println "small"
+    }
+    if (!isSmall(100)) {
+        println "big"
+    }
+}
+
+method classify(integer n): string {
+    if (n > 0) {
+        return "positive"
+    } else if (n < 0) {
+        return "negative"
+    }
+    return "zero"
+}
+
+method isSmall(integer n): bool {
+    return n < 10
+}

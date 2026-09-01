@@ -1,0 +1,54 @@
+package lexer
+
+// Character classes, keywords and escape sequences.
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+method isKeywordWord(string word): bool {
+    var keywords = { "package": true, "import": true, "method": true, "var": true,
+        "println": true, "print": true, "eprintln": true, "private": true,
+        "final": true, "return": true, "if": true, "else": true, "while": true,
+        "for": true, "in": true, "true": true, "false": true, "break": true,
+        "continue": true }
+    return keywords.has(word)
+}
+
+method isTwoCharOp(string op): bool {
+    return op == "==" || op == "!=" || op == "<=" || op == ">=" || op == "&&" || op == "||" || op == "=>" || op == "=<"
+}
+
+method isDigit(string c): bool {
+    return c >= "0" && c <= "9"
+}
+
+method isAlpha(string c): bool {
+    return (c >= "a" && c <= "z") || (c >= "A" && c <= "Z") || c == "_"
+}
+
+method isAlphaNum(string c): bool {
+    return isAlpha(c) || isDigit(c)
+}
+
+method isSymbolChar(string c): bool {
+    var symbols = { "{": true, "}": true, "(": true, ")": true, "[": true, "]": true,
+        ":": true, ";": true, ",": true, ".": true, "+": true, "-": true, "*": true,
+        "/": true, "%": true, "=": true, "<": true, ">": true, "!": true, "@": true }
+    return symbols.has(c)
+}
+
+method lexEscape(string c): string {
+    if (c == "n") {
+        return chr(10)
+    }
+    if (c == "t") {
+        return chr(9)
+    }
+    if (c == "r") {
+        return chr(13)
+    }
+    if (c == "0") {
+        return chr(0)
+    }
+    return c
+}

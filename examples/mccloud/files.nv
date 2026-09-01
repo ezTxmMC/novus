@@ -1,0 +1,72 @@
+package mccloud
+
+import os
+import path
+
+// File helpers: recursive copy, log tails and server.properties editing.
+
+method copyDir(string from, string to) {
+    os.mkdir(to)
+    for (entry in os.listDir(from)) {
+        var source = path.join(from, entry)
+        var target = path.join(to, entry)
+        if (os.isDir(source)) {
+            copyDir(source, target)
+            continue
+        }
+        os.copy(source, target)
+    }
+}
+
+// The last `count` lines of a text file.
+method tailLines(string file, integer count): string {
+    if (fileExists(file) == false) {
+        return ""
+    }
+    var lines = readFile(file).split("\n")
+    var start = lines.length() - count
+    if (start < 0) {
+        start = 0
+    }
+    var out = []
+    var i = start
+    while (i < lines.length()) {
+        out.append(lines[i])
+        i = i + 1
+    }
+    return out.join("\n")
+}
+
+// Sets key=value in a properties file (created when missing).
+method setProperty(string file, string key, string value) {
+    var lines = []
+    if (fileExists(file)) {
+        lines = readFile(file).split("\n")
+    }
+    var out = []
+    var found = false
+    for (line in lines) {
+        if (line.startsWith(key + "=")) {
+            out.append(key + "=" + value)
+            found = true
+            continue
+        }
+        out.append(line)
+    }
+    if (found == false) {
+        out.append(key + "=" + value)
+    }
+    writeFile(file, out.join("\n") + "\n")
+}
+
+method readProperty(string file, string key, string fallback): string {
+    if (fileExists(file) == false) {
+        return fallback
+    }
+    for (line in readFile(file).split("\n")) {
+        if (line.startsWith(key + "=")) {
+            return line.substring(key.length() + 1, line.length()).trim()
+        }
+    }
+    return fallback
+}

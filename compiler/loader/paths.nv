@@ -1,0 +1,123 @@
+package loader
+
+// Path helpers for import resolution.
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+method dirName(string path): string {
+    var i = path.length()
+    while (i > 0 && path.charAt(i - 1) != "/" && path.charAt(i - 1) != chr(92)) {
+        i = i - 1
+    }
+    if (i == 0) {
+        return "."
+    }
+    if (i > 1) {
+        i = i - 1
+    }
+    return path.substring(0, i)
+}
+
+method baseName(string path): string {
+    var i = path.length()
+    while (i > 0 && path.charAt(i - 1) != "/" && path.charAt(i - 1) != chr(92)) {
+        i = i - 1
+    }
+    return path.substring(i, path.length())
+}
+
+method isAbsolutePath(string p): bool {
+    if (p.length() == 0) {
+        return false
+    }
+    if (p.charAt(0) == "/" || p.charAt(0) == chr(92)) {
+        return true
+    }
+    return p.length() > 1 && p.charAt(1) == ":"
+}
+
+// Adds one path segment to the normalized segment list.
+method pushSegment(array<string> parts, string seg, bool leading): array<string> {
+    if (seg == "..") {
+        if (parts.length() > 0 && parts[parts.length() - 1] != "..") {
+            var trimmed = []
+            var k = 0
+            while (k < parts.length() - 1) {
+                trimmed.append(parts[k])
+                k = k + 1
+            }
+            return trimmed
+        }
+        parts.append(seg)
+        return parts
+    }
+    if (seg == ".") {
+        return parts
+    }
+    if (seg == "" && leading == false) {
+        return parts
+    }
+    parts.append(seg)
+    return parts
+}
+
+// Collapses "./" segments and "a/../" pairs.
+method normalizePath(string p): string {
+    var parts = []
+    var seg = ""
+    var i = 0
+    var n = p.length()
+    while (i <= n) {
+        var c = ""
+        if (i < n) {
+            c = p.charAt(i)
+        }
+        if (i == n || c == "/" || c == chr(92)) {
+            parts = pushSegment(parts, seg, i == 0)
+            seg = ""
+            i = i + 1
+            continue
+        }
+        seg = seg + c
+        i = i + 1
+    }
+    var out = ""
+    var j = 0
+    while (j < parts.length()) {
+        if (j > 0) {
+            out = out + "/"
+        }
+        out = out + parts[j]
+        j = j + 1
+    }
+    if (out == "") {
+        return "."
+    }
+    return out
+}
+
+method joinPath(string dir, string rel): string {
+    if (isAbsolutePath(rel)) {
+        return normalizePath(rel)
+    }
+    if (dir == "." || dir == "") {
+        return normalizePath(rel)
+    }
+    return normalizePath(dir + "/" + rel)
+}
+
+method fileLabel(string path): string {
+    var out = ""
+    var i = 0
+    while (i < path.length()) {
+        var c = path.charAt(i)
+        if (c == " ") {
+            out = out + "_"
+        } else {
+            out = out + c
+        }
+        i = i + 1
+    }
+    return out
+}

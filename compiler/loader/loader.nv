@@ -1,0 +1,41 @@
+package loader
+
+import "../ast/sexp.nv"
+import "../parser/declarations.nv"
+import "../parser/errors.nv"
+import "paths.nv"
+
+// Loads a program and resolves `import "file.nv"` declarations.
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+method loadFile(string path, string importedFrom, map<string, string> loaded, array<string> out): integer {
+    var key = normalizePath(path)
+    if (loaded.has(key)) {
+        return 0
+    }
+    loaded[key] = "1"
+    if (fileExists(path) == false) {
+        fail("cannot open '" + path + "'", importedFrom)
+    }
+    var decls = parseFile(readFile(path), fileLabel(path))
+    var dir = dirName(path)
+    for (d in decls) {
+        if (nodeHead(d) == "import") {
+            var rel = sexpUnescape(nodeChild(d, 1))
+            loadFile(joinPath(dir, rel), fileLabel(path), loaded, out)
+        } else {
+            out.append(d)
+        }
+    }
+    return 0
+}
+
+// All top-level declarations of the program rooted at mainFile.
+method loadProgram(string mainFile): array<string> {
+    var loaded = {}
+    var decls = []
+    loadFile(mainFile, "command line", loaded, decls)
+    return decls
+}

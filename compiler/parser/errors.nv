@@ -1,0 +1,16 @@
+package parser
+
+// Compile errors.
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+method fail(string message, string pos): integer {
+    eprintln "error: " + pos + ": " + message
+    exit(1)
+    return 0
+}
+
+method q(): string {
+    return chr(34)
+}

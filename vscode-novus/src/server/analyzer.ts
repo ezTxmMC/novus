@@ -2,8 +2,10 @@
  * Semantic analysis: symbol tables, scopes, name resolution, light type
  * inference and diagnostics for a single Novus document.
  */
+import * as path from 'path';
+import { URI } from 'vscode-uri';
 import * as ast from './ast';
-import { BUILTIN_ANNOTATIONS, builtinGlobals, builtinMembers, isBoolType, isFloatType, isPrimitive, isStringType } from './builtins';
+import { BUILTIN_ANNOTATIONS, builtinGlobals, builtinMembers, enumBuiltinMembers, isBoolType, isFloatType, isPrimitive, isStringType } from './builtins';
 import { Comment, Span } from './lexer';
 import { LineMap, ParseError, parse } from './parser';
 import { CLASS_LIKE, NSymbol, TYPE_LIKE, mkType, newSymbol, sameType, semanticTokenModifiers, semanticTokenType, typeToString } from './symbols';
@@ -111,10 +113,12 @@ export class Analysis {
       if (reportDuplicates && sym.name) {
         const clash = list.find(other => this.conflicts(other, sym));
         if (clash) {
+          // a local redeclared in the same block is an assignment for novusc
+          const localRedeclaration = scope.kind !== 'module' && scope.kind !== 'class' && clash.kind === sym.kind;
           this.diagnostics.push({
             span: sym.selectionSpan,
-            message: this.duplicateMessage(sym, clash),
-            severity: sym.kind === 'method' || sym.kind === 'constructor' || CLASS_LIKE.has(sym.kind) ? 'warning' : 'error',
+            message: localRedeclaration ? `'${sym.name}' is already declared in this scope (novusc treats this as an assignment)` : this.duplicateMessage(sym, clash),
+            severity: sym.kind === 'method' || sym.kind === 'constructor' || CLASS_LIKE.has(sym.kind) || localRedeclaration ? 'warning' : 'error',
           });
         }
       }
@@ -274,6 +278,7 @@ export class Analysis {
     if (seen.has(sym.id)) return [];
     seen.add(sym.id);
     const out: NSymbol[] = [...sym.members];
+    if (sym.kind === 'enum') out.push(...enumBuiltinMembers(sym));
     for (const base of sym.bases) {
       const baseSym = this.lookupType(base.name);
       if (baseSym && CLASS_LIKE.has(baseSym.kind)) {
@@ -362,6 +367,14 @@ export class Analysis {
           break;
         }
         case 'Import': {
+          if (item.isFile) {
+            // `import "file.nv"`: the imported file's package becomes visible
+            // (novusc flattens file imports; the extension maps them to packages).
+            const pkg = this.opts.packageOf(this.resolveFileImport(item.path ?? ''));
+            if (pkg) this.importNames.push(pkg);
+            this.importNames.push(item.name);
+            break;
+          }
           const short = item.name.includes('.') ? item.name.slice(item.name.lastIndexOf('.') + 1) : item.name;
           const builtin = this.opts.builtinModule(item.name) ?? this.opts.builtinModule(short);
           this.importNames.push(item.name);
@@ -555,6 +568,16 @@ export class Analysis {
       }
     }
     return sym;
+  }
+
+  /** URI of a file import target, resolved relative to this document. */
+  private resolveFileImport(rel: string): string {
+    try {
+      const base = URI.parse(this.uri).fsPath;
+      return URI.file(path.resolve(path.dirname(base), rel)).toString();
+    } catch {
+      return '';
+    }
   }
 
   // ----------------------------------------------------------------- walking

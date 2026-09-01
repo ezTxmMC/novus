@@ -59,7 +59,7 @@ function createClient(context: vscode.ExtensionContext): LanguageClient {
 
 // ------------------------------------------------------------------- run
 
-const CANDIDATES = ['build/novus', 'build/Release/novus', 'build/Debug/novus', 'out/novus', 'novus'];
+const CANDIDATES = ['build/novusc', 'novusc', 'dist/novusc'];
 
 function exists(file: string): boolean {
   try {
@@ -91,7 +91,7 @@ function resolveExecutable(document: vscode.TextDocument): { command: string; fo
       if (exists(candidate)) return { command: candidate, found: true };
     }
   }
-  return { command: 'novus' + exe, found: false };
+  return { command: 'novusc' + exe, found: false };
 }
 
 async function executeCurrentFile(mode: 'run' | 'build'): Promise<void> {
@@ -109,12 +109,12 @@ async function executeCurrentFile(mode: 'run' | 'build'): Promise<void> {
 
   const { command, found } = resolveExecutable(document);
   if (!found && path.isAbsolute(command)) {
-    void vscode.window.showErrorMessage(`Novus interpreter not found at '${command}'. Check the 'novus.executablePath' setting.`);
+    void vscode.window.showErrorMessage(`novusc not found at '${command}'. Check the 'novus.executablePath' setting.`);
     return;
   }
   if (!found) {
     const choice = await vscode.window.showWarningMessage(
-      "No 'build/novus' binary found in the workspace – running 'novus' from PATH. Build the interpreter (cmake --build build) or set 'novus.executablePath'.",
+      "No 'build/novusc' binary found in the workspace – running 'novusc' from PATH. Build the compiler (scripts/bootstrap.sh) or set 'novus.executablePath'.",
       'Run anyway',
       'Open settings',
     );

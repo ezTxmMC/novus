@@ -1,0 +1,47 @@
+package main
+
+// Block scoping, shadowing, redeclaration and value semantics.
+
+method main {
+    var x = 1
+    if (true) {
+        var x = 2
+        println x
+    }
+    println x
+    var y = "a"
+    var y = "b"
+    println y
+    for (i in [1, 2]) {
+        var tmp = i * 10
+        println tmp
+    }
+    var s = "abc"
+    var t = s
+    s = s + "d"
+    println t
+    println s
+    var n = 5
+    bump(n)
+    println n
+    var parts = ""
+    var k = 0
+    while (k < 1000) {
+        parts = parts + "x"
+        k = k + 1
+    }
+    println parts.length()
+    var acc = ""
+    var pieces = []
+    var j = 0
+    while (j < 3) {
+        acc = acc + j
+        pieces.append(acc)
+        j = j + 1
+    }
+    println pieces
+}
+
+method bump(integer v) {
+    v = v + 1
+}

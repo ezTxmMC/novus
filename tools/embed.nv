@@ -1,0 +1,61 @@
+package main
+
+// Embeds a text file into a Novus source file as a string constant:
+//   novusc run tools/embed.nv runtime/novus_rt.h > compiler/runtime/runtime.nv
+// The generated module exposes `runtimeSource()`, which novusc pastes at
+// the top of every generated C file.
+
+method main(array<string> arguments) {
+    if (arguments.length() < 1) {
+        eprintln "usage: embed <file>"
+        return 1
+    }
+    var text = readFile(arguments[0])
+    if (text == "") {
+        eprintln "cannot read " + arguments[0]
+        return 1
+    }
+    println "package runtime"
+    println ""
+    println "// GENERATED from " + arguments[0] + " by tools/embed.nv - do not edit."
+    println "// The C runtime that every program compiled by novusc embeds."
+    println ""
+    println "method runtimeSource(): string {"
+    println "    return \"" + escapeNovus(text) + "\""
+    println "}"
+    return 0
+}
+
+method escapeChar(string c): string {
+    if (c == "\\") {
+        return "\\\\"
+    }
+    if (c == "\"") {
+        return "\\\""
+    }
+    if (c == "\n") {
+        return "\\n"
+    }
+    if (c == "\t") {
+        return "\\t"
+    }
+    if (c == "\r") {
+        return "\\r"
+    }
+    if (c == "$") {
+        // keep "${" out of the literal (interpolation)
+        return "\\$"
+    }
+    return c
+}
+
+method escapeNovus(string text): string {
+    var out = ""
+    var i = 0
+    var n = text.length()
+    while (i < n) {
+        out = out + escapeChar(text.charAt(i))
+        i = i + 1
+    }
+    return out
+}

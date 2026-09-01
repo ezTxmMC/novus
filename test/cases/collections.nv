@@ -1,0 +1,61 @@
+package main
+
+// Arrays and maps: literals, indexing, mutation, nesting, display, typeOf.
+
+method main {
+    var xs = [3, 1, 2]
+    xs.append(4)
+    xs.append(5, 6)
+    println xs
+    println xs.length()
+    xs[0] = 30
+    println xs[0]
+    println xs.contains(2)
+    println xs.indexOf(2)
+    println xs.pop()
+    println xs
+    xs.insert(1, 99)
+    println xs
+    xs.remove(1)
+    println xs
+    var nested = [[1, 2], [3, 4]]
+    println nested[1][0]
+    nested[0].append(5)
+    println nested
+    var m = { "one": 1, "two": 2 }
+    m["three"] = 3
+    println m
+    println m.length()
+    println m.has("two")
+    println m.has("four")
+    println m.keys()
+    println m.values()
+    m.remove("one")
+    println m
+    println m.get("nope", "default")
+    var byKey = {}
+    byKey[7] = "seven"
+    println byKey["7"]
+    var deep = { "list": [1, 2], "map": { "k": "v" } }
+    println deep["map"]["k"]
+    println deep
+    println typeOf(1)
+    println typeOf(1.5)
+    println typeOf("s")
+    println typeOf(true)
+    println typeOf(xs)
+    println typeOf(m)
+    var copy = xs
+    copy.append(100)
+    println xs.length()
+    fill(xs)
+    println xs.length()
+    println [].length()
+    println {}.length()
+    var words = ["b", "a"]
+    println words[0] + words[1]
+}
+
+method fill(array<integer> target) {
+    target.append(200)
+}

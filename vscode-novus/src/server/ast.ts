@@ -112,6 +112,8 @@ export interface Block extends Span {
 
 export interface PrintStmt extends Span {
   kind: 'Print';
+  /** println (default), print (no line break) or eprintln (stderr). */
+  variant?: 'println' | 'print' | 'eprintln';
   value?: Expr;
 }
 

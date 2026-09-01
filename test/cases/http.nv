@@ -1,0 +1,33 @@
+package main
+
+import http
+import json
+import os
+import path
+
+// Offline behaviour of the http module: transport errors never abort
+// http.request, and the result map has a stable shape.
+
+method main {
+    var r = http.request("GET", "http://127.0.0.1:9/nothing", "", {})
+    println r["status"]
+    println r["ok"]
+    println r["body"]
+    println r["error"] != ""
+    println typeOf(r["headers"])
+    println http.download("http://127.0.0.1:9/nothing", "never-written.txt")
+    println fileExists("never-written.txt")
+    println json.isValid("{\"a\": [1, 2, {\"b\": null}]}")
+    println json.isValid("{\"a\": ")
+    println json.isValid("[1,] ")
+    println json.parse({ "k": [1, 2] })
+    println json.parse(Box{width=2})
+    var file = path.join(path.temp(), "novus-json-test", "deep", "data.json")
+    json.save({ "x": 1 }, path.join(path.temp(), "novus-json-test", "deep"), "data.json")
+    println json.load(file)
+    println os.removeAll(path.join(path.temp(), "novus-json-test"))
+}
+
+define class Box {
+    private final integer width: get
+}

@@ -1,0 +1,80 @@
+package main
+
+// Overloading by arity and by type, top-level constants, annotations,
+// typed declarations, coercion, main with arguments.
+
+private final GREETING = "hi"
+final LIMIT = 3
+var counter = LIMIT * 2
+
+define annotation Note {
+    text(): string
+}
+
+method main {
+    println "no args"
+    println GREETING
+    println LIMIT
+    println counter
+    counter = counter + 1
+    println counter
+    println add(1, 2)
+    println add(1, 2, 3)
+    println show("text")
+    println show(42)
+    println show(2.5)
+    println show([1])
+    old()
+    old()
+    integer truncated = 2.9
+    println truncated
+    float widened = 3
+    println widened
+    string text = 5
+    println text + "!"
+    array<integer> numbers = [1, 2]
+    println numbers
+    var later = 0
+    later = 7
+    println later
+    println noted()
+}
+
+method main(array<string> arguments) {
+    println "args: ${arguments}"
+    println arguments.length()
+}
+
+method add(integer a, integer b): integer {
+    return a + b
+}
+
+method add(integer a, integer b, integer c): integer {
+    return a + b + c
+}
+
+method show(string s): string {
+    return "string " + s
+}
+
+method show(integer i): string {
+    return "integer " + i
+}
+
+method show(float f): string {
+    return "float " + f
+}
+
+method show(array<integer> a): string {
+    return "array " + a
+}
+
+@Deprecated{text="use new() instead", since="0.2"}
+method old() {
+    println "old called"
+}
+
+@Note{text="annotated"}
+method noted(): string {
+    return "noted"
+}

@@ -1,0 +1,6 @@
+package main
+
+method main {
+    println "exiting with 3"
+    return 3
+}

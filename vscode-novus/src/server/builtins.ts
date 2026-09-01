@@ -10,8 +10,8 @@ export interface KeywordDoc {
   doc: string;
 }
 
-const IMPLEMENTED_NOTE = '\n\n_Implemented by the current interpreter._';
-const CONCEPT_NOTE = '\n\n_Concept syntax – not yet implemented by the interpreter._';
+const IMPLEMENTED_NOTE = '\n\n_Implemented by novusc._';
+const CONCEPT_NOTE = '\n\n_Concept syntax – not yet implemented by novusc._';
 
 export const KEYWORDS: KeywordDoc[] = [
   { name: 'package', detail: 'package <name>', doc: 'Declares the package of this file.' + IMPLEMENTED_NOTE },
@@ -19,6 +19,8 @@ export const KEYWORDS: KeywordDoc[] = [
   { name: 'method', detail: 'method name(params): Type { … }', doc: 'Declares a method. `method main` is the program entry point. The parameter list and the return type are optional.' + IMPLEMENTED_NOTE },
   { name: 'var', detail: 'var name[: Type] = value', doc: 'Declares a variable. The type is inferred from the initializer when omitted.' + IMPLEMENTED_NOTE },
   { name: 'println', detail: 'println <value>', doc: 'Prints a value followed by a line break. Strings support `${expression}` interpolation.' + IMPLEMENTED_NOTE },
+  { name: 'print', detail: 'print <value>', doc: 'Prints a value without a line break.' + IMPLEMENTED_NOTE },
+  { name: 'eprintln', detail: 'eprintln <value>', doc: 'Prints a value followed by a line break to standard error.' + IMPLEMENTED_NOTE },
   { name: 'return', detail: 'return [value]', doc: 'Returns from the current method. The value is coerced to the declared return type.' + IMPLEMENTED_NOTE },
   { name: 'define', detail: 'define class|enum|interface|abstract|annotation Name { … }', doc: 'Defines a new type.' + IMPLEMENTED_NOTE },
   { name: 'class', detail: 'define class Name[(params)] [based Base] { … }', doc: 'Defines a class. Parameters after the name declare a primary constructor.' + IMPLEMENTED_NOTE },
@@ -64,8 +66,8 @@ export const PRIMITIVE_TYPES: PrimitiveType[] = [
   { name: 'void', doc: 'No value (default return type).', implemented: true },
   { name: 'str', doc: 'Alias for `string`.', implemented: true },
   { name: 'int', doc: 'Alias for `integer`.', implemented: true },
-  { name: 'double', doc: 'Double precision floating point number.', implemented: false },
-  { name: 'doub', doc: 'Alias for `double`.', implemented: false },
+  { name: 'double', doc: 'Alias for `float`.', implemented: true },
+  { name: 'doub', doc: 'Alias for `float`.', implemented: true },
   { name: 'bool', doc: 'Boolean value (`true`/`false`).', implemented: true },
   { name: 'boolean', doc: 'Alias for `bool`.', implemented: true },
   { name: 'array', doc: 'Ordered collection of elements: `array<Type>`.', implemented: true, generic: true },
@@ -137,23 +139,74 @@ function module(name: string, doc: string, build: (m: NSymbol) => NSymbol[], not
 
 let cachedModules: NSymbol[] | undefined;
 
-/** Standard library modules (json and path are implemented, http is still a concept). */
+/** Standard library modules: json, path, os and http. */
 export function builtinModules(): NSymbol[] {
   if (cachedModules) return cachedModules;
   cachedModules = [
-    module('http', 'HTTP client.', m => [
-      method(m, 'get', [['string', 'url']], 'string', 'Performs a GET request and returns the response body.'),
-      method(m, 'post', [['string', 'url'], ['map', 'body']], 'string', 'Performs a POST request with a JSON body.'),
-    ]),
+    module('http', 'HTTP client (uses the curl command line tool; https works).', m => [
+      method(m, 'get', [['string', 'url']], 'string', 'Performs a GET request and returns the response body (aborts on transport errors).', IMPLEMENTED_NOTE),
+      method(m, 'post', [['string', 'url'], ['object', 'body']], 'string', 'Performs a POST request; maps/arrays are sent as JSON, strings as-is.', IMPLEMENTED_NOTE),
+      method(m, 'put', [['string', 'url'], ['object', 'body']], 'string', 'Performs a PUT request.', IMPLEMENTED_NOTE),
+      method(m, 'delete', [['string', 'url']], 'string', 'Performs a DELETE request.', IMPLEMENTED_NOTE),
+      method(m, 'request', [['string', 'method'], ['string', 'url'], ['object', 'body'], ['map', 'headers']], 'map', 'Performs a request and returns `{status, ok, body, headers, error}`; never aborts.', IMPLEMENTED_NOTE),
+      method(m, 'download', [['string', 'url'], ['string', 'file']], 'bool', 'Downloads a URL into a file.', IMPLEMENTED_NOTE),
+    ], IMPLEMENTED_NOTE),
     module('json', 'JSON serialization.', m => [
       method(m, 'parse', [['string', 'text']], 'map', 'Parses JSON text into maps, arrays and primitive values.', IMPLEMENTED_NOTE),
       method(m, 'stringify', [['object', 'value']], 'string', 'Serializes a value (maps, arrays, objects, primitives) to JSON text.', IMPLEMENTED_NOTE),
       method(m, 'save', [['object', 'value'], ['string', 'directory'], ['string', 'fileName']], undefined, 'Writes a value as pretty-printed JSON to `directory/fileName`.', IMPLEMENTED_NOTE),
+      method(m, 'pretty', [['object', 'value']], 'string', 'Serializes a value to indented JSON text.', IMPLEMENTED_NOTE),
+      method(m, 'load', [['string', 'file']], 'map', 'Reads and parses a JSON file.', IMPLEMENTED_NOTE),
+      method(m, 'isValid', [['string', 'text']], 'bool', 'Whether the text is well-formed JSON.', IMPLEMENTED_NOTE),
     ], IMPLEMENTED_NOTE),
     module('path', 'File system paths.', m => [
       field(m, 'absolute', 'string', 'Absolute path of the working directory.', IMPLEMENTED_NOTE),
       method(m, 'join', [['string', 'first'], ['string', 'second']], 'string', 'Joins path segments with the platform separator.', IMPLEMENTED_NOTE),
       method(m, 'exists', [['string', 'path']], 'bool', 'Whether the path exists.', IMPLEMENTED_NOTE),
+      method(m, 'dirname', [['string', 'path']], 'string', 'The directory part of a path.', IMPLEMENTED_NOTE),
+      method(m, 'basename', [['string', 'path']], 'string', 'The file name part of a path.', IMPLEMENTED_NOTE),
+      method(m, 'stem', [['string', 'path']], 'string', 'The file name without its extension.', IMPLEMENTED_NOTE),
+      method(m, 'temp', [], 'string', 'The temporary directory of the system.', IMPLEMENTED_NOTE),
+      method(m, 'extension', [['string', 'path']], 'string', 'The extension including the dot (`.txt`), empty when absent.', IMPLEMENTED_NOTE),
+      method(m, 'normalize', [['string', 'path']], 'string', 'Collapses `.`/`..` segments and duplicate separators.', IMPLEMENTED_NOTE),
+      method(m, 'isAbsolute', [['string', 'path']], 'bool', 'Whether the path is absolute.', IMPLEMENTED_NOTE),
+      method(m, 'relative', [['string', 'base'], ['string', 'target']], 'string', 'Path of `target` relative to directory `base`.', IMPLEMENTED_NOTE),
+      method(m, 'isDir', [['string', 'path']], 'bool', 'Whether the path is a directory.', IMPLEMENTED_NOTE),
+      method(m, 'isFile', [['string', 'path']], 'bool', 'Whether the path is a regular file.', IMPLEMENTED_NOTE),
+      method(m, 'separator', [], 'string', 'The platform path separator.', IMPLEMENTED_NOTE),
+    ], IMPLEMENTED_NOTE),
+    module('os', 'Operating system: files, directories, processes, environment, time.', m => [
+      method(m, 'mkdir', [['string', 'path']], 'bool', 'Creates a directory including missing parents.', IMPLEMENTED_NOTE),
+      method(m, 'rmdir', [['string', 'path']], 'bool', 'Removes an empty directory.', IMPLEMENTED_NOTE),
+      method(m, 'remove', [['string', 'path']], 'bool', 'Deletes a file.', IMPLEMENTED_NOTE),
+      method(m, 'removeAll', [['string', 'path']], 'bool', 'Deletes a file or a directory tree.', IMPLEMENTED_NOTE),
+      method(m, 'listDir', [['string', 'path']], 'array', 'Sorted entries of a directory.', IMPLEMENTED_NOTE),
+      method(m, 'exists', [['string', 'path']], 'bool', 'Whether the path exists.', IMPLEMENTED_NOTE),
+      method(m, 'isDir', [['string', 'path']], 'bool', 'Whether the path is a directory.', IMPLEMENTED_NOTE),
+      method(m, 'isFile', [['string', 'path']], 'bool', 'Whether the path is a regular file.', IMPLEMENTED_NOTE),
+      method(m, 'rename', [['string', 'from'], ['string', 'to']], 'bool', 'Renames or moves a file or directory.', IMPLEMENTED_NOTE),
+      method(m, 'copy', [['string', 'from'], ['string', 'to']], 'bool', 'Copies a file.', IMPLEMENTED_NOTE),
+      method(m, 'fileSize', [['string', 'path']], 'integer', 'Size of a file in bytes (-1 when missing).', IMPLEMENTED_NOTE),
+      method(m, 'modified', [['string', 'path']], 'integer', 'Modification time as unix seconds (-1 when missing).', IMPLEMENTED_NOTE),
+      method(m, 'readFile', [['string', 'path']], 'string', 'Reads a file.', IMPLEMENTED_NOTE),
+      method(m, 'writeFile', [['string', 'path'], ['string', 'content']], undefined, 'Writes a file.', IMPLEMENTED_NOTE),
+      method(m, 'appendFile', [['string', 'path'], ['string', 'content']], undefined, 'Appends to a file.', IMPLEMENTED_NOTE),
+      method(m, 'cwd', [], 'string', 'The working directory.', IMPLEMENTED_NOTE),
+      method(m, 'chdir', [['string', 'path']], 'bool', 'Changes the working directory.', IMPLEMENTED_NOTE),
+      method(m, 'temp', [], 'string', 'The temporary directory.', IMPLEMENTED_NOTE),
+      method(m, 'home', [], 'string', 'The home directory of the user.', IMPLEMENTED_NOTE),
+      method(m, 'exec', [['string', 'command']], 'integer', 'Runs a shell command and returns its exit code.', IMPLEMENTED_NOTE),
+      method(m, 'output', [['string', 'command']], 'string', 'Runs a shell command and returns its standard output.', IMPLEMENTED_NOTE),
+      method(m, 'env', [['string', 'name']], 'string', 'Value of an environment variable.', IMPLEMENTED_NOTE),
+      method(m, 'setEnv', [['string', 'name'], ['string', 'value']], 'bool', 'Sets an environment variable.', IMPLEMENTED_NOTE),
+      method(m, 'exit', [['integer', 'code']], undefined, 'Terminates the program.', IMPLEMENTED_NOTE),
+      method(m, 'platform', [], 'string', '`linux`, `macos`, `windows` or `unix`.', IMPLEMENTED_NOTE),
+      method(m, 'args', [], 'array', 'The command line arguments.', IMPLEMENTED_NOTE),
+      method(m, 'pid', [], 'integer', 'The process id.', IMPLEMENTED_NOTE),
+      method(m, 'time', [], 'integer', 'Current unix time in seconds.', IMPLEMENTED_NOTE),
+      method(m, 'clock', [], 'float', 'Current wall clock time in seconds with sub-second precision.', IMPLEMENTED_NOTE),
+      method(m, 'sleep', [['integer', 'milliseconds']], undefined, 'Pauses the program.', IMPLEMENTED_NOTE),
+      method(m, 'readLine', [], 'string', 'Reads one line from standard input.', IMPLEMENTED_NOTE),
     ], IMPLEMENTED_NOTE),
   ];
   return cachedModules;
@@ -161,7 +214,7 @@ export function builtinModules(): NSymbol[] {
 
 let cachedGlobals: NSymbol[] | undefined;
 
-/** Free builtin functions provided by the interpreter and the compiler. */
+/** Free builtin functions provided by novusc. */
 export function builtinGlobals(): NSymbol[] {
   if (cachedGlobals) return cachedGlobals;
   cachedGlobals = [
@@ -173,8 +226,20 @@ export function builtinGlobals(): NSymbol[] {
     method(undefined, 'chr', [['integer', 'code']], 'string', 'One-character string for a character code (e.g. `chr(34)` is a quote).', IMPLEMENTED_NOTE),
     method(undefined, 'ord', [['string', 'text']], 'integer', 'Character code of the first character.', IMPLEMENTED_NOTE),
     method(undefined, 'typeOf', [['object', 'value']], 'string', 'Type name of a value: `integer`, `float`, `bool`, `string`, `array`, `map` or a class name.', IMPLEMENTED_NOTE),
+    method(undefined, 'parseFloat', [['string', 'text']], 'float', 'Parses a floating point number from text.', IMPLEMENTED_NOTE),
+    method(undefined, 'removeFile', [['string', 'path']], 'bool', 'Deletes a file; returns whether it succeeded.', IMPLEMENTED_NOTE),
+    method(undefined, 'readLine', [], 'string', 'Reads one line from standard input.', IMPLEMENTED_NOTE),
+    method(undefined, 'exec', [['string', 'command']], 'integer', 'Runs a shell command and returns its exit code.', IMPLEMENTED_NOTE),
+    method(undefined, 'env', [['string', 'name']], 'string', 'Value of an environment variable (empty when unset).', IMPLEMENTED_NOTE),
+    method(undefined, 'exit', [['integer', 'code']], undefined, 'Terminates the program with an exit code.', IMPLEMENTED_NOTE),
+    method(undefined, 'platform', [], 'string', 'The operating system: `linux`, `macos`, `windows` or `unix`.', IMPLEMENTED_NOTE),
   ];
   return cachedGlobals;
+}
+
+/** Builtin members every enum has (novusc: `Enum.values()`). */
+export function enumBuiltinMembers(owner: NSymbol): NSymbol[] {
+  return [method(owner, 'values', [], 'array', 'All constants of the enum in declaration order.', IMPLEMENTED_NOTE)];
 }
 
 const memberCache = new Map<string, NSymbol[]>();
@@ -191,24 +256,28 @@ export function builtinMembers(typeName: string, elementType?: string): NSymbol[
     members = [
       method(owner, 'length', [], 'integer', 'Number of elements.', IMPLEMENTED_NOTE),
       method(owner, 'append', [[elem, 'items']], undefined, 'Appends one or more elements.', IMPLEMENTED_NOTE),
-      method(owner, 'remove', [[elem, 'item']], 'bool', 'Removes the first occurrence of an element.'),
-      method(owner, 'get', [['integer', 'index']], elem, 'Returns the element at the given index.'),
-      method(owner, 'size', [], 'integer', 'Number of elements.'),
-      method(owner, 'isEmpty', [], 'bool', 'Whether the array has no elements.'),
-      method(owner, 'contains', [[elem, 'item']], 'bool', 'Whether the array contains the element.'),
-      method(owner, 'clear', [], undefined, 'Removes all elements.'),
+      method(owner, 'pop', [], elem, 'Removes and returns the last element.', IMPLEMENTED_NOTE),
+      method(owner, 'insert', [['integer', 'index'], [elem, 'item']], undefined, 'Inserts an element at an index.', IMPLEMENTED_NOTE),
+      method(owner, 'remove', [['integer', 'index']], undefined, 'Removes the element at an index.', IMPLEMENTED_NOTE),
+      method(owner, 'contains', [[elem, 'item']], 'bool', 'Whether the array contains the element.', IMPLEMENTED_NOTE),
+      method(owner, 'indexOf', [[elem, 'item']], 'integer', 'Index of the first occurrence, -1 when absent.', IMPLEMENTED_NOTE),
+      method(owner, 'join', [['string', 'separator']], 'string', 'Joins the elements into one string.', IMPLEMENTED_NOTE),
+      method(owner, 'clear', [], undefined, 'Removes all elements.', IMPLEMENTED_NOTE),
     ];
   } else if (isStringType(typeName)) {
     members = [
       method(owner, 'length', [], 'integer', 'Number of characters.', IMPLEMENTED_NOTE),
       method(owner, 'charAt', [['integer', 'index']], 'string', 'Character at an index as a one-character string.', IMPLEMENTED_NOTE),
       method(owner, 'substring', [['integer', 'start'], ['integer', 'end']], 'string', 'Substring from start (inclusive) to end (exclusive), clamped to the bounds.', IMPLEMENTED_NOTE),
-      method(owner, 'upper', [], 'string', 'Upper-case copy.'),
-      method(owner, 'lower', [], 'string', 'Lower-case copy.'),
-      method(owner, 'trim', [], 'string', 'Copy without surrounding whitespace.'),
-      method(owner, 'contains', [['string', 'text']], 'bool', 'Whether the string contains the text.'),
-      method(owner, 'split', [['string', 'separator']], 'array', 'Splits the string.'),
-      method(owner, 'replace', [['string', 'search'], ['string', 'replacement']], 'string', 'Replaces all occurrences.'),
+      method(owner, 'indexOf', [['string', 'text']], 'integer', 'Index of the first occurrence, -1 when absent.', IMPLEMENTED_NOTE),
+      method(owner, 'contains', [['string', 'text']], 'bool', 'Whether the string contains the text.', IMPLEMENTED_NOTE),
+      method(owner, 'startsWith', [['string', 'prefix']], 'bool', 'Whether the string starts with the prefix.', IMPLEMENTED_NOTE),
+      method(owner, 'endsWith', [['string', 'suffix']], 'bool', 'Whether the string ends with the suffix.', IMPLEMENTED_NOTE),
+      method(owner, 'split', [['string', 'separator']], 'array', 'Splits the string (an empty separator splits into characters).', IMPLEMENTED_NOTE),
+      method(owner, 'replace', [['string', 'search'], ['string', 'replacement']], 'string', 'Replaces all occurrences.', IMPLEMENTED_NOTE),
+      method(owner, 'trim', [], 'string', 'Copy without surrounding whitespace.', IMPLEMENTED_NOTE),
+      method(owner, 'toUpper', [], 'string', 'Upper-case copy.', IMPLEMENTED_NOTE),
+      method(owner, 'toLower', [], 'string', 'Lower-case copy.', IMPLEMENTED_NOTE),
     ];
   } else if (typeName === 'map') {
     members = [
@@ -216,8 +285,8 @@ export function builtinMembers(typeName: string, elementType?: string): NSymbol[
       method(owner, 'has', [['string', 'key']], 'bool', 'Whether the key exists.', IMPLEMENTED_NOTE),
       method(owner, 'keys', [], 'array', 'All keys, sorted.', IMPLEMENTED_NOTE),
       method(owner, 'remove', [['string', 'key']], undefined, 'Removes an entry.', IMPLEMENTED_NOTE),
-      method(owner, 'get', [['string', 'key']], 'object', 'Returns the value for a key (use `m[key]` instead).'),
-      method(owner, 'put', [['string', 'key'], ['object', 'value']], undefined, 'Stores a value (use `m[key] = v` instead).'),
+      method(owner, 'values', [], 'array', 'All values, in key order.', IMPLEMENTED_NOTE),
+      method(owner, 'get', [['string', 'key'], ['object', 'default']], 'object', 'Returns the value for a key, or the default when absent.', IMPLEMENTED_NOTE),
     ];
   }
   memberCache.set(key, members);

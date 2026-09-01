@@ -1,0 +1,9 @@
+package mathlib
+
+import "vec.nv"
+
+final PI = 3.14159
+
+method square(integer x): integer {
+    return x * x
+}

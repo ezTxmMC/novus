@@ -1,0 +1,251 @@
+package parser
+
+import "../ast/text.nv"
+import "../lexer/lexer.nv"
+import "../lexer/tokens.nv"
+import "errors.nv"
+import "tokens.nv"
+
+// Expressions: precedence climbing, literals, calls, interpolation.
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+method precedenceOf(array<string> tokens, integer p): integer {
+    if (p >= tokens.length()) {
+        return 0 - 1
+    }
+    var t = tokens[p]
+    if (tokKind(t) != "SYM") {
+        return 0 - 1
+    }
+    var precs = { "||": 1, "&&": 2, "==": 3, "!=": 3, "<": 4, ">": 4,
+        "<=": 4, ">=": 4, "+": 5, "-": 5, "*": 6, "/": 6, "%": 6 }
+    var op = tokVal(t)
+    if (precs.has(op)) {
+        return parseInt(precs[op])
+    }
+    return 0 - 1
+}
+
+// After an element of a comma separated list: skips a ',' and returns the
+// next position; at the closer returns pos unchanged; fails otherwise.
+method afterListItem(array<string> tokens, integer pos, string closer, string what): integer {
+    if (isSym(tokens, pos, ",")) {
+        return pos + 1
+    }
+    if (isSym(tokens, pos, closer)) {
+        return pos
+    }
+    fail("expected ',' or '" + closer + "' in " + what + " but found " + describe(tokens, pos), posOf(tokens, pos))
+    return pos
+}
+
+// Argument list after '(' up to and including ')'. Returns the nodes
+// joined with spaces (prefixed by one space each) and the position.
+method parseArgs(array<string> tokens, integer pos): map<string, string> {
+    var p = pos
+    var node = ""
+    while (isSym(tokens, p, ")") == false) {
+        if (atEnd(tokens, p)) {
+            fail("unterminated argument list", posOf(tokens, p))
+        }
+        var arg = parseExpr(tokens, p, 0)
+        node = node + " " + arg["node"]
+        p = afterListItem(tokens, parseInt(arg["pos"]), ")", "argument list")
+    }
+    return { "node": node, "pos": p + 1 }
+}
+
+// String literal with ${...} interpolation -> (str "...") or a (+ ...) chain.
+method parseInterpolated(string text, string pos): string {
+    var dollar = chr(36)
+    var n = text.length()
+    var i = 0
+    var current = ""
+    var node = ""
+    var first = true
+    while (i < n) {
+        var c = text.charAt(i)
+        if (c == dollar && i + 1 < n && text.charAt(i + 1) == "{") {
+            var depth = 1
+            var j = i + 2
+            while (j < n && depth > 0) {
+                if (text.charAt(j) == "{") {
+                    depth = depth + 1
+                }
+                if (text.charAt(j) == "}") {
+                    depth = depth - 1
+                }
+                j = j + 1
+            }
+            if (depth > 0) {
+                current = current + c
+                i = i + 1
+            } else {
+                var inner = text.substring(i + 2, j - 1)
+                var innerTokens = lex(inner, pos)
+                var e = parseExpr(innerTokens, 0, 0)
+                if (first) {
+                    node = "(str " + sexpStr(current) + ")"
+                    first = false
+                } else {
+                    if (current != "") {
+                        node = "(+ " + node + " (str " + sexpStr(current) + "))"
+                    }
+                }
+                node = "(+ " + node + " " + e["node"] + ")"
+                current = ""
+                i = j
+            }
+        } else {
+            current = current + c
+            i = i + 1
+        }
+    }
+    if (first) {
+        return "(str " + sexpStr(current) + ")"
+    }
+    if (current != "") {
+        node = "(+ " + node + " (str " + sexpStr(current) + "))"
+    }
+    return node
+}
+
+method parsePrimary(array<string> tokens, integer pos): map<string, string> {
+    if (atEnd(tokens, pos)) {
+        fail("unexpected end of file in expression", posOf(tokens, pos))
+    }
+    var t = tokens[pos]
+    var kind = tokKind(t)
+    var val = tokVal(t)
+    if (kind == "SYM") {
+        if (val == "(") {
+            var inner = parseExpr(tokens, pos + 1, 0)
+            var after = expectSym(tokens, parseInt(inner["pos"]), ")")
+            return parsePostfix(tokens, inner["node"], after)
+        }
+        if (val == "!") {
+            var operand = parseUnary(tokens, pos + 1)
+            return { "node": "(! " + operand["node"] + ")", "pos": parseInt(operand["pos"]) }
+        }
+        if (val == "-") {
+            var negated = parseUnary(tokens, pos + 1)
+            return { "node": "(neg " + negated["node"] + ")", "pos": parseInt(negated["pos"]) }
+        }
+        if (val == "[") {
+            var node = "(arr"
+            var p = pos + 1
+            while (isSym(tokens, p, "]") == false) {
+                if (atEnd(tokens, p)) {
+                    fail("unterminated array literal", posOf(tokens, p))
+                }
+                var e = parseExpr(tokens, p, 0)
+                node = node + " " + e["node"]
+                p = afterListItem(tokens, parseInt(e["pos"]), "]", "array literal")
+            }
+            return parsePostfix(tokens, node + ")", p + 1)
+        }
+        if (val == "{") {
+            var mnode = "(mapl"
+            var mp = pos + 1
+            while (isSym(tokens, mp, "}") == false) {
+                if (atEnd(tokens, mp)) {
+                    fail("unterminated map literal", posOf(tokens, mp))
+                }
+                var k = parseExpr(tokens, mp, 0)
+                mnode = mnode + " " + k["node"]
+                mp = expectSym(tokens, parseInt(k["pos"]), ":")
+                var v = parseExpr(tokens, mp, 0)
+                mnode = mnode + " " + v["node"]
+                mp = afterListItem(tokens, parseInt(v["pos"]), "}", "map literal")
+            }
+            return parsePostfix(tokens, mnode + ")", mp + 1)
+        }
+        fail("unexpected " + describe(tokens, pos) + " in expression", posOf(tokens, pos))
+    }
+    if (kind == "STRING") {
+        return parsePostfix(tokens, parseInterpolated(val, tokPos(t)), pos + 1)
+    }
+    if (kind == "INT" || kind == "FLOAT") {
+        return parsePostfix(tokens, val, pos + 1)
+    }
+    if (kind == "KEYWORD") {
+        if (val == "true" || val == "false") {
+            return { "node": val, "pos": pos + 1 }
+        }
+        fail("unexpected keyword '" + val + "' in expression", posOf(tokens, pos))
+    }
+    if (kind == "IDENT") {
+        // Object literal: Name{field=value, ...}
+        if (isSym(tokens, pos + 1, "{")) {
+            var onode = "(obj " + val
+            var op = pos + 2
+            while (isSym(tokens, op, "}") == false) {
+                if (atEnd(tokens, op)) {
+                    fail("unterminated object literal", posOf(tokens, op))
+                }
+                op = expectIdent(tokens, op, "field name in object literal")
+                var fname = tokVal(tokens[op - 1])
+                op = expectSym(tokens, op, "=")
+                var fe = parseExpr(tokens, op, 0)
+                onode = onode + " (f " + fname + " " + fe["node"] + ")"
+                op = afterListItem(tokens, parseInt(fe["pos"]), "}", "object literal")
+            }
+            return parsePostfix(tokens, onode + ")", op + 1)
+        }
+        // Call: name(args)
+        if (isSym(tokens, pos + 1, "(")) {
+            var args = parseArgs(tokens, pos + 2)
+            return parsePostfix(tokens, "(call " + val + args["node"] + ")", parseInt(args["pos"]))
+        }
+        return parsePostfix(tokens, val, pos + 1)
+    }
+    fail("unexpected " + describe(tokens, pos) + " in expression", posOf(tokens, pos))
+    return { "node": "", "pos": pos + 1 }
+}
+
+method parseUnary(array<string> tokens, integer pos): map<string, string> {
+    return parsePrimary(tokens, pos)
+}
+
+method parsePostfix(array<string> tokens, string node, integer pos): map<string, string> {
+    while (true) {
+        if (isSym(tokens, pos, "[")) {
+            var idxE = parseExpr(tokens, pos + 1, 0)
+            node = "(idx " + node + " " + idxE["node"] + ")"
+            pos = expectSym(tokens, parseInt(idxE["pos"]), "]")
+            continue
+        }
+        if (isSym(tokens, pos, ".") == false) {
+            break
+        }
+        pos = expectIdent(tokens, pos + 1, "member name after '.'")
+        var name = tokVal(tokens[pos - 1])
+        if (isSym(tokens, pos, "(")) {
+            var args = parseArgs(tokens, pos + 1)
+            node = "(mcall " + node + " " + name + args["node"] + ")"
+            pos = parseInt(args["pos"])
+            continue
+        }
+        node = "(mget " + node + " " + name + ")"
+    }
+    return { "node": node, "pos": pos }
+}
+
+method parseExpr(array<string> tokens, integer pos, integer minPrec): map<string, string> {
+    var left = parseUnary(tokens, pos)
+    var node = left["node"]
+    var p = parseInt(left["pos"])
+    while (p < tokens.length()) {
+        var prec = precedenceOf(tokens, p)
+        if (prec < 0 || prec < minPrec) {
+            break
+        }
+        var op = tokVal(tokens[p])
+        var right = parseExpr(tokens, p + 1, prec + 1)
+        node = "(" + op + " " + node + " " + right["node"] + ")"
+        p = parseInt(right["pos"])
+    }
+    return { "node": node, "pos": p }
+}

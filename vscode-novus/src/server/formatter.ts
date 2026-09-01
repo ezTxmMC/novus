@@ -51,7 +51,7 @@ export interface FormattedLine {
   text: string;
 }
 
-const CONTROL_KW = new Set(['if', 'for', 'while', 'return', 'println', 'else', 'in']);
+const CONTROL_KW = new Set(['if', 'for', 'while', 'return', 'println', 'print', 'eprintln', 'else', 'in']);
 const HEAD_KW = new Set(['method', 'define', 'construct', 'abstract', 'else', 'if', 'for', 'while']);
 const MODIFIERS = new Set(['private', 'public', 'protected', 'final', 'static', 'abstract']);
 const BINARY = new Set(['+', '-', '*', '/', '%', '==', '!=', '<', '>', '<=', '>=', '&&', '||', '=']);

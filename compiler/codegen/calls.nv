@@ -1,0 +1,69 @@
+package codegen
+
+import "../ast/sexp.nv"
+import "../parser/errors.nv"
+import "builtins.nv"
+import "common.nv"
+import "expressions.nv"
+import "index.nv"
+
+// Calls: builtins, constructors, user methods and overloads.
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+method genArgs(string node, integer from, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    var out = ""
+    var i = from
+    while (i < nodeCount(node)) {
+        if (i > from) {
+            out = out + ", "
+        }
+        out = out + genExpr(nodeChild(node, i), prog, ctx, locals)
+        i = i + 1
+    }
+    return out
+}
+
+method genCall(string node, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    var name = nodeChild(node, 1)
+    var nargs = nodeCount(node) - 2
+    var key = name + "/" + nargs
+    if (ctx["class"] != "" && findMethod(prog, ctx["class"], name) != "") {
+        // inside a class a bare call means this.name(...); own methods win
+        var call = "nv_invoke(self, " + cstr(name) + ", " + nargs
+        if (nargs > 0) {
+            call = call + ", " + genArgs(node, 2, prog, ctx, locals)
+        }
+        return call + ")"
+    }
+    if (isCoreBuiltin(name) || (prog.has("hasfunc:" + name) == false && isClassLike(prog, name) == false)) {
+        var builtin = genBuiltinCall(name, nargs, genArgs(node, 2, prog, ctx, locals), ctx)
+        if (builtin != "") {
+            return builtin
+        }
+    }
+    if (prog.has("class:" + name)) {
+        if (classIsAbstract(prog["class:" + name])) {
+            fail("cannot instantiate abstract class '" + name + "'", ctx["pos"])
+        }
+        if (nargs == 0) {
+            return "nv_construct(" + cstr(name) + ", 0)"
+        }
+        return "nv_construct(" + cstr(name) + ", " + nargs + ", " + genArgs(node, 2, prog, ctx, locals) + ")"
+    }
+    if (prog.has("enum:" + name)) {
+        fail("'" + name + "' is an enum and cannot be constructed", ctx["pos"])
+    }
+    if (prog.has("func:" + key)) {
+        return "f_" + name + "_" + nargs + "(" + genArgs(node, 2, prog, ctx, locals) + ")"
+    }
+    if (prog.has("hasfunc:" + name)) {
+        fail("no overload of '" + name + "' takes " + nargs + " argument(s)", ctx["pos"])
+    }
+    if (prog.has("iface:" + name)) {
+        fail("cannot instantiate interface '" + name + "'", ctx["pos"])
+    }
+    fail("unknown method '" + name + "()'", ctx["pos"])
+    return ""
+}

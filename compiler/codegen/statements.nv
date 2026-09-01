@@ -1,0 +1,142 @@
+package codegen
+
+import "../ast/sexp.nv"
+import "../ast/text.nv"
+import "../parser/errors.nv"
+import "../parser/types.nv"
+import "common.nv"
+import "expressions.nv"
+import "index.nv"
+
+// Statements and blocks -> C.
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+method genBlock(string block, string indent, map<string, string> prog, map<string, string> ctx, map<string, string> outerLocals): string {
+    var locals = copyMap(outerLocals)
+    var blockVars = {}
+    var parts = []
+    var i = 1
+    while (i < nodeCount(block)) {
+        var at = nodeChild(block, i)
+        var stmt = at
+        if (nodeHead(at) == "at") {
+            ctx["pos"] = nodeChild(at, 1)
+            stmt = nodeChild(at, 2)
+        }
+        parts.append(genStatement(stmt, indent, prog, ctx, locals, blockVars))
+        i = i + 1
+    }
+    return joinParts(parts)
+}
+
+method declareLocal(string name, string init, string indent, map<string, string> locals, map<string, string> blockVars): string {
+    if (blockVars.has(name)) {
+        return indent + "l_" + name + " = " + init + ";" + nl()
+    }
+    locals[name] = "l_" + name
+    blockVars[name] = "1"
+    return indent + "nv l_" + name + " = " + init + ";" + nl()
+}
+
+method genStatement(string node, string indent, map<string, string> prog, map<string, string> ctx, map<string, string> locals, map<string, string> blockVars): string {
+    if (isList(node) == false) {
+        return indent + "(void)" + genExpr(node, prog, ctx, locals) + ";" + nl()
+    }
+    var head = nodeHead(node)
+    if (head == "nop") {
+        return ""
+    }
+    if (head == "var") {
+        var name = nodeChild(node, 1)
+        if (nodeCount(node) > 2) {
+            return declareLocal(name, genExpr(nodeChild(node, 2), prog, ctx, locals), indent, locals, blockVars)
+        }
+        return declareLocal(name, "nv_nil", indent, locals, blockVars)
+    }
+    if (head == "tvar") {
+        var tname = nodeChild(node, 2)
+        var ttype = nodeChild(node, 1)
+        if (nodeCount(node) > 3) {
+            return declareLocal(tname, coerceCode(genExpr(nodeChild(node, 3), prog, ctx, locals), ttype), indent, locals, blockVars)
+        }
+        return declareLocal(tname, "nv_default(" + cstr(normType(ttype)) + ")", indent, locals, blockVars)
+    }
+    if (head == "assign") {
+        var target = nodeChild(node, 1)
+        var cname = resolveVar(target, prog, ctx, locals)
+        if (cname == "" && isImplicitField(target, prog, ctx, locals)) {
+            return indent + "nv_set_member(self, " + cstr(target) + ", " + genExpr(nodeChild(node, 2), prog, ctx, locals) + ");" + nl()
+        }
+        if (cname == "" || cname == "self") {
+            fail("unknown variable '" + target + "'", ctx["pos"])
+        }
+        return indent + cname + " = " + genExpr(nodeChild(node, 2), prog, ctx, locals) + ";" + nl()
+    }
+    if (head == "setexpr") {
+        var lhs = nodeChild(node, 1)
+        var value = genExpr(nodeChild(node, 2), prog, ctx, locals)
+        if (nodeHead(lhs) == "idx") {
+            return indent + "nv_index_set(" + genExpr(nodeChild(lhs, 1), prog, ctx, locals) + ", " + genExpr(nodeChild(lhs, 2), prog, ctx, locals) + ", " + value + ");" + nl()
+        }
+        if (nodeHead(lhs) == "mget") {
+            return indent + "nv_set_member(" + genExpr(nodeChild(lhs, 1), prog, ctx, locals) + ", " + cstr(nodeChild(lhs, 2)) + ", " + value + ");" + nl()
+        }
+        fail("invalid assignment target", ctx["pos"])
+    }
+    if (head == "return") {
+        if (nodeCount(node) > 1) {
+            return indent + "return " + coerceCode(genExpr(nodeChild(node, 1), prog, ctx, locals), ctx["ret"]) + ";" + nl()
+        }
+        return indent + "return nv_nil;" + nl()
+    }
+    if (head == "println") {
+        return indent + "nv_println(" + genExpr(nodeChild(node, 1), prog, ctx, locals) + ");" + nl()
+    }
+    if (head == "print") {
+        return indent + "nv_print(" + genExpr(nodeChild(node, 1), prog, ctx, locals) + ");" + nl()
+    }
+    if (head == "eprintln") {
+        return indent + "nv_eprintln(" + genExpr(nodeChild(node, 1), prog, ctx, locals) + ");" + nl()
+    }
+    if (head == "if") {
+        var out = indent + "if (nv_truthy(" + genExpr(nodeChild(node, 1), prog, ctx, locals) + ")) {" + nl()
+        out = out + genBlock(nodeChild(node, 2), indent + "    ", prog, ctx, locals)
+        out = out + indent + "}"
+        if (nodeCount(node) > 3) {
+            var elseNode = nodeChild(node, 3)
+            if (nodeHead(elseNode) == "if") {
+                var ec = genStatement(elseNode, indent, prog, ctx, locals, blockVars)
+                return out + " else " + ec.substring(indent.length(), ec.length())
+            }
+            out = out + " else {" + nl() + genBlock(elseNode, indent + "    ", prog, ctx, locals) + indent + "}"
+        }
+        return out + nl()
+    }
+    if (head == "while") {
+        var wout = indent + "while (nv_truthy(" + genExpr(nodeChild(node, 1), prog, ctx, locals) + ")) {" + nl()
+        return wout + genBlock(nodeChild(node, 2), indent + "    ", prog, ctx, locals) + indent + "}" + nl()
+    }
+    if (head == "forin") {
+        var v = nodeChild(node, 1)
+        var iter = genExpr(nodeChild(node, 2), prog, ctx, locals)
+        var inner = indent + "    "
+        var fout = indent + "{" + nl()
+        fout = fout + inner + "NvArr *it_" + v + " = nv_iter(" + iter + ");" + nl()
+        fout = fout + inner + "for (int i_" + v + " = 0; i_" + v + " < it_" + v + "->len; i_" + v + "++) {" + nl()
+        fout = fout + inner + "    nv l_" + v + " = it_" + v + "->items[i_" + v + "];" + nl()
+        var bodyLocals = copyMap(locals)
+        bodyLocals[v] = "l_" + v
+        fout = fout + genBlock(nodeChild(node, 3), inner + "    ", prog, ctx, bodyLocals)
+        fout = fout + inner + "}" + nl()
+        return fout + indent + "}" + nl()
+    }
+    if (head == "break") {
+        return indent + "break;" + nl()
+    }
+    if (head == "continue") {
+        return indent + "continue;" + nl()
+    }
+    return indent + "(void)" + genExpr(node, prog, ctx, locals) + ";" + nl()
+}

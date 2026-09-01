@@ -1,0 +1,7 @@
+package greetlib
+
+import "math.nv"
+
+method greet(string who): string {
+    return "hello ${who}, ${square(2)}"
+}

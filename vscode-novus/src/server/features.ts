@@ -144,7 +144,7 @@ export function hover(ws: Workspace, analysis: Analysis, offset: number): Hover 
   }
   const prim = PRIMITIVE_MAP.get(w.word);
   if (prim && ref?.tokenType === 'type') {
-    const note = prim.implemented ? '_Implemented by the current interpreter._' : '_Concept syntax – not yet implemented by the interpreter._';
+    const note = prim.implemented ? '_Implemented by novusc._' : '_Concept syntax – not yet implemented by novusc._';
     return { contents: { kind: MarkupKind.Markdown, value: `\`\`\`novus\n${prim.generic ? prim.name + '<T>' : prim.name}\n\`\`\`\n\n${prim.doc}\n\n${note}` }, range };
   }
   const kw = KEYWORD_MAP.get(w.word);
@@ -152,7 +152,7 @@ export function hover(ws: Workspace, analysis: Analysis, offset: number): Hover 
     return { contents: { kind: MarkupKind.Markdown, value: `\`\`\`novus\n${kw.detail}\n\`\`\`\n\n${kw.doc}` }, range };
   }
   if (prim) {
-    const note = prim.implemented ? '_Implemented by the current interpreter._' : '_Concept syntax – not yet implemented by the interpreter._';
+    const note = prim.implemented ? '_Implemented by novusc._' : '_Concept syntax – not yet implemented by novusc._';
     return { contents: { kind: MarkupKind.Markdown, value: `\`\`\`novus\n${prim.name}\n\`\`\`\n\n${prim.doc}\n\n${note}` }, range };
   }
   return undefined;

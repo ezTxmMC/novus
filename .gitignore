@@ -43,7 +43,6 @@ CTestTestfile.cmake
 Testing/
 
 # Make
-Makefile
 makedep*
 *.make
 
@@ -75,3 +74,7 @@ Thumbs.db
 *~
 
 *.expected
+*.golden
+*.rc
+
+examples/**/test/

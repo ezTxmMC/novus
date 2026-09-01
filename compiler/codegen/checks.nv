@@ -1,0 +1,61 @@
+package codegen
+
+import "../ast/sexp.nv"
+import "../parser/errors.nv"
+import "common.nv"
+import "index.nv"
+
+// Semantic checks: base types, interfaces, abstract methods.
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+method checkClasses(map<string, string> prog, array<string> decls): integer {
+    for (d in decls) {
+        if (nodeHead(d) == "class") {
+            var name = nodeChild(d, 1)
+            var base = classBase(d)
+            var where = "class " + name
+            if (base != "" && isClassLike(prog, base) == false && prog.has("iface:" + base) == false) {
+                fail("unknown base type '" + base + "'", where)
+            }
+            if (classIsAbstract(d) == false) {
+                if (prog.has("iface:" + base)) {
+                    var names = nodeChild(prog["iface:" + base], 2)
+                    var i = 1
+                    while (i < nodeCount(names)) {
+                        var required = nodeChild(names, i)
+                        var found = findMethod(prog, name, required)
+                        if (found == "" || isAbstractMethod(found)) {
+                            fail("class '" + name + "' does not implement '" + required + "()' from interface " + base, where)
+                        }
+                        i = i + 1
+                    }
+                }
+                var current = name
+                var guard = 0
+                while (current != "" && guard < 64) {
+                    var node = typeNode(prog, current)
+                    if (node == "") {
+                        break
+                    }
+                    var methods = classMethods(node)
+                    var k = 1
+                    while (k < nodeCount(methods)) {
+                        var m = nodeChild(methods, k)
+                        if (isAbstractMethod(m)) {
+                            var resolved = findMethod(prog, name, methodName(m))
+                            if (resolved == "" || isAbstractMethod(resolved)) {
+                                fail("class '" + name + "' must implement abstract method '" + methodName(m) + "()'", where)
+                            }
+                        }
+                        k = k + 1
+                    }
+                    current = classBase(node)
+                    guard = guard + 1
+                }
+            }
+        }
+    }
+    return 0
+}

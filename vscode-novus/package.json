@@ -1,8 +1,8 @@
 {
   "name": "novus-language",
   "displayName": "Novus Language",
-  "description": "Full language support for the self-hosting Novus programming language (.nv): syntax highlighting, IntelliSense, diagnostics, navigation, run and native-build commands.",
-  "version": "0.2.0",
+  "description": "Full language support for the self-hosting Novus programming language (.nv): syntax highlighting, IntelliSense, diagnostics, navigation, and run/build commands via novusc.",
+  "version": "0.3.0",
   "publisher": "eztxmmc",
   "author": "ezTxmMC",
   "repository": {
@@ -112,7 +112,7 @@
           "type": "string",
           "default": "",
           "scope": "machine-overridable",
-          "markdownDescription": "Path to the `novus` binary used by **Novus: Run Novus File** and **Novus: Build Novus File**. Leave empty to look for `build/novus` in the workspace and then `novus` on `PATH`."
+          "markdownDescription": "Path to the `novusc` binary used by **Novus: Run Novus File** and **Novus: Build Novus File**. Leave empty to look for `build/novusc` in the workspace and then `novusc` on `PATH`."
         },
         "novus.diagnostics.enabled": {
           "type": "boolean",

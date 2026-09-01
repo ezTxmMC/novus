@@ -1,0 +1,7 @@
+package main
+
+method main {
+    println "hello"
+    var total = 0
+    totl = 1
+}

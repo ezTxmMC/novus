@@ -1,0 +1,169 @@
+package parser
+
+import "../lexer/tokens.nv"
+import "errors.nv"
+import "expressions.nv"
+import "tokens.nv"
+import "types.nv"
+
+// Statements and blocks.
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+method parseBlock(array<string> tokens, integer pos): map<string, string> {
+    var p = expectSym(tokens, pos, "{")
+    var node = "(block"
+    while (isSym(tokens, p, "}") == false) {
+        if (atEnd(tokens, p)) {
+            fail("unterminated block (missing '}')", posOf(tokens, p))
+        }
+        var at = posOf(tokens, p)
+        var s = parseStatement(tokens, p)
+        if (s["node"] != "(nop)") {
+            node = node + " (at " + at + " " + s["node"] + ")"
+        }
+        p = parseInt(s["pos"])
+    }
+    return { "node": node + ")", "pos": p + 1 }
+}
+
+method parseIf(array<string> tokens, integer pos): map<string, string> {
+    var p = expectSym(tokens, pos + 1, "(")
+    var c = parseExpr(tokens, p, 0)
+    p = expectSym(tokens, parseInt(c["pos"]), ")")
+    var thenBlock = parseBlock(tokens, p)
+    var node = "(if " + c["node"] + " " + thenBlock["node"]
+    p = parseInt(thenBlock["pos"])
+    if (isKw(tokens, p, "else")) {
+        if (isKw(tokens, p + 1, "if")) {
+            var elseIf = parseIf(tokens, p + 1)
+            node = node + " " + elseIf["node"]
+            p = parseInt(elseIf["pos"])
+        } else {
+            var elseBlock = parseBlock(tokens, p + 1)
+            node = node + " " + elseBlock["node"]
+            p = parseInt(elseBlock["pos"])
+        }
+    }
+    return { "node": node + ")", "pos": p }
+}
+
+// Is there a typed declaration `Type name = expr` at pos?
+method isTypedDecl(array<string> tokens, integer pos): bool {
+    if (isIdent(tokens, pos) == false) {
+        return false
+    }
+    var p = pos + 1
+    if (isSym(tokens, p, "<")) {
+        var depth = 0
+        while (atEnd(tokens, p) == false) {
+            if (isSym(tokens, p, "<")) {
+                depth = depth + 1
+            }
+            if (isSym(tokens, p, ">")) {
+                depth = depth - 1
+            }
+            p = p + 1
+            if (depth == 0) {
+                break
+            }
+        }
+    }
+    return isIdent(tokens, p) && isSym(tokens, p + 1, "=")
+}
+
+method parseStatement(array<string> tokens, integer pos): map<string, string> {
+    var t = tokens[pos]
+    var kind = tokKind(t)
+    var val = tokVal(t)
+    var here = tokPos(t)
+    if (kind == "SYM" && val == ";") {
+        return { "node": "(nop)", "pos": pos + 1 }
+    }
+    if (kind == "KEYWORD") {
+        if (val == "var") {
+            var p = expectIdent(tokens, pos + 1, "variable name")
+            var name = tokVal(tokens[p - 1])
+            var declType = ""
+            if (isSym(tokens, p, ":")) {
+                var ty = parseType(tokens, p + 1)
+                declType = ty["node"]
+                p = parseInt(ty["pos"])
+            }
+            if (isSym(tokens, p, "=")) {
+                var e = parseExpr(tokens, p + 1, 0)
+                if (declType != "") {
+                    return { "node": "(tvar " + declType + " " + name + " " + e["node"] + ")", "pos": parseInt(e["pos"]) }
+                }
+                return { "node": "(var " + name + " " + e["node"] + ")", "pos": parseInt(e["pos"]) }
+            }
+            if (declType != "") {
+                return { "node": "(tvar " + declType + " " + name + ")", "pos": p }
+            }
+            return { "node": "(var " + name + ")", "pos": p }
+        }
+        if (val == "return") {
+            var next = pos + 1
+            if (atEnd(tokens, next) || isSym(tokens, next, "}") || tokPos(tokens[next]) != here) {
+                return { "node": "(return)", "pos": next }
+            }
+            var re = parseExpr(tokens, next, 0)
+            return { "node": "(return " + re["node"] + ")", "pos": parseInt(re["pos"]) }
+        }
+        if (val == "println" || val == "print" || val == "eprintln") {
+            var pe = parseExpr(tokens, pos + 1, 0)
+            return { "node": "(" + val + " " + pe["node"] + ")", "pos": parseInt(pe["pos"]) }
+        }
+        if (val == "if") {
+            return parseIf(tokens, pos)
+        }
+        if (val == "while") {
+            var wp = expectSym(tokens, pos + 1, "(")
+            var c = parseExpr(tokens, wp, 0)
+            wp = expectSym(tokens, parseInt(c["pos"]), ")")
+            var b = parseBlock(tokens, wp)
+            return { "node": "(while " + c["node"] + " " + b["node"] + ")", "pos": parseInt(b["pos"]) }
+        }
+        if (val == "for") {
+            var fp = expectSym(tokens, pos + 1, "(")
+            fp = expectIdent(tokens, fp, "loop variable name")
+            var loopVar = tokVal(tokens[fp - 1])
+            if (isKw(tokens, fp, "in") == false) {
+                fail("expected 'in' in for loop but found " + describe(tokens, fp), posOf(tokens, fp))
+            }
+            var iterable = parseExpr(tokens, fp + 1, 0)
+            fp = expectSym(tokens, parseInt(iterable["pos"]), ")")
+            var fb = parseBlock(tokens, fp)
+            return { "node": "(forin " + loopVar + " " + iterable["node"] + " " + fb["node"] + ")", "pos": parseInt(fb["pos"]) }
+        }
+        if (val == "break") {
+            return { "node": "(break)", "pos": pos + 1 }
+        }
+        if (val == "continue") {
+            return { "node": "(continue)", "pos": pos + 1 }
+        }
+        if (val == "package") {
+            return { "node": "(nop)", "pos": pos + 2 }
+        }
+        fail("unexpected keyword '" + val + "'", here)
+    }
+    if (kind == "IDENT" && isSym(tokens, pos + 1, "=")) {
+        var ae = parseExpr(tokens, pos + 2, 0)
+        return { "node": "(assign " + val + " " + ae["node"] + ")", "pos": parseInt(ae["pos"]) }
+    }
+    if (isTypedDecl(tokens, pos)) {
+        var dt = parseType(tokens, pos)
+        var dp = parseInt(dt["pos"])
+        var dname = tokVal(tokens[dp])
+        var de = parseExpr(tokens, dp + 2, 0)
+        return { "node": "(tvar " + dt["node"] + " " + dname + " " + de["node"] + ")", "pos": parseInt(de["pos"]) }
+    }
+    var e = parseExpr(tokens, pos, 0)
+    var ep = parseInt(e["pos"])
+    if (isSym(tokens, ep, "=")) {
+        var rhs = parseExpr(tokens, ep + 1, 0)
+        return { "node": "(setexpr " + e["node"] + " " + rhs["node"] + ")", "pos": parseInt(rhs["pos"]) }
+    }
+    return { "node": e["node"], "pos": ep }
+}

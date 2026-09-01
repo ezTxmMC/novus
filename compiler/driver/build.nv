@@ -1,0 +1,148 @@
+package driver
+
+import os
+import path
+
+import "../codegen/program.nv"
+import "../loader/loader.nv"
+import "../runtime/runtime.nv"
+
+// Compiling programs: C generation, invoking the C compiler, run.
+
+// The generated C for a program (runtime embedded unless `mode` is "include").
+method generate(string source, string mode): string {
+    if (fileExists(source) == false) {
+        eprintln "novusc: cannot open '${source}'"
+        exit(1)
+    }
+    var decls = loadProgram(source)
+    if (mode == "include") {
+        return generateProgram(decls, "")
+    }
+    return generateProgram(decls, runtimeSource())
+}
+
+method emitCommand(string source, map<string, string> options): integer {
+    var mode = "embed"
+    if (options.has("--no-runtime")) {
+        mode = "include"
+    }
+    var code = generate(source, mode)
+    if (options.has("-o")) {
+        var target = options["-o"]
+        writeFile(target, code)
+        println "wrote ${target}"
+    } else {
+        print code
+    }
+    return 0
+}
+
+method quoted(string s): string {
+    return "\"" + s + "\""
+}
+
+method isWindows(map<string, string> options): bool {
+    if (options.has("--target")) {
+        return options["--target"].contains("windows")
+    }
+    return platform() == "windows"
+}
+
+method cCompiler(map<string, string> options): string {
+    if (options.has("--target")) {
+        var zig = env("NOVUS_ZIG")
+        if (zig == "") {
+            zig = "zig"
+        }
+        if (options.has("--cc")) {
+            zig = options["--cc"]
+        }
+        return zig + " cc -target " + options["--target"]
+    }
+    if (options.has("--cc")) {
+        return options["--cc"]
+    }
+    if (env("NOVUS_CC") != "") {
+        return env("NOVUS_CC")
+    }
+    if (platform() == "windows") {
+        return "gcc"
+    }
+    return "cc"
+}
+
+method cFlags(map<string, string> options): string {
+    var flags = "-O2"
+    if (env("NOVUS_CFLAGS") != "") {
+        flags = flags + " " + env("NOVUS_CFLAGS")
+    }
+    if (options.has("--cflags")) {
+        flags = flags + " " + options["--cflags"]
+    }
+    return flags
+}
+
+method defaultOutput(string source, map<string, string> options): string {
+    var out = path.stem(source)
+    if (options.has("-o")) {
+        out = options["-o"]
+    }
+    if (isWindows(options) && out.endsWith(".exe") == false) {
+        out = out + ".exe"
+    }
+    return out
+}
+
+// Compiles `source` to a native executable and returns its path.
+method buildBinary(string source, map<string, string> options): string {
+    var mode = "embed"
+    if (options.has("--no-runtime")) {
+        mode = "include"
+    }
+    var code = generate(source, mode)
+    var output = defaultOutput(source, options)
+    var cFile = output + ".c"
+    if (output.endsWith(".exe")) {
+        cFile = output.substring(0, output.length() - 4) + ".c"
+    }
+    writeFile(cFile, code)
+    var command = cCompiler(options) + " " + cFlags(options) + " " + quoted(cFile) + " -o " + quoted(output) + " -lm"
+    var rc = exec(command)
+    if (rc != 0) {
+        eprintln "novusc: C compilation failed (generated file kept at ${cFile})"
+        eprintln "  command: ${command}"
+        exit(1)
+    }
+    if (options.has("--keep-c") == false) {
+        removeFile(cFile)
+    }
+    return output
+}
+
+// A small stable hash so temporary names differ per source path.
+method pathHash(string s): integer {
+    var h = 7
+    var i = 0
+    while (i < s.length()) {
+        h = (h * 31 + ord(s.charAt(i))) % 1000000007
+        i = i + 1
+    }
+    return h
+}
+
+method runCommand(string source, array<string> arguments): integer {
+    var options = {}
+    var temp = path.join(path.temp(), "novusc-" + path.stem(source) + "-" + pathHash(path.absolute() + "/" + source))
+    options["-o"] = temp
+    var exe = buildBinary(source, options)
+    var command = quoted(exe)
+    var i = 2
+    while (i < arguments.length()) {
+        command = command + " " + quoted(arguments[i])
+        i = i + 1
+    }
+    var rc = exec(command)
+    removeFile(exe)
+    return rc
+}

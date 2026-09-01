@@ -1,0 +1,196 @@
+package codegen
+
+import "../ast/sexp.nv"
+import "../parser/types.nv"
+import "common.nv"
+import "statements.nv"
+
+// Method bodies, constructors and overload dispatchers -> C.
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+method deprecationCode(string m, string indent, string flagName): string {
+    var annos = nodeChild(m, 4)
+    var i = 1
+    while (i < nodeCount(annos)) {
+        var anno = nodeChild(annos, i)
+        if (nodeChild(anno, 1) == "Deprecated") {
+            var text = cstr("")
+            var since = cstr("")
+            var k = 2
+            while (k < nodeCount(anno)) {
+                var arg = nodeChild(anno, k)
+                if (nodeChild(arg, 1) == "text") {
+                    text = nodeChild(arg, 2)
+                }
+                if (nodeChild(arg, 1) == "since") {
+                    since = nodeChild(arg, 2)
+                }
+                k = k + 1
+            }
+            return indent + "nv_warn_deprecated(&" + flagName + ", " + cstr(methodName(m)) + ", " + since + ", " + text + ");" + nl()
+        }
+        i = i + 1
+    }
+    return ""
+}
+
+// Parameter bindings from an argument array (class methods and ctors).
+method bindArrayParams(string m, string indent, map<string, string> locals): string {
+    var params = paramsNode(m)
+    var out = ""
+    var i = 1
+    while (i < nodeCount(params)) {
+        var p = nodeChild(params, i)
+        var ptype = nodeChild(p, 1)
+        var pname = nodeChild(p, 2)
+        var src = "(n > " + (i - 1) + " ? args[" + (i - 1) + "] : nv_nil)"
+        out = out + indent + "nv l_" + pname + " = " + coerceCode(src, ptype) + ";" + nl()
+        locals[pname] = "l_" + pname
+        i = i + 1
+    }
+    return out
+}
+
+method cParamList(string m): string {
+    var params = paramsNode(m)
+    var out = ""
+    var i = 1
+    while (i < nodeCount(params)) {
+        if (i > 1) {
+            out = out + ", "
+        }
+        out = out + "nv a" + (i - 1)
+        i = i + 1
+    }
+    if (out == "") {
+        return "void"
+    }
+    return out
+}
+
+method funcCName(string name, integer arity, integer variant, integer variants): string {
+    var base = "f_" + name + "_" + arity
+    if (variants > 1) {
+        return base + "_v" + variant
+    }
+    return base
+}
+
+method argNames(integer arity): string {
+    var out = ""
+    var i = 0
+    while (i < arity) {
+        if (i > 0) {
+            out = out + ", "
+        }
+        out = out + "a" + i
+        i = i + 1
+    }
+    return out
+}
+
+method genFreeMethod(string m, string cname, map<string, string> prog): string {
+    var name = methodName(m)
+    var ctx = {"class": "", "func": name, "ret": methodRet(m), "pos": "method " + name}
+    var locals = {}
+    var params = paramsNode(m)
+    var out = "static nv " + cname + "(" + cParamList(m) + ") {" + nl()
+    var i = 1
+    while (i < nodeCount(params)) {
+        var p = nodeChild(params, i)
+        var pname = nodeChild(p, 2)
+        out = out + "    nv l_" + pname + " = " + coerceCode("a" + (i - 1), nodeChild(p, 1)) + ";" + nl()
+        locals[pname] = "l_" + pname
+        i = i + 1
+    }
+    var dep = deprecationCode(m, "    ", "dep_" + cname)
+    if (dep != "") {
+        out = "static int dep_" + cname + " = 0;" + nl() + out + dep
+    }
+    out = out + genBlock(nodeChild(m, 5), "    ", prog, ctx, locals)
+    return out + "    return nv_default(" + cstr(normType(methodRet(m))) + ");" + nl() + "}" + nl()
+}
+
+method genDispatcher(string name, integer arity, integer variants, map<string, string> prog): string {
+    var key = name + "/" + arity
+    var first = prog["fnode:" + key + "/0"]
+    var out = "static nv " + funcCName(name, arity, 0, 1) + "(" + cParamList(first) + ") {" + nl()
+    var k = 0
+    while (k < variants) {
+        var m = prog["fnode:" + key + "/" + k]
+        var params = paramsNode(m)
+        var cond = ""
+        var i = 1
+        while (i < nodeCount(params)) {
+            if (i > 1) {
+                cond = cond + " && "
+            }
+            cond = cond + "nv_type_is(a" + (i - 1) + ", " + cstr(nodeChild(nodeChild(params, i), 1)) + ")"
+            i = i + 1
+        }
+        if (cond == "") {
+            cond = "1"
+        }
+        out = out + "    if (" + cond + ") {" + nl() + "        return " + funcCName(name, arity, k, variants) + "(" + argNames(arity) + ");" + nl() + "    }" + nl()
+        k = k + 1
+    }
+    return out + "    return " + funcCName(name, arity, 0, variants) + "(" + argNames(arity) + ");" + nl() + "}" + nl()
+}
+
+method methodCName(string cls, string m, integer variant): string {
+    var base = "m_" + cls + "_" + methodName(m) + "_" + arityOf(m)
+    if (variant > 0) {
+        return base + "_v" + variant
+    }
+    return base
+}
+
+method genClassMethod(string cls, string m, string cname, map<string, string> prog): string {
+    var ctx = {"class": cls, "func": methodName(m), "ret": methodRet(m), "pos": "method " + cls + "." + methodName(m)}
+    var locals = {}
+    var out = "static nv " + cname + "(nv self, nv *args, int n) {" + nl()
+    out = out + bindArrayParams(m, "    ", locals)
+    var dep = deprecationCode(m, "    ", "dep_" + cname)
+    if (dep != "") {
+        out = "static int dep_" + cname + " = 0;" + nl() + out + dep
+    }
+    out = out + "    (void)n;" + nl()
+    out = out + genBlock(nodeChild(m, 5), "    ", prog, ctx, locals)
+    return out + "    return nv_default(" + cstr(normType(methodRet(m))) + ");" + nl() + "}" + nl()
+}
+
+method genCtor(string cls, string ctor, map<string, string> prog): string {
+    var ctx = {"class": cls, "func": "construct", "ret": "void", "pos": "constructor of " + cls}
+    var locals = {}
+    var out = "static nv c_" + cls + "(nv self, nv *args, int n) {" + nl()
+    var params = nodeChild(ctor, 1)
+    var i = 1
+    while (i < nodeCount(params)) {
+        var p = nodeChild(params, i)
+        var pname = nodeChild(p, 2)
+        var src = "(n > " + (i - 1) + " ? args[" + (i - 1) + "] : nv_nil)"
+        out = out + "    nv l_" + pname + " = " + coerceCode(src, nodeChild(p, 1)) + ";" + nl()
+        locals[pname] = "l_" + pname
+        i = i + 1
+    }
+    out = out + "    (void)n;" + nl()
+    out = out + genBlock(nodeChild(ctor, 2), "    ", prog, ctx, locals)
+    return out + "    return nv_nil;" + nl() + "}" + nl()
+}
+
+// Index of `m` among same-named, same-arity methods of the class.
+method methodVariant(string methods, integer index): integer {
+    var m = nodeChild(methods, index)
+    var variant = 0
+    var i = 1
+    while (i < index) {
+        var other = nodeChild(methods, i)
+        if (methodName(other) == methodName(m) && arityOf(other) == arityOf(m)) {
+            variant = variant + 1
+        }
+        i = i + 1
+    }
+    return variant
+}

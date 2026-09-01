@@ -1,0 +1,71 @@
+package parser
+
+import "../lexer/tokens.nv"
+import "errors.nv"
+
+// Token predicates and expectations used by all parser files.
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+method isSym(array<string> tokens, integer p, string s): bool {
+    if (p >= tokens.length()) {
+        return false
+    }
+    var t = tokens[p]
+    return tokKind(t) == "SYM" && tokVal(t) == s
+}
+
+method isKw(array<string> tokens, integer p, string w): bool {
+    if (p >= tokens.length()) {
+        return false
+    }
+    var t = tokens[p]
+    return tokKind(t) == "KEYWORD" && tokVal(t) == w
+}
+
+method isIdent(array<string> tokens, integer p): bool {
+    if (p >= tokens.length()) {
+        return false
+    }
+    return tokKind(tokens[p]) == "IDENT"
+}
+
+method isIdentNamed(array<string> tokens, integer p, string name): bool {
+    return isIdent(tokens, p) && tokVal(tokens[p]) == name
+}
+
+method atEnd(array<string> tokens, integer p): bool {
+    if (p >= tokens.length()) {
+        return true
+    }
+    return tokKind(tokens[p]) == "EOF"
+}
+
+method posOf(array<string> tokens, integer p): string {
+    if (p >= tokens.length()) {
+        return tokPos(tokens[tokens.length() - 1])
+    }
+    return tokPos(tokens[p])
+}
+
+method describe(array<string> tokens, integer p): string {
+    if (atEnd(tokens, p)) {
+        return "end of file"
+    }
+    return "'" + tokVal(tokens[p]) + "'"
+}
+
+method expectSym(array<string> tokens, integer p, string s): integer {
+    if (isSym(tokens, p, s) == false) {
+        fail("expected '" + s + "' but found " + describe(tokens, p), posOf(tokens, p))
+    }
+    return p + 1
+}
+
+method expectIdent(array<string> tokens, integer p, string what): integer {
+    if (isIdent(tokens, p) == false) {
+        fail("expected " + what + " but found " + describe(tokens, p), posOf(tokens, p))
+    }
+    return p + 1
+}

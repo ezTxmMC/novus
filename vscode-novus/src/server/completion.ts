@@ -15,7 +15,7 @@ import { CLASS_LIKE, NSymbol, describe, mkType, typeToString } from './symbols';
 import { Workspace } from './workspace';
 
 const MODIFIERS = ['private', 'public', 'protected', 'final', 'static', 'abstract'];
-const STATEMENT_KEYWORDS = ['var', 'println', 'return', 'if', 'else', 'for', 'while', 'break', 'continue'];
+const STATEMENT_KEYWORDS = ['var', 'println', 'print', 'eprintln', 'return', 'if', 'else', 'for', 'while', 'break', 'continue'];
 const TOP_LEVEL_KEYWORDS = ['package', 'import', 'method', 'define', 'var', 'println', 'private', 'final'];
 const CLASS_BODY_KEYWORDS = ['method', 'construct', 'define', 'abstract', ...MODIFIERS];
 const EXPRESSION_KEYWORDS = ['this', 'true', 'false', 'null'];
@@ -45,6 +45,7 @@ const SNIPPETS: Snippet[] = [
   { label: 'while', detail: 'while (…) { }', body: 'while (${1:condition}) {\n\t$0\n}', contexts: ['statement'] },
   { label: 'var', detail: 'var name = value', body: 'var ${1:name} = ${2:value}', contexts: ['statement', 'toplevel'] },
   { label: 'println', detail: 'println "…"', body: 'println "${1:text}"', contexts: ['statement', 'toplevel'] },
+  { label: 'eprintln', detail: 'eprintln "…"', body: 'eprintln "${1:text}"', contexts: ['statement'] },
 ];
 
 export function complete(ws: Workspace, analysis: Analysis, offset: number): CompletionItem[] {
@@ -187,7 +188,7 @@ function contextAt(analysis: Analysis, offset: number, before: string): Context 
     const atStart = /^\s*\w*$/.test(before);
     if (!atStart) {
       const trimmed = before.trimEnd();
-      if (/(?:=|\(|,|\[|\{|:|\+|-|\*|\/|%|<|>|!|&&|\|\||\breturn|\bprintln|\bin)\s*\w*$/.test(before) || /[=(,[{+\-*/%<>!]$/.test(trimmed)) {
+      if (/(?:=|\(|,|\[|\{|:|\+|-|\*|\/|%|<|>|!|&&|\|\||\breturn|\bprintln|\bprint|\beprintln|\bin)\s*\w*$/.test(before) || /[=(,[{+\-*/%<>!]$/.test(trimmed)) {
         return 'expression';
       }
       return 'expression';
@@ -486,7 +487,7 @@ function findInitializer(text: string, offset: number): InitializerContext | und
   const annotation = /@\s*$/.test(beforeName);
   // A struct initializer only appears in expression position; `define class X {`, `based X {`,
   // `method x {` etc. are excluded here and by the type lookup in the caller.
-  if (!annotation && !/(^|[=(\[,:{;]|\breturn|\bprintln|\bin)\s*$/.test(beforeName)) return undefined;
+  if (!annotation && !/(^|[=(\[,:{;]|\breturn|\bprintln|\bprint|\beprintln|\bin)\s*$/.test(beforeName)) return undefined;
 
   const existing = new Set<string>();
   const inner = text.slice(brace + 1, offset);

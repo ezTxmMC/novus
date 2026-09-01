@@ -1,0 +1,66 @@
+package ast
+
+// Text helpers shared by the parser and the code generator.
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+// One character of text in escaped form (also valid inside a C literal).
+method sexpEscapeChar(string c): string {
+    var backslash = chr(92)
+    if (c == backslash) {
+        return backslash + backslash
+    }
+    if (c == chr(34)) {
+        return backslash + chr(34)
+    }
+    if (c == chr(10)) {
+        return backslash + "n"
+    }
+    if (c == chr(13)) {
+        return backslash + "r"
+    }
+    if (c == chr(9)) {
+        return backslash + "t"
+    }
+    if (c == "?") {
+        // keeps "??" out of the generated C (trigraphs)
+        return backslash + "?"
+    }
+    return c
+}
+
+// Encode text as a quoted s-expression string atom.
+method sexpStr(string text): string {
+    var quote = chr(34)
+    var out = quote
+    var i = 0
+    var n = text.length()
+    while (i < n) {
+        out = out + sexpEscapeChar(text.charAt(i))
+        i = i + 1
+    }
+    return out + quote
+}
+
+// Joins many pieces into one string with O(n log n) copying.
+method joinParts(array<string> parts): string {
+    var current = parts
+    while (current.length() > 1) {
+        var next = []
+        var i = 0
+        while (i < current.length()) {
+            if (i + 1 < current.length()) {
+                next.append(current[i] + current[i + 1])
+            } else {
+                next.append(current[i])
+            }
+            i = i + 2
+        }
+        current = next
+    }
+    if (current.length() == 0) {
+        return ""
+    }
+    return current[0]
+}

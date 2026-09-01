@@ -1,0 +1,41 @@
+package main
+
+import json
+import path
+
+define class Item {
+    private final string name: get
+    private final integer qty: get
+}
+
+method main {
+    var data = { "name": "box", "tags": ["a", "b"], "size": 2.5, "count": 3, "ok": true, "nested": { "z": 1, "a": [] } }
+    var text = json.stringify(data)
+    println text
+    var back = json.parse(text)
+    println back["tags"][1]
+    println back["size"] * 2
+    println back["count"] + 1
+    println back["ok"] == true
+    println back["nested"]
+    println json.stringify([1, 2.0, "x\"y", false])
+    println json.stringify(Item{name="pen", qty=2})
+    println json.parse("[1, 2, {\"k\": null}]")
+    println json.pretty({ "a": [1, { "b": 2 }], "c": {} })
+    println json.parse("\"esc\\u0041\\n\"")
+    println path.join("a", "b/c", "d.txt")
+    println path.dirname("/x/y/z.nv")
+    println path.basename("/x/y/z.nv")
+    println path.stem("/x/y/z.nv")
+    println path.exists("/definitely/not/here")
+    println path.absolute() == path.absolute
+    var dir = path.join(path.temp(), "novus-test-json")
+    writeFile(dir, "")
+    json.save(data, path.temp(), "novus-test-json")
+    println readFile(dir)
+    println fileExists(dir)
+    println removeFile(dir)
+    println fileExists(dir)
+    println env("NOVUS_SURELY_UNSET_VAR") == ""
+    println typeOf(platform())
+}

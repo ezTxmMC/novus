@@ -1,0 +1,121 @@
+package lexer
+
+import "chars.nv"
+
+// The Novus lexer: source text -> tokens.
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+method lex(string source, string file): array<string> {
+    var quote = chr(34)
+    var newline = chr(10)
+    var backslash = chr(92)
+    var tokens = []
+    var i = 0
+    var n = source.length()
+    var line = 1
+    while (i < n) {
+        var c = source.charAt(i)
+        var pos = file + ":" + line
+        if (c == newline) {
+            line = line + 1
+            i = i + 1
+            continue
+        }
+        if (c <= " ") {
+            i = i + 1
+            continue
+        }
+        if (isAlpha(c)) {
+            var word = ""
+            while (i < n && isAlphaNum(source.charAt(i))) {
+                word = word + source.charAt(i)
+                i = i + 1
+            }
+            var wordKind = "IDENT"
+            if (isKeywordWord(word)) {
+                wordKind = "KEYWORD"
+            }
+            tokens.append(wordKind + " " + pos + " " + word)
+            continue
+        }
+        if (isDigit(c)) {
+            var num = ""
+            var numKind = "INT"
+            while (i < n && isDigit(source.charAt(i))) {
+                num = num + source.charAt(i)
+                i = i + 1
+            }
+            if (i + 1 < n && source.charAt(i) == "." && isDigit(source.charAt(i + 1))) {
+                numKind = "FLOAT"
+                num = num + "."
+                i = i + 1
+                while (i < n && isDigit(source.charAt(i))) {
+                    num = num + source.charAt(i)
+                    i = i + 1
+                }
+            }
+            tokens.append(numKind + " " + pos + " " + num)
+            continue
+        }
+        if (c == quote) {
+            var text = ""
+            i = i + 1
+            while (i < n && source.charAt(i) != quote) {
+                var sc = source.charAt(i)
+                if (sc == backslash && i + 1 < n) {
+                    text = text + lexEscape(source.charAt(i + 1))
+                    i = i + 2
+                    continue
+                }
+                if (sc == newline) {
+                    line = line + 1
+                }
+                text = text + sc
+                i = i + 1
+            }
+            i = i + 1
+            tokens.append("STRING " + pos + " " + text)
+            continue
+        }
+        var two = ""
+        if (i + 1 < n) {
+            two = c + source.charAt(i + 1)
+        }
+        if (two == "//") {
+            while (i < n && source.charAt(i) != newline) {
+                i = i + 1
+            }
+            continue
+        }
+        if (two == "/*") {
+            i = i + 2
+            while (i + 1 < n && (source.charAt(i) != "*" || source.charAt(i + 1) != "/")) {
+                if (source.charAt(i) == newline) {
+                    line = line + 1
+                }
+                i = i + 1
+            }
+            i = i + 2
+            continue
+        }
+        if (isTwoCharOp(two)) {
+            if (two == "=>") {
+                two = ">="
+            }
+            if (two == "=<") {
+                two = "<="
+            }
+            tokens.append("SYM " + pos + " " + two)
+            i = i + 2
+            continue
+        }
+        if (isSymbolChar(c)) {
+            tokens.append("SYM " + pos + " " + c)
+        }
+        i = i + 1
+    }
+    tokens.append("EOF " + file + ":" + line + " ")
+    return tokens
+}

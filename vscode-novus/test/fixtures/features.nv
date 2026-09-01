@@ -1,6 +1,8 @@
 package fixtures
 
 import json
+import os
+import path
 
 /// Greeting used by main.
 private final GREETING = "Hello"
@@ -39,6 +41,12 @@ method main {
   println Color.RED
   println json.stringify(counter)
   println (1 + 2) * 3
+  print "no newline "
+  eprintln "to stderr"
+  integer truncated = -2.5 * -1
+  println truncated
+  println path.join(os.temp(), "x")
+  println os.platform()
 }
 
 method add(integer a, integer b): integer {
@@ -54,6 +62,10 @@ define class Counter based ICounter {
 
   construct(integer value) {
     this.value = value
+  }
+
+  method describe(): string {
+    return "counter at ${value}"
   }
 
   @Interface

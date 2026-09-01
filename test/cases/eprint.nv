@@ -1,0 +1,9 @@
+package main
+
+method main {
+    print "no newline "
+    print 42
+    println ""
+    eprintln "to stderr"
+    println "done"
+}

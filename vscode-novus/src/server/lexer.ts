@@ -54,7 +54,7 @@ export interface LexResult {
 /** Words that can never be used as identifiers. */
 export const RESERVED_WORDS = new Set<string>([
   'package', 'import', 'define', 'class', 'enum', 'interface', 'annotation', 'abstract',
-  'method', 'construct', 'var', 'println', 'return', 'if', 'else', 'for', 'while', 'in',
+  'method', 'construct', 'var', 'println', 'print', 'eprintln', 'return', 'if', 'else', 'for', 'while', 'in',
   'based', 'this', 'true', 'false', 'null', 'private', 'public', 'protected', 'final',
   'static', 'break', 'continue',
 ]);

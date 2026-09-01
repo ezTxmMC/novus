@@ -1,0 +1,56 @@
+package main
+
+import "driver/build.nv"
+import "driver/cli.nv"
+
+// novusc - the Novus compiler driver.
+//
+//   novusc run <file.nv> [args...]        compile to a temporary binary and run it
+//   novusc build <file.nv> [options]      compile to a native executable
+//   novusc emit <file.nv> [-o out.c]      write the generated C
+//   novusc check <file.nv>                parse and analyze only
+//   novusc version | help
+//
+// See driver/cli.nv for the options and driver/build.nv for the build steps.
+
+method main(array<string> arguments) {
+    if (arguments.length() < 1) {
+        printUsage()
+        return 1
+    }
+    var command = arguments[0]
+    if (command == "version" || command == "--version" || command == "-v") {
+        println "novusc ${VERSION}"
+        return 0
+    }
+    if (command == "help" || command == "--help" || command == "-h") {
+        printUsage()
+        return 0
+    }
+    if (arguments.length() < 2) {
+        eprintln "novusc: '${command}' needs a source file"
+        printUsage()
+        return 1
+    }
+    var source = arguments[1]
+    if (command == "emit") {
+        return emitCommand(source, optionsFrom(arguments, 2))
+    }
+    if (command == "check") {
+        generate(source, "")
+        println "ok: ${source}"
+        return 0
+    }
+    if (command == "build") {
+        var options = optionsFrom(arguments, 2)
+        var output = buildBinary(source, options)
+        println "built ${output}"
+        return 0
+    }
+    if (command == "run") {
+        return runCommand(source, arguments)
+    }
+    eprintln "novusc: unknown command '${command}'"
+    printUsage()
+    return 1
+}

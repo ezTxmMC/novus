@@ -1,0 +1,44 @@
+package main
+
+// Arithmetic, precedence, unary minus, comparisons, booleans, formatting.
+
+method main {
+    println 1 + 2 * 3
+    println (1 + 2) * 3
+    println 7 / 2
+    println 7 % 3
+    println 7.0 / 2
+    println 1.5 + 1
+    println 10 - -3
+    println -2 * 4
+    println 2 == 2.0
+    println 3 < 2
+    println "b" > "a"
+    println "abc" == "abc"
+    println "abc" != "abd"
+    println true && false
+    println true || false
+    println !true
+    println 5 / 0
+    println 5.0 / 0
+    println 1000000 * 1000000
+    println "sum: " + 1 + 2
+    println 1 + 2 + " is three"
+    println 2.5 * 2
+    println twice(3)
+    println twice(3.9)
+    println half(7)
+    println describe(1, 2)
+}
+
+method twice(integer x): integer {
+    return x * 2
+}
+
+method half(integer x): float {
+    return x / 2
+}
+
+method describe(integer a, integer b): string {
+    return a + b
+}

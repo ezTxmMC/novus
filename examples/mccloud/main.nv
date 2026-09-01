@@ -1,0 +1,352 @@
+package main
+
+import os
+import path
+
+import "cloud.nv"
+import "files.nv"
+import "process.nv"
+
+// mccloud - a small Minecraft server cloud as a command line tool.
+//
+// Groups describe a kind of server (memory, first port, maximum count);
+// a template per group (templates/<group>/server.jar, ...) is copied for
+// every instance into servers/<group>-<n>. Instances run detached in
+// `screen` sessions (Linux/macOS) or in their own console window (Windows).
+//
+//   mccloud init
+//   mccloud group create lobby 1024 25565 2
+//   mccloud template import lobby ~/Downloads/paper.jar
+//   mccloud start lobby
+//   mccloud list | cmd lobby-1 say hi | log lobby-1 | attach lobby-1 | stop lobby-1
+
+private final ROOT_ENV = "MCCLOUD_HOME"
+
+method main(array<string> arguments) {
+    if (arguments.length() < 1) {
+        printUsage()
+        return 1
+    }
+    var command = arguments[0]
+    var cloud = Cloud(cloudRoot())
+    if (command == "init") {
+        return initCommand(cloud)
+    }
+    if (command == "group") {
+        return groupCommand(cloud, arguments)
+    }
+    if (command == "template") {
+        return templateCommand(cloud, arguments)
+    }
+    if (command == "start") {
+        return startCommand(cloud, arguments)
+    }
+    if (command == "stop") {
+        return stopCommand(cloud, arguments)
+    }
+    if (command == "list" || command == "status") {
+        return listCommand(cloud)
+    }
+    if (command == "cmd") {
+        return cmdCommand(cloud, arguments)
+    }
+    if (command == "log") {
+        return logCommand(cloud, arguments)
+    }
+    if (command == "attach") {
+        return attachCommand(cloud, arguments)
+    }
+    if (command == "delete") {
+        return deleteCommand(cloud, arguments)
+    }
+    if (command == "help" || command == "--help" || command == "-h") {
+        printUsage()
+        return 0
+    }
+    eprintln "mccloud: unknown command '${command}'"
+    printUsage()
+    return 1
+}
+
+method printUsage() {
+    println "mccloud - a tiny Minecraft server cloud"
+    println ""
+    println "usage:"
+    println "  mccloud init                                  create the cloud directory"
+    println "  mccloud group create <name> <memoryMB> <port> <max>"
+    println "  mccloud group list | group delete <name>"
+    println "  mccloud template import <group> <server.jar>  set the jar of a group"
+    println "  mccloud start <group>                         start a new instance"
+    println "  mccloud stop <server>|all                     stop instances"
+    println "  mccloud list                                  running instances"
+    println "  mccloud cmd <server> <command...>             send a console command (screen)"
+    println "  mccloud log <server> [lines]                  show the end of the log"
+    println "  mccloud attach <server>                       open the console"
+    println "  mccloud delete <server>                       stop and remove the instance"
+    println ""
+    println "The cloud lives in ./mccloud-data (or $MCCLOUD_HOME)."
+}
+
+method cloudRoot(): string {
+    var configured = env(ROOT_ENV)
+    if (configured != "") {
+        return configured
+    }
+    return path.join(path.absolute, "mccloud-data")
+}
+
+method need(array<string> arguments, integer count, string usage): bool {
+    if (arguments.length() < count) {
+        eprintln "usage: mccloud ${usage}"
+        return false
+    }
+    return true
+}
+
+method initCommand(Cloud cloud): integer {
+    if (os.mkdir(path.join(cloud.root(), "templates")) == false || os.mkdir(path.join(cloud.root(), "servers")) == false) {
+        eprintln "cannot create the cloud directory '${cloud.root()}'"
+        eprintln "(does a file with that name exist? set MCCLOUD_HOME to use another directory)"
+        return 1
+    }
+    cloud.save()
+    println "cloud directory: ${cloud.root()}"
+    println "process backend: ${backendName()}"
+    if (backendReady() == false) {
+        println "warning: 'screen' is not installed - servers cannot be started"
+    }
+    println "next: mccloud group create lobby 1024 25565 2"
+    return 0
+}
+
+method groupCommand(Cloud cloud, array<string> arguments): integer {
+    if (need(arguments, 2, "group create|list|delete ...") == false) {
+        return 1
+    }
+    var action = arguments[1]
+    if (action == "list") {
+        if (cloud.groups().length() == 0) {
+            println "no groups - create one with: mccloud group create <name> <memoryMB> <port> <max>"
+            return 0
+        }
+        for (name in cloud.groups()) {
+            var g = cloud.groups()[name]
+            var jar = "missing"
+            if (fileExists(path.join(cloud.templateDir(name), "server.jar"))) {
+                jar = "ready"
+            }
+            println "${name}: ${g.memory()} MB, ports from ${g.port()}, max ${g.max()}, running ${cloud.runningInGroup(name)}, template ${jar}"
+        }
+        return 0
+    }
+    if (action == "create") {
+        if (need(arguments, 6, "group create <name> <memoryMB> <port> <max>") == false) {
+            return 1
+        }
+        var name = arguments[2]
+        if (cloud.hasGroup(name)) {
+            eprintln "group '${name}' already exists"
+            return 1
+        }
+        cloud.groups()[name] = Group(name, parseInt(arguments[3]), parseInt(arguments[4]), parseInt(arguments[5]))
+        os.mkdir(cloud.templateDir(name))
+        cloud.save()
+        println "created group ${name} (template directory: ${cloud.templateDir(name)})"
+        println "next: mccloud template import ${name} <server.jar>"
+        return 0
+    }
+    if (action == "delete") {
+        if (need(arguments, 3, "group delete <name>") == false) {
+            return 1
+        }
+        var name = arguments[2]
+        if (cloud.runningInGroup(name) > 0) {
+            eprintln "group '${name}' still has running servers"
+            return 1
+        }
+        cloud.groups().remove(name)
+        cloud.save()
+        println "deleted group ${name} (template kept)"
+        return 0
+    }
+    eprintln "unknown group action '${action}'"
+    return 1
+}
+
+method templateCommand(Cloud cloud, array<string> arguments): integer {
+    if (need(arguments, 4, "template import <group> <server.jar>") == false) {
+        return 1
+    }
+    var group = arguments[2]
+    var jar = arguments[3]
+    if (cloud.hasGroup(group) == false) {
+        eprintln "unknown group '${group}'"
+        return 1
+    }
+    if (fileExists(jar) == false) {
+        eprintln "cannot read '${jar}'"
+        return 1
+    }
+    var dir = cloud.templateDir(group)
+    os.mkdir(dir)
+    os.copy(jar, path.join(dir, "server.jar"))
+    setProperty(path.join(dir, "eula.txt"), "eula", "true")
+    setProperty(path.join(dir, "server.properties"), "online-mode", "true")
+    println "imported ${jar} into ${dir}"
+    println "note: starting servers means you accept the Minecraft EULA (eula.txt)"
+    return 0
+}
+
+method startCommand(Cloud cloud, array<string> arguments): integer {
+    if (need(arguments, 2, "start <group>") == false) {
+        return 1
+    }
+    var group = arguments[1]
+    if (cloud.hasGroup(group) == false) {
+        eprintln "unknown group '${group}'"
+        return 1
+    }
+    if (fileExists(path.join(cloud.templateDir(group), "server.jar")) == false) {
+        eprintln "group '${group}' has no template - run: mccloud template import ${group} <server.jar>"
+        return 1
+    }
+    if (cloud.runningInGroup(group) >= cloud.groups()[group].max()) {
+        eprintln "group '${group}' already runs ${cloud.runningInGroup(group)} server(s) (max)"
+        return 1
+    }
+    if (backendReady() == false) {
+        eprintln "'screen' is not installed"
+        return 1
+    }
+    var server = cloud.startServer(group)
+    println "started ${server.name()} on port ${server.port()} (${backendName()})"
+    return 0
+}
+
+method stopCommand(Cloud cloud, array<string> arguments): integer {
+    if (need(arguments, 2, "stop <server>|all") == false) {
+        return 1
+    }
+    var target = arguments[1]
+    if (target == "all") {
+        var names = []
+        for (s in cloud.servers()) {
+            names.append(s.name())
+        }
+        for (name in names) {
+            cloud.stopServer(name)
+            println "stopped ${name}"
+        }
+        return 0
+    }
+    if (cloud.stopServer(target) == false) {
+        eprintln "no running server '${target}'"
+        return 1
+    }
+    println "stopped ${target}"
+    return 0
+}
+
+method listCommand(Cloud cloud): integer {
+    if (cloud.servers().length() == 0) {
+        println "no running servers"
+        return 0
+    }
+    var gone = []
+    for (s in cloud.servers()) {
+        var state = "running"
+        if (isRunning(s.name()) == false) {
+            state = "stopped"
+            gone.append(s.name())
+        }
+        println "${s.name()}  group ${s.group()}  port ${s.port()}  ${state}  up ${uptime(s.started())}"
+    }
+    for (name in gone) {
+        cloud.forget(name)
+    }
+    return 0
+}
+
+method uptime(integer started): string {
+    var seconds = os.time() - started
+    if (seconds < 60) {
+        return "${seconds}s"
+    }
+    if (seconds < 3600) {
+        return "${seconds / 60}m"
+    }
+    return "${seconds / 3600}h ${(seconds % 3600) / 60}m"
+}
+
+method cmdCommand(Cloud cloud, array<string> arguments): integer {
+    if (need(arguments, 3, "cmd <server> <command...>") == false) {
+        return 1
+    }
+    var name = arguments[1]
+    if (cloud.findServer(name) < 0) {
+        eprintln "no running server '${name}'"
+        return 1
+    }
+    var words = []
+    var i = 2
+    while (i < arguments.length()) {
+        words.append(arguments[i])
+        i = i + 1
+    }
+    var command = words.join(" ")
+    if (sendCommand(name, command) == false) {
+        eprintln "sending console commands needs screen (type it in the server window instead)"
+        return 1
+    }
+    println "sent to ${name}: ${command}"
+    return 0
+}
+
+method logCommand(Cloud cloud, array<string> arguments): integer {
+    if (need(arguments, 2, "log <server> [lines]") == false) {
+        return 1
+    }
+    var name = arguments[1]
+    var lines = 30
+    if (arguments.length() > 2) {
+        lines = parseInt(arguments[2])
+    }
+    var file = path.join(cloud.serverDir(name), "logs", "latest.log")
+    if (fileExists(file) == false) {
+        eprintln "no log yet at ${file}"
+        return 1
+    }
+    println tailLines(file, lines)
+    return 0
+}
+
+method attachCommand(Cloud cloud, array<string> arguments): integer {
+    if (need(arguments, 2, "attach <server>") == false) {
+        return 1
+    }
+    var name = arguments[1]
+    if (isRunning(name) == false) {
+        eprintln "'${name}' is not running"
+        return 1
+    }
+    attachProcess(name)
+    return 0
+}
+
+method deleteCommand(Cloud cloud, array<string> arguments): integer {
+    if (need(arguments, 2, "delete <server>") == false) {
+        return 1
+    }
+    var name = arguments[1]
+    if (cloud.findServer(name) >= 0) {
+        cloud.stopServer(name)
+    }
+    var dir = cloud.serverDir(name)
+    if (os.exists(dir) == false) {
+        eprintln "no server directory '${dir}'"
+        return 1
+    }
+    os.removeAll(dir)
+    println "deleted ${name}"
+    return 0
+}

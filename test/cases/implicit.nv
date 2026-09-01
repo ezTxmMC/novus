@@ -1,0 +1,38 @@
+package main
+
+// Inside a class, bare names resolve to fields and methods of `this`.
+
+define class Account {
+    private final string owner: get
+    private integer balance: get
+
+    construct(string owner) {
+        this.owner = owner
+        this.balance = 0
+    }
+
+    method deposit(integer amount) {
+        balance = balance + amount
+        log("deposit " + amount)
+    }
+
+    method log(string what) {
+        println "${owner}: ${what} -> ${balance}"
+    }
+
+    method double() {
+        deposit(balance)
+    }
+}
+
+method log(string what) {
+    println "free log: ${what}"
+}
+
+method main {
+    var a = Account("ada")
+    a.deposit(10)
+    a.double()
+    log("outside")
+    println a.balance()
+}

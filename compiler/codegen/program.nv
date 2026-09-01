@@ -1,0 +1,188 @@
+package codegen
+
+import "../ast/sexp.nv"
+import "../ast/text.nv"
+import "../parser/errors.nv"
+import "../parser/types.nv"
+import "calls.nv"
+import "checks.nv"
+import "common.nv"
+import "expressions.nv"
+import "index.nv"
+import "methods.nv"
+
+// Whole-program generation: classes, enums, globals, main.
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+method genClassCode(string node, map<string, string> prog, array<string> protos, array<string> bodies, array<string> registry): integer {
+    var cls = nodeChild(node, 1)
+    var isEnum = "0"
+    if (nodeHead(node) == "enum") {
+        isEnum = "1"
+    }
+    var base = classBase(node)
+    if (isClassLike(prog, base) == false) {
+        base = ""
+    }
+    var abstractFlag = "0"
+    if (classIsAbstract(node)) {
+        abstractFlag = "1"
+    }
+    registry.append("    c = nv_class_define(" + cstr(cls) + ", " + cstr(base) + ", " + abstractFlag + ", " + isEnum + ");" + nl())
+    var fields = classFields(node)
+    var i = 1
+    while (i < nodeCount(fields)) {
+        var f = nodeChild(fields, i)
+        registry.append("    nv_class_field(c, " + cstr(nodeChild(f, 2)) + ", " + cstr(normType(nodeChild(f, 1))) + ");" + nl())
+        i = i + 1
+    }
+    var ctor = classCtor(node)
+    if (nodeHead(ctor) == "ctor") {
+        protos.append("static nv c_" + cls + "(nv self, nv *args, int n);" + nl())
+        bodies.append(genCtor(cls, ctor, prog))
+        registry.append("    nv_class_ctor(c, " + (nodeCount(nodeChild(ctor, 1)) - 1) + ", c_" + cls + ");" + nl())
+    }
+    var methods = classMethods(node)
+    var k = 1
+    while (k < nodeCount(methods)) {
+        var m = nodeChild(methods, k)
+        if (isAbstractMethod(m) == false) {
+            var cname = methodCName(cls, m, methodVariant(methods, k))
+            protos.append("static nv " + cname + "(nv self, nv *args, int n);" + nl())
+            bodies.append(genClassMethod(cls, m, cname, prog))
+            registry.append("    nv_class_method(c, " + cstr(methodName(m)) + ", " + arityOf(m) + ", " + cname + ");" + nl())
+        }
+        k = k + 1
+    }
+    return 0
+}
+
+method genEnumInit(string node, map<string, string> prog): string {
+    var name = nodeChild(node, 1)
+    var consts = nodeChild(node, 2)
+    var ctx = {"class": "", "func": "", "ret": "void", "pos": "enum " + name}
+    var locals = {}
+    var out = ""
+    var i = 1
+    while (i < nodeCount(consts)) {
+        var c = nodeChild(consts, i)
+        var nargs = nodeCount(c) - 2
+        var constructor = "nv_construct(" + cstr(name) + ", " + nargs
+        if (nargs > 0) {
+            constructor = constructor + ", " + genArgs(c, 2, prog, ctx, locals)
+        }
+        out = out + "    nv_enum_add(" + cstr(name) + ", " + cstr(nodeChild(c, 1)) + ", " + constructor + "));" + nl()
+        i = i + 1
+    }
+    return out
+}
+
+method genMainEntry(map<string, string> prog): string {
+    var hasMain0 = prog.has("func:main/0")
+    var hasMain1 = prog.has("func:main/1")
+    if (hasMain0 == false && hasMain1 == false) {
+        fail("no 'method main' found", "program")
+    }
+    var out = "int main(int argc, char **argv) {" + nl()
+    out = out + "    nv result = nv_nil;" + nl()
+    out = out + "    nv_init_args(argc, argv);" + nl()
+    out = out + "    nv_register_classes();" + nl()
+    out = out + "    nv_init_globals();" + nl()
+    out = out + "    nv_init_enums();" + nl()
+    out = out + mainCallCode(hasMain0, hasMain1)
+    out = out + "    fflush(stdout);" + nl()
+    out = out + "    return result->type == NV_INT ? (int)result->i : 0;" + nl()
+    return out + "}" + nl()
+}
+
+// The statement(s) that select and call the user's main method.
+method mainCallCode(bool hasMain0, bool hasMain1): string {
+    if (hasMain0 && hasMain1) {
+        return "    if (argc > 1) {" + nl() + "        result = f_main_1(nv_args());" + nl() + "    } else {" + nl() + "        result = f_main_0();" + nl() + "    }" + nl()
+    }
+    if (hasMain1) {
+        return "    result = f_main_1(nv_args());" + nl()
+    }
+    return "    result = f_main_0();" + nl()
+}
+
+// Generates the complete C translation unit. `runtime` is the text of
+// novus_rt.h to embed; when empty an #include "novus_rt.h" is emitted.
+method generateProgram(array<string> decls, string runtime): string {
+    var prog = {}
+    indexProgram(decls, prog)
+    checkClasses(prog, decls)
+
+    var protos = []
+    var bodies = []
+    var registry = []
+    var globalsInit = []
+    var enumsInit = []
+    var emitted = {}
+
+    for (d in decls) {
+        var head = nodeHead(d)
+        if (head == "method") {
+            var name = methodName(d)
+            var arity = arityOf(d)
+            var key = name + "/" + arity
+            var variants = parseInt(prog["func:" + key])
+            var variant = 0
+            if (emitted.has(key)) {
+                variant = parseInt(emitted[key])
+            }
+            emitted[key] = intToStr(variant + 1)
+            var cname = funcCName(name, arity, variant, variants)
+            protos.append("static nv " + cname + "(" + cParamList(d) + ");" + nl())
+            bodies.append(genFreeMethod(d, cname, prog))
+            if (variants > 1 && variant == 0) {
+                protos.append("static nv " + funcCName(name, arity, 0, 1) + "(" + cParamList(d) + ");" + nl())
+                bodies.append(genDispatcher(name, arity, variants, prog))
+            }
+            continue
+        }
+        if (head == "class" || head == "enum") {
+            genClassCode(d, prog, protos, bodies, registry)
+            if (head == "enum") {
+                enumsInit.append(genEnumInit(d, prog))
+            }
+            continue
+        }
+        if (head == "global") {
+            var gname = nodeChild(d, 1)
+            var gctx = {"class": "", "func": "", "ret": "void", "pos": "constant " + gname}
+            var glocals = {}
+            protos.append("static nv g_" + gname + ";" + nl())
+            globalsInit.append("    g_" + gname + " = " + genExpr(nodeChild(d, 2), prog, gctx, glocals) + ";" + nl())
+        }
+    }
+
+    var out = []
+    out.append("/* generated by novusc - do not edit */" + nl())
+    if (runtime == "") {
+        out.append("#include " + cstr("novus_rt.h") + nl())
+    } else {
+        out.append(runtime)
+        if (runtime.charAt(runtime.length() - 1) != nl()) {
+            out.append(nl())
+        }
+    }
+    out.append(nl() + "/* declarations */" + nl())
+    out.append(joinParts(protos))
+    out.append(nl() + "static void nv_register_classes(void) {" + nl() + "    NvClass *c = 0;" + nl() + "    (void)c;" + nl())
+    out.append(joinParts(registry))
+    out.append("}" + nl() + nl() + "static void nv_init_globals(void) {" + nl())
+    out.append(joinParts(globalsInit))
+    out.append("}" + nl() + nl() + "static void nv_init_enums(void) {" + nl())
+    out.append(joinParts(enumsInit))
+    out.append("}" + nl() + nl())
+    var i = 0
+    while (i < bodies.length()) {
+        out.append(bodies[i] + nl())
+        i = i + 1
+    }
+    out.append(genMainEntry(prog))
+    return joinParts(out)
+}

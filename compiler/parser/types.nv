@@ -1,0 +1,84 @@
+package parser
+
+import "../lexer/tokens.nv"
+import "errors.nv"
+import "tokens.nv"
+
+// Type names and parameter lists.
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+method normType(string t): string {
+    var head = t
+    var i = 0
+    while (i < t.length() && t.charAt(i) != "<") {
+        i = i + 1
+    }
+    var rest = ""
+    if (i < t.length()) {
+        head = t.substring(0, i)
+        rest = t.substring(i, t.length())
+    }
+    if (head == "str") {
+        head = "string"
+    }
+    if (head == "int") {
+        head = "integer"
+    }
+    if (head == "boolean") {
+        head = "bool"
+    }
+    if (head == "double" || head == "doub") {
+        head = "float"
+    }
+    return head + rest
+}
+
+// Parses a type such as integer, Person, array<string> or
+// map<string, array<integer>> and returns { node, pos }.
+method parseType(array<string> tokens, integer pos): map<string, string> {
+    var p = pos
+    if (isIdent(tokens, p) == false) {
+        fail("expected a type but found " + describe(tokens, p), posOf(tokens, p))
+    }
+    var name = tokVal(tokens[p])
+    p = p + 1
+    if (isSym(tokens, p, "<")) {
+        var depth = 0
+        while (atEnd(tokens, p) == false) {
+            var v = tokVal(tokens[p])
+            if (isSym(tokens, p, "<")) {
+                depth = depth + 1
+            }
+            if (isSym(tokens, p, ">")) {
+                depth = depth - 1
+            }
+            name = name + v
+            p = p + 1
+            if (depth == 0) {
+                break
+            }
+        }
+    }
+    return { "node": normType(name), "pos": p }
+}
+
+// (params (p type name) ...)
+method parseParams(array<string> tokens, integer pos): map<string, string> {
+    var p = expectSym(tokens, pos, "(")
+    var node = "(params"
+    while (isSym(tokens, p, ")") == false) {
+        if (atEnd(tokens, p)) {
+            fail("unterminated parameter list", posOf(tokens, p))
+        }
+        var t = parseType(tokens, p)
+        p = parseInt(t["pos"])
+        p = expectIdent(tokens, p, "parameter name")
+        node = node + " (p " + t["node"] + " " + tokVal(tokens[p - 1]) + ")"
+        if (isSym(tokens, p, ",")) {
+            p = p + 1
+        }
+    }
+    return { "node": node + ")", "pos": p + 1 }
+}

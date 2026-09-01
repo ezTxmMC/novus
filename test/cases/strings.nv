@@ -1,0 +1,46 @@
+package main
+
+// String literals, escapes, interpolation and the string builtins.
+
+method main {
+    var name = "Ada"
+    var age = 36
+    println "Hello, ${name}! You are ${age}."
+    println "${age + 1} next year"
+    println "${name}${age}"
+    println "tab:\there"
+    println "quote: \"yes\""
+    println "backslash: \\"
+    println "brace: {} ${name}"
+    var s = "Hello World"
+    println s.length()
+    println s.charAt(4)
+    println s.substring(6, 11)
+    println s.substring(6, 100)
+    println s.indexOf("World")
+    println s.indexOf("nope")
+    println s.contains("lo W")
+    println s.startsWith("Hell")
+    println s.endsWith("World")
+    println s.toUpper()
+    println s.toLower()
+    println "  padded ".trim() + "|"
+    println s.replace("l", "L")
+    println "a,b,,c".split(",")
+    println "abc".split("")
+    println chr(65) + chr(97)
+    println ord("A")
+    println parseInt("42") + 1
+    println parseInt("  17x")
+    println parseFloat("2.5") * 2
+    var list = ["x", "y", "z"]
+    println list.join("-")
+    println "item: ${list[1]}"
+    for (c in "hey") {
+        print c
+        print "."
+    }
+    println ""
+    var multi = "line1\nline2"
+    println multi
+}

@@ -1,0 +1,53 @@
+package main
+
+import os
+import path
+
+// The os module: directories, files, environment, processes.
+
+method main {
+    var root = path.join(os.temp(), "novus-os-test-" + os.pid())
+    os.removeAll(root)
+    println os.exists(root)
+    println os.mkdir(path.join(root, "a", "b"))
+    println os.isDir(path.join(root, "a"))
+    println os.isFile(path.join(root, "a"))
+    os.writeFile(path.join(root, "a", "one.txt"), "hello")
+    os.appendFile(path.join(root, "a", "one.txt"), " world")
+    println os.readFile(path.join(root, "a", "one.txt"))
+    println os.fileSize(path.join(root, "a", "one.txt"))
+    println os.modified(path.join(root, "a", "one.txt")) > 0
+    println os.copy(path.join(root, "a", "one.txt"), path.join(root, "a", "two.txt"))
+    println os.rename(path.join(root, "a", "two.txt"), path.join(root, "a", "three.txt"))
+    println os.listDir(path.join(root, "a"))
+    println os.remove(path.join(root, "a", "three.txt"))
+    println os.remove(path.join(root, "a", "missing.txt"))
+    println os.rmdir(path.join(root, "a"))
+    println os.rmdir(path.join(root, "a", "b"))
+    println os.listDir(path.join(root, "a"))
+    println os.removeAll(root)
+    println os.exists(root)
+    println os.setEnv("NOVUS_OS_TEST", "42")
+    println os.env("NOVUS_OS_TEST")
+    println os.env("NOVUS_OS_UNSET_FOR_SURE") == ""
+    println os.cwd() == path.absolute
+    println os.time() > 1700000000
+    var start = os.clock()
+    os.sleep(20)
+    println os.clock() - start >= 0.01
+    println os.home() != ""
+    println typeOf(os.platform())
+    println os.args()
+    println os.pid() > 0
+    println path.extension("archive.tar.gz")
+    println path.extension("noext")
+    println path.normalize("a/./b/../c//d/")
+    println path.normalize("/x/../../y")
+    println path.isAbsolute("/root")
+    println path.isAbsolute("rel/x")
+    println path.relative("/a/b/c", "/a/d/e.txt")
+    println path.relative("/a/b", "/a/b")
+    println path.absolute("sub/../x.nv") == path.join(path.absolute, "x.nv")
+    println path.join("a", "", "b")
+    println typeOf(path.separator())
+}

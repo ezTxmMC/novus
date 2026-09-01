@@ -1,37 +1,61 @@
 {
   "package": {
     "prefix": "package",
-    "body": ["package ${1:main}", "", "$0"],
+    "body": [
+      "package ${1:main}",
+      "",
+      "$0"
+    ],
     "description": "Package declaration"
   },
   "import": {
     "prefix": "import",
-    "body": ["import ${1:module}"],
+    "body": [
+      "import ${1:module}"
+    ],
     "description": "Import a module"
   },
   "main": {
     "prefix": "main",
-    "body": ["method main {", "\t$0", "}"],
+    "body": [
+      "method main {",
+      "\t$0",
+      "}"
+    ],
     "description": "Program entry point"
   },
   "main with args": {
     "prefix": "mainargs",
-    "body": ["method main(array<string> args) {", "\t$0", "}"],
+    "body": [
+      "method main(array<string> args) {",
+      "\t$0",
+      "}"
+    ],
     "description": "Program entry point receiving arguments"
   },
   "method": {
     "prefix": "method",
-    "body": ["method ${1:name}(${2:integer value})${3:: ${4:integer}} {", "\t$0", "}"],
+    "body": [
+      "method ${1:name}(${2:integer value})${3:: ${4:integer}} {",
+      "\t$0",
+      "}"
+    ],
     "description": "Method declaration"
   },
   "method without parameters": {
     "prefix": "methodv",
-    "body": ["method ${1:name} {", "\t$0", "}"],
+    "body": [
+      "method ${1:name} {",
+      "\t$0",
+      "}"
+    ],
     "description": "Method declaration without parameter list"
   },
   "abstract method": {
     "prefix": "abstract",
-    "body": ["abstract method ${1:name}(${2})${3:: ${4:bool}}"],
+    "body": [
+      "abstract method ${1:name}(${2})${3:: ${4:bool}}"
+    ],
     "description": "Abstract method signature"
   },
   "class": {
@@ -61,12 +85,22 @@
   },
   "abstract class": {
     "prefix": "abstractclass",
-    "body": ["define abstract ${1:Name} {", "\tabstract method ${2:name}(): ${3:bool}", "\t$0", "}"],
+    "body": [
+      "define abstract ${1:Name} {",
+      "\tabstract method ${2:name}(): ${3:bool}",
+      "\t$0",
+      "}"
+    ],
     "description": "Abstract class definition"
   },
   "interface": {
     "prefix": "interface",
-    "body": ["define interface ${1:IName} {", "\t${2:method}()", "\t$0", "}"],
+    "body": [
+      "define interface ${1:IName} {",
+      "\t${2:method}()",
+      "\t$0",
+      "}"
+    ],
     "description": "Interface definition"
   },
   "enum": {
@@ -87,77 +121,163 @@
   },
   "annotation": {
     "prefix": "annotation",
-    "body": ["define annotation ${1:Name} {", "\t${2:text}(): ${3:string}", "\t$0", "}"],
+    "body": [
+      "define annotation ${1:Name} {",
+      "\t${2:text}(): ${3:string}",
+      "\t$0",
+      "}"
+    ],
     "description": "Annotation definition"
   },
   "construct": {
     "prefix": "construct",
-    "body": ["construct(${1:string} ${2:name}) {", "\tthis.${2:name} = ${2:name}", "\t$0", "}"],
+    "body": [
+      "construct(${1:string} ${2:name}) {",
+      "\tthis.${2:name} = ${2:name}",
+      "\t$0",
+      "}"
+    ],
     "description": "Constructor"
   },
   "field": {
     "prefix": "field",
-    "body": ["private final ${1:string} ${2:name}: ${3|get,get\\, set,set|}"],
+    "body": [
+      "private final ${1:string} ${2:name}: ${3|get,get\\, set,set|}"
+    ],
     "description": "Field with accessors"
   },
   "var": {
     "prefix": "var",
-    "body": ["var ${1:name} = ${2:value}"],
+    "body": [
+      "var ${1:name} = ${2:value}"
+    ],
     "description": "Variable declaration"
   },
   "typed var": {
     "prefix": "vart",
-    "body": ["var ${1:name}: ${2:integer} = ${3:value}"],
+    "body": [
+      "var ${1:name}: ${2:integer} = ${3:value}"
+    ],
     "description": "Variable declaration with explicit type"
   },
   "println": {
     "prefix": "println",
-    "body": ["println \"${1:text}\""],
+    "body": [
+      "println \"${1:text}\""
+    ],
     "description": "Print a line"
   },
   "println interpolated": {
     "prefix": "printf",
-    "body": ["println \"${1:text} \\${${2:value}}\""],
+    "body": [
+      "println \"${1:text} \\${${2:value}}\""
+    ],
     "description": "Print a line with string interpolation"
   },
   "if": {
     "prefix": "if",
-    "body": ["if (${1:condition}) {", "\t$0", "}"],
+    "body": [
+      "if (${1:condition}) {",
+      "\t$0",
+      "}"
+    ],
     "description": "If statement"
   },
   "if else": {
     "prefix": "ifelse",
-    "body": ["if (${1:condition}) {", "\t$2", "} else {", "\t$0", "}"],
+    "body": [
+      "if (${1:condition}) {",
+      "\t$2",
+      "} else {",
+      "\t$0",
+      "}"
+    ],
     "description": "If / else statement"
   },
   "for in": {
     "prefix": "for",
-    "body": ["for (${1:item} in ${2:items}) {", "\t$0", "}"],
+    "body": [
+      "for (${1:item} in ${2:items}) {",
+      "\t$0",
+      "}"
+    ],
     "description": "For-in loop"
   },
   "for index": {
     "prefix": "fori",
-    "body": ["for (var ${1:i} = 0; ${1:i} < ${2:count}; ${1:i} = ${1:i} + 1) {", "\t$0", "}"],
+    "body": [
+      "for (var ${1:i} = 0; ${1:i} < ${2:count}; ${1:i} = ${1:i} + 1) {",
+      "\t$0",
+      "}"
+    ],
     "description": "Counted for loop"
   },
   "while": {
     "prefix": "while",
-    "body": ["while (${1:condition}) {", "\t$0", "}"],
+    "body": [
+      "while (${1:condition}) {",
+      "\t$0",
+      "}"
+    ],
     "description": "While loop"
   },
   "struct init": {
     "prefix": "new",
-    "body": ["${1:Type}{", "\t${2:field}=${3:value}", "}"],
+    "body": [
+      "${1:Type}{",
+      "\t${2:field}=${3:value}",
+      "}"
+    ],
     "description": "Initialize an object with named fields"
   },
   "deprecated": {
     "prefix": "@Deprecated",
-    "body": ["@Deprecated{", "\ttext=\"${1:Reason}\",", "\tsince=\"${2:0.1.0}\"", "}"],
+    "body": [
+      "@Deprecated{",
+      "\ttext=\"${1:Reason}\",",
+      "\tsince=\"${2:0.1.0}\"",
+      "}"
+    ],
     "description": "Mark a member as deprecated"
   },
   "doc comment": {
     "prefix": "doc",
-    "body": ["/**", " * ${1:Description}", " */"],
+    "body": [
+      "/**",
+      " * ${1:Description}",
+      " */"
+    ],
     "description": "Documentation comment"
+  },
+  "Print to stderr": {
+    "prefix": "eprintln",
+    "body": [
+      "eprintln \"${1:message}\""
+    ],
+    "description": "Print a line to standard error"
+  },
+  "Print without newline": {
+    "prefix": "print",
+    "body": [
+      "print ${1:value}"
+    ],
+    "description": "Print without a line break"
+  },
+  "Run a command": {
+    "prefix": "exec",
+    "body": [
+      "var ${1:code} = os.exec(\"${2:command}\")"
+    ],
+    "description": "Run a shell command (import os)"
+  },
+  "HTTP request": {
+    "prefix": "http",
+    "body": [
+      "var ${1:response} = http.request(\"${2:GET}\", \"${3:https://example.com}\", ${4:\"\"}, {})",
+      "if (${1:response}[\"ok\"]) {",
+      "\t$0",
+      "}"
+    ],
+    "description": "HTTP request with status/body/headers (import http)"
   }
 }

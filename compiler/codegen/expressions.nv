@@ -1,0 +1,204 @@
+package codegen
+
+import "../ast/sexp.nv"
+import "../lexer/chars.nv"
+import "../parser/errors.nv"
+import "calls.nv"
+import "common.nv"
+import "index.nv"
+import "modules.nv"
+
+// Expressions -> C.
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+method isIdentAtom(string node): bool {
+    if (node.length() == 0 || isList(node)) {
+        return false
+    }
+    var c = node.charAt(0)
+    return isAlpha(c)
+}
+
+method isNumberAtom(string node): bool {
+    if (node.length() == 0 || isList(node)) {
+        return false
+    }
+    return isDigit(node.charAt(0))
+}
+
+method hasDot(string s): bool {
+    var i = 0
+    while (i < s.length()) {
+        if (s.charAt(i) == ".") {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+
+// Is `name` a variable in scope (local, this or global)?
+method resolveVar(string name, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    if (locals.has(name)) {
+        return locals[name]
+    }
+    if (name == "this") {
+        if (ctx["class"] != "") {
+            return "self"
+        }
+        return ""
+    }
+    if (prog.has("global:" + name)) {
+        return "g_" + name
+    }
+    return ""
+}
+
+method genExpr(string node, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    if (isList(node) == false) {
+        if (node == "true") {
+            return "nv_bool(1)"
+        }
+        if (node == "false") {
+            return "nv_bool(0)"
+        }
+        if (isNumberAtom(node)) {
+            if (hasDot(node)) {
+                return "nv_float(" + node + ")"
+            }
+            return "nv_int(" + node + "LL)"
+        }
+        var v = resolveVar(node, prog, ctx, locals)
+        if (v != "") {
+            return v
+        }
+        if (isImplicitField(node, prog, ctx, locals)) {
+            return "nv_get_member(self, " + cstr(node) + ")"
+        }
+        if (isClassLike(prog, node)) {
+            fail("'" + node + "' is a type, not a value", ctx["pos"])
+        }
+        if (node == "this") {
+            fail("'this' is only available inside classes", ctx["pos"])
+        }
+        fail("unknown variable '" + node + "'", ctx["pos"])
+    }
+    var head = nodeHead(node)
+    if (head == "str") {
+        return "nv_lit(" + nodeChild(node, 1) + ")"
+    }
+    if (head == "neg") {
+        var operand = nodeChild(node, 1)
+        if (isNumberAtom(operand)) {
+            if (hasDot(operand)) {
+                return "nv_float(-" + operand + ")"
+            }
+            return "nv_int(-" + operand + "LL)"
+        }
+        return "nv_neg(" + genExpr(operand, prog, ctx, locals) + ")"
+    }
+    if (head == "!") {
+        return "nv_not(" + genExpr(nodeChild(node, 1), prog, ctx, locals) + ")"
+    }
+    if (head == "arr") {
+        var count = nodeCount(node) - 1
+        if (count == 0) {
+            return "nv_arr()"
+        }
+        return "nv_arr_of(" + count + ", " + genArgs(node, 1, prog, ctx, locals) + ")"
+    }
+    if (head == "mapl") {
+        var pairs = (nodeCount(node) - 1) / 2
+        if (pairs == 0) {
+            return "nv_map()"
+        }
+        return "nv_map_of(" + pairs + ", " + genArgs(node, 1, prog, ctx, locals) + ")"
+    }
+    if (head == "obj") {
+        var cls = nodeChild(node, 1)
+        if (isClassLike(prog, cls) == false) {
+            fail("unknown class '" + cls + "'", ctx["pos"])
+        }
+        if (prog.has("enum:" + cls)) {
+            fail("'" + cls + "' is an enum and cannot be constructed", ctx["pos"])
+        }
+        if (classIsAbstract(prog["class:" + cls])) {
+            fail("cannot instantiate abstract class '" + cls + "'", ctx["pos"])
+        }
+        var out = "nv_new_object_fields(" + cstr(cls) + ", " + (nodeCount(node) - 2)
+        var i = 2
+        while (i < nodeCount(node)) {
+            var f = nodeChild(node, i)
+            out = out + ", " + cstr(nodeChild(f, 1)) + ", " + genExpr(nodeChild(f, 2), prog, ctx, locals)
+            i = i + 1
+        }
+        return out + ")"
+    }
+    if (head == "idx") {
+        return "nv_index(" + genExpr(nodeChild(node, 1), prog, ctx, locals) + ", " + genExpr(nodeChild(node, 2), prog, ctx, locals) + ")"
+    }
+    if (head == "mget") {
+        var target = nodeChild(node, 1)
+        var member = nodeChild(node, 2)
+        if (isIdentAtom(target) && resolveVar(target, prog, ctx, locals) == "" && isImplicitField(target, prog, ctx, locals) == false) {
+            if (prog.has("enum:" + target)) {
+                return "nv_enum_get(" + cstr(target) + ", " + cstr(member) + ")"
+            }
+            if (target == "path" && member == "absolute") {
+                return "nv_path_absolute()"
+            }
+            if (isModuleName(target)) {
+                fail("'" + target + "." + member + "' is a function - call it with ()", ctx["pos"])
+            }
+            if (isClassLike(prog, target)) {
+                fail("'" + target + "' is a type, not a value", ctx["pos"])
+            }
+            fail("unknown variable '" + target + "'", ctx["pos"])
+        }
+        return "nv_get_member(" + genExpr(target, prog, ctx, locals) + ", " + cstr(member) + ")"
+    }
+    if (head == "mcall") {
+        var mtarget = nodeChild(node, 1)
+        var mname = nodeChild(node, 2)
+        var nargs = nodeCount(node) - 3
+        if (isIdentAtom(mtarget) && resolveVar(mtarget, prog, ctx, locals) == "" && isImplicitField(mtarget, prog, ctx, locals) == false) {
+            if (isModuleName(mtarget)) {
+                return genModuleCall(mtarget, mname, node, prog, ctx, locals)
+            }
+            if (prog.has("enum:" + mtarget)) {
+                if (mname == "values") {
+                    return "nv_enum_values(" + cstr(mtarget) + ")"
+                }
+                fail("unknown enum function " + mtarget + "." + mname + "()", ctx["pos"])
+            }
+            if (isClassLike(prog, mtarget)) {
+                fail("'" + mtarget + "' is a type, not a value", ctx["pos"])
+            }
+            fail("unknown variable '" + mtarget + "'", ctx["pos"])
+        }
+        var call = "nv_invoke(" + genExpr(mtarget, prog, ctx, locals) + ", " + cstr(mname) + ", " + nargs
+        if (nargs > 0) {
+            call = call + ", " + genArgs(node, 3, prog, ctx, locals)
+        }
+        return call + ")"
+    }
+    if (head == "call") {
+        return genCall(node, prog, ctx, locals)
+    }
+    var l = genExpr(nodeChild(node, 1), prog, ctx, locals)
+    var r = genExpr(nodeChild(node, 2), prog, ctx, locals)
+    if (head == "&&") {
+        return "nv_bool(nv_truthy(" + l + ") && nv_truthy(" + r + "))"
+    }
+    if (head == "||") {
+        return "nv_bool(nv_truthy(" + l + ") || nv_truthy(" + r + "))"
+    }
+    var ops = {"+": "nv_add", "-": "nv_sub", "*": "nv_mul", "/": "nv_div", "%": "nv_mod",
+        "==": "nv_eq", "!=": "nv_ne", "<": "nv_lt", ">": "nv_gt", "<=": "nv_le", ">=": "nv_ge"}
+    if (ops.has(head) == false) {
+        fail("unsupported expression '" + head + "'", ctx["pos"])
+    }
+    return ops[head] + "(" + l + ", " + r + ")"
+}

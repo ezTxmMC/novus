@@ -1,0 +1,143 @@
+package main
+
+// Classes, constructors, fields, accessors, inheritance, polymorphism,
+// abstract classes, interfaces, enums, object literals.
+
+define interface IAnimal {
+    sound(): string
+}
+
+define abstract Animal based IAnimal {
+    private final string name: get, set
+    private integer legs: get
+
+    construct(string name, integer legs) {
+        this.name = name
+        this.legs = legs
+    }
+
+    abstract method sound(): string
+
+    method describe(): string {
+        return "${this.name} has ${this.legs} legs and says ${this.sound()}"
+    }
+
+    method rename(string newName) {
+        name = newName
+    }
+}
+
+define class Dog based Animal {
+    construct(string name) {
+        this.name = name
+        this.legs = 4
+    }
+
+    method sound(): string {
+        return "woof"
+    }
+}
+
+define class Bird based Animal {
+    private final bool canFly: get
+
+    construct(string name, bool canFly) {
+        this.name = name
+        this.legs = 2
+        this.canFly = canFly
+    }
+
+    method sound(): string {
+        return "tweet"
+    }
+
+    method describe(): string {
+        var base = "bird: "
+        return base + this.name + " flies=" + this.canFly
+    }
+}
+
+define class Point {
+    private final integer x: get, set
+    private final integer y: get, set
+
+    method sum(): integer {
+        return x + y
+    }
+}
+
+define class Counter {
+    private integer value: get
+
+    construct() {
+        this.value = 0
+    }
+
+    method increment() {
+        this.value = this.value + 1
+    }
+}
+
+define enum Color {
+    RED("#f00"),
+    GREEN("#0f0"),
+    BLUE("#00f");
+
+    private final string hex: get
+
+    private construct(string hex) {
+        this.hex = hex
+    }
+
+    method describe(): string {
+        return "${this.hex}"
+    }
+}
+
+define enum Level {
+    LOW,
+    HIGH
+}
+
+method main {
+    var animals = [Dog("Rex"), Bird("Tweety", true), Bird("Pingu", false)]
+    for (a in animals) {
+        println a.describe()
+    }
+    var rex = animals[0]
+    println rex.name()
+    rex.name("Max")
+    println rex.name()
+    rex.rename("Rocky")
+    println rex.name()
+    println rex.legs()
+    println rex
+    println typeOf(rex)
+    var p = Point{x=3, y=4}
+    println p.sum()
+    println p
+    var q = Point(1, 2)
+    println q.sum()
+    var c = Counter()
+    c.increment()
+    c.increment()
+    println c.value()
+    var same = c
+    same.increment()
+    println c.value()
+    var color = Color.GREEN
+    println color
+    println color.hex()
+    println color.describe()
+    println color == Color.GREEN
+    println color == Color.RED
+    println Color.values()
+    println Level.HIGH
+    println typeOf(color)
+    var first = animals[1]
+    println first.canFly()
+    println first.name
+    var literalDog = Dog{name="Lit"}
+    println literalDog.legs()
+    println literalDog.sound()
+}

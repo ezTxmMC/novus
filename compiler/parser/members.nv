@@ -1,0 +1,166 @@
+package parser
+
+import "../ast/text.nv"
+import "../lexer/tokens.nv"
+import "errors.nv"
+import "expressions.nv"
+import "statements.nv"
+import "tokens.nv"
+import "types.nv"
+
+// Annotations, methods and class/enum members.
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+// @Name or @Name{key="value", ...} -> (anno Name (a key "value") ...)
+method parseAnnotation(array<string> tokens, integer pos): map<string, string> {
+    var p = expectIdent(tokens, pos + 1, "annotation name after '@'")
+    var node = "(anno " + tokVal(tokens[p - 1])
+    if (isSym(tokens, p, "{")) {
+        p = p + 1
+        while (isSym(tokens, p, "}") == false) {
+            if (atEnd(tokens, p)) {
+                fail("unterminated annotation arguments", posOf(tokens, p))
+            }
+            if (isIdent(tokens, p) && isSym(tokens, p + 1, "=")) {
+                var key = tokVal(tokens[p])
+                p = p + 2
+                if (tokKind(tokens[p]) == "STRING") {
+                    node = node + " (a " + key + " " + sexpStr(tokVal(tokens[p])) + ")"
+                    p = p + 1
+                } else {
+                    var ignored = parseExpr(tokens, p, 0)
+                    p = parseInt(ignored["pos"])
+                }
+            } else {
+                p = p + 1
+            }
+            if (isSym(tokens, p, ",")) {
+                p = p + 1
+            }
+        }
+        p = p + 1
+    }
+    return { "node": node + ")", "pos": p }
+}
+
+// method name[(params)][: type] { body }   (pos points at 'method')
+method parseMethodDecl(array<string> tokens, integer pos, string annos): map<string, string> {
+    var p = expectIdent(tokens, pos + 1, "method name")
+    var name = tokVal(tokens[p - 1])
+    var params = "(params)"
+    if (isSym(tokens, p, "(")) {
+        var pr = parseParams(tokens, p)
+        params = pr["node"]
+        p = parseInt(pr["pos"])
+    }
+    var ret = "void"
+    if (isSym(tokens, p, ":")) {
+        var rt = parseType(tokens, p + 1)
+        ret = rt["node"]
+        p = parseInt(rt["pos"])
+    }
+    var b = parseBlock(tokens, p)
+    var node = "(method " + name + " " + ret + " " + params + " " + annos + " " + b["node"] + ")"
+    return { "node": node, "pos": parseInt(b["pos"]) }
+}
+
+// Class or enum body up to (not including) the closing '}'.
+// Returns node "(fields ...) (ctor ...)|(noctor) (methods ...)".
+method parseMembers(array<string> tokens, integer pos): map<string, string> {
+    var p = pos
+    var fields = "(fields"
+    var ctor = "(noctor)"
+    var methods = "(methods"
+    var annos = "(annos)"
+    while (isSym(tokens, p, "}") == false) {
+        if (atEnd(tokens, p)) {
+            fail("unterminated class body (missing '}')", posOf(tokens, p))
+        }
+        if (isSym(tokens, p, "@")) {
+            var an = parseAnnotation(tokens, p)
+            annos = annos.substring(0, annos.length() - 1) + " " + an["node"] + ")"
+            p = parseInt(an["pos"])
+            continue
+        }
+        if (isSym(tokens, p, ";")) {
+            p = p + 1
+            continue
+        }
+        while (isKw(tokens, p, "private") || isKw(tokens, p, "final")) {
+            p = p + 1
+        }
+        if (isIdentNamed(tokens, p, "abstract") && isKw(tokens, p + 1, "method")) {
+            p = expectIdent(tokens, p + 2, "method name after 'abstract method'")
+            var aname = tokVal(tokens[p - 1])
+            var aparams = "(params)"
+            if (isSym(tokens, p, "(")) {
+                var apr = parseParams(tokens, p)
+                aparams = apr["node"]
+                p = parseInt(apr["pos"])
+            }
+            var aret = "void"
+            if (isSym(tokens, p, ":")) {
+                var art = parseType(tokens, p + 1)
+                aret = art["node"]
+                p = parseInt(art["pos"])
+            }
+            methods = methods + " (method " + aname + " " + aret + " " + aparams + " " + annos + " (abstract))"
+            annos = "(annos)"
+            continue
+        }
+        if (isKw(tokens, p, "method")) {
+            var m = parseMethodDecl(tokens, p, annos)
+            methods = methods + " " + m["node"]
+            annos = "(annos)"
+            p = parseInt(m["pos"])
+            continue
+        }
+        if (isIdentNamed(tokens, p, "construct") && isSym(tokens, p + 1, "(")) {
+            var cpr = parseParams(tokens, p + 1)
+            var cb = parseBlock(tokens, parseInt(cpr["pos"]))
+            ctor = "(ctor " + cpr["node"] + " " + cb["node"] + ")"
+            annos = "(annos)"
+            p = parseInt(cb["pos"])
+            continue
+        }
+        if (isIdent(tokens, p) && isSym(tokens, p + 1, "(")) {
+            // method without the keyword: name(params)[: type] [{ body }]
+            var iname = tokVal(tokens[p])
+            var ipr = parseParams(tokens, p + 1)
+            p = parseInt(ipr["pos"])
+            var iret = "void"
+            if (isSym(tokens, p, ":")) {
+                var irt = parseType(tokens, p + 1)
+                iret = irt["node"]
+                p = parseInt(irt["pos"])
+            }
+            var ibody = "(abstract)"
+            if (isSym(tokens, p, "{")) {
+                var ib = parseBlock(tokens, p)
+                ibody = ib["node"]
+                p = parseInt(ib["pos"])
+            }
+            methods = methods + " (method " + iname + " " + iret + " " + ipr["node"] + " " + annos + " " + ibody + ")"
+            annos = "(annos)"
+            continue
+        }
+        // field: Type name [: get[, set]]
+        var ft = parseType(tokens, p)
+        p = expectIdent(tokens, parseInt(ft["pos"]), "field name")
+        fields = fields + " (f " + ft["node"] + " " + tokVal(tokens[p - 1]) + ")"
+        if (isSym(tokens, p, ":")) {
+            p = p + 1
+            while (isIdentNamed(tokens, p, "get") || isIdentNamed(tokens, p, "set")) {
+                p = p + 1
+                if (isSym(tokens, p, ",") == false) {
+                    break
+                }
+                p = p + 1
+            }
+        }
+        annos = "(annos)"
+    }
+    return { "node": fields + ") " + ctor + " " + methods + ")", "pos": p }
+}

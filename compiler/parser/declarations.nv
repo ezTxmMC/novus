@@ -1,0 +1,237 @@
+package parser
+
+import "../ast/text.nv"
+import "../lexer/lexer.nv"
+import "../lexer/tokens.nv"
+import "errors.nv"
+import "expressions.nv"
+import "members.nv"
+import "statements.nv"
+import "tokens.nv"
+import "types.nv"
+
+// Top-level declarations and whole files.
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+// define class|abstract Name [(params)] [based Base] { members }
+method parseClass(array<string> tokens, integer pos, bool isAbstract): map<string, string> {
+    var p = expectIdent(tokens, pos, "class name")
+    var name = tokVal(tokens[p - 1])
+    if (isSym(tokens, p, "(")) {
+        var ignored = parseParams(tokens, p)
+        p = parseInt(ignored["pos"])
+    }
+    var base = "-"
+    if (isIdentNamed(tokens, p, "based")) {
+        p = expectIdent(tokens, p + 1, "base name after 'based'")
+        base = tokVal(tokens[p - 1])
+    }
+    p = expectSym(tokens, p, "{")
+    var members = parseMembers(tokens, p)
+    p = expectSym(tokens, parseInt(members["pos"]), "}")
+    var abstractFlag = "false"
+    if (isAbstract) {
+        abstractFlag = "true"
+    }
+    return { "node": "(class " + name + " " + base + " " + abstractFlag + " " + members["node"] + ")", "pos": p }
+}
+
+// define enum Name { CONST[(args)], ...; members }
+method parseEnum(array<string> tokens, integer pos): map<string, string> {
+    var p = expectIdent(tokens, pos, "enum name")
+    var name = tokVal(tokens[p - 1])
+    p = expectSym(tokens, p, "{")
+    var consts = "(consts"
+    while (isIdent(tokens, p) && (isSym(tokens, p + 1, ",") || isSym(tokens, p + 1, "(") || isSym(tokens, p + 1, ";") || isSym(tokens, p + 1, "}"))) {
+        var cname = tokVal(tokens[p])
+        p = p + 1
+        var cargs = ""
+        if (isSym(tokens, p, "(")) {
+            var ar = parseArgs(tokens, p + 1)
+            cargs = ar["node"]
+            p = parseInt(ar["pos"])
+        }
+        consts = consts + " (c " + cname + cargs + ")"
+        if (isSym(tokens, p, ",")) {
+            p = p + 1
+        }
+        if (isSym(tokens, p, ";")) {
+            p = p + 1
+            break
+        }
+    }
+    var members = parseMembers(tokens, p)
+    p = expectSym(tokens, parseInt(members["pos"]), "}")
+    return { "node": "(enum " + name + " " + consts + ") " + members["node"] + ")", "pos": p }
+}
+
+// define interface Name { name(params)[: type] ... }
+method parseInterface(array<string> tokens, integer pos): map<string, string> {
+    var p = expectIdent(tokens, pos, "interface name")
+    var name = tokVal(tokens[p - 1])
+    p = expectSym(tokens, p, "{")
+    var names = "(names"
+    while (isSym(tokens, p, "}") == false) {
+        if (atEnd(tokens, p)) {
+            fail("unterminated interface body", posOf(tokens, p))
+        }
+        if (isSym(tokens, p, "@")) {
+            var an = parseAnnotation(tokens, p)
+            p = parseInt(an["pos"])
+            continue
+        }
+        if (isIdent(tokens, p) && isSym(tokens, p + 1, "(")) {
+            names = names + " " + tokVal(tokens[p])
+            var pr = parseParams(tokens, p + 1)
+            p = parseInt(pr["pos"])
+            if (isSym(tokens, p, ":")) {
+                var rt = parseType(tokens, p + 1)
+                p = parseInt(rt["pos"])
+            }
+            if (isSym(tokens, p, "{")) {
+                var ib = parseBlock(tokens, p)
+                p = parseInt(ib["pos"])
+            }
+            continue
+        }
+        p = p + 1
+    }
+    return { "node": "(iface " + name + " " + names + "))", "pos": p + 1 }
+}
+
+method skipBraced(array<string> tokens, integer pos): integer {
+    var p = pos
+    while (atEnd(tokens, p) == false && isSym(tokens, p, "{") == false) {
+        p = p + 1
+    }
+    var depth = 0
+    while (atEnd(tokens, p) == false) {
+        if (isSym(tokens, p, "{")) {
+            depth = depth + 1
+        }
+        if (isSym(tokens, p, "}")) {
+            depth = depth - 1
+            if (depth == 0) {
+                return p + 1
+            }
+        }
+        p = p + 1
+    }
+    return p
+}
+
+// define class|abstract|enum|interface|annotation ... (pos points at 'define');
+// appends the declaration and returns the position after it.
+method parseDefine(array<string> tokens, integer pos, array<string> decls): integer {
+    var what = tokVal(tokens[pos + 1])
+    if (what == "class" || what == "abstract") {
+        var c = parseClass(tokens, pos + 2, what == "abstract")
+        decls.append(c["node"])
+        return parseInt(c["pos"])
+    }
+    if (what == "enum") {
+        var en = parseEnum(tokens, pos + 2)
+        decls.append(en["node"])
+        return parseInt(en["pos"])
+    }
+    if (what == "interface") {
+        var iface = parseInterface(tokens, pos + 2)
+        decls.append(iface["node"])
+        return parseInt(iface["pos"])
+    }
+    if (what == "annotation") {
+        var p = expectIdent(tokens, pos + 2, "annotation name")
+        decls.append("(annodef " + tokVal(tokens[p - 1]) + ")")
+        return skipBraced(tokens, p)
+    }
+    fail("unknown definition kind '" + what + "'", tokPos(tokens[pos]))
+    return pos
+}
+
+// [private] [final] [var] NAME [: type] = expr (top-level constant)
+method parseGlobal(array<string> tokens, integer pos, array<string> decls): integer {
+    var p = pos
+    while (isKw(tokens, p, "private") || isKw(tokens, p, "final")) {
+        p = p + 1
+    }
+    if (isKw(tokens, p, "var")) {
+        p = p + 1
+    }
+    p = expectIdent(tokens, p, "constant name")
+    var gname = tokVal(tokens[p - 1])
+    if (isSym(tokens, p, ":")) {
+        var gt = parseType(tokens, p + 1)
+        p = parseInt(gt["pos"])
+    }
+    p = expectSym(tokens, p, "=")
+    var ge = parseExpr(tokens, p, 0)
+    decls.append("(global " + gname + " " + ge["node"] + ")")
+    return parseInt(ge["pos"])
+}
+
+method isGlobalStart(array<string> tokens, integer p): bool {
+    if (isKw(tokens, p, "private") || isKw(tokens, p, "final") || isKw(tokens, p, "var")) {
+        return true
+    }
+    return isIdent(tokens, p) && isSym(tokens, p + 1, "=")
+}
+
+// Parses one source file into an array of top-level declaration nodes.
+// Imports are returned as (import "path") nodes for the loader to resolve.
+method parseFile(string source, string file): array<string> {
+    var tokens = lex(source, file)
+    var decls = []
+    var p = 0
+    var annos = "(annos)"
+    while (atEnd(tokens, p) == false) {
+        var t = tokens[p]
+        if (isKw(tokens, p, "package")) {
+            p = expectIdent(tokens, p + 1, "package name")
+            continue
+        }
+        if (isKw(tokens, p, "import")) {
+            if (tokKind(tokens[p + 1]) == "STRING") {
+                decls.append("(import " + sexpStr(tokVal(tokens[p + 1])) + ")")
+                p = p + 2
+                continue
+            }
+            p = expectIdent(tokens, p + 1, "module name or file path after 'import'")
+            continue
+        }
+        if (isSym(tokens, p, "@")) {
+            var an = parseAnnotation(tokens, p)
+            annos = annos.substring(0, annos.length() - 1) + " " + an["node"] + ")"
+            p = parseInt(an["pos"])
+            continue
+        }
+        if (isKw(tokens, p, "method")) {
+            var m = parseMethodDecl(tokens, p, annos)
+            decls.append(m["node"])
+            annos = "(annos)"
+            p = parseInt(m["pos"])
+            continue
+        }
+        if (isIdentNamed(tokens, p, "define")) {
+            p = parseDefine(tokens, p, decls)
+            annos = "(annos)"
+            continue
+        }
+        if (isGlobalStart(tokens, p)) {
+            p = parseGlobal(tokens, p, decls)
+            continue
+        }
+        if (isKw(tokens, p, "println") || isKw(tokens, p, "print") || isKw(tokens, p, "eprintln")) {
+            var pe = parseExpr(tokens, p + 1, 0)
+            p = parseInt(pe["pos"])
+            continue
+        }
+        if (isSym(tokens, p, ";")) {
+            p = p + 1
+            continue
+        }
+        fail("unexpected " + describe(tokens, p) + " at top level", tokPos(t))
+    }
+    return decls
+}

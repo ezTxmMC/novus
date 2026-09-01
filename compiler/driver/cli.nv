@@ -1,0 +1,50 @@
+package driver
+
+// Command line: usage text and option parsing.
+
+private final VERSION = "0.3.0"
+
+method printUsage() {
+    println "novusc ${VERSION} - the Novus compiler"
+    println ""
+    println "usage:"
+    println "  novusc run <file.nv> [args...]     compile and run"
+    println "  novusc build <file.nv> [options]   compile to a native executable"
+    println "  novusc emit <file.nv> [-o out.c]   write the generated C"
+    println "  novusc check <file.nv>             parse and analyze only"
+    println "  novusc version"
+    println ""
+    println "build options:"
+    println "  -o <path>         output path (default: source file stem)"
+    println "  --cc <compiler>   C compiler (default: $NOVUS_CC, then cc / gcc)"
+    println "  --cflags <flags>  extra C compiler flags (also $NOVUS_CFLAGS)"
+    println "  --target <triple> cross compile via 'zig cc -target <triple>'"
+    println "  --keep-c          keep the generated .c file"
+    println "  --no-runtime      #include \"novus_rt.h\" instead of embedding it"
+}
+
+// Parses "--flag value" / "-o value" / "--switch" pairs into a map.
+method optionsFrom(array<string> arguments, integer from): map<string, string> {
+    var options = {}
+    var i = from
+    while (i < arguments.length()) {
+        var a = arguments[i]
+        if (a == "-o" || a == "--cc" || a == "--cflags" || a == "--target") {
+            if (i + 1 >= arguments.length()) {
+                eprintln "novusc: option ${a} needs a value"
+                exit(1)
+            }
+            options[a] = arguments[i + 1]
+            i = i + 2
+            continue
+        }
+        if (a == "--keep-c" || a == "--no-runtime") {
+            options[a] = "true"
+            i = i + 1
+            continue
+        }
+        eprintln "novusc: unknown option '${a}'"
+        exit(1)
+    }
+    return options
+}

@@ -59,7 +59,7 @@ export class LineMap {
   }
 }
 
-const STATEMENT_STARTERS = new Set(['var', 'println', 'return', 'if', 'for', 'while', 'method', 'define', 'construct', 'package', 'import', 'break', 'continue']);
+const STATEMENT_STARTERS = new Set(['var', 'println', 'print', 'eprintln', 'return', 'if', 'for', 'while', 'method', 'define', 'construct', 'package', 'import', 'break', 'continue']);
 
 export function parse(src: string): ParseResult {
   const lexed = lex(src);
@@ -806,16 +806,17 @@ export class Parser {
       this.error(`Expected 'var' after modifier`);
       return undefined;
     }
-    if (this.isKw('println')) {
+    if (this.isKw('println') || this.isKw('print') || this.isKw('eprintln')) {
       const kw = this.advance();
+      const variant = kw.value as 'println' | 'print' | 'eprintln';
       let value: ast.Expr | undefined;
       if (this.cur.newlineBefore || this.isPunct('}') || this.isPunct(';') || this.atEOF()) {
-        this.error("Expected a value after 'println'", kw);
+        this.error(`Expected a value after '${variant}'`, kw);
       } else {
         value = this.parseExpression();
-        if (!value) this.error("Expected a value after 'println'", kw);
+        if (!value) this.error(`Expected a value after '${variant}'`, kw);
       }
-      return { kind: 'Print', value, start, end: this.prevEnd() };
+      return { kind: 'Print', variant, value, start, end: this.prevEnd() };
     }
     if (this.isKw('return')) {
       this.advance();

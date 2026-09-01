@@ -1,0 +1,145 @@
+package codegen
+
+import "../ast/sexp.nv"
+import "../parser/errors.nv"
+import "common.nv"
+
+// The program index: methods, classes, enums, interfaces, globals.
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+method indexProgram(array<string> decls, map<string, string> prog): integer {
+    for (d in decls) {
+        var head = nodeHead(d)
+        var name = nodeChild(d, 1)
+        if (head == "method") {
+            var key = name + "/" + arityOf(d)
+            var count = 0
+            if (prog.has("func:" + key)) {
+                count = parseInt(prog["func:" + key])
+            }
+            prog["fnode:" + key + "/" + count] = d
+            prog["func:" + key] = intToStr(count + 1)
+            prog["hasfunc:" + name] = "1"
+            continue
+        }
+        if (head == "class" || head == "enum") {
+            if (isClassLike(prog, name) || prog.has("iface:" + name)) {
+                fail("duplicate definition of '" + name + "'", head + " " + name)
+            }
+            prog[head + ":" + name] = d
+            continue
+        }
+        if (head == "iface" || head == "annodef" || head == "global") {
+            prog[head + ":" + name] = d
+        }
+    }
+    return 0
+}
+
+method isClassLike(map<string, string> prog, string name): bool {
+    return prog.has("class:" + name) || prog.has("enum:" + name)
+}
+
+// The class or enum node, "" if unknown.
+method typeNode(map<string, string> prog, string name): string {
+    if (prog.has("class:" + name)) {
+        return prog["class:" + name]
+    }
+    if (prog.has("enum:" + name)) {
+        return prog["enum:" + name]
+    }
+    return ""
+}
+
+method classBase(string node): string {
+    if (nodeHead(node) == "class") {
+        var base = nodeChild(node, 2)
+        if (base == "-") {
+            return ""
+        }
+        return base
+    }
+    return ""
+}
+
+method classFields(string node): string {
+    if (nodeHead(node) == "enum") {
+        return nodeChild(node, 3)
+    }
+    return nodeChild(node, 4)
+}
+
+method classCtor(string node): string {
+    if (nodeHead(node) == "enum") {
+        return nodeChild(node, 4)
+    }
+    return nodeChild(node, 5)
+}
+
+method classMethods(string node): string {
+    if (nodeHead(node) == "enum") {
+        return nodeChild(node, 5)
+    }
+    return nodeChild(node, 6)
+}
+
+method classIsAbstract(string node): bool {
+    return nodeHead(node) == "class" && nodeChild(node, 3) == "true"
+}
+
+// The most-derived method node named `name` reachable from class `cls`.
+method findMethod(map<string, string> prog, string cls, string name): string {
+    var current = cls
+    var guard = 0
+    while (current != "" && guard < 64) {
+        var node = typeNode(prog, current)
+        if (node == "") {
+            return ""
+        }
+        var methods = classMethods(node)
+        var i = 1
+        while (i < nodeCount(methods)) {
+            var m = nodeChild(methods, i)
+            if (methodName(m) == name) {
+                return m
+            }
+            i = i + 1
+        }
+        current = classBase(node)
+        guard = guard + 1
+    }
+    return ""
+}
+
+// Is `name` a field of class `cls` or one of its bases?
+method classHasField(map<string, string> prog, string cls, string name): bool {
+    var current = cls
+    var guard = 0
+    while (current != "" && guard < 64) {
+        var node = typeNode(prog, current)
+        if (node == "") {
+            return false
+        }
+        var fields = classFields(node)
+        var i = 1
+        while (i < nodeCount(fields)) {
+            if (nodeChild(nodeChild(fields, i), 2) == name) {
+                return true
+            }
+            i = i + 1
+        }
+        current = classBase(node)
+        guard = guard + 1
+    }
+    return false
+}
+
+// Inside a class, a bare identifier may refer to a field of `this`.
+method isImplicitField(string name, map<string, string> prog, map<string, string> ctx, map<string, string> locals): bool {
+    if (ctx["class"] == "" || locals.has(name) || prog.has("global:" + name)) {
+        return false
+    }
+    return classHasField(prog, ctx["class"], name)
+}

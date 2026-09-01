@@ -1,0 +1,97 @@
+name: ci
+
+on:
+  push:
+    branches: [master, main]
+    tags: ['v*']
+  pull_request:
+
+jobs:
+  native:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux-x86_64, os: ubuntu-latest }
+          - { name: macos-arm64, os: macos-latest }
+          - { name: macos-x86_64, os: macos-13 }
+          - { name: windows-x86_64, os: windows-latest }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up MSYS2 (gcc)
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: false
+          install: mingw-w64-x86_64-gcc
+
+      - name: Bootstrap and test (unix)
+        if: runner.os != 'Windows'
+        run: |
+          scripts/bootstrap.sh
+          test/run_tests.sh
+          test/selfhost.sh
+
+      - name: Bootstrap and test (windows)
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        run: |
+          export NOVUS_CC=gcc
+          scripts/bootstrap.sh
+          test/run_tests.sh
+          test/selfhost.sh
+
+      - name: Package
+        shell: bash
+        run: |
+          mkdir -p artifact
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cp build/novusc.exe artifact/novusc-${{ matrix.name }}.exe
+          else
+            cp build/novusc artifact/novusc-${{ matrix.name }}
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: novusc-${{ matrix.name }}
+          path: artifact/*
+
+  cross:
+    name: cross (zig)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.14.1
+      - name: Bootstrap
+        run: scripts/bootstrap.sh
+      - name: Cross compile
+        run: scripts/cross.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: novusc-cross
+          path: dist/*
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [native, cross]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Collect
+        run: |
+          mkdir -p release
+          find artifacts -type f -exec cp {} release/ \;
+          ls -la release
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: release/*

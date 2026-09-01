@@ -1,0 +1,83 @@
+package codegen
+
+import "../parser/errors.nv"
+
+// Free builtin functions.
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+method expectArgs(string what, integer got, integer want, map<string, string> ctx): integer {
+    if (got != want) {
+        fail(what + " expects " + want + " argument(s) but got " + got, ctx["pos"])
+    }
+    return 0
+}
+
+method genBuiltinCall(string name, integer nargs, string args, map<string, string> ctx): string {
+    if (name == "readFile") {
+        expectArgs("readFile", nargs, 1, ctx)
+        return "nv_read_file(" + args + ")"
+    }
+    if (name == "writeFile") {
+        expectArgs("writeFile", nargs, 2, ctx)
+        return "nv_write_file(" + args + ")"
+    }
+    if (name == "fileExists") {
+        expectArgs("fileExists", nargs, 1, ctx)
+        return "nv_file_exists(" + args + ")"
+    }
+    if (name == "args") {
+        expectArgs("args", nargs, 0, ctx)
+        return "nv_args()"
+    }
+    if (name == "parseInt") {
+        expectArgs("parseInt", nargs, 1, ctx)
+        return "nv_parse_int(" + args + ")"
+    }
+    if (name == "parseFloat") {
+        expectArgs("parseFloat", nargs, 1, ctx)
+        return "nv_parse_float(" + args + ")"
+    }
+    if (name == "chr") {
+        expectArgs("chr", nargs, 1, ctx)
+        return "nv_chr(" + args + ")"
+    }
+    if (name == "ord") {
+        expectArgs("ord", nargs, 1, ctx)
+        return "nv_ord(" + args + ")"
+    }
+    if (name == "typeOf") {
+        expectArgs("typeOf", nargs, 1, ctx)
+        return "nv_type_of(" + args + ")"
+    }
+    if (name == "exec") {
+        expectArgs("exec", nargs, 1, ctx)
+        return "nv_exec(" + args + ")"
+    }
+    if (name == "env") {
+        expectArgs("env", nargs, 1, ctx)
+        return "nv_env(" + args + ")"
+    }
+    if (name == "exit") {
+        expectArgs("exit", nargs, 1, ctx)
+        return "nv_exit(" + args + ")"
+    }
+    if (name == "platform") {
+        expectArgs("platform", nargs, 0, ctx)
+        return "nv_platform()"
+    }
+    if (name == "readLine") {
+        expectArgs("readLine", nargs, 0, ctx)
+        return "nv_read_line()"
+    }
+    if (name == "removeFile") {
+        expectArgs("removeFile", nargs, 1, ctx)
+        return "nv_remove_file(" + args + ")"
+    }
+    return ""
+}
+
+method isCoreBuiltin(string name): bool {
+    return name == "readFile" || name == "writeFile" || name == "fileExists" || name == "args" || name == "parseInt" || name == "chr" || name == "ord" || name == "typeOf"
+}

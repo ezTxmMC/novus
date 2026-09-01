@@ -27,9 +27,9 @@ Full editor support for the [Novus](../README.md) programming language (`.nv` fi
   spacing and blank lines in the style of `test/syntax.nv` (`a + b`, `if (x) {`, `Key{field="value"}`,
   `array<Person> friends`, `name: get, set`). Line breaks, comments and strings are left as written, and it
   also works on files that do not parse yet.
-- **Run & Build** – `Novus: Run Novus File` (editor play button, `Ctrl+Alt+N`) runs the current file with
-  the interpreter; `Novus: Build Novus File` compiles it to a native binary via the self-hosted
-  Novus-to-C pipeline (`novus build`). Both use `build/novus` in the workspace or `novus.executablePath`.
+- **Run & Build** – `Novus: Run Novus File` (editor play button, `Ctrl+Alt+N`) compiles and runs the
+  current file (`novusc run`); `Novus: Build Novus File` compiles it to a native binary (`novusc build`).
+  Both use `build/novusc` in the workspace, then `novusc` on `PATH`, or `novus.executablePath`.
 - **Snippets** – `main`, `method`, `class`, `enum`, `interface`, `for`, `if`, `field`, `@Deprecated`, …
 
 The whole workspace is indexed, so symbols defined in other `.nv` files are available for completion,
@@ -39,7 +39,7 @@ navigation and rename.
 
 | Setting                              | Default | Description                                               |
 | ------------------------------------ | ------- | --------------------------------------------------------- |
-| `novus.executablePath`               | `""`    | Interpreter used by the run command (empty = auto-detect) |
+| `novus.executablePath`               | `""`    | `novusc` used by run/build (empty = auto-detect)          |
 | `novus.diagnostics.enabled`          | `true`  | Report problems                                           |
 | `novus.diagnostics.undefinedSymbols` | `true`  | Warn about names that cannot be resolved                  |
 | `novus.diagnostics.unusedVariables`  | `true`  | Fade out unused local variables                           |
@@ -49,16 +49,16 @@ navigation and rename.
 
 ## Language notes
 
-The interpreter now implements essentially all of `test/syntax.nv` (it runs as a golden test): classes,
-inheritance, interfaces, abstract classes, enums, annotations, overloading, `${}` interpolation, comments,
-modules (`json`, `path`) and the free builtins (`readFile`, `writeFile`, `fileExists`, `args`, `parseInt`,
-`chr`, `ord`, `typeOf`). Novus is self-hosting: a compiler written in Novus compiles Novus (and itself) to C
-– `novus build` produces native binaries for programs that stick to the compiler subset. Hover texts still
-mark the few remaining concept-only pieces (`http`, `public`/`protected`/`static`, `null`, `double`, `image`).
+Novus is self-hosting: `novusc`, written in Novus, compiles Novus (and itself) to C and is the only
+implementation. It covers all of `test/syntax.nv` (a golden test): classes, inheritance, interfaces,
+abstract classes, enums, annotations, overloading, `${}` interpolation, comments, modules (`json`, `path`,
+`os`, `http`) and the free builtins (`readFile`, `writeFile`, `fileExists`, `removeFile`, `readLine`, `args`, `parseInt`,
+`parseFloat`, `chr`, `ord`, `typeOf`, `exec`, `env`, `exit`, `platform`). Hover texts still mark the few
+remaining concept-only pieces (`public`/`protected`/`static`, `null`, `image`).
 
 Packages: a file declares `package name`; its top-level symbols are visible to files of the same package
 and to files that `import name`. Files without a `package` line are visible everywhere. The builtin modules
-`http`, `json` and `path` must be imported as well.
+`http`, `json`, `os` and `path` should be imported as well.
 
 Statements are newline terminated (a `;` is optional). A binary operator that starts a new line begins a
 new statement, so put operators at the end of the line when wrapping expressions.

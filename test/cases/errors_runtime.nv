@@ -1,0 +1,8 @@
+package main
+
+method main {
+    var xs = [1, 2, 3]
+    println "before"
+    println xs[5]
+    println "not reached"
+}

@@ -1,0 +1,4 @@
+ada: deposit 10 -> 10
+ada: deposit 10 -> 20
+free log: outside
+20

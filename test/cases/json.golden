@@ -1,0 +1,45 @@
+{"count":3,"name":"box","nested":{"a":[],"z":1},"ok":true,"size":2.5,"tags":["a","b"]}
+b
+5.000000
+4
+true
+{a: [], z: 1}
+[1,2.0,"x\"y",false]
+{"name":"pen","qty":2}
+[1, 2, {k: }]
+{
+  "a": [
+    1,
+    {
+      "b": 2
+    }
+  ],
+  "c": {}
+}
+escA
+
+a/b/c/d.txt
+/x/y
+z.nv
+z
+false
+true
+{
+  "count": 3,
+  "name": "box",
+  "nested": {
+    "a": [],
+    "z": 1
+  },
+  "ok": true,
+  "size": 2.5,
+  "tags": [
+    "a",
+    "b"
+  ]
+}
+true
+true
+false
+true
+string

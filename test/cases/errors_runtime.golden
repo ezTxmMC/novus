@@ -1,0 +1,2 @@
+before
+error: array index 5 out of bounds (size 3)

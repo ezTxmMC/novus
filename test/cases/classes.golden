@@ -1,0 +1,26 @@
+Rex has 4 legs and says woof
+bird: Tweety flies=true
+bird: Pingu flies=false
+Rex
+Max
+Rocky
+4
+Dog{legs: 4, name: Rocky}
+Dog
+7
+Point{x: 3, y: 4}
+3
+2
+3
+GREEN
+#0f0
+#0f0
+true
+false
+[RED, GREEN, BLUE]
+HIGH
+Color
+true
+Tweety
+0
+woof

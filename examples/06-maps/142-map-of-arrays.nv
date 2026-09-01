@@ -1,0 +1,16 @@
+package main
+
+// A map whose values are arrays.
+
+method main {
+    var schedule = {}
+    schedule["monday"] = ["standup", "review"]
+    schedule["tuesday"] = ["planning"]
+    schedule["monday"].append("retro")
+    for (day in schedule) {
+        println "${day}: ${schedule[day].length()} item(s)"
+        for (item in schedule[day]) {
+            println "  - ${item}"
+        }
+    }
+}

@@ -1,0 +1,38 @@
+package main
+
+// Ordering tasks so that every dependency comes first.
+
+method topologicalSort(map<string, object> dependencies): array<string> {
+    var order = []
+    var done = {}
+    var guard = 0
+    while (order.length() < dependencies.length() && guard < 100) {
+        for (task in dependencies) {
+            if (done.has(task)) {
+                continue
+            }
+            var ready = true
+            for (needed in dependencies[task]) {
+                if (done.has(needed) == false) {
+                    ready = false
+                }
+            }
+            if (ready) {
+                done[task] = true
+                order.append(task)
+            }
+        }
+        guard = guard + 1
+    }
+    return order
+}
+
+method main {
+    var tasks = {
+        "deploy": ["test", "build"],
+        "test": ["build"],
+        "build": ["checkout"],
+        "checkout": []
+    }
+    println topologicalSort(tasks).join(" -> ")
+}

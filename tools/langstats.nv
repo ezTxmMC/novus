@@ -12,7 +12,7 @@ import path
 // rule); data, prose and generated files are listed separately. --all counts
 // every file type, --lines ranks by lines instead of bytes.
 
-private final SKIP_DIRS = { ".git": true, "build": true, "dist": true, "node_modules": true, "out": true, "mccloud-data": true }
+private final SKIP_DIRS = { ".git": true, "build": true, "dist": true, "node_modules": true, "out": true, "mccloud-data": true, "generated": true }
 private final GENERATED = { "bootstrap/novusc.c": true, "compiler/runtime/runtime.nv": true, "compiler/std/stdlib.nv": true, "vscode-novus/package-lock.json": true }
 private final BAR_WIDTH = 30
 

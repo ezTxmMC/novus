@@ -1,0 +1,25 @@
+package main
+
+import strings
+
+// Turning a title into a URL slug.
+
+method slugify(string title): string {
+    var out = ""
+    for (c in title.toLower()) {
+        if (strings.isAlpha(c) || strings.isDigit(c)) {
+            out = out + c
+            continue
+        }
+        if (out.endsWith("-") == false && out != "") {
+            out = out + "-"
+        }
+    }
+    return strings.stripSuffix(out, "-")
+}
+
+method main {
+    println slugify("Hello, World!")
+    println slugify("  Novus 1.0 Released  ")
+    println slugify("C++ vs Novus")
+}

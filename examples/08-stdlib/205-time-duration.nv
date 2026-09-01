@@ -1,0 +1,15 @@
+package main
+
+import time
+
+// Human readable durations and measuring time.
+
+method main {
+    println time.duration(45)
+    println time.duration(90)
+    println time.duration(3725)
+    println time.duration(90000)
+    var start = time.clock()
+    time.sleep(10)
+    println time.elapsedMs(start) >= 5
+}

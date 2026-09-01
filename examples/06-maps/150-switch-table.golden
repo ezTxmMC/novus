@@ -1,0 +1,3 @@
+add: adds an item
+done: marks an item as done
+unknown command 'delete' (try: add, done, list)

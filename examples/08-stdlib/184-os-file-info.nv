@@ -1,0 +1,15 @@
+package main
+
+import os
+
+// Size and modification time of a file.
+
+method main {
+    var file = "example-184.bin"
+    os.writeFile(file, "1234567890")
+    println os.fileSize(file)
+    println os.modified(file) > 0
+    println os.fileSize("missing-file")
+    println os.isFile(file) && os.isDir(file) == false
+    os.remove(file)
+}

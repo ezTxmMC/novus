@@ -76,11 +76,10 @@ method genCall(string node, map<string, string> prog, map<string, string> ctx, m
     }
     if (ctx["class"] != "" && findMethod(prog, ctx["class"], name) != "") {
         // inside a class a bare call means this.name(...); own methods win
-        var call = "nv_invoke(self, " + cstr(name) + ", " + nargs
-        if (nargs > 0) {
-            call = call + ", " + genArgs(node, 2, prog, ctx, locals)
+        if (nargs == 0) {
+            return "nv_invoke0(self, " + cstr(name) + ")"
         }
-        return call + ")"
+        return "nv_invoke(self, " + cstr(name) + ", " + nargs + ", " + genArgs(node, 2, prog, ctx, locals) + ")"
     }
     if (isCoreBuiltin(name) || (prog.has("hasfunc:" + name) == false && isClassLike(prog, name) == false)) {
         var builtin = genBuiltinCall(name, nargs, genArgs(node, 2, prog, ctx, locals), ctx)
@@ -92,10 +91,15 @@ method genCall(string node, map<string, string> prog, map<string, string> ctx, m
         if (classIsAbstract(prog["class:" + name])) {
             fail("cannot instantiate abstract class '" + name + "'", ctx["pos"])
         }
-        if (nargs == 0) {
-            return "nv_construct(" + cstr(name) + ", 0)"
+        if (nargs <= 3) {
+            // nv_construct0..3 avoid the va_list of the general form
+            var direct = "nv_construct" + nargs + "(&nv_cls_" + name + ", " + cstr(name)
+            if (nargs > 0) {
+                direct = direct + ", " + genArgs(node, 2, prog, ctx, locals)
+            }
+            return direct + ")"
         }
-        return "nv_construct(" + cstr(name) + ", " + nargs + ", " + genArgs(node, 2, prog, ctx, locals) + ")"
+        return "nv_construct_cached(&nv_cls_" + name + ", " + cstr(name) + ", " + nargs + ", " + genArgs(node, 2, prog, ctx, locals) + ")"
     }
     if (prog.has("enum:" + name)) {
         fail("'" + name + "' is an enum and cannot be constructed", ctx["pos"])

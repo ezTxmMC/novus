@@ -1,0 +1,12 @@
+package main
+
+// Integer and float arithmetic behave differently.
+
+method main {
+    println 7 / 2
+    println 7.0 / 2
+    println 7 / 2.0
+    println 1 / 3
+    println 1.0 / 3.0
+    println 2 * 0.5
+}

@@ -1,0 +1,15 @@
+package main
+
+// Growing and shrinking an array at the end.
+
+method main {
+    var stack = []
+    stack.append("a")
+    stack.append("b", "c")
+    println stack
+    println stack.pop()
+    println stack
+    println stack.length()
+    stack.clear()
+    println stack
+}

@@ -1,0 +1,39 @@
+{
+  "name": "novus-docs",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "sync": "bun run scripts/sync-content.ts",
+    "dev": "bun run sync && vite",
+    "build": "bun run sync && tsc -b --noEmit && vite build && cp dist/index.html dist/404.html",
+    "preview": "vite preview",
+    "check": "tsc -b --noEmit",
+    "smoke": "bun run sync && bun scripts/smoke.tsx"
+  },
+  "dependencies": {
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "react-router-dom": "^7.18.3"
+  },
+  "devDependencies": {
+    "@mdx-js/react": "^3.1.1",
+    "@mdx-js/rollup": "^3.1.1",
+    "@shikijs/rehype": "^4.4.3",
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/bun": "^1.4.0",
+    "@types/mdx": "^2.0.14",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.5",
+    "@vitejs/plugin-react": "^6.1.1",
+    "happy-dom": "^20.12.0",
+    "rehype-slug": "^6.0.0",
+    "remark-frontmatter": "^5.0.0",
+    "remark-gfm": "^4.0.1",
+    "remark-mdx-frontmatter": "^5.2.0",
+    "shiki": "^4.4.3",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^7.0.2",
+    "vite": "^8.2.2"
+  }
+}

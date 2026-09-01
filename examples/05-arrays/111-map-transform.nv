@@ -1,0 +1,22 @@
+package main
+
+method squares(array<integer> numbers): array<integer> {
+    var out = []
+    for (n in numbers) {
+        out.append(n * n)
+    }
+    return out
+}
+
+method upperAll(array<string> words): array<string> {
+    var out = []
+    for (word in words) {
+        out.append(word.toUpper())
+    }
+    return out
+}
+
+method main {
+    println squares([1, 2, 3, 4, 5])
+    println upperAll(["novus", "rocks"])
+}

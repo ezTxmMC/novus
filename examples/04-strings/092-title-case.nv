@@ -1,0 +1,16 @@
+package main
+
+import strings
+
+method titleCase(string text): string {
+    var out = []
+    for (word in strings.words(text.toLower())) {
+        out.append(strings.capitalize(word))
+    }
+    return out.join(" ")
+}
+
+method main {
+    println titleCase("the novus programming language")
+    println titleCase("HELLO WORLD")
+}

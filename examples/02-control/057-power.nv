@@ -1,0 +1,23 @@
+package main
+
+// Fast exponentiation by squaring.
+
+method power(integer base, integer exponent): integer {
+    var result = 1
+    var left = exponent
+    var factor = base
+    while (left > 0) {
+        if (left % 2 == 1) {
+            result = result * factor
+        }
+        factor = factor * factor
+        left = left / 2
+    }
+    return result
+}
+
+method main {
+    println power(2, 10)
+    println power(3, 5)
+    println power(7, 0)
+}

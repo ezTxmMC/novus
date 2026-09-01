@@ -1,0 +1,76 @@
+# Installation
+
+Novus needs one thing: a C compiler. `gcc`, `clang` and `zig cc` all work.
+
+## From source (recommended)
+
+```bash
+git clone https://github.com/ezTxmMC/novus
+cd novus
+scripts/bootstrap.sh          # or: make
+```
+
+That runs three stages and leaves `build/novusc`:
+
+| Stage | What happens |
+|---|---|
+| 0 | `cc bootstrap/novusc.c -o build/novusc0` - the checked-in snapshot |
+| 1 | the snapshot compiles the current `compiler/*.nv` sources |
+| 2 | the result compiles itself again - that binary is `build/novusc` |
+
+```bash
+build/novusc version
+# novusc 0.1.0-pre.alpha.3
+```
+
+### Windows
+
+With `gcc` from MinGW-w64 / MSYS2 on the `PATH`:
+
+```bash
+scripts\bootstrap.cmd
+# or
+powershell -ExecutionPolicy Bypass -File scripts\bootstrap.ps1
+```
+
+`set NOVUS_CC=clang` picks a different compiler.
+
+## Prebuilt binaries
+
+Every push builds binaries for Linux, macOS and Windows; tagged releases have
+them attached. Seven targets are cross compiled from a single machine with
+[zig](https://ziglang.org):
+
+```bash
+scripts/cross.sh              # -> dist/
+scripts/cross.sh aarch64-macos  # just one target
+```
+
+<Callout type="warning">
+macOS binaries built through zig are not code signed. Run
+`xattr -d com.apple.quarantine novusc-aarch64-macos` once after downloading.
+</Callout>
+
+## Environment variables
+
+| Variable | Meaning |
+|---|---|
+| `NOVUS_CC` | C compiler used to build programs (default `cc`, `gcc` on Windows) |
+| `NOVUS_CFLAGS` | extra flags handed to the C compiler |
+| `NOVUS_ZIG` | zig executable used for `--target` cross builds |
+| `NOVUS_DEPS` | module cache for dependencies (default `~/.novus/deps`) |
+
+## Verifying the installation
+
+```bash
+make test
+```
+
+runs the golden tests, all 250 examples and the self-hosting ladder including
+the fixpoint check.
+
+## Editor support
+
+The VS Code extension in `vscode-novus/` provides highlighting, a language
+server with diagnostics and navigation, and run/build commands - see
+[Editor support](/docs/projects/editor).

@@ -1,0 +1,18 @@
+package main
+
+// @Deprecated warns the first time the method is called.
+
+@Deprecated{text="use area() instead", since="0.2"}
+method size(integer side): integer {
+    return side * side
+}
+
+method area(integer side): integer {
+    return side * side
+}
+
+method main {
+    println size(3)
+    println size(4)
+    println area(5)
+}

@@ -1,0 +1,7 @@
+[general]
+  name = novus
+[logging]
+  level = debug
+[server]
+  host = localhost
+  port = 8080

@@ -1,0 +1,84 @@
+# Modules and imports
+
+Novus has two kinds of imports: **files** of your own program and **modules**
+(the standard library and dependencies).
+
+## Files
+
+```nv
+import "helpers.nv"
+import "../lib/shapes.nv"
+```
+
+The path is relative to the importing file. Every file is loaded once, cycles
+are fine, and all declarations end up in one program - so a method from an
+imported file is called without any prefix.
+
+## Packages
+
+The `package` line at the top names the file's package:
+
+```nv
+package geometry
+```
+
+Packages group files that belong together and give the editor its symbol
+scopes. They do not create a namespace at run time - within one program,
+top-level names must be unique.
+
+## Standard modules
+
+```nv
+import strings
+import os
+import json
+```
+
+Module functions are **namespaced**, so they never collide with your own
+names:
+
+```nv
+println strings.repeat("ab", 3)
+println os.exists("file.txt")
+println json.stringify({ "a": 1 })
+```
+
+Every module is a regular Novus file in [std/](https://github.com/ezTxmMC/novus/tree/master/std),
+embedded into the compiler. Functions declared `native "..."` are implemented
+by the C runtime:
+
+```nv
+package os
+
+method mkdir(string path): bool native "nv_os_mkdir"
+
+method envOr(string name, string fallback): string {
+    var value = env(name)
+    if (value == "") {
+        return fallback
+    }
+    return value
+}
+```
+
+Using a module without importing it is a compile-time error that names the
+missing import. The full list is in the [standard library reference](/stdlib).
+
+## Dependency modules
+
+A dependency declared in `project.nv` is imported by its module path:
+
+```nv
+import "github.com/user/geo"                   // the module's entry file
+import "github.com/user/geo/shapes/circle.nv"  // a file inside the module
+```
+
+See [Dependencies](/docs/projects/dependencies).
+
+## Resolution order
+
+When `novusc` sees an import it tries, in this order:
+
+1. a standard module with that name (`import os`)
+2. a dependency module path from `project.nv`
+3. a file path relative to the importing file

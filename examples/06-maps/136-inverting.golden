@@ -1,0 +1,4 @@
+{france: fr, germany: de}
+{de: germany, fr: france, it: italy}
+[[de, germany], [fr, france]]
+{a: 3, b: 1, c: 1}

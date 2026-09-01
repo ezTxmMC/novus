@@ -1,0 +1,74 @@
+# The novusc CLI
+
+```
+novusc run [file.nv] [args...]     compile to a temporary binary and run it
+novusc build [file.nv] [options]   compile to a native executable
+novusc emit [file.nv] [-o out.c]   write the generated C
+novusc check [file.nv]             parse and analyze only
+novusc init [module-path]          create project.nv + main.nv
+novusc deps [add|update]           fetch dependencies
+novusc version | help
+```
+
+Inside a directory with a `project.nv` the file argument is optional -
+`novusc run` uses the manifest's `main`, `novusc build` also its `output`
+name.
+
+## Commands
+
+### run
+
+```bash
+novusc run examples/01-basics/001-hello-world.nv
+novusc run app.nv --verbose input.txt     # arguments after the file go to the program
+```
+
+Compiles into the temporary directory and executes; the exit code is passed
+through.
+
+### build
+
+```bash
+novusc build app.nv -o app
+novusc build app.nv --target aarch64-macos -o app-mac
+novusc build app.nv --cflags "-O3 -march=native"
+```
+
+### emit
+
+```bash
+novusc emit app.nv -o app.c    # one self-contained C file
+novusc emit app.nv             # to stdout
+novusc emit app.nv --no-runtime -o app.c   # #include "novus_rt.h" instead
+```
+
+### check
+
+Parses, resolves imports and runs the semantic checks without producing
+anything - the fastest way to validate a file.
+
+### init and deps
+
+```bash
+novusc init github.com/you/app
+novusc deps                       # fetch what project.nv requires
+novusc deps add github.com/you/lib v1.2.0
+novusc deps update                # re-fetch everything
+```
+
+## Build options
+
+| Option | Meaning |
+|---|---|
+| `-o <path>` | output file (default: the source stem, or `output` from project.nv) |
+| `--cc <compiler>` | C compiler to use (default `$NOVUS_CC`, then `cc`) |
+| `--cflags <flags>` | extra flags for the C compiler (also `$NOVUS_CFLAGS`) |
+| `--target <triple>` | cross compile through `zig cc -target <triple>` |
+| `--keep-c` | keep the generated `.c` file next to the binary |
+| `--no-runtime` | `#include "novus_rt.h"` instead of embedding the runtime |
+
+## Exit codes
+
+`novusc` returns 0 on success and 1 on a compile error. `novusc run` returns
+whatever the compiled program returned, so `return 3` from `main` gives exit
+code 3.

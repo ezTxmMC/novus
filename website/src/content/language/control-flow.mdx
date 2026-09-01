@@ -1,0 +1,96 @@
+# Control flow
+
+## if / else
+
+```nv
+if (temperature > 25) {
+    println "warm"
+} else if (temperature > 10) {
+    println "mild"
+} else {
+    println "cold"
+}
+```
+
+Conditions must be booleans - there is no implicit truthiness, so write
+`if (items.length() == 0)` rather than `if (items)`.
+
+Guard clauses keep code flat:
+
+```nv
+method describe(integer age): string {
+    if (age < 0) {
+        return "invalid"
+    }
+    if (age < 13) {
+        return "child"
+    }
+    return "adult"
+}
+```
+
+## while
+
+```nv
+var i = 0
+while (i < 5) {
+    println i
+    i = i + 1
+}
+```
+
+`while (true)` with a `break` is the idiomatic infinite loop.
+
+## for..in
+
+`for` iterates over a collection - there is no C style `for (i = 0; ...)`.
+
+```nv
+for (item in ["a", "b"]) { println item }      // array elements
+for (key in { "x": 1 }) { println key }        // map keys, sorted
+for (c in "abc") { print c }                   // characters
+```
+
+Counting loops use `arrays.range` or a `while`:
+
+```nv
+import arrays
+
+for (i in arrays.range(0, 5)) {
+    println "index ${i}"
+}
+```
+
+## break and continue
+
+```nv
+for (n in numbers) {
+    if (n < 0) {
+        continue      // skip to the next iteration
+    }
+    if (n > 100) {
+        break         // leave the innermost loop
+    }
+    println n
+}
+```
+
+## Scope
+
+Variables belong to the block that declares them. Re-declaring a name in the
+same block assigns to it instead of shadowing.
+
+```nv
+var x = 1
+if (true) {
+    var x = 2      // a new variable inside this block
+    println x      // 2
+}
+println x          // 1
+```
+
+## Examples
+
+- [FizzBuzz](/examples/02-control/043-fizzbuzz)
+- [Collatz sequence](/examples/02-control/049-collatz)
+- [Binary search as a guessing game](/examples/02-control/058-number-guess)

@@ -1,0 +1,6 @@
+push a -> [a]
+push b -> [a, b]
+push c -> [a, b, c]
+pop c -> [a, b]
+pop b -> [a]
+pop a -> []

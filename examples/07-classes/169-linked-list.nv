@@ -1,0 +1,54 @@
+package main
+
+// A linked list built from nodes that point at each other.
+
+define class Node {
+    private final integer value: get
+    private Node next: get, set
+
+    construct(integer value) {
+        this.value = value
+    }
+}
+
+define class LinkedList {
+    private Node head: get
+    private integer size: get
+
+    construct() {
+        this.size = 0
+    }
+
+    method add(integer value) {
+        var node = Node(value)
+        size = size + 1
+        if (typeOf(head) != "Node") {
+            head = node
+            return
+        }
+        var current = head
+        while (typeOf(current.next()) == "Node") {
+            current = current.next()
+        }
+        current.next(node)
+    }
+
+    method values(): array<integer> {
+        var out = []
+        var current = head
+        while (typeOf(current) == "Node") {
+            out.append(current.value())
+            current = current.next()
+        }
+        return out
+    }
+}
+
+method main {
+    var list = LinkedList()
+    for (n in [3, 1, 4]) {
+        list.add(n)
+    }
+    println list.values()
+    println list.size()
+}

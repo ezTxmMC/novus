@@ -1,0 +1,15 @@
+package main
+
+// A queue: append at the end, remove(0) from the front.
+
+method main {
+    var queue = []
+    queue.append("first")
+    queue.append("second")
+    queue.append("third")
+    while (queue.length() > 0) {
+        var next = queue[0]
+        queue.remove(0)
+        println "serving ${next}, ${queue.length()} waiting"
+    }
+}

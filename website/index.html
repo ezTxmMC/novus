@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <title>Novus - a self-hosting language that compiles to C</title>
+    <meta name="description" content="Novus is a self-hosting programming language. Its compiler is written in Novus, compiles to portable C and compiles itself byte-identically." />
+    <script>
+      // set the theme before the first paint to avoid a flash
+      const stored = localStorage.getItem('novus-theme');
+      const dark = stored ? stored === 'dark' : window.matchMedia('(prefers-color-scheme: dark)').matches;
+      document.documentElement.classList.toggle('dark', dark);
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

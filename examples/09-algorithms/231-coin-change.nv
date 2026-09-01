@@ -1,0 +1,29 @@
+package main
+
+import arrays
+
+// The fewest coins that make an amount.
+
+method fewestCoins(array<integer> coins, integer amount): integer {
+    var best = [0]
+    for (value in arrays.range(1, amount + 1)) {
+        var minimum = -1
+        for (coin in coins) {
+            if (coin <= value && best[value - coin] >= 0) {
+                var candidate = best[value - coin] + 1
+                if (minimum < 0 || candidate < minimum) {
+                    minimum = candidate
+                }
+            }
+        }
+        best.append(minimum)
+    }
+    return best[amount]
+}
+
+method main {
+    var coins = [1, 5, 10, 25]
+    println fewestCoins(coins, 63)
+    println fewestCoins(coins, 6)
+    println fewestCoins([5, 10], 3)
+}

@@ -1,0 +1,15 @@
+package main
+
+import arrays
+
+// The helpers of the arrays module.
+
+method main {
+    println arrays.sort([3, 1, 2])
+    println arrays.unique([1, 1, 2])
+    println arrays.range(0, 4)
+    println arrays.chunk([1, 2, 3, 4, 5], 2)
+    println arrays.sum([1, 2, 3])
+    println arrays.reverse(["a", "b"])
+    println arrays.concat([1], [2, 3])
+}

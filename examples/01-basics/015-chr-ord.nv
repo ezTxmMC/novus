@@ -1,0 +1,11 @@
+package main
+
+// chr turns a character code into a string, ord does the reverse.
+
+method main {
+    println chr(65)
+    println chr(97) + chr(98) + chr(99)
+    println ord("A")
+    println ord("z")
+    println chr(ord("a") + 1)
+}

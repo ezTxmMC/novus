@@ -1,0 +1,20 @@
+package main
+
+// An enum is a fixed set of named values.
+
+define enum Direction {
+    NORTH,
+    EAST,
+    SOUTH,
+    WEST
+}
+
+method main {
+    var heading = Direction.NORTH
+    println heading
+    println heading == Direction.NORTH
+    println heading == Direction.SOUTH
+    for (direction in Direction.values()) {
+        println "- ${direction}"
+    }
+}

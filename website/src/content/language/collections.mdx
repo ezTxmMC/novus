@@ -1,0 +1,105 @@
+# Collections
+
+## Arrays
+
+```nv
+var numbers = [10, 20, 30]
+println numbers[0]           // 10
+numbers[1] = 99
+numbers.append("mixed")      // arrays can hold any value
+println numbers.length()
+```
+
+| Method | Meaning |
+|---|---|
+| `length()` | number of elements |
+| `append(x, ...)` | add at the end |
+| `pop()` | remove and return the last element |
+| `insert(index, x)` | insert at a position |
+| `remove(index)` | remove at a position |
+| `contains(x)` / `indexOf(x)` | search |
+| `join(separator)` | build a string |
+| `clear()` | remove everything |
+
+The [arrays](/stdlib#arrays) module adds `sort`, `reverse`, `unique`,
+`range`, `slice`, `chunk`, `sum`, `min`, `max`, `concat`, `copy` and more.
+
+```nv
+import arrays
+
+println arrays.sort([3, 1, 2])          // [1, 2, 3]
+println arrays.range(0, 5)              // [0, 1, 2, 3, 4]
+println arrays.chunk([1, 2, 3, 4], 2)   // [[1, 2], [3, 4]]
+```
+
+## Maps
+
+```nv
+var ages = { "ada": 36, "grace": 45 }
+println ages["ada"]
+ages["alan"] = 41
+println ages.has("mars")      // false
+println ages.keys()           // [ada, alan, grace]
+```
+
+| Method | Meaning |
+|---|---|
+| `length()` | number of entries |
+| `has(key)` | whether a key exists |
+| `keys()` / `values()` | in key order |
+| `get(key, fallback)` | value or fallback |
+| `remove(key)` | delete an entry |
+
+Keys are always text, so `m[7]` and `m["7"]` are the same entry. Iteration is
+sorted by key, which keeps output deterministic.
+
+```nv
+for (name in ages) {
+    println "${name}: ${ages[name]}"
+}
+```
+
+## Nesting
+
+```nv
+var config = {
+    "server": { "host": "localhost", "port": 8080 },
+    "tags": ["fast", "small"]
+}
+println config["server"]["port"]
+println config["tags"][0]
+```
+
+<Callout type="warning">
+Indexing inside interpolation needs a temporary, because `"${m["k"]}"` would
+end the string literal at the inner quote.
+</Callout>
+
+## Common patterns
+
+Filtering and mapping are loops (Novus has no closures):
+
+```nv
+method evens(array<integer> numbers): array<integer> {
+    var out = []
+    for (n in numbers) {
+        if (n % 2 == 0) {
+            out.append(n)
+        }
+    }
+    return out
+}
+```
+
+Counting with a map:
+
+```nv
+var counts = {}
+for (word in words) {
+    if (counts.has(word)) {
+        counts[word] = counts[word] + 1
+        continue
+    }
+    counts[word] = 1
+}
+```

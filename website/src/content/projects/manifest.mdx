@@ -1,0 +1,57 @@
+# project.nv
+
+A directory with a `project.nv` is a project. The manifest has its own
+explicit, line based syntax - a setting followed by quoted values, `//`
+comments allowed:
+
+```nv
+project "github.com/ezTxmMC/app"          // module path: how others import it
+version "0.1.0"
+main "main.nv"                            // entry file (default main.nv)
+lib "lib.nv"                              // entry when used as a dependency
+output "app"                              // executable name
+novus "0.1.0-pre.alpha.3"                 // minimum compiler version
+
+require "github.com/user/geo" "v1.2.0"    // dependency
+replace "github.com/user/geo" "../geo"    // use a local checkout instead
+```
+
+## Settings
+
+| Setting | Meaning |
+|---|---|
+| `project` | module path - the name other projects import |
+| `version` | your version, informational |
+| `main` | entry file for the application (default `main.nv`) |
+| `lib` | entry file when this project is imported (default: `main`) |
+| `output` | binary name for `novusc build` (default: last path segment) |
+| `novus` | minimum compiler version, informational |
+| `require` | dependency: module path plus git tag, branch, commit or `latest` |
+| `replace` | develop against a local directory instead of fetching |
+
+## Creating one
+
+```bash
+novusc init github.com/you/app
+```
+
+writes a `project.nv` and a `main.nv` hello world.
+
+## Working inside a project
+
+Once a manifest exists, the commands need no file argument - they use `main`
+and `output` from it:
+
+```bash
+novusc run              # runs main.nv
+novusc build            # builds ./app
+novusc check
+```
+
+`novusc` looks for the nearest `project.nv` in the current directory or any
+parent, so this works from subdirectories too.
+
+<Callout type="tip">
+A library project sets `lib` to the file that should be loaded when someone
+imports the module, and can keep a `main.nv` around for its own demo program.
+</Callout>

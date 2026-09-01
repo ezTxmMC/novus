@@ -1,0 +1,17 @@
+package main
+
+import json
+
+// Serializing and parsing back again.
+
+method main {
+    var original = { "list": [1, 2, 3], "flag": true, "text": "hi" }
+    var text = json.stringify(original)
+    println text
+    var back = json.parse(text)
+    println back["list"][2]
+    println back["flag"] == true
+    println json.stringify(back) == text
+    println json.isValid(text)
+    println json.isValid("{broken")
+}

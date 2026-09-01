@@ -1,0 +1,34 @@
+package main
+
+// Numbers in binary, octal and hexadecimal.
+
+method toBase(integer number, integer base): string {
+    if (number == 0) {
+        return "0"
+    }
+    var digits = "0123456789abcdef"
+    var rest = number
+    var out = ""
+    while (rest > 0) {
+        out = digits.charAt(rest % base) + out
+        rest = rest / base
+    }
+    return out
+}
+
+method fromBase(string text, integer base): integer {
+    var digits = "0123456789abcdef"
+    var total = 0
+    for (c in text) {
+        total = total * base + digits.indexOf(c)
+    }
+    return total
+}
+
+method main {
+    println toBase(255, 2)
+    println toBase(255, 8)
+    println toBase(255, 16)
+    println fromBase("ff", 16)
+    println fromBase("11111111", 2)
+}

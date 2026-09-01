@@ -1,0 +1,39 @@
+package main
+
+import math
+
+// A two dimensional vector with arithmetic.
+
+define class Vector {
+    private final float x: get
+    private final float y: get
+
+    construct(float x, float y) {
+        this.x = x
+        this.y = y
+    }
+
+    method plus(Vector other): Vector {
+        return Vector(x + other.x(), y + other.y())
+    }
+
+    method scale(float factor): Vector {
+        return Vector(x * factor, y * factor)
+    }
+
+    method length(): float {
+        return math.sqrt(x * x + y * y)
+    }
+
+    method describe(): string {
+        return "(${x}, ${y})"
+    }
+}
+
+method main {
+    var a = Vector(3.0, 4.0)
+    var b = Vector(1.0, 2.0)
+    println a.length()
+    println a.plus(b).describe()
+    println a.scale(2.0).describe()
+}

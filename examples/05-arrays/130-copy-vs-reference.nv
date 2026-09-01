@@ -1,0 +1,16 @@
+package main
+
+import arrays
+
+// Assigning an array shares it; arrays.copy makes an independent one.
+
+method main {
+    var original = [1, 2, 3]
+    var shared = original
+    var copied = arrays.copy(original)
+    shared.append(4)
+    copied.append(99)
+    println "original ${original}"
+    println "shared   ${shared}"
+    println "copied   ${copied}"
+}

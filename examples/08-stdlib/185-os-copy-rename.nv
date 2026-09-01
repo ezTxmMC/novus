@@ -1,0 +1,16 @@
+package main
+
+import os
+
+// Copying, renaming and deleting files.
+
+method main {
+    os.writeFile("example-185-a.txt", "hello")
+    println os.copy("example-185-a.txt", "example-185-b.txt")
+    println os.readFile("example-185-b.txt")
+    println os.rename("example-185-b.txt", "example-185-c.txt")
+    println os.exists("example-185-b.txt")
+    println os.exists("example-185-c.txt")
+    os.remove("example-185-a.txt")
+    os.remove("example-185-c.txt")
+}

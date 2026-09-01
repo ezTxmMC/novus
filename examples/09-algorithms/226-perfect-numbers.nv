@@ -1,0 +1,29 @@
+package main
+
+import arrays
+
+// Numbers that equal the sum of their divisors.
+
+method divisorSum(integer n): integer {
+    var sum = 1
+    var d = 2
+    while (d * d <= n) {
+        if (n % d == 0) {
+            sum = sum + d
+            if (d != n / d) {
+                sum = sum + n / d
+            }
+        }
+        d = d + 1
+    }
+    return sum
+}
+
+method main {
+    for (n in arrays.range(2, 10000)) {
+        if (divisorSum(n) == n) {
+            println "${n} is perfect"
+        }
+    }
+    println "28 -> divisor sum ${divisorSum(28)}"
+}

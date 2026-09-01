@@ -1,0 +1,6 @@
+[build]
+{out: app, release: src/main.nv}
+app
+native
+true
+build

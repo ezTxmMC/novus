@@ -1,0 +1,48 @@
+package main
+
+import strings
+
+// Splitting source text into tokens - the first step of every compiler.
+
+method tokenize(string source): array<string> {
+    var tokens = []
+    var i = 0
+    while (i < source.length()) {
+        var c = source.charAt(i)
+        if (c == " ") {
+            i = i + 1
+            continue
+        }
+        if (strings.isDigit(c)) {
+            var number = ""
+            while (i < source.length() && strings.isDigit(source.charAt(i))) {
+                number = number + source.charAt(i)
+                i = i + 1
+            }
+            tokens.append("NUMBER " + number)
+            continue
+        }
+        if (strings.isAlpha(c)) {
+            var word = ""
+            while (i < source.length() && (strings.isAlpha(source.charAt(i)) || strings.isDigit(source.charAt(i)))) {
+                word = word + source.charAt(i)
+                i = i + 1
+            }
+            var kind = "IDENT "
+            if (word == "let" || word == "print") {
+                kind = "KEYWORD "
+            }
+            tokens.append(kind + word)
+            continue
+        }
+        tokens.append("SYMBOL " + c)
+        i = i + 1
+    }
+    return tokens
+}
+
+method main {
+    for (token in tokenize("let total = 12 + count2 * 3")) {
+        println token
+    }
+}

@@ -1,0 +1,17 @@
+package main
+
+// Filling placeholders in a template.
+
+method render(string template, map<string, string> values): string {
+    var out = template
+    for (key in values) {
+        out = out.replace("{" + key + "}", values[key])
+    }
+    return out
+}
+
+method main {
+    var template = "Hello {name}, you have {count} new messages."
+    println render(template, { "name": "Ada", "count": "5" })
+    println render(template, { "name": "Grace", "count": "0" })
+}

@@ -1,0 +1,15 @@
+package main
+
+import csv
+
+// Reading and writing CSV with quoting.
+
+method main {
+    var rows = csv.parse("name,city\nada,london\ngrace,new york\n")
+    println rows.length()
+    println rows[0]
+    println rows[2][1]
+    var out = csv.stringify([["a", "b"], ["quoted, value", "with \"quotes\""]])
+    println out
+    println csv.parse(out)[1][0]
+}

@@ -1,0 +1,26 @@
+package main
+
+// Overloads with the same arity are chosen by parameter type.
+
+method show(integer value): string {
+    return "integer ${value}"
+}
+
+method show(float value): string {
+    return "float ${value}"
+}
+
+method show(string value): string {
+    return "string ${value}"
+}
+
+method show(array<integer> value): string {
+    return "array ${value}"
+}
+
+method main {
+    println show(7)
+    println show(2.5)
+    println show("text")
+    println show([1, 2])
+}

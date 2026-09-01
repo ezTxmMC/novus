@@ -1,0 +1,11 @@
+package main
+
+import os
+
+// exec runs a command and returns its exit code.
+
+method main {
+    var code = os.exec("echo command output")
+    println "exit code ${code}"
+    println os.exec("exit 3")
+}

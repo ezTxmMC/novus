@@ -1,0 +1,14 @@
+package main
+
+import strings
+
+// Upper case, lower case and capitalization.
+
+method main {
+    println "Novus".toUpper()
+    println "Novus".toLower()
+    println strings.capitalize("novus")
+    var mixed = "hEllO"
+    println mixed.toLower() == "hello"
+    println strings.capitalize(mixed.toLower())
+}

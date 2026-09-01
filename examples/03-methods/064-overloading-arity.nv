@@ -1,0 +1,16 @@
+package main
+
+// Methods with the same name but a different number of parameters.
+
+method area(integer size): integer {
+    return size * size
+}
+
+method area(integer width, integer height): integer {
+    return width * height
+}
+
+method main {
+    println area(4)
+    println area(3, 5)
+}

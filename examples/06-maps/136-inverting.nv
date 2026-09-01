@@ -1,0 +1,13 @@
+package main
+
+import maps
+
+// Inverting, merging and listing map entries.
+
+method main {
+    var codes = { "de": "germany", "fr": "france" }
+    println maps.invert(codes)
+    println maps.merge(codes, { "it": "italy" })
+    println maps.entries(codes)
+    println maps.countValues(["a", "b", "a", "c", "a"])
+}

@@ -1,0 +1,28 @@
+package main
+
+import arrays
+
+// Sorting small integers by counting how often each value occurs.
+
+method countingSort(array<integer> items, integer maximum): array<integer> {
+    var counts = []
+    for (i in arrays.range(0, maximum + 1)) {
+        counts.append(0)
+    }
+    for (n in items) {
+        counts[n] = counts[n] + 1
+    }
+    var out = []
+    for (value in arrays.range(0, maximum + 1)) {
+        var left = counts[value]
+        while (left > 0) {
+            out.append(value)
+            left = left - 1
+        }
+    }
+    return out
+}
+
+method main {
+    println countingSort([4, 2, 2, 8, 3, 3, 1], 8)
+}

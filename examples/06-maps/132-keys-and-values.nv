@@ -1,0 +1,12 @@
+package main
+
+// The keys and values of a map, always in key order.
+
+method main {
+    var scores = { "ada": 99, "grace": 100, "alan": 95 }
+    println scores.keys()
+    println scores.values()
+    for (name in scores.keys()) {
+        println "${name}: ${scores[name]}"
+    }
+}

@@ -1,0 +1,12 @@
+package main
+
+// A line comment.
+/*
+   A block comment spanning
+   several lines.
+*/
+
+method main {
+    println "code runs" // trailing comment
+    /* inline */ println "comments do not"
+}

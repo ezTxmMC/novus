@@ -1,0 +1,17 @@
+package main
+
+import json
+import os
+
+// Saving and loading a JSON file.
+
+method main {
+    var data = { "users": [{ "name": "ada" }, { "name": "grace" }] }
+    json.save(data, ".", "example-196.json")
+    println os.exists("example-196.json")
+    var loaded = json.load("example-196.json")
+    println loaded["users"].length()
+    var first = loaded["users"][0]
+    println first["name"]
+    os.remove("example-196.json")
+}

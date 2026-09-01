@@ -1,0 +1,27 @@
+package main
+
+import strings
+
+// A Caesar cipher shifts every letter by a fixed amount.
+
+method shift(string text, integer by): string {
+    var out = ""
+    for (c in text) {
+        if (strings.isAlpha(c) == false) {
+            out = out + c
+            continue
+        }
+        var base = ord("a")
+        if (c < "a") {
+            base = ord("A")
+        }
+        out = out + chr(base + (ord(c) - base + by) % 26)
+    }
+    return out
+}
+
+method main {
+    var secret = shift("Attack at dawn!", 3)
+    println secret
+    println shift(secret, 23)
+}

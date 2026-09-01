@@ -1,0 +1,17 @@
+package main
+
+method isLeapYear(integer year): bool {
+    if (year % 400 == 0) {
+        return true
+    }
+    if (year % 100 == 0) {
+        return false
+    }
+    return year % 4 == 0
+}
+
+method main {
+    for (year in [1900, 2000, 2023, 2024, 2100]) {
+        println "${year}: ${isLeapYear(year)}"
+    }
+}

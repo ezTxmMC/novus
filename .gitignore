@@ -1,76 +1,61 @@
-# Build folders
+# Build output
+# build/  scripts/bootstrap.sh (novusc0, novusc1, novusc)
+# dist/   scripts/cross.sh (cross compiled binaries)
 build/
-bin/
-out/
 dist/
-Debug/
-Release/
-x64/
-x86/
-
-# Object / compiled files
 *.o
 *.obj
-*.lo
-*.la
-*.al
-*.ilk
-*.pch
-*.pdb
-*.idb
-*.dSYM/
-
-# Static / dynamic libraries
-*.a
-*.lib
-*.so
-*.so.*
-*.dll
-*.dylib
-
-# Executables
 *.exe
-*.out
-*.app
+*.pdb
+a.out
 
-# CMake
-CMakeFiles/
-CMakeCache.txt
-cmake_install.cmake
-install_manifest.txt
-compile_commands.json
-CTestTestfile.cmake
-Testing/
+# Generated C: `novusc emit` / `novusc build --keep-c` next to the sources.
+# The bootstrap snapshot is the one C file that is tracked.
+*.c
+!bootstrap/novusc.c
 
-# Make
-makedep*
-*.make
+# Files the examples write while they run (they clean up themselves)
+examples/*/example-*
+examples/*/*.json
 
-# Ninja
-.ninja_deps
-.ninja_log
-build.ninja
+# Binaries built from the examples and the quick start
+/wc
+/demo
+examples/*/wc
+examples/*/mccloud
+examples/**/test/
+test/cases/project/geoapp
 
-# IDEs / Editors
-.vscode/
-!vscode-novus/.vscode/
-.idea/
-*.suo
-*.user
-*.userosscache
-*.sln.docstates
+# Program output written into the working directory
+todo.json
+mccloud-data/
+people/
 
-# Logs
+# Website (website/ — bun + vite docs site; its `dist/` is covered above)
+node_modules/
+*.tsbuildinfo
+.vite/
+
+# Copied out of the repository by `bun run sync` (scripts/sync-content.ts)
+website/src/generated/
+website/src/lib/novus.tmLanguage.json
+
+# Documentation site (website/ has its own .gitignore as well)
+website/node_modules/
+website/dist/
+website/src/generated/
+website/src/lib/novus.tmLanguage.json
+
+# Tooling caches and logs
+.cache/
 *.log
-
-# OS files
-.DS_Store
-Thumbs.db
-
-# Temporary files
 *.tmp
-*.temp
 *.swp
 *~
 
-examples/**/test/
+# Editors and OS
+.vscode/
+!vscode-novus/.vscode/
+.idea/
+.DS_Store
+Thumbs.db

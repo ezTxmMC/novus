@@ -1,0 +1,15 @@
+package main
+
+method main {
+    var counts = {}
+    for (c in "mississippi") {
+        if (counts.has(c)) {
+            counts[c] = counts[c] + 1
+            continue
+        }
+        counts[c] = 1
+    }
+    for (c in counts) {
+        println "${c}: ${counts[c]}"
+    }
+}

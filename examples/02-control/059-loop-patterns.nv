@@ -1,0 +1,27 @@
+package main
+
+import arrays
+
+// The three common shapes of a loop.
+
+method main {
+    // counting
+    var i = 0
+    while (i < 3) {
+        print "${i} "
+        i = i + 1
+    }
+    println ""
+    // over a collection
+    for (item in ["a", "b", "c"]) {
+        print item + " "
+    }
+    println ""
+    // until a condition
+    var value = 100
+    while (value > 1) {
+        value = value / 3
+    }
+    println "reduced to ${value}"
+    println arrays.range(0, 3)
+}

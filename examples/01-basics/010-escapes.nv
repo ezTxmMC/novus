@@ -1,0 +1,11 @@
+package main
+
+// Backslash escapes inside string literals.
+
+method main {
+    println "tab:\there"
+    println "quote: \"quoted\""
+    println "backslash: \\"
+    println "two\nlines"
+    println "carriage return is \\r"
+}

@@ -1,0 +1,16 @@
+package main
+
+import arrays
+import strings
+
+// A formatted multiplication table.
+
+method main {
+    for (row in arrays.range(1, 6)) {
+        var cells = []
+        for (col in arrays.range(1, 6)) {
+            cells.append(strings.padLeft("" + row * col, 3))
+        }
+        println cells.join("")
+    }
+}

@@ -1,0 +1,12 @@
+package main
+
+import os
+
+method main {
+    println os.setEnv("NOVUS_EXAMPLE", "42")
+    println os.env("NOVUS_EXAMPLE")
+    println os.envOr("NOVUS_MISSING", "default value")
+    println os.env("NOVUS_MISSING") == ""
+    println os.platform().length() > 0
+    println os.pid() > 0
+}

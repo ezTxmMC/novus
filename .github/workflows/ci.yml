@@ -59,6 +59,28 @@ jobs:
           name: novusc-${{ matrix.name }}
           path: artifact/*
 
+  website:
+    name: docs site
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: Install
+        working-directory: website
+        run: bun install --frozen-lockfile
+      - name: Build
+        working-directory: website
+        run: bun run build
+      - name: Smoke test
+        working-directory: website
+        run: bun run smoke
+      - uses: actions/upload-artifact@v4
+        with:
+          name: docs-site
+          path: website/dist
+
   cross:
     name: cross (zig)
     runs-on: ubuntu-latest

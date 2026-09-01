@@ -1,0 +1,14 @@
+package main
+
+import strings
+
+// Shortening text and stripping prefixes or suffixes.
+
+method main {
+    var text = "a rather long sentence"
+    println strings.truncate(text, 10)
+    println strings.truncate(text, 100)
+    println strings.truncate(text, 3)
+    println strings.stripPrefix("v1.2.3", "v")
+    println strings.stripSuffix("archive.tar", ".tar")
+}

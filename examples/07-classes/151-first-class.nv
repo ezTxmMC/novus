@@ -1,0 +1,21 @@
+package main
+
+// A class groups data (fields) and behaviour (methods).
+
+define class Greeter {
+    private final string name: get
+
+    construct(string name) {
+        this.name = name
+    }
+
+    method greet(): string {
+        return "Hello, ${name}!"
+    }
+}
+
+method main {
+    var greeter = Greeter("Ada")
+    println greeter.greet()
+    println greeter.name()
+}

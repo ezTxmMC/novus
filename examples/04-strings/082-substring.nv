@@ -1,0 +1,11 @@
+package main
+
+// substring(start, end) - end is exclusive and clamped to the length.
+
+method main {
+    var text = "programming"
+    println text.substring(0, 7)
+    println text.substring(7, text.length())
+    println text.substring(3, 6)
+    println text.substring(5, 100)
+}

@@ -1,14 +1,15 @@
 # Novus - self-hosting compiler. Only a C compiler is required.
 #
 #   make            build build/novusc from the bootstrap snapshot
-#   make test       golden tests + self-hosting fixpoint check
+#   make test       golden tests, 250 examples and the self-hosting check
+#   make examples   run every example under examples/NN-*/
 #   make snapshot   regenerate bootstrap/novusc.c after compiler changes
 #   make cross      cross compile for all platforms (needs zig)
 #   make stats      language statistics of the repository (like GitHub's bar)
 #   make install    copy build/novusc to $(PREFIX)/bin
 PREFIX ?= /usr/local
 
-.PHONY: all test snapshot cross stats install clean
+.PHONY: all test examples snapshot cross stats install clean
 
 all: build/novusc
 
@@ -17,7 +18,11 @@ build/novusc: bootstrap/novusc.c $(wildcard compiler/*.nv compiler/*/*.nv std/*.
 
 test: build/novusc
 	test/run_tests.sh
+	test/run_examples.sh
 	test/selfhost.sh
+
+examples: build/novusc
+	test/run_examples.sh
 
 # no build/novusc prerequisite: after runtime/codegen changes the old
 # build/novusc must run first (two-step rule, see BOOTSTRAP.md)

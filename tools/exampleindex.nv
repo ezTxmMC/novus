@@ -1,0 +1,172 @@
+package main
+
+import os
+import path
+import strings
+
+// Regenerates examples/README.md from the example files themselves:
+//   novusc run tools/exampleindex.nv > examples/README.md
+// The description of an example is its first comment block.
+
+method chapterTitle(string folder): string {
+    var titles = {
+        "01-basics": "Basics",
+        "02-control": "Control flow",
+        "03-methods": "Methods",
+        "04-strings": "Strings",
+        "05-arrays": "Arrays",
+        "06-maps": "Maps",
+        "07-classes": "Classes and objects",
+        "08-stdlib": "Standard library",
+        "09-algorithms": "Algorithms",
+        "10-projects": "Projects"
+    }
+    if (titles.has(folder)) {
+        return titles[folder]
+    }
+    return folder
+}
+
+method chapterBlurb(string folder): string {
+    var blurbs = {
+        "01-basics": "Values, variables, printing and the shape of a program.",
+        "02-control": "Conditions, loops and the patterns built from them.",
+        "03-methods": "Parameters, return values, overloading and recursion.",
+        "04-strings": "Text handling from single characters to whole documents.",
+        "05-arrays": "Ordered collections, transformations and classic sorts.",
+        "06-maps": "Key/value data: counting, grouping, indexing, caching.",
+        "07-classes": "Fields, constructors, inheritance, interfaces, enums.",
+        "08-stdlib": "One or two examples per module of std/.",
+        "09-algorithms": "Searching, sorting, dynamic programming, graphs.",
+        "10-projects": "Longer programs that combine everything."
+    }
+    if (blurbs.has(folder)) {
+        return blurbs[folder]
+    }
+    return ""
+}
+
+// The first comment block of a file, as one sentence.
+method describe(string file): string {
+    var collected = []
+    for (raw in readFile(file).split("\n")) {
+        var line = raw.trim()
+        if (line.startsWith("//")) {
+            var text = strings.stripPrefix(strings.stripPrefix(line, "//"), "/").trim()
+            if (text != "") {
+                collected.append(text)
+            }
+            continue
+        }
+        if (collected.length() > 0) {
+            break
+        }
+        if (line.startsWith("method ") || line.startsWith("define ")) {
+            break
+        }
+    }
+    if (collected.length() == 0) {
+        return ""
+    }
+    var text = collected.join(" ")
+    var stop = text.indexOf(". ")
+    if (stop > 0) {
+        text = text.substring(0, stop)
+    }
+    return strings.stripSuffix(text, ".").replace("|", "\\|")
+}
+
+method titleOf(string file): string {
+    return file.substring(4, file.length() - 3)
+}
+
+method chapters(): array<string> {
+    var out = []
+    for (entry in os.listDir("examples")) {
+        if (os.isDir(path.join("examples", entry)) && strings.isDigit(entry.charAt(0))) {
+            out.append(entry)
+        }
+    }
+    return out
+}
+
+method exampleFiles(string folder): array<string> {
+    var out = []
+    for (entry in os.listDir(path.join("examples", folder))) {
+        if (entry.endsWith(".nv")) {
+            out.append(entry)
+        }
+    }
+    return out
+}
+
+method main {
+    var folders = chapters()
+    var total = 0
+    for (folder in folders) {
+        total = total + exampleFiles(folder).length()
+    }
+
+    println "# Novus examples"
+    println ""
+    println "${total} small programs, from the first line of Novus to complete projects."
+    println "Every example is self contained, prints something and is checked against the"
+    println "`.golden` file next to it."
+    println ""
+    println "```sh"
+    println "novusc run examples/01-basics/001-hello-world.nv   # run a single example"
+    println "make examples                                      # run all ${total}"
+    println "test/run_examples.sh strings                       # only matching paths"
+    println "```"
+    println ""
+    println "| Chapter | Examples | Topic |"
+    println "|---|---|---|"
+    for (folder in folders) {
+        var files = exampleFiles(folder)
+        var first = files[0].substring(0, 3)
+        var last = files[files.length() - 1].substring(0, 3)
+        var title = chapterTitle(folder)
+        var anchor = title.toLower().replace(" ", "-")
+        println "| [${title}](#${anchor}-${first}-${last}) | ${first}-${last} | " + strings.stripSuffix(chapterBlurb(folder), ".") + " |"
+    }
+
+    for (folder in folders) {
+        var files = exampleFiles(folder)
+        var title = chapterTitle(folder)
+        var first = files[0].substring(0, 3)
+        var last = files[files.length() - 1].substring(0, 3)
+        println ""
+        println "## ${title} (${first}-${last})"
+        println ""
+        println chapterBlurb(folder)
+        println ""
+        println "| # | Example | Shows |"
+        println "|---|---------|-------|"
+        for (file in files) {
+            var number = file.substring(0, 3)
+            var name = titleOf(file)
+            var summary = describe(path.join("examples", folder, file))
+            println "| ${number} | [${name}](${folder}/${file}) | ${summary} |"
+        }
+    }
+
+    println ""
+    println "## Showcase projects"
+    println ""
+    println "Larger programs with a directory of their own:"
+    println ""
+    println "| Project | Shows | Run with |"
+    println "|---|---|---|"
+    println "| [shapes](shapes/main.nv) | Interfaces, abstract classes, inheritance, polymorphism, enums | `novusc run examples/shapes/main.nv` |"
+    println "| [todo](todo/main.nv) | CLI arguments and JSON persistence | `novusc run examples/todo/main.nv add \"buy milk\"` |"
+    println "| [wordcount](wordcount/main.nv) | Files, maps and string processing | `novusc run examples/wordcount/main.nv file.txt` |"
+    println "| [mccloud](mccloud/README.md) | A multi-file project: classes, `os`/`path`/`json`, `screen` and Windows consoles | `novusc build examples/mccloud/main.nv && ./mccloud init` |"
+    println ""
+    println "## Notes"
+    println ""
+    println "- Examples that write files clean up after themselves, and none of them needs a network."
+    println "- Output is deterministic: random numbers are seeded, timestamps are fixed."
+    println "- `" + chr(36) + "{...}` cannot contain a string literal - put it in a variable first."
+    println "- `test/run_examples.sh --update` regenerates the golden files after a change."
+    println "- This file is generated: `novusc run tools/exampleindex.nv > examples/README.md`"
+}

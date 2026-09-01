@@ -101,7 +101,7 @@ method genStatement(string node, string indent, map<string, string> prog, map<st
         return indent + "nv_eprintln(" + genExpr(nodeChild(node, 1), prog, ctx, locals) + ");" + nl()
     }
     if (head == "if") {
-        var out = indent + "if (nv_truthy(" + genExpr(nodeChild(node, 1), prog, ctx, locals) + ")) {" + nl()
+        var out = indent + "if (" + genCondition(nodeChild(node, 1), prog, ctx, locals) + ") {" + nl()
         out = out + genBlock(nodeChild(node, 2), indent + "    ", prog, ctx, locals)
         out = out + indent + "}"
         if (nodeCount(node) > 3) {
@@ -115,7 +115,7 @@ method genStatement(string node, string indent, map<string, string> prog, map<st
         return out + nl()
     }
     if (head == "while") {
-        var wout = indent + "while (nv_truthy(" + genExpr(nodeChild(node, 1), prog, ctx, locals) + ")) {" + nl()
+        var wout = indent + "while (" + genCondition(nodeChild(node, 1), prog, ctx, locals) + ") {" + nl()
         return wout + genBlock(nodeChild(node, 2), indent + "    ", prog, ctx, locals) + indent + "}" + nl()
     }
     if (head == "forin") {

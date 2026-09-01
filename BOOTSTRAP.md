@@ -98,7 +98,12 @@ expressions: atoms 123 1.5 true false name, (str "escaped"), (neg e), (! e),
 
 Every value is an `nv` (`NvVal*`, 24 bytes; small integers are tagged
 pointers with the lowest bit set, so `nv_type_of()`/`nv_ival()` must be used
-instead of dereferencing). Locals are `l_name`, top-level constants
+instead of dereferencing). Objects are one arena block: value, header and one
+slot per field, addressed by index (`nv_field_index`) - the names live in the
+class. Maps keep entries in insertion order with a hash index and sort on
+demand, so iteration stays in key order (the fixpoint depends on it).
+Arithmetic and comparisons go through the inline `*_fast` / `*_bool` wrappers,
+conditions never box a bool. Locals are `l_name`, top-level constants
 `g_NAME`, free methods `f_name_N` (N = arity; same-arity overloads become
 `f_name_N_vK` plus a dispatcher that tests parameter types), class methods
 `m_Class_name_N(nv self, nv *args, int n)`, constructors `c_Class`. Classes

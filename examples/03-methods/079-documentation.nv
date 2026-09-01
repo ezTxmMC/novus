@@ -1,0 +1,21 @@
+package main
+
+/**
+ * Doc comments describe what a method does.
+ * The editor shows them on hover.
+ */
+method roundTo(float value, integer decimals): float {
+    var factor = 1
+    var i = 0
+    while (i < decimals) {
+        factor = factor * 10
+        i = i + 1
+    }
+    return (value * factor + 0.5) / factor
+}
+
+/// A single line doc comment works as well.
+method main {
+    println roundTo(3.14159, 2)
+    println roundTo(2.71828, 3)
+}

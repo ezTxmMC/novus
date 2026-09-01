@@ -1,0 +1,24 @@
+package main
+
+// Two objects are equal only when they are the same instance.
+
+define class Box {
+    private final integer size: get, set
+
+    construct(integer size) {
+        this.size = size
+    }
+
+    method sameSize(Box other): bool {
+        return size == other.size()
+    }
+}
+
+method main {
+    var a = Box(3)
+    var b = Box(3)
+    var c = a
+    println a == b
+    println a == c
+    println a.sameSize(b)
+}

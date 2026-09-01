@@ -1,0 +1,53 @@
+# Editor support
+
+The VS Code extension lives in
+[vscode-novus/](https://github.com/ezTxmMC/novus/tree/master/vscode-novus).
+Build a `.vsix` and install it through *Extensions: Install from VSIX…*:
+
+```bash
+cd vscode-novus
+npm install
+npm run package
+```
+
+## What it does
+
+**Syntax highlighting** - the same TextMate grammar this site uses for its
+code blocks, plus semantic highlighting that colours symbols by what they
+are.
+
+**IntelliSense** - completion for keywords, types, locals, fields, enum
+constants, std modules and annotations; signature help with overloads; hover
+documentation from `///` and `/** */` comments.
+
+**Diagnostics** - syntax errors with recovery, unresolved names, duplicate
+declarations, missing method bodies, unused locals, deprecated members and
+`project.nv` manifest errors.
+
+**Navigation** - go to definition, find references, rename across the
+workspace, document symbols, workspace symbol search, folding.
+
+**Auto import** - using a symbol from another package offers an *Import '…'*
+quick fix; dependency modules resolve through `project.nv`.
+
+**Run and build** - `Novus: Run Novus File` (`Ctrl+Alt+N`) and
+`Novus: Build Novus File` use `build/novusc` from the workspace, then
+`novusc` from the `PATH`, or the `novus.executablePath` setting.
+
+## Settings
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `novus.executablePath` | `""` | `novusc` used by run/build (empty = auto-detect) |
+| `novus.diagnostics.enabled` | `true` | report problems |
+| `novus.diagnostics.undefinedSymbols` | `true` | warn about unresolved names |
+| `novus.diagnostics.unusedVariables` | `true` | fade out unused locals |
+| `novus.format.namedArgumentSpacing` | `none` | `Key{field="v"}` or `Key{field = "v"}` |
+| `novus.format.maxBlankLines` | `1` | blank lines kept by the formatter |
+
+## Other editors
+
+The language server speaks LSP and can be started with
+`node vscode-novus/out/server/server.js --stdio`, so any LSP client works.
+For plain syntax highlighting, point your editor at
+`vscode-novus/syntaxes/novus.tmLanguage.json`.

@@ -1,0 +1,14 @@
+package main
+
+import maps
+
+// User settings on top of defaults.
+
+method main {
+    var defaults = { "host": "localhost", "port": "8080", "debug": "false" }
+    var user = { "port": "9000" }
+    var settings = maps.merge(defaults, user)
+    for (key in settings) {
+        println "${key} = ${settings[key]}"
+    }
+}

@@ -1,0 +1,93 @@
+# Methods
+
+```nv
+method greet(string name): string {
+    return "Hello, ${name}!"
+}
+
+method shout(string text) {          // no return type: returns nothing
+    println text.toUpper()
+}
+```
+
+Parameters are typed and converted on the way in; the return value is
+converted to the declared return type.
+
+## Overloading
+
+Methods can share a name when their parameter lists differ - by count:
+
+```nv
+method area(integer size): integer {
+    return size * size
+}
+
+method area(integer width, integer height): integer {
+    return width * height
+}
+```
+
+or, for the same count, by type:
+
+```nv
+method show(integer value): string { return "integer ${value}" }
+method show(float value): string   { return "float ${value}" }
+method show(string value): string  { return "string ${value}" }
+```
+
+The compiler emits a dispatcher that picks the overload by the runtime type
+of the arguments.
+
+<Callout type="tip">
+There are no default arguments. A shorter overload that calls the longer one
+does the same job:
+
+```nv
+method connect(string host): string {
+    return connect(host, 8080)
+}
+```
+</Callout>
+
+## Recursion
+
+```nv
+method factorial(integer n): integer {
+    if (n <= 1) {
+        return 1
+    }
+    return n * factorial(n - 1)
+}
+```
+
+Mutual recursion works as well - all methods are visible to each other
+regardless of order.
+
+## Passing collections
+
+Arrays, maps and objects are references: a method can change what the caller
+sees.
+
+```nv
+method addItem(array<string> items, string item) {
+    items.append(item)
+}
+
+var basket = ["apple"]
+addItem(basket, "bread")
+println basket      // [apple, bread]
+```
+
+Use `arrays.copy` or `maps.copy` when you need an independent value.
+
+## main
+
+`main` is the entry point, with or without arguments:
+
+```nv
+method main { }
+method main(array<string> arguments) { }
+```
+
+If both exist, the one with arguments is used when the program is started
+with any. The integer returned becomes the exit code.

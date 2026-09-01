@@ -1,0 +1,26 @@
+package main
+
+// Folding an array into a single value.
+
+method product(array<integer> numbers): integer {
+    var result = 1
+    for (n in numbers) {
+        result = result * n
+    }
+    return result
+}
+
+method longest(array<string> words): string {
+    var best = ""
+    for (word in words) {
+        if (word.length() > best.length()) {
+            best = word
+        }
+    }
+    return best
+}
+
+method main {
+    println product([1, 2, 3, 4, 5])
+    println longest(["a", "abc", "ab"])
+}

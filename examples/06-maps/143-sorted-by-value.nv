@@ -1,0 +1,20 @@
+package main
+
+import arrays
+
+// Maps iterate by key; sorting by value needs a little work.
+
+method main {
+    var scores = { "ada": 99, "grace": 100, "alan": 95 }
+    var pairs = []
+    for (name in scores) {
+        pairs.append(arrays.slice([scores[name], name], 0, 2))
+    }
+    var byScore = []
+    for (pair in pairs) {
+        byScore.append("${pair[0]} ${pair[1]}")
+    }
+    for (entry in arrays.reverse(arrays.sort(byScore))) {
+        println entry
+    }
+}

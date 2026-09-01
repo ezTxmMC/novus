@@ -1,0 +1,12 @@
+package main
+
+import arrays
+
+// Reversing, deduplicating and counting elements.
+
+method main {
+    println arrays.reverse([1, 2, 3, 4])
+    println arrays.unique([1, 2, 2, 3, 1])
+    println arrays.unique(["a", "b", "a"])
+    println arrays.countOf([1, 2, 2, 3, 2], 2)
+}

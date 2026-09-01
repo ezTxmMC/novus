@@ -1,0 +1,37 @@
+package main
+
+import arrays
+
+// The sieve of Eratosthenes marks multiples instead of testing divisors.
+
+method primesBelow(integer limit): array<integer> {
+    var sieve = []
+    for (i in arrays.range(0, limit)) {
+        sieve.append(true)
+    }
+    var n = 2
+    while (n * n < limit) {
+        if (sieve[n]) {
+            var multiple = n * n
+            while (multiple < limit) {
+                sieve[multiple] = false
+                multiple = multiple + n
+            }
+        }
+        n = n + 1
+    }
+    var out = []
+    for (candidate in arrays.range(2, limit)) {
+        if (sieve[candidate]) {
+            out.append(candidate)
+        }
+    }
+    return out
+}
+
+method main {
+    var primes = primesBelow(100)
+    println primes.join(" ")
+    println "${primes.length()} primes below 100"
+    println primesBelow(1000).length()
+}

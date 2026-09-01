@@ -1,0 +1,101 @@
+# Your first program
+
+## Hello world
+
+Every program is a `main` method. Put this into `hello.nv`:
+
+```nv
+package main
+
+method main {
+    println "Hello, world!"
+}
+```
+
+Run it:
+
+```bash
+novusc run hello.nv
+# Hello, world!
+```
+
+`novusc run` compiles the file to a temporary native binary, runs it and
+removes it again. It is a compiler, not an interpreter - the program you run
+is machine code.
+
+## Build a binary
+
+```bash
+novusc build hello.nv -o hello
+./hello
+```
+
+The result is a static, self-contained executable. Nothing needs to be
+installed to run it.
+
+## Look at the generated C
+
+```bash
+novusc emit hello.nv -o hello.c
+cc hello.c -o hello
+```
+
+One file, runtime included. This is how cross compiling works too:
+
+```bash
+novusc build hello.nv --target x86_64-windows-gnu -o hello.exe
+```
+
+## Arguments
+
+A second `main` overload receives the command line:
+
+```nv
+package main
+
+method main {
+    println "no arguments"
+}
+
+method main(array<string> arguments) {
+    println "got ${arguments.length()}: ${arguments}"
+}
+```
+
+```bash
+novusc run args.nv one two
+# got 2: [one, two]
+```
+
+## A small program
+
+```nv
+package main
+
+import strings
+
+method main(array<string> arguments) {
+    if (arguments.length() < 1) {
+        eprintln "usage: count <file>"
+        return 1
+    }
+    var text = readFile(arguments[0])
+    var words = strings.words(text)
+    println "${text.length()} characters, ${words.length()} words"
+    return 0
+}
+```
+
+The integer returned from `main` becomes the exit code, `eprintln` writes to
+standard error.
+
+<Callout type="tip">
+Working inside a project? Create a `project.nv` with `novusc init` and then
+just run `novusc run` - the manifest points at the main file. See
+[project.nv](/docs/projects/manifest).
+</Callout>
+
+## Next
+
+- [The novusc CLI](/docs/cli) - every command and option
+- [Language basics](/docs/language/basics)

@@ -1,0 +1,25 @@
+package main
+
+// Binary search as a guessing game, without any input.
+
+method main {
+    var secret = 73
+    var low = 1
+    var high = 100
+    var tries = 0
+    while (low <= high) {
+        var guess = (low + high) / 2
+        tries = tries + 1
+        if (guess == secret) {
+            println "guessed ${guess} after ${tries} tries"
+            break
+        }
+        if (guess < secret) {
+            println "${guess} is too low"
+            low = guess + 1
+            continue
+        }
+        println "${guess} is too high"
+        high = guess - 1
+    }
+}

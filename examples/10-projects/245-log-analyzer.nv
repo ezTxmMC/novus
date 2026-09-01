@@ -1,0 +1,32 @@
+package main
+
+import arrays
+import strings
+
+// Counting log levels and finding the slowest request.
+
+method main {
+    var log = "INFO  GET /index 12ms\nWARN  GET /slow 340ms\nINFO  GET /about 8ms\nERROR POST /save 55ms\nINFO  GET /slow 410ms"
+    var levels = {}
+    var slowest = 0
+    var slowestPath = ""
+    for (line in log.split("\n")) {
+        var parts = strings.words(line)
+        var level = parts[0]
+        if (levels.has(level)) {
+            levels[level] = levels[level] + 1
+        } else {
+            levels[level] = 1
+        }
+        var duration = parseInt(strings.stripSuffix(parts[3], "ms"))
+        if (duration > slowest) {
+            slowest = duration
+            slowestPath = parts[2]
+        }
+    }
+    for (level in levels) {
+        println "${level}: ${levels[level]}"
+    }
+    println "slowest: ${slowestPath} (${slowest}ms)"
+    println "total entries: ${arrays.sum(levels.values())}"
+}

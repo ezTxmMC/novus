@@ -1,0 +1,19 @@
+package main
+
+import strings
+
+method isPalindrome(string text): bool {
+    var cleaned = ""
+    for (c in text.toLower()) {
+        if (strings.isAlpha(c) || strings.isDigit(c)) {
+            cleaned = cleaned + c
+        }
+    }
+    return cleaned == strings.reverse(cleaned)
+}
+
+method main {
+    for (text in ["level", "A man, a plan, a canal: Panama", "novus"]) {
+        println "${isPalindrome(text)}: ${text}"
+    }
+}

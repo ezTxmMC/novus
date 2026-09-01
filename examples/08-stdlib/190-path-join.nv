@@ -1,0 +1,13 @@
+package main
+
+import path
+
+// Building paths from segments.
+
+method main {
+    println path.join("a", "b", "c.txt")
+    println path.join("a/", "/b")
+    println path.join("", "solo")
+    println path.withExtension("report.txt", ".md")
+    println path.segments("/usr/local/bin")
+}

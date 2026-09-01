@@ -1,0 +1,12 @@
+package main
+
+import path
+
+// The path from one directory to another.
+
+method main {
+    println path.relative("/a/b/c", "/a/d/e.txt")
+    println path.relative("/a/b", "/a/b/c/d.txt")
+    println path.relative("/a/b", "/a/b")
+    println path.separator().length()
+}

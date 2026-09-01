@@ -1,0 +1,13 @@
+package main
+
+// The free builtins read and write files.
+
+method main {
+    var file = "example-027.txt"
+    writeFile(file, "line one\nline two\n")
+    println fileExists(file)
+    println readFile(file).trim()
+    println removeFile(file)
+    println fileExists(file)
+    println readFile("does-not-exist") == ""
+}

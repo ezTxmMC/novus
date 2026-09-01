@@ -1,0 +1,13 @@
+package main
+
+// Variables live inside the block that declares them.
+
+method main {
+    var outer = "visible"
+    if (true) {
+        var inner = "block only"
+        println inner
+        println outer
+    }
+    println outer
+}

@@ -1,0 +1,4 @@
+integer 7
+float 2.500000
+string text
+array [1, 2]

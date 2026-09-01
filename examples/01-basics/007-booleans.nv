@@ -1,0 +1,15 @@
+package main
+
+// Booleans come from comparisons and the logical operators && || !.
+
+method main {
+    var yes = true
+    var no = false
+    println yes
+    println !yes
+    println yes && no
+    println yes || no
+    println 3 < 5
+    println 3 == 3.0
+    println "a" != "b"
+}

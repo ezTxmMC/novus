@@ -1,0 +1,12 @@
+package main
+
+// Looking for an element with contains and indexOf.
+
+method main {
+    var languages = ["novus", "c", "rust", "go"]
+    println languages.contains("rust")
+    println languages.contains("java")
+    println languages.indexOf("c")
+    println languages.indexOf("java")
+    println languages.join(", ")
+}

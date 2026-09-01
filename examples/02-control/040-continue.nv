@@ -1,0 +1,17 @@
+package main
+
+// continue skips to the next iteration.
+
+method main {
+    var sum = 0
+    var n = 1
+    while (n <= 10) {
+        if (n % 2 == 1) {
+            n = n + 1
+            continue
+        }
+        sum = sum + n
+        n = n + 1
+    }
+    println "sum of even numbers: ${sum}"
+}

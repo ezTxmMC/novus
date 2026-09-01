@@ -70,6 +70,34 @@ method failModuleUse(string name, map<string, string> prog, map<string, string> 
     return 0
 }
 
+// A condition as a C int, avoiding the boxed bool for comparisons and
+// logical operators: `while (nv_lt_bool(i, n))` instead of
+// `while (nv_truthy(nv_lt(i, n)))`.
+method genCondition(string node, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    var head = nodeHead(node)
+    if (head == "&&") {
+        return "(" + genCondition(nodeChild(node, 1), prog, ctx, locals) + " && " + genCondition(nodeChild(node, 2), prog, ctx, locals) + ")"
+    }
+    if (head == "||") {
+        return "(" + genCondition(nodeChild(node, 1), prog, ctx, locals) + " || " + genCondition(nodeChild(node, 2), prog, ctx, locals) + ")"
+    }
+    if (head == "!") {
+        return "(!" + genCondition(nodeChild(node, 1), prog, ctx, locals) + ")"
+    }
+    var bools = {"<": "nv_lt_bool", ">": "nv_gt_bool", "<=": "nv_le_bool", ">=": "nv_ge_bool",
+        "==": "nv_eq_bool", "!=": "nv_ne_bool"}
+    if (bools.has(head) && nodeCount(node) == 3) {
+        return bools[head] + "(" + genExpr(nodeChild(node, 1), prog, ctx, locals) + ", " + genExpr(nodeChild(node, 2), prog, ctx, locals) + ")"
+    }
+    if (node == "true") {
+        return "1"
+    }
+    if (node == "false") {
+        return "0"
+    }
+    return "nv_truthy(" + genExpr(node, prog, ctx, locals) + ")"
+}
+
 method genExpr(string node, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
     if (isList(node) == false) {
         if (node == "true") {
@@ -142,7 +170,7 @@ method genExpr(string node, map<string, string> prog, map<string, string> ctx, m
         if (classIsAbstract(prog["class:" + cls])) {
             fail("cannot instantiate abstract class '" + cls + "'", ctx["pos"])
         }
-        var out = "nv_new_object_fields(" + cstr(cls) + ", " + (nodeCount(node) - 2)
+        var out = "nv_new_object_fields_cached(&nv_cls_" + cls + ", " + cstr(cls) + ", " + (nodeCount(node) - 2)
         var i = 2
         while (i < nodeCount(node)) {
             var f = nodeChild(node, i)
@@ -196,11 +224,10 @@ method genExpr(string node, map<string, string> prog, map<string, string> ctx, m
             failModuleUse(mtarget, prog, ctx)
             fail("unknown variable '" + mtarget + "'", ctx["pos"])
         }
-        var call = "nv_invoke(" + genExpr(mtarget, prog, ctx, locals) + ", " + cstr(mname) + ", " + nargs
-        if (nargs > 0) {
-            call = call + ", " + genArgs(node, 3, prog, ctx, locals)
+        if (nargs == 0) {
+            return "nv_invoke0(" + genExpr(mtarget, prog, ctx, locals) + ", " + cstr(mname) + ")"
         }
-        return call + ")"
+        return "nv_invoke(" + genExpr(mtarget, prog, ctx, locals) + ", " + cstr(mname) + ", " + nargs + ", " + genArgs(node, 3, prog, ctx, locals) + ")"
     }
     if (head == "call") {
         return genCall(node, prog, ctx, locals)
@@ -213,7 +240,8 @@ method genExpr(string node, map<string, string> prog, map<string, string> ctx, m
     if (head == "||") {
         return "nv_bool(nv_truthy(" + l + ") || nv_truthy(" + r + "))"
     }
-    var ops = {"+": "nv_add", "-": "nv_sub", "*": "nv_mul", "/": "nv_div", "%": "nv_mod",
+    // *_fast are inline wrappers that keep small-integer arithmetic in registers
+    var ops = {"+": "nv_add_fast", "-": "nv_sub_fast", "*": "nv_mul_fast", "/": "nv_div", "%": "nv_mod",
         "==": "nv_eq", "!=": "nv_ne", "<": "nv_lt", ">": "nv_gt", "<=": "nv_le", ">=": "nv_ge"}
     if (ops.has(head) == false) {
         fail("unsupported expression '" + head + "'", ctx["pos"])

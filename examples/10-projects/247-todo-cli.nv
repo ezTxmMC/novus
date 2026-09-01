@@ -1,0 +1,48 @@
+package main
+
+import json
+import os
+
+// A small todo list stored as JSON - run it with: add "text" | list | done 0
+
+method load(string store): array<object> {
+    if (os.exists(store) == false) {
+        return []
+    }
+    return json.parse(os.readFile(store))
+}
+
+method save(string store, array<object> items) {
+    os.writeFile(store, json.stringify(items))
+}
+
+method show(array<object> items) {
+    if (items.length() == 0) {
+        println "nothing to do"
+        return
+    }
+    var index = 0
+    for (item in items) {
+        var mark = "[ ]"
+        if (item["done"] == true) {
+            mark = "[x]"
+        }
+        var text = item["text"]
+        println "${index} ${mark} ${text}"
+        index = index + 1
+    }
+}
+
+method main {
+    var store = "example-247-todo.json"
+    var items = load(store)
+    items.append({ "text": "write examples", "done": false })
+    items.append({ "text": "run the tests", "done": false })
+    save(store, items)
+    show(load(store))
+    items[0]["done"] = true
+    save(store, items)
+    println "--- after finishing the first task:"
+    show(load(store))
+    os.remove(store)
+}

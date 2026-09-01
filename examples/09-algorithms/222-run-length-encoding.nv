@@ -1,0 +1,43 @@
+package main
+
+import strings
+
+// Compressing runs of repeated characters.
+
+method encode(string text): string {
+    var out = ""
+    var i = 0
+    while (i < text.length()) {
+        var c = text.charAt(i)
+        var run = 0
+        while (i + run < text.length() && text.charAt(i + run) == c) {
+            run = run + 1
+        }
+        out = out + c + run
+        i = i + run
+    }
+    return out
+}
+
+method decode(string encoded): string {
+    var out = ""
+    var i = 0
+    while (i < encoded.length()) {
+        var c = encoded.charAt(i)
+        var digits = ""
+        i = i + 1
+        while (i < encoded.length() && strings.isDigit(encoded.charAt(i))) {
+            digits = digits + encoded.charAt(i)
+            i = i + 1
+        }
+        out = out + strings.repeat(c, parseInt(digits))
+    }
+    return out
+}
+
+method main {
+    var encoded = encode("aaabbbccccd")
+    println encoded
+    println decode(encoded)
+    println decode(encode("novus")) == "novus"
+}

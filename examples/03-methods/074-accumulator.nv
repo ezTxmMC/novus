@@ -1,0 +1,15 @@
+package main
+
+// Passing an accumulator through recursive calls.
+
+method sumTo(integer n, integer total): integer {
+    if (n == 0) {
+        return total
+    }
+    return sumTo(n - 1, total + n)
+}
+
+method main {
+    println sumTo(10, 0)
+    println sumTo(100, 0)
+}

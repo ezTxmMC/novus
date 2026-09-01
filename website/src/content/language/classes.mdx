@@ -1,0 +1,160 @@
+# Classes and objects
+
+```nv
+define class Greeter {
+    private final string name: get
+
+    construct(string name) {
+        this.name = name
+    }
+
+    method greet(): string {
+        return "Hello, ${name}!"
+    }
+}
+
+var greeter = Greeter("Ada")
+println greeter.greet()
+```
+
+## Fields and accessors
+
+A field declaration is `[private] [final] Type name[: get[, set]]`.
+`get` generates a reader `name()`, `set` a writer `name(value)`.
+
+```nv
+define class Counter {
+    private integer value: get, set     // value() and value(x)
+    private final string label: get     // label() only
+}
+```
+
+Inside the class, fields and methods can be used without `this.`:
+
+```nv
+method deposit(integer amount) {
+    balance = balance + amount    // same as this.balance
+    log("deposit")                // same as this.log(...)
+}
+```
+
+## Creating objects
+
+Two ways: the constructor, or an object literal that sets fields directly.
+
+```nv
+var a = Point(3, 4)               // runs construct(...)
+var b = Point{x=3, y=4}           // sets fields, no constructor
+```
+
+Without a constructor, arguments fill the fields in declaration order.
+
+## Inheritance
+
+```nv
+define class Animal {
+    private final string name: get
+
+    method sound(): string {
+        return "..."
+    }
+
+    method speak(): string {
+        return "${name} says ${this.sound()}"
+    }
+}
+
+define class Dog based Animal {
+    construct(string name) {
+        this.name = name
+    }
+
+    method sound(): string {
+        return "woof"
+    }
+}
+```
+
+Method lookup starts at the most derived class, so `speak()` on a `Dog`
+calls the `Dog` version of `sound()` - that is all polymorphism needs.
+
+## Abstract classes and interfaces
+
+```nv
+define abstract Vehicle {
+    abstract method wheels(): integer
+
+    method describe(): string {
+        return "${this.wheels()} wheels"
+    }
+}
+
+define interface Printable {
+    render(): string
+}
+
+define class Label based Printable {
+    method render(): string {
+        return "label"
+    }
+}
+```
+
+An abstract class cannot be instantiated, and a class that does not implement
+every abstract or interface method is a **compile-time error**.
+
+## Enums
+
+```nv
+define enum Planet {
+    MERCURY(3.3),
+    EARTH(5.97);
+
+    private final float mass: get
+
+    private construct(float mass) {
+        this.mass = mass
+    }
+
+    method describe(): string {
+        return "mass ${mass}"
+    }
+}
+
+println Planet.EARTH.mass()
+for (planet in Planet.values()) {
+    println "${planet}: ${planet.describe()}"
+}
+```
+
+Constants print as their name and compare by identity.
+
+## Annotations
+
+```nv
+@Deprecated{text="use area() instead", since="0.2"}
+method size(integer side): integer {
+    return side * side
+}
+```
+
+The first call prints a warning. Annotations can also be declared with
+`define annotation Name { ... }`.
+
+## Objects are references
+
+```nv
+var settings = Settings()
+var alias = settings
+alias.theme("dark")
+println settings.theme()     // dark
+```
+
+Two objects are equal only when they are the same instance; compare fields
+for value equality.
+
+## Examples
+
+- [Polymorphism](/examples/07-classes/158-polymorphism)
+- [Binary search tree](/examples/07-classes/172-binary-tree)
+- [Bank system](/examples/10-projects/248-bank-system)

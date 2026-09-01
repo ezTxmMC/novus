@@ -1,0 +1,28 @@
+package main
+
+// Walking a graph as deep as possible first.
+
+method visit(map<string, object> graph, string node, map<string, object> seen, array<string> order) {
+    if (seen.has(node)) {
+        return
+    }
+    seen[node] = true
+    order.append(node)
+    for (next in graph[node]) {
+        visit(graph, next, seen, order)
+    }
+}
+
+method main {
+    var graph = {
+        "a": ["b", "c"],
+        "b": ["d"],
+        "c": ["e"],
+        "d": [],
+        "e": ["a"]
+    }
+    var order = []
+    visit(graph, "a", {}, order)
+    println order.join(" ")
+    println order.length()
+}

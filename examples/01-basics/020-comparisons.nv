@@ -1,0 +1,12 @@
+package main
+
+// Numbers compare numerically, strings lexicographically.
+
+method main {
+    println 2 < 10
+    println "2" < "10"
+    println "apple" < "banana"
+    println "Zoo" < "apple"
+    println 1.5 >= 1.5
+    println 3 != 4
+}

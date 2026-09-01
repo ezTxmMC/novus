@@ -1,0 +1,24 @@
+package main
+
+// Caching results in a map turns exponential recursion into linear work.
+
+var cache = {}
+
+method fib(integer n): integer {
+    if (n < 2) {
+        return n
+    }
+    var key = "" + n
+    if (cache.has(key)) {
+        return cache[key]
+    }
+    var value = fib(n - 1) + fib(n - 2)
+    cache[key] = value
+    return value
+}
+
+method main {
+    println fib(40)
+    println fib(70)
+    println "${cache.length()} cached values"
+}

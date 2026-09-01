@@ -1,0 +1,20 @@
+package main
+
+// The greatest common divisor with Euclid's algorithm.
+
+method gcd(integer a, integer b): integer {
+    var x = a
+    var y = b
+    while (y != 0) {
+        var rest = x % y
+        x = y
+        y = rest
+    }
+    return x
+}
+
+method main {
+    println gcd(48, 18)
+    println gcd(17, 5)
+    println "lcm(4, 6) = ${4 * 6 / gcd(4, 6)}"
+}

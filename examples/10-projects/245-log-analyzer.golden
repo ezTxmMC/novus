@@ -1,0 +1,5 @@
+ERROR: 1
+INFO: 3
+WARN: 1
+slowest: /slow (410ms)
+total entries: 5

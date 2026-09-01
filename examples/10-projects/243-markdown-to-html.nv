@@ -1,0 +1,64 @@
+package main
+
+import strings
+
+// A small subset of markdown: headings, bullets, bold and paragraphs.
+
+method inline(string text): string {
+    var out = text
+    var parts = out.split("**")
+    if (parts.length() > 2) {
+        out = ""
+        var bold = false
+        for (part in parts) {
+            if (bold) {
+                out = out + "<b>" + part + "</b>"
+            } else {
+                out = out + part
+            }
+            bold = !bold
+        }
+    }
+    return out
+}
+
+method render(string markdown): string {
+    var lines = []
+    var inList = false
+    for (raw in markdown.split("\n")) {
+        var line = raw.trim()
+        if (line.startsWith("- ") == false && inList) {
+            lines.append("</ul>")
+            inList = false
+        }
+        if (line == "") {
+            continue
+        }
+        if (line.startsWith("## ")) {
+            lines.append("<h2>" + inline(line.substring(3, line.length())) + "</h2>")
+            continue
+        }
+        if (line.startsWith("# ")) {
+            lines.append("<h1>" + inline(line.substring(2, line.length())) + "</h1>")
+            continue
+        }
+        if (line.startsWith("- ")) {
+            if (inList == false) {
+                lines.append("<ul>")
+                inList = true
+            }
+            lines.append("  <li>" + inline(line.substring(2, line.length())) + "</li>")
+            continue
+        }
+        lines.append("<p>" + inline(line) + "</p>")
+    }
+    if (inList) {
+        lines.append("</ul>")
+    }
+    return lines.join("\n")
+}
+
+method main {
+    var markdown = "# Novus\n\nA **self hosting** language.\n\n## Features\n\n- compiles to C\n- **small** runtime\n\nThe end."
+    println render(markdown)
+}

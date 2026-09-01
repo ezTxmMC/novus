@@ -1,0 +1,13 @@
+package main
+
+import fmt
+
+// A two column table.
+
+method main {
+    println fmt.table([
+        ["language", "novus"],
+        ["version", "0.1"],
+        ["compiles to", "C"]
+    ])
+}

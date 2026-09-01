@@ -1,0 +1,17 @@
+package main
+
+import io
+import test
+
+// io.write prints without a line break; readLine/readLines take input.
+
+method main {
+    io.write("no newline: ")
+    io.write("still the same line")
+    io.write("\n")
+    io.flush()
+    test.assertEqual(2 + 2, 4, "addition")
+    test.assert("novus".length() == 5, "length")
+    test.assertEqual("a" + "b", "ab", "concatenation")
+    println test.report()
+}

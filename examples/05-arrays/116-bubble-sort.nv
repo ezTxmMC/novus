@@ -1,0 +1,30 @@
+package main
+
+import arrays
+
+// Bubble sort: repeatedly swap neighbours that are out of order.
+
+method bubbleSort(array<integer> input): array<integer> {
+    var items = arrays.copy(input)
+    var n = items.length()
+    var swapped = true
+    while (swapped) {
+        swapped = false
+        for (i in arrays.range(1, n)) {
+            if (items[i - 1] > items[i]) {
+                var t = items[i - 1]
+                items[i - 1] = items[i]
+                items[i] = t
+                swapped = true
+            }
+        }
+        n = n - 1
+    }
+    return items
+}
+
+method main {
+    var numbers = [5, 2, 9, 1, 5, 6]
+    println bubbleSort(numbers)
+    println numbers
+}

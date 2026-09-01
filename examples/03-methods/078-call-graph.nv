@@ -1,0 +1,19 @@
+package main
+
+// Methods calling methods calling methods.
+
+method inner(string text): string {
+    return "[" + text + "]"
+}
+
+method middle(string text): string {
+    return inner(inner(text))
+}
+
+method outer(string text): string {
+    return middle(text.toUpper())
+}
+
+method main {
+    println outer("core")
+}

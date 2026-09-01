@@ -1,0 +1,19 @@
+package main
+
+// Grouping values under a common key.
+
+method main {
+    var words = ["apple", "avocado", "banana", "blueberry", "cherry"]
+    var groups = {}
+    for (word in words) {
+        var letter = word.charAt(0)
+        if (groups.has(letter) == false) {
+            groups[letter] = []
+        }
+        groups[letter].append(word)
+    }
+    for (letter in groups) {
+        var joined = groups[letter].join(", ")
+        println "${letter}: ${joined}"
+    }
+}

@@ -1,0 +1,11 @@
+package main
+
+// Iterating a map yields its keys, always in sorted order.
+
+method main {
+    var ages = { "grace": 45, "ada": 36, "alan": 41 }
+    for (name in ages) {
+        println "${name} is ${ages[name]}"
+    }
+    println ages.length()
+}

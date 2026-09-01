@@ -1,0 +1,14 @@
+package main
+
+// while (true) needs a break to end.
+
+method main {
+    var attempts = 0
+    while (true) {
+        attempts = attempts + 1
+        if (attempts * attempts > 50) {
+            break
+        }
+    }
+    println "first square above 50 at ${attempts} (${attempts * attempts})"
+}

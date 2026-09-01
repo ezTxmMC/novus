@@ -1,0 +1,29 @@
+package main
+
+import arrays
+
+// Multiplying two matrices.
+
+method multiply(array<object> a, array<object> b): array<object> {
+    var out = []
+    for (i in arrays.range(0, a.length())) {
+        var row = []
+        for (j in arrays.range(0, b[0].length())) {
+            var sum = 0
+            for (k in arrays.range(0, b.length())) {
+                sum = sum + a[i][k] * b[k][j]
+            }
+            row.append(sum)
+        }
+        out.append(row)
+    }
+    return out
+}
+
+method main {
+    var a = [[1, 2], [3, 4]]
+    var b = [[5, 6], [7, 8]]
+    for (row in multiply(a, b)) {
+        println row.join(" ")
+    }
+}

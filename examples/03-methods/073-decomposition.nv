@@ -1,0 +1,17 @@
+package main
+
+// Splitting a task into small methods keeps main readable.
+
+method celsiusToFahrenheit(float celsius): float {
+    return celsius * 9.0 / 5.0 + 32.0
+}
+
+method line(float celsius): string {
+    return "${celsius} C = ${celsiusToFahrenheit(celsius)} F"
+}
+
+method main {
+    for (c in [-40.0, 0.0, 37.0, 100.0]) {
+        println line(c)
+    }
+}

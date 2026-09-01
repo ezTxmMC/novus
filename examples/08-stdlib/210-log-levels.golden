@@ -1,0 +1,6 @@
+DEBUG starting up
+INFO  ready
+WARN  disk almost full
+ERROR could not save
+--- only warnings and above:
+WARN  still visible

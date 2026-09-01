@@ -1,0 +1,28 @@
+package main
+
+// Enum constants can carry data and methods.
+
+define enum Planet {
+    MERCURY(3.3, 2439.7),
+    EARTH(5.97, 6371.0),
+    JUPITER(1898.0, 69911.0);
+
+    private final float mass: get
+    private final float radius: get
+
+    private construct(float mass, float radius) {
+        this.mass = mass
+        this.radius = radius
+    }
+
+    method describe(): string {
+        return "mass ${mass}, radius ${radius}"
+    }
+}
+
+method main {
+    for (planet in Planet.values()) {
+        println "${planet}: ${planet.describe()}"
+    }
+    println Planet.EARTH.radius()
+}

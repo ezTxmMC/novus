@@ -1,0 +1,17 @@
+package main
+
+import random
+
+// Seeding makes the sequence reproducible.
+
+method main {
+    random.seed(2026)
+    var first = [random.int(1, 6), random.int(1, 6), random.int(1, 6)]
+    random.seed(2026)
+    var second = [random.int(1, 6), random.int(1, 6), random.int(1, 6)]
+    println first == second
+    println first.length()
+    println random.int(5, 5)
+    var value = random.float()
+    println value >= 0.0 && value < 1.0
+}

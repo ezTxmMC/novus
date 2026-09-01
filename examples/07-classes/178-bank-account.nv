@@ -1,0 +1,41 @@
+package main
+
+// An account that validates deposits and withdrawals.
+
+define class Account {
+    private final string owner: get
+    private integer balance: get
+
+    construct(string owner, integer balance) {
+        this.owner = owner
+        this.balance = balance
+    }
+
+    method deposit(integer amount): bool {
+        if (amount <= 0) {
+            return false
+        }
+        balance = balance + amount
+        return true
+    }
+
+    method withdraw(integer amount): bool {
+        if (amount <= 0 || amount > balance) {
+            return false
+        }
+        balance = balance - amount
+        return true
+    }
+
+    method statement(): string {
+        return "${owner}: ${balance}"
+    }
+}
+
+method main {
+    var account = Account("Ada", 100)
+    println account.deposit(50)
+    println account.withdraw(30)
+    println account.withdraw(1000)
+    println account.statement()
+}

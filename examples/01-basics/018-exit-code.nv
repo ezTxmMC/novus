@@ -1,0 +1,8 @@
+package main
+
+// The integer returned by main becomes the process exit code.
+
+method main {
+    println "failing on purpose"
+    return 3
+}

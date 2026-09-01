@@ -1,0 +1,12 @@
+package main
+
+// Parameters are typed; values are converted to the declared type.
+
+method describe(string label, integer count, float ratio): string {
+    return "${label}: ${count} (${ratio})"
+}
+
+method main {
+    println describe("items", 3, 0.5)
+    println describe("rounded", 2.9, 1)
+}

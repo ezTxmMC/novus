@@ -1,0 +1,16 @@
+package main
+
+import arrays
+
+// Two ways to walk an array: by element and by index.
+
+method main {
+    var items = ["x", "y", "z"]
+    for (item in items) {
+        print item
+    }
+    println ""
+    for (i in arrays.range(0, items.length())) {
+        println "${i}: ${items[i]}"
+    }
+}

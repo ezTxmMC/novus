@@ -1,0 +1,74 @@
+package main
+
+import arrays
+
+// Conway's game of life on a small fixed board.
+
+method neighbours(array<object> board, integer row, integer col): integer {
+    var count = 0
+    for (dr in [-1, 0, 1]) {
+        for (dc in [-1, 0, 1]) {
+            if (dr == 0 && dc == 0) {
+                continue
+            }
+            var r = row + dr
+            var c = col + dc
+            if (r < 0 || c < 0 || r >= board.length() || c >= board[0].length()) {
+                continue
+            }
+            count = count + board[r][c]
+        }
+    }
+    return count
+}
+
+method step(array<object> board): array<object> {
+    var out = []
+    for (row in arrays.range(0, board.length())) {
+        var line = []
+        for (col in arrays.range(0, board[0].length())) {
+            var alive = board[row][col] == 1
+            var n = neighbours(board, row, col)
+            var next = 0
+            if (alive && (n == 2 || n == 3)) {
+                next = 1
+            }
+            if (alive == false && n == 3) {
+                next = 1
+            }
+            line.append(next)
+        }
+        out.append(line)
+    }
+    return out
+}
+
+method show(array<object> board) {
+    for (row in board) {
+        var line = ""
+        for (cell in row) {
+            if (cell == 1) {
+                line = line + "#"
+                continue
+            }
+            line = line + "."
+        }
+        println line
+    }
+    println ""
+}
+
+method main {
+    var board = [
+        [0, 1, 0, 0, 0],
+        [0, 0, 1, 0, 0],
+        [1, 1, 1, 0, 0],
+        [0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0]
+    ]
+    for (generation in arrays.range(0, 3)) {
+        println "generation ${generation}"
+        show(board)
+        board = step(board)
+    }
+}

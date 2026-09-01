@@ -1,0 +1,20 @@
+package main
+
+import arrays
+
+// Straightforward but slow: every call branches twice.
+
+method fib(integer n): integer {
+    if (n < 2) {
+        return n
+    }
+    return fib(n - 1) + fib(n - 2)
+}
+
+method main {
+    var out = []
+    for (n in arrays.range(0, 15)) {
+        out.append(fib(n))
+    }
+    println out.join(" ")
+}

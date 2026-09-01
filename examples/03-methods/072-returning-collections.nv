@@ -1,0 +1,25 @@
+package main
+
+// Methods can build and return arrays and maps.
+
+method firstLetters(array<string> words): array<string> {
+    var out = []
+    for (word in words) {
+        out.append(word.charAt(0))
+    }
+    return out
+}
+
+method lengths(array<string> words): map<string, integer> {
+    var out = {}
+    for (word in words) {
+        out[word] = word.length()
+    }
+    return out
+}
+
+method main {
+    var words = ["novus", "compiler", "fast"]
+    println firstLetters(words)
+    println lengths(words)
+}

@@ -1,0 +1,13 @@
+package main
+
+// Counting down with a while loop.
+
+method main {
+    var n = 5
+    while (n > 0) {
+        print n
+        print " "
+        n = n - 1
+    }
+    println "liftoff!"
+}

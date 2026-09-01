@@ -1,0 +1,118 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --font-sans: "Inter var", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", "Cascadia Code", monospace;
+
+  --color-brand-50: oklch(0.97 0.03 150);
+  --color-brand-100: oklch(0.94 0.06 150);
+  --color-brand-300: oklch(0.83 0.13 150);
+  --color-brand-400: oklch(0.75 0.16 150);
+  --color-brand-500: oklch(0.68 0.18 150);
+  --color-brand-600: oklch(0.58 0.16 150);
+  --color-brand-700: oklch(0.48 0.13 150);
+  --color-brand-950: oklch(0.22 0.05 150);
+}
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+    scroll-padding-top: 6rem;
+  }
+
+  body {
+    @apply bg-white text-slate-700 antialiased dark:bg-[#0b0f14] dark:text-slate-300;
+  }
+
+  ::selection {
+    @apply bg-brand-500/25;
+  }
+
+  /* Shiki emits both themes; pick one per color scheme. */
+  .shiki,
+  .shiki span {
+    color: var(--shiki-light);
+    background-color: var(--shiki-light-bg);
+  }
+
+  .dark .shiki,
+  .dark .shiki span {
+    color: var(--shiki-dark);
+    background-color: var(--shiki-dark-bg);
+  }
+}
+
+@layer components {
+  /* Documentation typography - deliberately small and dense. */
+  .prose-docs {
+    @apply text-[15px] leading-7;
+  }
+
+  .prose-docs h1 {
+    @apply mb-3 font-mono text-3xl font-semibold tracking-tight text-slate-900 dark:text-white;
+  }
+
+  .prose-docs h2 {
+    @apply mt-12 mb-4 scroll-mt-24 border-t border-slate-200 pt-8 font-mono text-xl font-semibold text-slate-900 dark:border-white/10 dark:text-white;
+  }
+
+  .prose-docs h3 {
+    @apply mt-8 mb-3 scroll-mt-24 font-mono text-base font-semibold text-slate-900 dark:text-white;
+  }
+
+  .prose-docs p {
+    @apply my-4;
+  }
+
+  .prose-docs a {
+    @apply font-medium text-brand-600 underline decoration-brand-600/30 underline-offset-4 transition hover:decoration-brand-600 dark:text-brand-400 dark:decoration-brand-400/30 dark:hover:decoration-brand-400;
+  }
+
+  .prose-docs ul {
+    @apply my-4 list-disc space-y-2 pl-6 marker:text-brand-500;
+  }
+
+  .prose-docs ol {
+    @apply my-4 list-decimal space-y-2 pl-6 marker:text-slate-400;
+  }
+
+  .prose-docs blockquote {
+    @apply my-6 border-l-2 border-brand-500 bg-brand-50/60 py-2 pl-4 text-slate-600 dark:bg-brand-950/40 dark:text-slate-300;
+  }
+
+  .prose-docs :not(pre) > code {
+    @apply rounded border border-slate-200 bg-slate-100 px-1.5 py-0.5 font-mono text-[0.85em] text-slate-800 dark:border-white/10 dark:bg-white/5 dark:text-slate-200;
+  }
+
+  .prose-docs pre {
+    @apply my-5 overflow-x-auto rounded-xl border border-slate-200 p-4 font-mono text-[13px] leading-6 dark:border-white/10;
+  }
+
+  .prose-docs table {
+    @apply my-6 w-full border-collapse text-left text-sm;
+  }
+
+  .prose-docs th {
+    @apply border-b border-slate-300 pb-2 pr-4 font-mono text-xs font-semibold tracking-wide text-slate-900 uppercase dark:border-white/15 dark:text-white;
+  }
+
+  .prose-docs td {
+    @apply border-b border-slate-100 py-2 pr-4 align-top dark:border-white/5;
+  }
+
+  .prose-docs hr {
+    @apply my-10 border-slate-200 dark:border-white/10;
+  }
+
+  /* Tailwind 4: @apply only takes utilities, so the shared card styles are
+     spelled out in both rules instead of composing them. */
+  .card {
+    @apply rounded-xl border border-slate-200 bg-white p-5 transition dark:border-white/10 dark:bg-white/[0.03];
+  }
+
+  .card-link {
+    @apply block rounded-xl border border-slate-200 bg-white p-5 transition hover:border-brand-500/60 dark:border-white/10 dark:bg-white/[0.03];
+  }
+}

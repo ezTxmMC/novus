@@ -1,0 +1,13 @@
+package main
+
+// "${expression}" inserts a value into a string.
+
+method main {
+    var name = "Grace"
+    var count = 3
+    println "Hello, ${name}!"
+    println "${count} + ${count} = ${count + count}"
+    println "upper: ${name.toUpper()}"
+    var loud = name.toUpper()
+    println "combined: ${name} / ${loud}"
+}

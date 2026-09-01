@@ -1,0 +1,10 @@
+package main
+
+// Adding a number to a string concatenates, adding two numbers adds.
+
+method main {
+    println "sum: " + 1 + 2
+    println "sum: " + (1 + 2)
+    println 1 + 2 + " total"
+    println "${1 + 2} total"
+}

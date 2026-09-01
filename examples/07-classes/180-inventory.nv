@@ -1,0 +1,54 @@
+package main
+
+// Objects stored in a map and summed up.
+
+define class Item {
+    private final string name: get
+    private integer quantity: get, set
+    private final float price: get
+
+    construct(string name, integer quantity, float price) {
+        this.name = name
+        this.quantity = quantity
+        this.price = price
+    }
+
+    method value(): float {
+        return quantity * price
+    }
+}
+
+define class Inventory {
+    private final map<string, object> items: get
+
+    construct() {
+        this.items = {}
+    }
+
+    method add(Item item) {
+        items[item.name()] = item
+    }
+
+    method total(): float {
+        var sum = 0.0
+        for (key in items) {
+            sum = sum + items[key].value()
+        }
+        return sum
+    }
+
+    method report() {
+        for (key in items) {
+            var item = items[key]
+            println "${key}: ${item.quantity()} x ${item.price()} = ${item.value()}"
+        }
+        println "total: ${this.total()}"
+    }
+}
+
+method main {
+    var inventory = Inventory()
+    inventory.add(Item("bolt", 100, 0.25))
+    inventory.add(Item("nut", 50, 0.1))
+    inventory.report()
+}

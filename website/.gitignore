@@ -1,0 +1,5 @@
+node_modules/
+dist/
+src/generated/
+src/lib/novus.tmLanguage.json
+*.local

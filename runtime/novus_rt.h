@@ -89,6 +89,7 @@ typedef struct NvArr {
     nv *items;
     int len;
     int cap;
+    int heap;  /* items came from malloc: grow with realloc instead of copying */
 } NvArr;
 
 typedef struct NvEntry {
@@ -96,19 +97,29 @@ typedef struct NvEntry {
     nv val;
 } NvEntry;
 
-typedef struct NvMap { /* entries kept sorted by key (like std::map) */
+/* Entries live in insertion order with an open addressing index on top, so
+ * lookup and insert are O(1). Iteration (keys, values, for..in, display,
+ * json) always sorts first - the compiler depends on that order, and the
+ * bootstrap fixpoint depends on the compiler. */
+typedef struct NvMap {
     NvEntry *items;
     int len;
     int cap;
+    int *index;   /* slot -> position + 1 in items, 0 is empty */
+    int mask;     /* index capacity - 1 (a power of two), 0 when absent */
+    int sorted;   /* whether items are currently in key order */
 } NvMap;
 
 typedef struct NvClass NvClass;
 
 typedef struct NvObj {
     NvClass *cls;
-    NvMap *fields;
     const char *name; /* enum constant name, NULL for class instances */
+    /* the field slots follow this header directly - see nv_fields() */
 } NvObj;
+
+/* One slot per field, in class order (see nv_field_index). */
+static inline nv *nv_fields(NvObj *o) { return (nv *)(o + 1); }
 
 /* A value is 24 bytes. Small integers (62 bit) are not allocated at all:
  * they are encoded in the pointer itself (lowest bit set) - always go
@@ -159,10 +170,23 @@ struct NvClass {
     int nmethods;
     int methodCap;
     NvMethodFn ctor;
+    NvMethodFn resolvedCtor; /* ctor of this class or the nearest base, cached */
+    int ctorResolved;
     int ctorArity;
     NvMap *constants; /* enum constants */
     NvArr *constantOrder;
+    int *order;       /* field indices sorted by name, built on demand */
+    int totalFields;  /* fields of this class and its bases, -1 until counted */
+    nv *defaults;     /* default value per field, built with totalFields */
 };
+
+static int nv_class_field_count(NvClass *c);
+static const char *nv_field_name_at(NvClass *c, int index, const char **type);
+static int nv_field_index(NvClass *c, const char *name);
+static nv *nv_class_defaults(NvClass *c);
+/* Field indices in name order - display and JSON keep the sorted output the
+ * language always had (and the golden tests rely on). */
+static int *nv_field_order(NvClass *c, int count);
 
 /* ------------------------------------------------------------------ */
 /* Memory                                                              */
@@ -344,17 +368,41 @@ static const char *nv_cstr(nv v) {
 static NvArr *nv_arr_new(void) {
     NvArr *a = (NvArr *)nv_alloc(sizeof(NvArr));
     a->len = 0;
+    a->heap = 0;
     a->cap = 8;
     a->items = (nv *)nv_alloc(sizeof(nv) * (size_t)a->cap);
     return a;
 }
 
-static void nv_arr_push(NvArr *a, nv v) {
-    if (a->len == a->cap) {
-        nv *items = (nv *)nv_alloc(sizeof(nv) * (size_t)a->cap * 2);
+/* Growing inside the arena leaves every previous copy behind, which doubles
+ * the memory of a large array. Above this size we switch to realloc. */
+#define NV_ARR_HEAP_AT 4096
+
+static void nv_arr_grow(NvArr *a) {
+    int cap = a->cap * 2;
+    if (cap >= NV_ARR_HEAP_AT) {
+        if (a->heap) {
+            a->items = (nv *)realloc(a->items, sizeof(nv) * (size_t)cap);
+        } else {
+            nv *items = (nv *)malloc(sizeof(nv) * (size_t)cap);
+            memcpy(items, a->items, sizeof(nv) * (size_t)a->len);
+            a->items = items;
+            a->heap = 1;
+        }
+        if (!a->items) {
+            nv_error("out of memory");
+        }
+    } else {
+        nv *items = (nv *)nv_alloc(sizeof(nv) * (size_t)cap);
         memcpy(items, a->items, sizeof(nv) * (size_t)a->len);
         a->items = items;
-        a->cap *= 2;
+    }
+    a->cap = cap;
+}
+
+static void nv_arr_push(NvArr *a, nv v) {
+    if (a->len == a->cap) {
+        nv_arr_grow(a);
     }
     a->items[a->len++] = v;
 }
@@ -377,89 +425,162 @@ static nv nv_arr_of(int count, ...) {
     return v;
 }
 
+static unsigned nv_key_hash(const char *key) {
+    unsigned h = 2166136261u;
+    for (; *key; key++) {
+        h = (h ^ (unsigned char)*key) * 16777619u;
+    }
+    return h;
+}
+
 static NvMap *nv_map_new_cap(int cap) {
     NvMap *m = (NvMap *)nv_alloc(sizeof(NvMap));
     m->len = 0;
     m->cap = cap < 1 ? 1 : cap;
     m->items = (NvEntry *)nv_alloc(sizeof(NvEntry) * (size_t)m->cap);
+    m->index = 0;
+    m->mask = 0;
+    m->sorted = 1;
     return m;
 }
 
 static NvMap *nv_map_new(void) { return nv_map_new_cap(4); }
 
-/* binary search; returns index of key or -(insertion point) - 1 */
-static int nv_map_find(NvMap *m, const char *key) {
-    int lo = 0, hi = m->len - 1;
-    while (lo <= hi) {
-        int mid = (lo + hi) / 2;
-        int c = strcmp(m->items[mid].key, key);
-        if (c == 0) {
-            return mid;
-        }
-        if (c < 0) {
-            lo = mid + 1;
-        } else {
-            hi = mid - 1;
-        }
+/* (Re)builds the hash index; called when it grows or entries move. */
+static void nv_map_reindex(NvMap *m, int slots) {
+    int i;
+    while (slots < (m->len + 1) * 2) {
+        slots *= 2;
     }
-    return -lo - 1;
+    m->mask = slots - 1;
+    m->index = (int *)nv_alloc(sizeof(int) * (size_t)slots);
+    memset(m->index, 0, sizeof(int) * (size_t)slots);
+    for (i = 0; i < m->len; i++) {
+        unsigned slot = nv_key_hash(m->items[i].key) & (unsigned)m->mask;
+        while (m->index[slot]) {
+            slot = (slot + 1) & (unsigned)m->mask;
+        }
+        m->index[slot] = i + 1;
+    }
+}
+
+/* Below this size a linear scan beats hashing - and object field maps,
+ * which are the bulk of all maps, stay index free (and small). */
+#define NV_MAP_LINEAR 8
+
+/* Position of `key` in items, or -1. */
+static int nv_map_find(NvMap *m, const char *key) {
+    unsigned slot;
+    if (m->len == 0) {
+        return -1;
+    }
+    if (!m->index) {
+        int i;
+        if (m->len <= NV_MAP_LINEAR) {
+            for (i = 0; i < m->len; i++) {
+                if (strcmp(m->items[i].key, key) == 0) {
+                    return i;
+                }
+            }
+            return -1;
+        }
+        nv_map_reindex(m, 16);
+    }
+    slot = nv_key_hash(key) & (unsigned)m->mask;
+    while (m->index[slot]) {
+        int at = m->index[slot] - 1;
+        if (strcmp(m->items[at].key, key) == 0) {
+            return at;
+        }
+        slot = (slot + 1) & (unsigned)m->mask;
+    }
+    return -1;
+}
+
+static void nv_map_append(NvMap *m, const char *key, nv val) {
+    unsigned slot;
+    if (m->len == m->cap) {
+        NvEntry *items = (NvEntry *)nv_alloc(sizeof(NvEntry) * (size_t)m->cap * 2);
+        memcpy(items, m->items, sizeof(NvEntry) * (size_t)m->len);
+        m->items = items;
+        m->cap *= 2;
+    }
+    m->items[m->len].key = key;
+    m->items[m->len].val = val;
+    m->len++;
+    if (m->sorted && m->len > 1 && strcmp(m->items[m->len - 2].key, key) > 0) {
+        m->sorted = 0;
+    }
+    if (!m->index) {
+        if (m->len <= NV_MAP_LINEAR) {
+            return;                      /* stays index free */
+        }
+        nv_map_reindex(m, 16);
+        return;
+    }
+    if ((m->len + 1) * 2 > m->mask + 1) {
+        nv_map_reindex(m, m->mask + 1);
+        return;
+    }
+    slot = nv_key_hash(key) & (unsigned)m->mask;
+    while (m->index[slot]) {
+        slot = (slot + 1) & (unsigned)m->mask;
+    }
+    m->index[slot] = m->len;
 }
 
 /* `key` must outlive the map (string literal, class table, arena string). */
 static void nv_map_set_static(NvMap *m, const char *key, nv val) {
-    int idx = nv_map_find(m, key);
-    int pos;
-    if (idx >= 0) {
-        m->items[idx].val = val;
+    int at = nv_map_find(m, key);
+    if (at >= 0) {
+        m->items[at].val = val;
         return;
     }
-    pos = -idx - 1;
-    if (m->len == m->cap) {
-        NvEntry *items = (NvEntry *)nv_alloc(sizeof(NvEntry) * (size_t)m->cap * 2);
-        memcpy(items, m->items, sizeof(NvEntry) * (size_t)m->len);
-        m->items = items;
-        m->cap *= 2;
-    }
-    memmove(m->items + pos + 1, m->items + pos, sizeof(NvEntry) * (size_t)(m->len - pos));
-    m->items[pos].key = key;
-    m->items[pos].val = val;
-    m->len++;
+    nv_map_append(m, key, val);
 }
 
 static void nv_map_set(NvMap *m, const char *key, nv val) {
-    int idx = nv_map_find(m, key);
-    int pos;
-    if (idx >= 0) {
-        m->items[idx].val = val;
+    int at = nv_map_find(m, key);
+    if (at >= 0) {
+        m->items[at].val = val;
         return;
     }
-    pos = -idx - 1;
-    if (m->len == m->cap) {
-        NvEntry *items = (NvEntry *)nv_alloc(sizeof(NvEntry) * (size_t)m->cap * 2);
-        memcpy(items, m->items, sizeof(NvEntry) * (size_t)m->len);
-        m->items = items;
-        m->cap *= 2;
-    }
-    memmove(m->items + pos + 1, m->items + pos, sizeof(NvEntry) * (size_t)(m->len - pos));
-    m->items[pos].key = nv_strndup(key, strlen(key));
-    m->items[pos].val = val;
-    m->len++;
+    nv_map_append(m, nv_strndup(key, strlen(key)), val);
 }
 
 static nv nv_map_get(NvMap *m, const char *key) {
-    int idx = nv_map_find(m, key);
-    return idx >= 0 ? m->items[idx].val : 0;
+    int at = nv_map_find(m, key);
+    return at >= 0 ? m->items[at].val : 0;
 }
 
 static int nv_map_has(NvMap *m, const char *key) { return nv_map_find(m, key) >= 0; }
 
 static void nv_map_remove(NvMap *m, const char *key) {
-    int idx = nv_map_find(m, key);
-    if (idx < 0) {
+    int at = nv_map_find(m, key);
+    if (at < 0) {
         return;
     }
-    memmove(m->items + idx, m->items + idx + 1, sizeof(NvEntry) * (size_t)(m->len - idx - 1));
+    memmove(m->items + at, m->items + at + 1, sizeof(NvEntry) * (size_t)(m->len - at - 1));
     m->len--;
+    if (m->index) {
+        nv_map_reindex(m, m->mask + 1);
+    }
+}
+
+static int nv_entry_cmp(const void *a, const void *b) {
+    return strcmp(((const NvEntry *)a)->key, ((const NvEntry *)b)->key);
+}
+
+/* Every read that exposes the order sorts first. */
+static void nv_map_order(NvMap *m) {
+    if (m->sorted) {
+        return;
+    }
+    qsort(m->items, (size_t)m->len, sizeof(NvEntry), nv_entry_cmp);
+    m->sorted = 1;
+    if (m->index) {
+        nv_map_reindex(m, m->mask + 1);
+    }
 }
 
 static nv nv_map(void) {
@@ -585,6 +706,7 @@ static void nv_display_into(NvSb *sb, nv v) {
         nv_sb_addc(sb, ']');
         break;
     case NV_MAP:
+        nv_map_order(v->m);
         nv_sb_addc(sb, '{');
         for (i = 0; i < v->m->len; i++) {
             if (i > 0) {
@@ -603,13 +725,17 @@ static void nv_display_into(NvSb *sb, nv v) {
         }
         nv_sb_add(sb, v->o->cls->name);
         nv_sb_addc(sb, '{');
-        for (i = 0; i < v->o->fields->len; i++) {
-            if (i > 0) {
-                nv_sb_add(sb, ", ");
+        {
+            int count = nv_class_field_count(v->o->cls);
+            int *order = nv_field_order(v->o->cls, count);
+            for (i = 0; i < count; i++) {
+                if (i > 0) {
+                    nv_sb_add(sb, ", ");
+                }
+                nv_sb_add(sb, nv_field_name_at(v->o->cls, order[i], 0));
+                nv_sb_add(sb, ": ");
+                nv_display_into(sb, nv_fields(v->o)[order[i]]);
             }
-            nv_sb_add(sb, v->o->fields->items[i].key);
-            nv_sb_add(sb, ": ");
-            nv_display_into(sb, v->o->fields->items[i].val);
         }
         nv_sb_addc(sb, '}');
         break;
@@ -938,6 +1064,66 @@ static int nv_compare(nv l, nv r, const char *op) {
     return 0;
 }
 
+/* ---------------------------------------------------------------- */
+/* Fast paths: small-integer arithmetic and comparisons without a call */
+/* ---------------------------------------------------------------- */
+
+static inline nv nv_tag(long long v) {
+    if (v > -NV_TAG_LIMIT && v < NV_TAG_LIMIT) {
+        return (nv)(uintptr_t)(((uintptr_t)v << 1) | 1u);
+    }
+    return nv_int(v);
+}
+
+static inline int nv_both_tagged(nv l, nv r) { return ((uintptr_t)l & (uintptr_t)r & 1u) != 0; }
+
+static inline nv nv_add_fast(nv l, nv r) {
+    if (nv_both_tagged(l, r)) {
+        return nv_tag(nv_ival(l) + nv_ival(r));
+    }
+    return nv_add(l, r);
+}
+
+static inline nv nv_sub_fast(nv l, nv r) {
+    if (nv_both_tagged(l, r)) {
+        return nv_tag(nv_ival(l) - nv_ival(r));
+    }
+    return nv_sub(l, r);
+}
+
+static inline nv nv_mul_fast(nv l, nv r) {
+    if (nv_both_tagged(l, r)) {
+        long long a = nv_ival(l), b = nv_ival(r);
+        if (a > -0x40000000LL && a < 0x40000000LL && b > -0x40000000LL && b < 0x40000000LL) {
+            return nv_tag(a * b);
+        }
+    }
+    return nv_mul(l, r);
+}
+
+/* Conditions want a C int, not a boxed bool - these skip the boxing. */
+static inline int nv_lt_bool(nv l, nv r) {
+    if (nv_both_tagged(l, r)) return nv_ival(l) < nv_ival(r);
+    return nv_compare(l, r, "<") < 0;
+}
+static inline int nv_gt_bool(nv l, nv r) {
+    if (nv_both_tagged(l, r)) return nv_ival(l) > nv_ival(r);
+    return nv_compare(l, r, ">") > 0;
+}
+static inline int nv_le_bool(nv l, nv r) {
+    if (nv_both_tagged(l, r)) return nv_ival(l) <= nv_ival(r);
+    return nv_compare(l, r, "<=") <= 0;
+}
+static inline int nv_ge_bool(nv l, nv r) {
+    if (nv_both_tagged(l, r)) return nv_ival(l) >= nv_ival(r);
+    return nv_compare(l, r, ">=") >= 0;
+}
+static inline int nv_eq_bool(nv l, nv r) {
+    if (nv_both_tagged(l, r)) return l == r;
+    return nv_equals(l, r);
+}
+static inline int nv_ne_bool(nv l, nv r) { return !nv_eq_bool(l, r); }
+
 static nv nv_eq(nv l, nv r) { return nv_bool(nv_equals(l, r)); }
 static nv nv_ne(nv l, nv r) { return nv_bool(!nv_equals(l, r)); }
 static nv nv_lt(nv l, nv r) { return nv_bool(nv_compare(l, r, "<") < 0); }
@@ -995,11 +1181,11 @@ static void nv_index_set(nv t, nv k, nv v) {
 static nv nv_get_member(nv t, const char *name) {
     nv v = 0;
     if (nv_type_of(t) == NV_OBJ) {
-        v = nv_map_get(t->o->fields, name);
-        if (!v) {
+        int at = nv_field_index(t->o->cls, name);
+        if (at < 0) {
             nv_error("no property '%s' on value of type %s", name, t->o->cls->name);
         }
-        return v;
+        return nv_fields(t->o)[at];
     }
     if (nv_type_of(t) == NV_MAP) {
         v = nv_map_get(t->m, name);
@@ -1014,7 +1200,11 @@ static nv nv_get_member(nv t, const char *name) {
 
 static void nv_set_member(nv t, const char *name, nv v) {
     if (nv_type_of(t) == NV_OBJ) {
-        nv_map_set_static(t->o->fields, name, v); /* name is a literal */
+        int at = nv_field_index(t->o->cls, name);
+        if (at < 0) {
+            nv_error("no field '%s' on %s", name, t->o->cls->name);
+        }
+        nv_fields(t->o)[at] = v;
         return;
     }
     if (nv_type_of(t) == NV_MAP) {
@@ -1045,6 +1235,7 @@ static NvClass *nv_find_class(const char *name) {
 static NvClass *nv_class_define(const char *name, const char *base, int isAbstract, int isEnum) {
     NvClass *c = (NvClass *)nv_alloc(sizeof(NvClass));
     memset(c, 0, sizeof(NvClass));
+    c->totalFields = -1;
     c->name = name;
     c->base = base && base[0] ? base : 0;
     c->isAbstract = isAbstract;
@@ -1142,71 +1333,155 @@ static NvMethod *nv_class_find_method(NvClass *c, const char *name, int arity) {
     return byName;
 }
 
-static void nv_init_fields(NvClass *c, NvMap *fields) {
-    int i;
+/* Fields are laid out base class first, then the class itself. */
+static int nv_class_field_count(NvClass *c);
+
+static int nv_field_index(NvClass *c, const char *name) {
     NvClass *base = nv_class_base(c);
-    if (base) {
-        nv_init_fields(base, fields);
-    }
+    int offset = base ? nv_class_field_count(base) : 0;
+    int i;
     for (i = 0; i < c->nfields; i++) {
-        nv_map_set_static(fields, c->fieldNames[i], nv_default(c->fieldTypes[i]));
+        if (strcmp(c->fieldNames[i], name) == 0) {
+            return offset + i;
+        }
+    }
+    return base ? nv_field_index(base, name) : -1;
+}
+
+/* Name and declared type of the field at `index`. */
+static const char *nv_field_name_at(NvClass *c, int index, const char **type) {
+    NvClass *base = nv_class_base(c);
+    int offset = base ? nv_class_field_count(base) : 0;
+    if (index >= offset) {
+        if (type) {
+            *type = c->fieldTypes[index - offset];
+        }
+        return c->fieldNames[index - offset];
+    }
+    return base ? nv_field_name_at(base, index, type) : 0;
+}
+
+static int *nv_field_order(NvClass *c, int count) {
+    int i, j;
+    if (c->order) {
+        return c->order;
+    }
+    c->order = (int *)nv_alloc(sizeof(int) * (size_t)(count < 1 ? 1 : count));
+    for (i = 0; i < count; i++) {
+        /* insertion sort: field counts are tiny */
+        const char *name = nv_field_name_at(c, i, 0);
+        for (j = i; j > 0 && strcmp(nv_field_name_at(c, c->order[j - 1], 0), name) > 0; j--) {
+            c->order[j] = c->order[j - 1];
+        }
+        c->order[j] = i;
+    }
+    return c->order;
+}
+
+
+
+static void nv_init_fields(NvClass *c, nv *fields) {
+    int count = nv_class_field_count(c);
+    if (count > 0) {
+        memcpy(fields, nv_class_defaults(c), sizeof(nv) * (size_t)count);
     }
 }
 
 static int nv_class_field_count(NvClass *c) {
     int n = 0, guard = 0;
-    while (c && guard++ < 64) {
-        n += c->nfields;
-        c = nv_class_base(c);
+    NvClass *walk = c;
+    if (c->totalFields >= 0) {
+        return c->totalFields;
     }
+    while (walk && guard++ < 64) {
+        n += walk->nfields;
+        walk = nv_class_base(walk);
+    }
+    c->totalFields = n;
     return n;
 }
 
-/* Value, object and field map live in one arena block. */
+/* Default value per field slot, computed once per class. */
+static nv *nv_class_defaults(NvClass *c) {
+    int count, i;
+    if (c->defaults) {
+        return c->defaults;
+    }
+    count = nv_class_field_count(c);
+    c->defaults = (nv *)nv_alloc(sizeof(nv) * (size_t)(count < 1 ? 1 : count));
+    for (i = 0; i < count; i++) {
+        const char *type = 0;
+        nv_field_name_at(c, i, &type);
+        c->defaults[i] = type ? nv_default(type) : nv_nil;
+    }
+    return c->defaults;
+}
+
+/* Value, object header and field slots live in one arena block. */
 typedef struct NvObjBlock {
     NvVal val;
     NvObj obj;
-    NvMap map;
 } NvObjBlock;
+
+static nv nv_new_object_of(NvClass *c);
+
+/* Class pointer cached per call site: the name lookup happens once. */
+static nv nv_new_object_cached(NvClass **cache, const char *className) {
+    if (!*cache) {
+        *cache = nv_find_class(className);
+        if (!*cache) {
+            nv_error("unknown class '%s'", className);
+        }
+    }
+    return nv_new_object_of(*cache);
+}
 
 static nv nv_new_object(const char *className) {
     NvClass *c = nv_find_class(className);
-    NvObjBlock *b;
-    int nfields;
     if (!c) {
         nv_error("unknown class '%s'", className);
     }
+    return nv_new_object_of(c);
+}
+
+static nv nv_new_object_of(NvClass *c) {
+    NvObjBlock *b;
+    int nfields;
     if (c->isAbstract) {
-        nv_error("cannot instantiate abstract class '%s'", className);
+        nv_error("cannot instantiate abstract class '%s'", c->name);
     }
     nfields = nv_class_field_count(c);
-    b = (NvObjBlock *)nv_alloc(sizeof(NvObjBlock));
-    memset(b, 0, sizeof(NvObjBlock));
+    b = (NvObjBlock *)nv_alloc(sizeof(NvObjBlock) + sizeof(nv) * (size_t)(nfields < 1 ? 1 : nfields));
     b->val.type = NV_OBJ;
+    b->val.slen = 0;
+    b->val.scap = 0;
     b->val.o = &b->obj;
     b->obj.cls = c;
-    b->obj.fields = &b->map;
     b->obj.name = 0;
-    b->map.cap = nfields < 1 ? 1 : nfields;
-    b->map.items = (NvEntry *)nv_alloc(sizeof(NvEntry) * (size_t)b->map.cap);
-    nv_init_fields(c, &b->map);
+    nv_init_fields(c, nv_fields(&b->obj));
     return &b->val;
 }
 
-static nv nv_construct_args(const char *className, nv *args, int n) {
-    nv obj = nv_new_object(className);
+static nv nv_construct_obj(nv obj, nv *args, int n) {
     NvClass *c = obj->o->cls;
-    int guard = 0;
-    while (c && guard++ < 64) {
-        if (c->ctor) {
-            c->ctor(obj, args, n);
-            return obj;
+    if (!c->ctorResolved) {
+        NvClass *walk = c;
+        int guard = 0;
+        while (walk && guard++ < 64) {
+            if (walk->ctor) {
+                c->resolvedCtor = walk->ctor;
+                break;
+            }
+            walk = nv_class_base(walk);
         }
-        c = nv_class_base(c);
+        c->ctorResolved = 1;
+    }
+    if (c->resolvedCtor) {
+        c->resolvedCtor(obj, args, n);
+        return obj;
     }
     /* no constructor: positional field initialization (base fields first) */
     {
-        NvMap *f = obj->o->fields;
         NvClass *chain[64];
         int depth = 0, i, k = 0;
         for (c = obj->o->cls; c && depth < 64; c = nv_class_base(c)) {
@@ -1215,11 +1490,15 @@ static nv nv_construct_args(const char *className, nv *args, int n) {
         for (i = depth - 1; i >= 0; i--) {
             int j;
             for (j = 0; j < chain[i]->nfields && k < n; j++, k++) {
-                nv_map_set_static(f, chain[i]->fieldNames[j], nv_coerce(args[k], chain[i]->fieldTypes[j]));
+                nv_fields(obj->o)[k] = nv_coerce(args[k], chain[i]->fieldTypes[j]);
             }
         }
     }
     return obj;
+}
+
+static nv nv_construct_args(const char *className, nv *args, int n) {
+    return nv_construct_obj(nv_new_object(className), args, n);
 }
 
 static nv nv_construct(const char *className, int n, ...) {
@@ -1234,7 +1513,64 @@ static nv nv_construct(const char *className, int n, ...) {
     return nv_construct_args(className, args, n);
 }
 
+/* The common arities without va_list - object construction is hot. */
+static inline nv nv_construct0(NvClass **cache, const char *className) {
+    return nv_construct_obj(nv_new_object_cached(cache, className), 0, 0);
+}
+
+static inline nv nv_construct1(NvClass **cache, const char *className, nv a0) {
+    nv args[1];
+    args[0] = a0;
+    return nv_construct_obj(nv_new_object_cached(cache, className), args, 1);
+}
+
+static inline nv nv_construct2(NvClass **cache, const char *className, nv a0, nv a1) {
+    nv args[2];
+    args[0] = a0;
+    args[1] = a1;
+    return nv_construct_obj(nv_new_object_cached(cache, className), args, 2);
+}
+
+static inline nv nv_construct3(NvClass **cache, const char *className, nv a0, nv a1, nv a2) {
+    nv args[3];
+    args[0] = a0;
+    args[1] = a1;
+    args[2] = a2;
+    return nv_construct_obj(nv_new_object_cached(cache, className), args, 3);
+}
+
+/* Same, with the class pointer cached in a static at the call site. */
+static nv nv_construct_cached(NvClass **cache, const char *className, int n, ...) {
+    nv args[64];
+    va_list ap;
+    int i;
+    va_start(ap, n);
+    for (i = 0; i < n && i < 64; i++) {
+        args[i] = va_arg(ap, nv);
+    }
+    va_end(ap);
+    return nv_construct_obj(nv_new_object_cached(cache, className), args, n);
+}
+
 /* Object literal: Name{field=value, ...} - no constructor is run. */
+static nv nv_new_object_fields_cached(NvClass **cache, const char *className, int n, ...) {
+    nv obj = nv_new_object_cached(cache, className);
+    va_list ap;
+    int i;
+    va_start(ap, n);
+    for (i = 0; i < n; i++) {
+        const char *name = va_arg(ap, const char *);
+        nv val = va_arg(ap, nv);
+        int at = nv_field_index(obj->o->cls, name);
+        if (at < 0) {
+            nv_error("no field '%s' on %s", name, obj->o->cls->name);
+        }
+        nv_fields(obj->o)[at] = val;
+    }
+    va_end(ap);
+    return obj;
+}
+
 static nv nv_new_object_fields(const char *className, int n, ...) {
     nv obj = nv_new_object(className);
     va_list ap;
@@ -1243,7 +1579,11 @@ static nv nv_new_object_fields(const char *className, int n, ...) {
     for (i = 0; i < n; i++) {
         const char *name = va_arg(ap, const char *);
         nv val = va_arg(ap, nv);
-        nv_map_set_static(obj->o->fields, name, val);
+        int at = nv_field_index(obj->o->cls, name);
+        if (at < 0) {
+            nv_error("no field '%s' on %s", name, obj->o->cls->name);
+        }
+        nv_fields(obj->o)[at] = val;
     }
     va_end(ap);
     return obj;
@@ -1421,15 +1761,16 @@ static long long nv_arr_index_of(nv a, nv v) {
 
 static nv nv_invoke_args(nv t, const char *name, nv *args, int n) {
     if (nv_type_of(t) == NV_OBJ) {
-        const char *ftype = nv_class_field_type(t->o->cls, name);
         NvMethod *m;
-        if (ftype) {
+        int at = nv_field_index(t->o->cls, name);
+        if (at >= 0) {
+            const char *ftype = 0;
             if (n == 0) {
-                nv v = nv_map_get(t->o->fields, name);
-                return v ? v : nv_nil;
+                return nv_fields(t->o)[at];      /* getter */
             }
-            nv_map_set_static(t->o->fields, name, nv_coerce(args[0], ftype));
-            return nv_nil;
+            nv_field_name_at(t->o->cls, at, &ftype);
+            nv_fields(t->o)[at] = ftype ? nv_coerce(args[0], ftype) : args[0];
+            return nv_nil;                     /* setter */
         }
         m = nv_class_find_method(t->o->cls, name, n);
         if (m) {
@@ -1509,6 +1850,7 @@ static nv nv_invoke_args(nv t, const char *name, nv *args, int n) {
         if (strcmp(name, "keys") == 0) {
             nv out = nv_arr();
             int i;
+            nv_map_order(t->m);
             for (i = 0; i < t->m->len; i++) {
                 nv_arr_push(out->a, nv_str(t->m->items[i].key));
             }
@@ -1517,6 +1859,7 @@ static nv nv_invoke_args(nv t, const char *name, nv *args, int n) {
         if (strcmp(name, "values") == 0) {
             nv out = nv_arr();
             int i;
+            nv_map_order(t->m);
             for (i = 0; i < t->m->len; i++) {
                 nv_arr_push(out->a, t->m->items[i].val);
             }
@@ -1582,6 +1925,17 @@ static nv nv_invoke_args(nv t, const char *name, nv *args, int n) {
     return nv_nil;
 }
 
+/* `obj.field()` and `obj.method()` without building an argument array. */
+static inline nv nv_invoke0(nv t, const char *name) {
+    if (nv_type_of(t) == NV_OBJ) {
+        int at = nv_field_index(t->o->cls, name);
+        if (at >= 0) {
+            return nv_fields(t->o)[at];
+        }
+    }
+    return nv_invoke_args(t, name, 0, 0);
+}
+
 static nv nv_invoke(nv t, const char *name, int n, ...) {
     nv args[64];
     va_list ap;
@@ -1598,16 +1952,37 @@ static nv nv_invoke(nv t, const char *name, int n, ...) {
 /* Iteration                                                           */
 /* ------------------------------------------------------------------ */
 
+/* Iteration walks a snapshot, so the body may change the collection while
+ * looping. The snapshot is allocated at its final size instead of growing. */
+static NvArr *nv_arr_with_capacity(int cap) {
+    NvArr *a = (NvArr *)nv_alloc(sizeof(NvArr));
+    a->len = 0;
+    a->heap = 0;
+    a->cap = cap < 1 ? 1 : cap;
+    if (a->cap >= NV_ARR_HEAP_AT) {
+        a->items = (nv *)malloc(sizeof(nv) * (size_t)a->cap);
+        if (!a->items) {
+            nv_error("out of memory");
+        }
+        a->heap = 1;
+    } else {
+        a->items = (nv *)nv_alloc(sizeof(nv) * (size_t)a->cap);
+    }
+    return a;
+}
+
 static NvArr *nv_iter(nv v) {
-    NvArr *out = nv_arr_new();
+    NvArr *out;
     int i;
     if (nv_type_of(v) == NV_ARR) {
-        for (i = 0; i < v->a->len; i++) {
-            nv_arr_push(out, v->a->items[i]);
-        }
+        out = nv_arr_with_capacity(v->a->len);
+        memcpy(out->items, v->a->items, sizeof(nv) * (size_t)v->a->len);
+        out->len = v->a->len;
         return out;
     }
+    out = nv_arr_new();
     if (nv_type_of(v) == NV_MAP) {
+        nv_map_order(v->m);
         for (i = 0; i < v->m->len; i++) {
             nv_arr_push(out, nv_str(v->m->items[i].key));
         }
@@ -2533,6 +2908,7 @@ static nv nv_http_request(nv method, nv url, nv body, nv headers) {
     nv_sb_add(&cmd, " --write-out ");
     nv_sb_add(&cmd, nv_shell_quote("%{http_code}"));
     if (headers && nv_type_of(headers) == NV_MAP) {
+        nv_map_order(headers->m);
         for (i = 0; i < headers->m->len; i++) {
             nv line = nv_concat(nv_concat(nv_str(headers->m->items[i].key), nv_str(": ")), headers->m->items[i].val);
             if (strcmp(nv_cstr(nv_str_case(nv_str(headers->m->items[i].key), 0)), "content-type") == 0) {
@@ -2712,13 +3088,34 @@ static void nv_json_write(NvSb *sb, nv v, int indent, int depth) {
         nv_json_indent(sb, indent, depth);
         nv_sb_addc(sb, ']');
         break;
-    case NV_MAP:
     case NV_OBJ: {
-        NvMap *m = nv_type_of(v) == NV_MAP ? v->m : v->o->fields;
-        if (nv_type_of(v) == NV_OBJ && v->o->name && m->len == 0) {
+        int count = nv_class_field_count(v->o->cls);
+        int *order = nv_field_order(v->o->cls, count);
+        if (v->o->name && count == 0) {
             nv_json_string(sb, v->o->name);
             break;
         }
+        if (count == 0) {
+            nv_sb_add(sb, "{}");
+            break;
+        }
+        nv_sb_addc(sb, '{');
+        for (i = 0; i < count; i++) {
+            if (i > 0) {
+                nv_sb_addc(sb, ',');
+            }
+            nv_json_indent(sb, indent, depth + 1);
+            nv_json_string(sb, nv_field_name_at(v->o->cls, order[i], 0));
+            nv_sb_add(sb, indent > 0 ? ": " : ":");
+            nv_json_write(sb, nv_fields(v->o)[order[i]], indent, depth + 1);
+        }
+        nv_json_indent(sb, indent, depth);
+        nv_sb_addc(sb, '}');
+        break;
+    }
+    case NV_MAP: {
+        NvMap *m = v->m;
+        nv_map_order(m);
         if (m->len == 0) {
             nv_sb_add(sb, "{}");
             break;

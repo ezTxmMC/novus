@@ -110,10 +110,10 @@ constants, and the stdlib modules `os`, `path`, `json` and `http`.
 
 Values are dynamically typed at run time; arrays, maps and objects are
 passed by reference. Integers are 64 bit and never allocated (tagged
-pointers), objects are a single small block, so integer loops run in
-constant memory and millions of objects cost ~100 bytes each. Missing
-interface/abstract implementations and unknown names are compile-time
-errors.
+pointers), objects are one block of header plus field slots (~48 bytes for a
+one-field class), maps are hash indexed but always iterate in key order.
+Missing interface/abstract implementations, unknown names and unknown fields
+are errors.
 
 Statements `println`, `print`, `eprintln`.
 Strings: `length`, `charAt`, `substring`, `indexOf`, `contains`,
@@ -176,6 +176,7 @@ Free builtins need no import: `readFile`, `writeFile`, `fileExists`,
 | `test/`                 | Golden tests (`run_tests.sh`) and the self-hosting ladder (`selfhost.sh`)     |
 | `examples/`             | Example programs ([overview](examples/README.md))                             |
 | `vscode-novus/`         | VS Code extension: highlighting, language server, run/build commands           |
+| `website/`              | Documentation site (React + Vite + MDX + Tailwind, built with bun)            |
 
 ## Self-hosting and hacking on the compiler
 
@@ -203,11 +204,36 @@ start using it (see [BOOTSTRAP.md](BOOTSTRAP.md)).
 which languages make up the tree, GitHub-style - Novus included, generated
 files and data/prose listed separately.
 
+## Documentation site
+
+[website/](website/README.md) is the documentation site: React, React Router,
+Vite, MDX and Tailwind CSS 4, built with bun. It generates its examples
+browser, standard library reference and syntax highlighting from this
+repository, so it cannot drift from the language.
+
+```sh
+cd website && bun install && bun run dev
+```
+
+## Examples
+
+[examples/](examples/README.md) holds 250 programs from `hello world` to a
+small virtual machine, grouped from easy to complex: basics, control flow,
+methods, strings, arrays, maps, classes, the standard library, algorithms and
+complete projects. Each one runs on its own and is verified against a golden
+file.
+
+```sh
+novusc run examples/01-basics/001-hello-world.nv
+make examples                    # run all 250
+```
+
 ## Tests
 
 ```sh
-make test              # golden tests + self-hosting ladder
+make test              # golden tests, examples and the self-hosting ladder
 test/run_tests.sh      # only the golden tests (filter: test/run_tests.sh classes)
+test/run_examples.sh   # only the examples (filter: test/run_examples.sh maps)
 ```
 
 ## Editor support

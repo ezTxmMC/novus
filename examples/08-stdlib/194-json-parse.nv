@@ -1,0 +1,16 @@
+package main
+
+import json
+
+// Reading JSON text into maps and arrays.
+
+method main {
+    var data = json.parse("{\"name\": \"novus\", \"stars\": 42, \"tags\": [\"fast\", \"small\"]}")
+    var name = data["name"]
+    var stars = data["stars"]
+    println name
+    println stars + 1
+    println data["tags"]
+    println data["tags"][0]
+    println typeOf(data)
+}

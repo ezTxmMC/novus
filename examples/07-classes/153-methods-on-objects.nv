@@ -1,0 +1,33 @@
+package main
+
+// Methods that compute from the fields of an object.
+
+define class Rectangle {
+    private final float width: get
+    private final float height: get
+
+    construct(float width, float height) {
+        this.width = width
+        this.height = height
+    }
+
+    method area(): float {
+        return width * height
+    }
+
+    method perimeter(): float {
+        return 2.0 * (width + height)
+    }
+
+    method isSquare(): bool {
+        return width == height
+    }
+}
+
+method main {
+    var r = Rectangle(3.0, 4.0)
+    println r.area()
+    println r.perimeter()
+    println r.isSquare()
+    println Rectangle(2.0, 2.0).isSquare()
+}

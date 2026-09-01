@@ -1,0 +1,91 @@
+# Architecture
+
+`novusc` is a straight pipeline from text to C. Every stage is a package of
+Novus files under
+[compiler/](https://github.com/ezTxmMC/novus/tree/master/compiler).
+
+```
+source .nv
+   │  lexer/      tokens as strings:  "IDENT main.nv:3 println"
+   ▼
+tokens
+   │  parser/     s-expression AST, also strings
+   ▼
+(method main void (params) (annos) (block ...))
+   │  loader/     resolves imports, flattens every file into one list
+   ▼
+declarations
+   │  codegen/    index, semantic checks, C emission
+   ▼
+one .c file  ──►  cc  ──►  native binary
+```
+
+## The packages
+
+| Package | Job |
+|---|---|
+| `lexer/` | characters to tokens (`tokens.nv`, `chars.nv`, `lexer.nv`) |
+| `parser/` | tokens to an s-expression AST (`expressions`, `statements`, `members`, `declarations`) |
+| `ast/` | navigating the string AST (`nodeChild`, `nodeCount`, ...) |
+| `loader/` | `import` resolution: files, std modules, dependencies |
+| `codegen/` | program index, checks, expressions, statements, methods, whole program |
+| `project/` | `project.nv` manifests and git dependencies |
+| `std/` | the standard library, embedded as strings |
+| `driver/` | the command line and the call into the C compiler |
+
+## Everything is a string
+
+The AST is not a tree of objects but nested s-expressions in plain strings:
+
+```
+(method greet string (params (p string name)) (annos)
+  (block (at hello.nv:4 (return (+ (str "Hello, ") name)))))
+```
+
+That sounds slow, and it is not free - but it kept the compiler small enough
+to bootstrap itself early, and it means every intermediate form can be
+printed and diffed. `ast/sexp.nv` provides the accessors.
+
+## The runtime
+
+Compiled programs embed
+[runtime/novus_rt.h](https://github.com/ezTxmMC/novus/blob/master/runtime/novus_rt.h):
+values, arrays, maps, classes, the standard library natives and the memory
+arena.
+
+A value is 24 bytes. Small integers are **tagged pointers** - the value lives
+in the pointer itself with the lowest bit set, so integer arithmetic never
+allocates. An object is one arena block: value, header and one slot per field,
+addressed by index (the field names live in the class), which puts a
+one-field instance at 48 bytes. Maps store entries in insertion order behind a
+hash index and sort lazily, so lookups are O(1) while iteration stays in key
+order. Memory is arena allocated and never freed, which is exactly right for a
+compiler process and fine for most tools.
+
+```c
+struct NvVal {
+    int type;
+    int slen;
+    int scap;
+    union { long long i; double f; const char *s; NvArr *a; NvMap *m; NvObj *o; };
+};
+```
+
+## Generated C
+
+Locals become `l_name`, top-level constants `g_NAME`, free methods
+`f_name_N` (N = arity, with `_vK` variants plus a dispatcher for overloads),
+class methods `m_Class_name_N(nv self, nv *args, int n)`, constructors
+`c_Class`. Start-up registers the classes, initializes constants, constructs
+the enum values and calls `main`.
+
+```bash
+novusc emit hello.nv | head -30    # see it for yourself
+```
+
+## Why C
+
+C is the most portable target there is: every platform has a compiler, the
+output is debuggable, and cross compiling is just another `cc`. It also makes
+the bootstrap possible - the checked-in `bootstrap/novusc.c` is nothing but
+the compiler's own output.

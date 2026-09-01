@@ -1,0 +1,15 @@
+package main
+
+import strings
+
+// Padding and repeating text for aligned output.
+
+method main {
+    println "[" + strings.padLeft("42", 6) + "]"
+    println "[" + strings.padRight("42", 6) + "]"
+    println strings.padLeftWith("7", 3, "0")
+    println strings.repeat("=", 20)
+    for (item in [["apples", 12], ["figs", 3]]) {
+        println strings.padRight(item[0], 10) + strings.padLeft("" + item[1], 4)
+    }
+}

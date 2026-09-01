@@ -1,0 +1,19 @@
+package main
+
+// The factorial of a number, computed iteratively.
+
+method factorial(integer n): integer {
+    var result = 1
+    var i = 2
+    while (i <= n) {
+        result = result * i
+        i = i + 1
+    }
+    return result
+}
+
+method main {
+    for (n in [0, 1, 5, 10, 20]) {
+        println "${n}! = ${factorial(n)}"
+    }
+}

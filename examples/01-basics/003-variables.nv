@@ -1,0 +1,16 @@
+package main
+
+// `var` declares a variable; its type comes from the value.
+
+method main {
+    var name = "Ada"
+    var age = 36
+    var height = 1.72
+    var member = true
+    println name
+    println age
+    println height
+    println member
+    age = age + 1
+    println age
+}

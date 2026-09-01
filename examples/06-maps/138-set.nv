@@ -1,0 +1,15 @@
+package main
+
+// A map with boolean values works as a set.
+
+method main {
+    var seen = {}
+    for (word in ["a", "b", "a", "c", "b"]) {
+        seen[word] = true
+    }
+    println seen.keys()
+    println seen.length()
+    println seen.has("c")
+    seen.remove("c")
+    println seen.keys()
+}

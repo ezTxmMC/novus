@@ -1,0 +1,15 @@
+package main
+
+// A declared type converts the value: integers truncate, floats widen,
+// strings take the text form.
+
+method main {
+    integer truncated = 2.9
+    float widened = 3
+    string text = 42
+    bool flag = true
+    println truncated
+    println widened
+    println text + "!"
+    println flag
+}

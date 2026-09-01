@@ -1,0 +1,53 @@
+package main
+
+// A least recently used cache built from a map and an order list.
+
+define class LruCache {
+    private final integer capacity: get
+    private final map<string, object> values: get
+    private final array<string> order: get
+
+    construct(integer capacity) {
+        this.capacity = capacity
+        this.values = {}
+        this.order = []
+    }
+
+    method touch(string key) {
+        var at = order.indexOf(key)
+        if (at >= 0) {
+            order.remove(at)
+        }
+        order.append(key)
+    }
+
+    method put(string key, object value) {
+        values[key] = value
+        this.touch(key)
+        if (order.length() > capacity) {
+            var oldest = order[0]
+            order.remove(0)
+            values.remove(oldest)
+            println "evicted ${oldest}"
+        }
+    }
+
+    method get(string key): object {
+        if (values.has(key) == false) {
+            return "miss"
+        }
+        this.touch(key)
+        return values[key]
+    }
+}
+
+method main {
+    var cache = LruCache(2)
+    cache.put("a", 1)
+    cache.put("b", 2)
+    println cache.get("a")
+    cache.put("c", 3)
+    println cache.get("b")
+    println cache.get("c")
+    println cache.order()
+}

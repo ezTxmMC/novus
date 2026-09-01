@@ -1,0 +1,27 @@
+package main
+
+// Inside a class, fields and methods can be used without `this.`.
+
+define class Account {
+    private integer balance: get
+
+    construct() {
+        this.balance = 0
+    }
+
+    method deposit(integer amount) {
+        balance = balance + amount
+        log("deposit ${amount}")
+    }
+
+    method log(string what) {
+        println "${what} -> balance ${balance}"
+    }
+}
+
+method main {
+    var account = Account()
+    account.deposit(100)
+    account.deposit(50)
+    println account.balance()
+}

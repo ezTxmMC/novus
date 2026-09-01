@@ -1,0 +1,14 @@
+package main
+
+// An array used as a stack: append pushes, pop takes from the end.
+
+method main {
+    var stack = []
+    for (token in ["a", "b", "c"]) {
+        stack.append(token)
+        println "push ${token} -> ${stack}"
+    }
+    while (stack.length() > 0) {
+        println "pop ${stack.pop()} -> ${stack}"
+    }
+}

@@ -1,0 +1,32 @@
+package main
+
+import arrays
+
+// Checking whether every row, column and diagonal sums to the same value.
+
+method isMagic(array<object> square): bool {
+    var n = square.length()
+    var target = arrays.sum(square[0])
+    var diagonal = 0
+    var antiDiagonal = 0
+    for (i in arrays.range(0, n)) {
+        if (arrays.sum(square[i]) != target) {
+            return false
+        }
+        var column = 0
+        for (j in arrays.range(0, n)) {
+            column = column + square[j][i]
+        }
+        if (column != target) {
+            return false
+        }
+        diagonal = diagonal + square[i][i]
+        antiDiagonal = antiDiagonal + square[i][n - 1 - i]
+    }
+    return diagonal == target && antiDiagonal == target
+}
+
+method main {
+    println isMagic([[2, 7, 6], [9, 5, 1], [4, 3, 8]])
+    println isMagic([[1, 2], [3, 4]])
+}

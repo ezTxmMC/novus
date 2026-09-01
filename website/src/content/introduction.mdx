@@ -1,0 +1,82 @@
+# Introduction
+
+Novus is a small, self-hosting programming language. The compiler, `novusc`,
+is written in Novus, translates Novus to portable C and compiles itself -
+byte for byte identically. There is no second implementation: a checked-in C
+snapshot of the compiler bootstraps everything, so the only thing you need to
+build the whole language is a C compiler.
+
+```nv
+package main
+
+method main {
+    var names = ["Ada", "Grace"]
+    for (n in names) {
+        println "Hello, ${n}!"
+    }
+}
+```
+
+## What it looks like
+
+Novus reads like a scripting language: `var` with type inference, string
+interpolation, arrays and maps as literals, `for..in` over anything
+iterable. It is structured like a compiled one: methods with typed
+parameters and overloads, classes with fields and constructors, interfaces,
+abstract classes and enums.
+
+```nv
+define class Account {
+    private final string owner: get
+    private integer balance: get
+
+    construct(string owner) {
+        this.owner = owner
+        this.balance = 0
+    }
+
+    method deposit(integer amount): bool {
+        if (amount <= 0) {
+            return false
+        }
+        balance = balance + amount
+        return true
+    }
+}
+```
+
+## What makes it different
+
+**It compiles itself.** The bootstrap ladder builds the compiler from its own
+generated C, then rebuilds it with itself, then checks that the result emits
+exactly the same C. That fixpoint is verified on every commit - see
+[Bootstrapping](/docs/bootstrapping).
+
+**It compiles to one C file.** `novusc emit` gives you a single, self-contained
+translation unit with the runtime embedded. Any C compiler on any platform
+turns it into a binary, which is also how cross compiling works
+(`--target x86_64-windows-gnu` through `zig cc`).
+
+**It has no install step.** No LLVM, no VM, no package manager needed up front.
+`cc bootstrap/novusc.c -o novusc` is a working compiler.
+
+## What it is not
+
+Novus is young and deliberately small. There are no closures, no generics
+beyond `array<T>`/`map<K, V>` annotations, no threads, no exceptions - errors
+are values you check, or the program aborts with a message. Values are
+dynamically typed at run time; type annotations convert and document, they do
+not (yet) reject programs at compile time.
+
+<Callout type="note">
+Missing interface or abstract methods, unknown names, unknown modules and
+wrong argument counts *are* compile-time errors. Everything else surfaces at
+run time with a file and line.
+</Callout>
+
+## Where to go next
+
+- [Installation](/docs/installation) - three stages, a few seconds
+- [Your first program](/docs/first-program) - from `hello world` to a binary
+- [Language basics](/docs/language/basics) - values, variables, operators
+- [Examples](/examples) - 250 programs from one-liners to a virtual machine

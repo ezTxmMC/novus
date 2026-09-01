@@ -1,0 +1,31 @@
+package main
+
+import arrays
+import strings
+
+// Ranking words by frequency, breaking ties alphabetically.
+
+method main {
+    var text = "the quick brown fox jumps over the lazy dog the fox barks"
+    var counts = {}
+    for (word in strings.words(text)) {
+        if (counts.has(word)) {
+            counts[word] = counts[word] + 1
+            continue
+        }
+        counts[word] = 1
+    }
+    var ranked = []
+    for (word in counts) {
+        var padded = strings.padLeft("" + counts[word], 3)
+        ranked.append(padded + " " + word)
+    }
+    var top = 0
+    for (entry in arrays.reverse(arrays.sort(ranked))) {
+        if (top >= 4) {
+            break
+        }
+        println entry.trim()
+        top = top + 1
+    }
+}

@@ -30,7 +30,9 @@ method genClassCode(string node, map<string, string> prog, array<string> protos,
     if (classIsAbstract(node)) {
         abstractFlag = "1"
     }
+    protos.append("static NvClass *nv_cls_" + cls + ";" + nl())
     registry.append("    c = nv_class_define(" + cstr(cls) + ", " + cstr(base) + ", " + abstractFlag + ", " + isEnum + ");" + nl())
+    registry.append("    nv_cls_" + cls + " = c;" + nl())
     var fields = classFields(node)
     var i = 1
     while (i < nodeCount(fields)) {

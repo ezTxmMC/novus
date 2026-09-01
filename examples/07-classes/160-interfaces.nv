@@ -1,0 +1,39 @@
+package main
+
+// An interface lists methods a class must implement.
+
+define interface Printable {
+    render(): string
+}
+
+define class Invoice based Printable {
+    private final integer number: get
+    private final float amount: get
+
+    construct(integer number, float amount) {
+        this.number = number
+        this.amount = amount
+    }
+
+    method render(): string {
+        return "invoice #${number}: ${amount}"
+    }
+}
+
+define class Label based Printable {
+    private final string text: get
+
+    construct(string text) {
+        this.text = text
+    }
+
+    method render(): string {
+        return "label: ${text}"
+    }
+}
+
+method main {
+    for (item in [Invoice(1, 99.5), Label("fragile")]) {
+        println item.render()
+    }
+}

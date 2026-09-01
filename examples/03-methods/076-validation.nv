@@ -1,0 +1,16 @@
+package main
+
+// Validating input and reporting the problem on stderr.
+
+method divide(integer a, integer b): integer {
+    if (b == 0) {
+        eprintln "warning: division by zero, using 0"
+        return 0
+    }
+    return a / b
+}
+
+method main {
+    println divide(10, 2)
+    println divide(10, 0)
+}

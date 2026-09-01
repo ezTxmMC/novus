@@ -1,0 +1,39 @@
+package main
+
+// Reading INI style configuration into nested maps.
+
+method parseIni(string text): map<string, object> {
+    var out = {}
+    var section = "general"
+    out[section] = {}
+    for (raw in text.split("\n")) {
+        var line = raw.trim()
+        if (line == "" || line.startsWith(";") || line.startsWith("#")) {
+            continue
+        }
+        if (line.startsWith("[") && line.endsWith("]")) {
+            section = line.substring(1, line.length() - 1)
+            out[section] = {}
+            continue
+        }
+        var at = line.indexOf("=")
+        if (at < 0) {
+            continue
+        }
+        out[section][line.substring(0, at).trim()] = line.substring(at + 1, line.length()).trim()
+    }
+    return out
+}
+
+method main {
+    var text = "; a comment\nname = novus\n\n[server]\nhost = localhost\nport = 8080\n\n[logging]\nlevel = debug"
+    var config = parseIni(text)
+    for (section in config) {
+        println "[" + section + "]"
+        var values = config[section]
+        for (key in values) {
+            var value = values[key]
+            println "  ${key} = ${value}"
+        }
+    }
+}

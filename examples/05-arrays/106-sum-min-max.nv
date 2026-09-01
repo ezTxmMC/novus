@@ -1,0 +1,14 @@
+package main
+
+import arrays
+
+// Aggregating numbers with the arrays module.
+
+method main {
+    var numbers = [4, 8, 15, 16, 23, 42]
+    println arrays.sum(numbers)
+    println arrays.min(numbers)
+    println arrays.max(numbers)
+    println arrays.first(numbers) + arrays.last(numbers)
+    println arrays.isEmpty([])
+}

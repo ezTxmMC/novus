@@ -1,0 +1,23 @@
+package main
+
+// Objects are references: changing one changes every name for it.
+
+define class Settings {
+    private string theme: get, set
+
+    construct() {
+        this.theme = "light"
+    }
+}
+
+method switchToDark(Settings settings) {
+    settings.theme("dark")
+}
+
+method main {
+    var settings = Settings()
+    var alias = settings
+    switchToDark(settings)
+    println settings.theme()
+    println alias.theme()
+}

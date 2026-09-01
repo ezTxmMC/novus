@@ -1,0 +1,63 @@
+# Dependencies
+
+Dependencies are git repositories, identified by their URL without the
+scheme - the same idea as Go modules.
+
+```nv
+project "github.com/you/app"
+main "main.nv"
+
+require "github.com/user/geo" "v1.2.0"
+require "github.com/user/colors"          // = latest
+```
+
+## Fetching
+
+```bash
+novusc deps                         # clone what is missing
+novusc deps add github.com/user/geo v1.2.0
+novusc deps update                  # re-fetch everything
+```
+
+`novusc build` and `novusc run` fetch missing dependencies automatically.
+Modules are cloned with `git` into `$NOVUS_DEPS` (default
+`~/.novus/deps/<module>@<version>`), and the dependencies of dependencies are
+resolved through their own `project.nv` - the first version seen wins.
+
+The version can be a **tag**, a **branch**, a **commit hash** or `latest`
+(the default branch at fetch time).
+
+## Importing
+
+```nv
+import "github.com/user/geo"                   // the module's lib/main entry
+import "github.com/user/geo/shapes/circle.nv"  // any file inside the module
+```
+
+Everything the module declares becomes part of your program, so its methods
+and classes are used directly.
+
+## Local development
+
+`replace` points a module at a directory on disk - no fetching, no version:
+
+```nv
+require "github.com/user/geo" "v1.2.0"
+replace "github.com/user/geo" "../geo"
+```
+
+Perfect for developing a library and its consumer side by side; remove the
+line to go back to the published version.
+
+<Callout type="warning">
+There is no lock file yet. `latest` means whatever the default branch is at
+the moment of fetching - pin tags for reproducible builds.
+</Callout>
+
+## Publishing a module
+
+1. add a `project.nv` with `project` set to the repository URL and `lib`
+   pointing at the entry file
+2. tag a release: `git tag v1.0.0 && git push --tags`
+
+That is all - there is no registry to publish to.

@@ -1,0 +1,25 @@
+package main
+
+import strings
+
+// Building an index from words to the lines that contain them.
+
+method main {
+    var lines = ["novus compiles to c", "c is portable", "novus is small"]
+    var index = {}
+    var number = 0
+    for (line in lines) {
+        for (word in strings.words(line)) {
+            if (index.has(word) == false) {
+                index[word] = []
+            }
+            if (index[word].contains(number) == false) {
+                index[word].append(number)
+            }
+        }
+        number = number + 1
+    }
+    for (word in ["novus", "c", "small"]) {
+        println "${word}: ${index[word]}"
+    }
+}

@@ -1,0 +1,7 @@
+package main
+
+// The smallest Novus program: a main method that prints a line.
+
+method main {
+    println "Hello, world!"
+}

@@ -1,0 +1,15 @@
+package main
+
+// println adds a line break, print does not, eprintln writes to stderr.
+
+method main {
+    println "a line"
+    print "no"
+    print " line "
+    print "break"
+    println ""
+    eprintln "this goes to standard error"
+    println 42
+    println true
+    println 2.5
+}

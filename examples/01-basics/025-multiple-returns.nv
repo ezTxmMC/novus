@@ -1,0 +1,19 @@
+package main
+
+// A method can return early; the last value wins.
+
+method classify(integer n): string {
+    if (n < 0) {
+        return "negative"
+    }
+    if (n == 0) {
+        return "zero"
+    }
+    return "positive"
+}
+
+method main {
+    println classify(-5)
+    println classify(0)
+    println classify(5)
+}

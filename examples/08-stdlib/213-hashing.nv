@@ -1,0 +1,13 @@
+package main
+
+import hash
+
+// Hashing text with FNV-1a and CRC32.
+
+method main {
+    println hash.fnv1a("novus") == hash.fnv1a("novus")
+    println hash.fnv1a("a") == hash.fnv1a("b")
+    println hash.crc32("hello")
+    println hash.hex(255)
+    println hash.bucket("some key", 8) < 8
+}

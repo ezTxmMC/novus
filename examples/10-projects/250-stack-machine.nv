@@ -1,0 +1,90 @@
+package main
+
+import strings
+
+// A tiny virtual machine: the last example puts everything together.
+//
+//   PUSH n   push a number        ADD SUB MUL   arithmetic
+//   DUP      duplicate the top    PRINT         print the top
+//   JMPZ n   jump if top is zero  JMP n         jump
+
+define class Machine {
+    private final array<object> program: get
+    private final array<object> stack: get
+    private integer pointer: get
+    private integer steps: get
+
+    construct(array<object> program) {
+        this.program = program
+        this.stack = []
+        this.pointer = 0
+        this.steps = 0
+    }
+
+    method run() {
+        while (pointer < program.length() && steps < 1000) {
+            steps = steps + 1
+            var parts = strings.words(program[pointer])
+            var operation = parts[0]
+            pointer = pointer + 1
+            if (operation == "PUSH") {
+                stack.append(parseInt(parts[1]))
+                continue
+            }
+            if (operation == "ADD") {
+                stack.append(stack.pop() + stack.pop())
+                continue
+            }
+            if (operation == "MUL") {
+                stack.append(stack.pop() * stack.pop())
+                continue
+            }
+            if (operation == "SUB") {
+                var right = stack.pop()
+                stack.append(stack.pop() - right)
+                continue
+            }
+            if (operation == "DUP") {
+                stack.append(stack[stack.length() - 1])
+                continue
+            }
+            if (operation == "PRINT") {
+                println stack[stack.length() - 1]
+                continue
+            }
+            if (operation == "JMPZ") {
+                if (stack.pop() == 0) {
+                    pointer = parseInt(parts[1])
+                }
+                continue
+            }
+            if (operation == "JMP") {
+                pointer = parseInt(parts[1])
+                continue
+            }
+            eprintln "unknown instruction ${operation}"
+            return
+        }
+        println "executed ${steps} instructions, stack ${stack}"
+    }
+}
+
+method main {
+    // (2 + 3) * 4
+    var program = ["PUSH 2", "PUSH 3", "ADD", "PUSH 4", "MUL", "PRINT"]
+    Machine(program).run()
+
+    // count down from 3 to 0
+    var countdown = [
+        "PUSH 3",
+        "DUP",
+        "PRINT",
+        "PUSH 1",
+        "SUB",
+        "DUP",
+        "JMPZ 8",
+        "JMP 1",
+        "PRINT"
+    ]
+    Machine(countdown).run()
+}

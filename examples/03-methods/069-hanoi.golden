@@ -1,0 +1,4 @@
+move disk 3 from A to B
+move disk 4 from A to C
+move disk 3 from B to C
+15 moves in total

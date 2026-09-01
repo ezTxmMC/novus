@@ -1,0 +1,120 @@
+# Basics
+
+## Program structure
+
+A file starts with an optional `package` line, then imports, then
+declarations. Execution begins at `main`.
+
+```nv
+package main
+
+import strings
+
+private final GREETING = "Hello"
+
+method main {
+    println "${GREETING}, world!"
+}
+```
+
+Statements end at the line break; a `;` is allowed but never needed.
+Comments are `//` to the end of the line and `/* ... */` across lines.
+
+## Values
+
+| Type | Literal | Notes |
+|---|---|---|
+| `integer` | `42`, `-7` | 64 bit, never allocated (tagged pointers) |
+| `float` | `2.5`, `1.0` | double precision, prints with six decimals |
+| `bool` | `true`, `false` | no implicit truthiness |
+| `string` | `"text"` | with `${}` interpolation and escapes |
+| `array<T>` | `[1, 2, 3]` | passed by reference |
+| `map<K, V>` | `{ "a": 1 }` | string keys, iterated in key order |
+
+## Variables
+
+```nv
+var name = "Ada"          // type inferred
+var age = 36
+age = age + 1             // reassignment
+
+integer truncated = 2.9   // declared type converts: 2
+float widened = 3         // 3.000000
+string text = 42          // "42"
+```
+
+Top level constants are visible everywhere:
+
+```nv
+private final APP = "novus"
+final VERSION = "1.0"
+```
+
+## Operators
+
+```nv
+println 2 + 3 * 4      // 14 - the usual precedence
+println 7 / 2          // 3   - integer division truncates
+println 7.0 / 2        // 3.500000
+println 7 % 3          // 1
+println -x             // unary minus
+println a < b && !c    // comparison and logic
+```
+
+Strings compare lexicographically, numbers numerically. `+` concatenates as
+soon as one side is a string:
+
+```nv
+println "sum: " + 1 + 2     // sum: 12
+println "sum: " + (1 + 2)   // sum: 3
+```
+
+## Strings
+
+```nv
+var text = "Novus"
+println text.length()            // 5
+println text.charAt(0)           // N
+println text.substring(1, 3)     // ov
+println text.toUpper()           // NOVUS
+println text.contains("ov")      // true
+println "a,b,c".split(",")       // [a, b, c]
+println ["a", "b"].join("-")     // a-b
+```
+
+Interpolation embeds any expression:
+
+```nv
+var count = 3
+println "${count} items, next is ${count + 1}"
+```
+
+<Callout type="warning">
+`${...}` cannot contain a string literal - the quote would end the enclosing
+literal. Put the value in a variable first:
+
+```nv
+var name = person["name"]
+println "hello ${name}"
+```
+</Callout>
+
+Escapes are `\n`, `\t`, `\r`, `\"` and `\\`.
+
+## Builtins
+
+These need no import:
+
+`readFile`, `writeFile`, `fileExists`, `removeFile`, `readLine`, `args`,
+`parseInt`, `parseFloat`, `chr`, `ord`, `typeOf`, `exec`, `env`, `exit`,
+`platform`.
+
+```nv
+println typeOf(1)          // integer
+println parseInt("42") + 1 // 43
+println chr(65)            // A
+println ord("A")           // 65
+```
+
+Output statements: `println` (with line break), `print` (without) and
+`eprintln` (to standard error).

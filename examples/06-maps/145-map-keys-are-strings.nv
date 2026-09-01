@@ -1,0 +1,12 @@
+package main
+
+// Every key is stored as text, so 7 and "7" are the same key.
+
+method main {
+    var m = {}
+    m[7] = "seven"
+    println m["7"]
+    m[true] = "yes"
+    println m.keys()
+    println m
+}

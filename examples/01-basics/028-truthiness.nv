@@ -1,0 +1,18 @@
+package main
+
+// Conditions need a boolean - there is no implicit truthiness.
+
+method main {
+    var count = 0
+    if (count == 0) {
+        println "count is zero"
+    }
+    var text = ""
+    if (text.length() == 0) {
+        println "text is empty"
+    }
+    var items = []
+    if (items.length() == 0) {
+        println "no items"
+    }
+}

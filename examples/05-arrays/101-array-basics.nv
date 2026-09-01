@@ -1,0 +1,14 @@
+package main
+
+// Creating an array, reading and replacing its elements.
+
+method main {
+    var numbers = [10, 20, 30]
+    println numbers
+    println numbers.length()
+    println numbers[0]
+    println numbers[numbers.length() - 1]
+    numbers[1] = 99
+    println numbers
+    println []
+}

@@ -1,0 +1,15 @@
+package main
+
+// Arrays are passed by reference: the method changes the caller's array.
+
+method addItem(array<string> items, string item) {
+    items.append(item)
+}
+
+method main {
+    var basket = ["apple"]
+    addItem(basket, "bread")
+    addItem(basket, "milk")
+    println basket
+    println basket.length()
+}

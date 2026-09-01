@@ -1,0 +1,49 @@
+package main
+
+// Shortest path with weights: always expand the cheapest known node.
+
+method shortest(map<string, object> graph, string from, string to): integer {
+    var distance = {}
+    var visited = {}
+    for (node in graph) {
+        distance[node] = -1
+    }
+    distance[from] = 0
+    var guard = 0
+    while (guard < 100) {
+        guard = guard + 1
+        var current = ""
+        for (node in graph) {
+            if (visited.has(node) || distance[node] < 0) {
+                continue
+            }
+            if (current == "" || distance[node] < distance[current]) {
+                current = node
+            }
+        }
+        if (current == "") {
+            break
+        }
+        visited[current] = true
+        var edges = graph[current]
+        for (target in edges) {
+            var candidate = distance[current] + edges[target]
+            if (distance[target] < 0 || candidate < distance[target]) {
+                distance[target] = candidate
+            }
+        }
+    }
+    return distance[to]
+}
+
+method main {
+    var graph = {
+        "a": { "b": 4, "c": 2 },
+        "b": { "d": 5 },
+        "c": { "b": 1, "d": 8 },
+        "d": {}
+    }
+    println shortest(graph, "a", "d")
+    println shortest(graph, "a", "b")
+    println shortest(graph, "c", "d")
+}

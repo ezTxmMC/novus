@@ -1,0 +1,47 @@
+package main
+
+import arrays
+
+// Counting the ways to place N queens without attacks (backtracking).
+
+method safe(array<integer> placed, integer column): bool {
+    var row = placed.length()
+    var i = 0
+    while (i < placed.length()) {
+        var other = placed[i]
+        if (other == column) {
+            return false
+        }
+        var rowDistance = row - i
+        var columnDistance = other - column
+        if (columnDistance < 0) {
+            columnDistance = 0 - columnDistance
+        }
+        if (rowDistance == columnDistance) {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+method solve(integer size, array<integer> placed): integer {
+    if (placed.length() == size) {
+        return 1
+    }
+    var found = 0
+    for (column in arrays.range(0, size)) {
+        if (safe(placed, column)) {
+            placed.append(column)
+            found = found + solve(size, placed)
+            placed.remove(placed.length() - 1)
+        }
+    }
+    return found
+}
+
+method main {
+    for (size in [4, 5, 6, 7, 8]) {
+        println "${size} queens: ${solve(size, [])} solutions"
+    }
+}

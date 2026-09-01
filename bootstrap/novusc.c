@@ -3005,7 +3005,7 @@ static void nv_register_classes(void) {
 }
 
 static void nv_init_globals(void) {
-    g_VERSION = nv_lit("0.3.0");
+    g_VERSION = nv_lit("0.1.0-pre.alpha.1");
 }
 
 static void nv_init_enums(void) {

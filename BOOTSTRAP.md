@@ -23,10 +23,10 @@ up to date. `scripts/snapshot.sh` regenerates `compiler/runtime/runtime.nv` and
 
 ## History
 
-- v0.1: a C++ tree-walking interpreter (`novus run`).
-- v0.2: a first Novus-written compiler (`tools/*.nv`) for a small statically
+- First a C++ tree-walking interpreter (`novus run`).
+- Then a first Novus-written compiler (`tools/*.nv`) for a small statically
   typed subset, executed by the interpreter, reached the fixpoint.
-- v0.3 (now): the compiler was rewritten for the whole language with a
+- Now (0.1.0-pre.alpha.1): the compiler was rewritten for the whole language with a
   dynamically typed C runtime and a driver; its C was captured as the
   snapshot, and the C++ interpreter and the old tools were removed. The
   interpreter was used exactly once more - to build the old native compiler

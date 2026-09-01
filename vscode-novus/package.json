@@ -2,7 +2,7 @@
   "name": "novus-language",
   "displayName": "Novus Language",
   "description": "Full language support for the self-hosting Novus programming language (.nv): syntax highlighting, IntelliSense, diagnostics, navigation, and run/build commands via novusc.",
-  "version": "0.3.0",
+  "version": "0.1.0-pre.alpha.1",
   "publisher": "eztxmmc",
   "author": "ezTxmMC",
   "repository": {

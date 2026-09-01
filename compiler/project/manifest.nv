@@ -1,0 +1,187 @@
+package project
+
+import path
+
+import "../lexer/lexer.nv"
+import "../lexer/tokens.nv"
+import "../parser/errors.nv"
+
+// project.nv - the project manifest. Explicit line based syntax, values
+// are string literals, comments as in Novus:
+//
+//   project "github.com/user/app"          module path (others import it by this name)
+//   version "0.1.0"
+//   main "main.nv"                          entry file of an application (default main.nv)
+//   lib "lib.nv"                            entry file when the project is imported as a dependency
+//   output "app"                            name of the built executable
+//   novus "0.1.0-pre.alpha.2"               minimum compiler version (informational)
+//   require "github.com/user/lib" "v1.2.0"  dependency: git tag, branch, commit or "latest"
+//   replace "github.com/user/lib" "../lib"  use a local directory instead of fetching
+
+define class Dependency {
+    private final string module: get
+    private final string version: get
+}
+
+define class Manifest {
+    private final string file: get
+    private final string dir: get
+    private final string name: get, set
+    private final string version: get, set
+    private final string main: get, set
+    private final string lib: get, set
+    private final string output: get, set
+    private final string novus: get, set
+    private final array<Dependency> requires: get
+    private final map<string, string> replaces: get
+
+    construct(string file, string dir) {
+        this.file = file
+        this.dir = dir
+        this.name = ""
+        this.version = ""
+        this.main = "main.nv"
+        this.lib = ""
+        this.output = ""
+        this.novus = ""
+        this.requires = []
+        this.replaces = {}
+    }
+
+    // The file other projects import when they require this one.
+    method entryFile(): string {
+        if (lib != "") {
+            return lib
+        }
+        return main
+    }
+
+    method outputName(): string {
+        if (output != "") {
+            return output
+        }
+        var parts = name.split("/")
+        if (name != "" && parts[parts.length() - 1] != "") {
+            return parts[parts.length() - 1]
+        }
+        return "app"
+    }
+
+    method addRequire(string module, string version) {
+        for (d in requires) {
+            if (d.module() == module) {
+                return
+            }
+        }
+        requires.append(Dependency(module, version))
+    }
+}
+
+// Parses a manifest file; aborts with a message on syntax errors.
+method parseManifest(string file): Manifest {
+    var m = Manifest(file, dirOf(file))
+    var tokens = lex(readFile(file), file)
+    var p = 0
+    while (atEnd(tokens, p) == false) {
+        var t = tokens[p]
+        if (tokKind(t) != "IDENT") {
+            fail("expected a setting such as project, version, main, require or replace but found '" + tokVal(t) + "'", tokPos(t))
+        }
+        var key = tokVal(t)
+        var line = tokPos(t)
+        var values = []
+        p = p + 1
+        while (atEnd(tokens, p) == false && tokPos(tokens[p]) == line) {
+            if (tokKind(tokens[p]) != "STRING") {
+                fail("values in project.nv must be quoted strings (near '" + tokVal(tokens[p]) + "')", line)
+            }
+            values.append(tokVal(tokens[p]))
+            p = p + 1
+        }
+        applySetting(m, key, values, line)
+    }
+    return m
+}
+
+method applySetting(Manifest m, string key, array<string> values, string line) {
+    if (key == "require") {
+        if (values.length() < 1 || values.length() > 2) {
+            fail("require needs a module path and an optional version", line)
+        }
+        var version = "latest"
+        if (values.length() == 2) {
+            version = values[1]
+        }
+        m.addRequire(values[0], version)
+        return
+    }
+    if (key == "replace") {
+        if (values.length() != 2) {
+            fail("replace needs a module path and a local directory", line)
+        }
+        m.replaces()[values[0]] = values[1]
+        return
+    }
+    if (values.length() != 1) {
+        fail("'" + key + "' takes exactly one value", line)
+    }
+    var value = values[0]
+    if (key == "project") {
+        m.name(value)
+        return
+    }
+    if (key == "version") {
+        m.version(value)
+        return
+    }
+    if (key == "main") {
+        m.main(value)
+        return
+    }
+    if (key == "lib") {
+        m.lib(value)
+        return
+    }
+    if (key == "output") {
+        m.output(value)
+        return
+    }
+    if (key == "novus") {
+        m.novus(value)
+        return
+    }
+    fail("unknown setting '" + key + "' (known: project, version, main, lib, output, novus, require, replace)", line)
+}
+
+method dirOf(string file): string {
+    var i = file.length()
+    while (i > 0 && file.charAt(i - 1) != "/" && file.charAt(i - 1) != chr(92)) {
+        i = i - 1
+    }
+    if (i == 0) {
+        return "."
+    }
+    if (i > 1) {
+        i = i - 1
+    }
+    return file.substring(0, i)
+}
+
+// The nearest project.nv in `dir` or one of its parents, "" if none.
+method findManifest(string dir): string {
+    var current = path.absolute(dir)
+    var guard = 0
+    while (guard < 64) {
+        var candidate = path.join(current, "project.nv")
+        if (fileExists(candidate)) {
+            return candidate
+        }
+        var parent = path.dirname(current)
+        if (parent == current || parent == "." || parent == "") {
+            return ""
+        }
+        current = parent
+        guard = guard + 1
+    }
+    return ""
+}

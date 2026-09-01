@@ -19,7 +19,9 @@ test: build/novusc
 	test/run_tests.sh
 	test/selfhost.sh
 
-snapshot: build/novusc
+# no build/novusc prerequisite: after runtime/codegen changes the old
+# build/novusc must run first (two-step rule, see BOOTSTRAP.md)
+snapshot:
 	scripts/snapshot.sh
 
 cross: build/novusc

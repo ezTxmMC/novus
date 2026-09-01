@@ -2,17 +2,24 @@ package driver
 
 // Command line: usage text and option parsing.
 
-private final VERSION = "0.1.0-pre.alpha.1"
+private final VERSION = "0.1.0-pre.alpha.2"
 
 method printUsage() {
     println "novusc ${VERSION} - the Novus compiler"
     println ""
     println "usage:"
-    println "  novusc run <file.nv> [args...]     compile and run"
-    println "  novusc build <file.nv> [options]   compile to a native executable"
-    println "  novusc emit <file.nv> [-o out.c]   write the generated C"
-    println "  novusc check <file.nv>             parse and analyze only"
+    println "  novusc run [file.nv] [args...]     compile and run"
+    println "  novusc build [file.nv] [options]   compile to a native executable"
+    println "  novusc emit [file.nv] [-o out.c]   write the generated C"
+    println "  novusc check [file.nv]             parse and analyze only"
+    println "  novusc init [module-path]          create project.nv + main.nv here"
+    println "  novusc deps                        fetch the dependencies of project.nv"
+    println "  novusc deps add <module> [version] add a dependency (git tag/branch/commit)"
+    println "  novusc deps update                 re-fetch all dependencies"
     println "  novusc version"
+    println ""
+    println "Without a file the commands use the project.nv of the current directory."
+    println "Dependencies are cached in $NOVUS_DEPS (default ~/.novus/deps)."
     println ""
     println "build options:"
     println "  -o <path>         output path (default: source file stem)"

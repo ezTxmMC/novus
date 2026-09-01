@@ -61,7 +61,7 @@ method genStatement(string node, string indent, map<string, string> prog, map<st
         if (nodeCount(node) > 3) {
             return declareLocal(tname, coerceCode(genExpr(nodeChild(node, 3), prog, ctx, locals), ttype), indent, locals, blockVars)
         }
-        return declareLocal(tname, "nv_default(" + cstr(normType(ttype)) + ")", indent, locals, blockVars)
+        return declareLocal(tname, defaultCode(ttype), indent, locals, blockVars)
     }
     if (head == "assign") {
         var target = nodeChild(node, 1)

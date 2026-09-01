@@ -1,0 +1,13 @@
+package geo
+
+define class Circle {
+    private final float radius: get
+
+    method area(): float {
+        return 3.0 * radius * radius
+    }
+}
+
+method unitCircle(): Circle {
+    return Circle(1.0)
+}

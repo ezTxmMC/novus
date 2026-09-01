@@ -1,0 +1,10 @@
+package main
+
+import "example.com/geo"
+import "example.com/geo/shapes/circle.nv"
+
+method main {
+    println greetGeo()
+    println unitCircle().area()
+    println Circle(2.0).area()
+}

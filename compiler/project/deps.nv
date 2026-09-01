@@ -1,0 +1,155 @@
+package project
+
+import os
+import path
+
+import "manifest.nv"
+
+// Dependencies: every `require` is fetched with git into the module cache
+// ($NOVUS_DEPS, default ~/.novus/deps) as <module>@<version>, transitively
+// through the dependencies' own project.nv files. The result is a module
+// table the loader uses to resolve `import "github.com/user/lib"` (entry
+// file) and `import "github.com/user/lib/sub/file.nv"` (file inside).
+
+method depsCacheDir(): string {
+    var configured = env("NOVUS_DEPS")
+    if (configured != "") {
+        return configured
+    }
+    return path.join(os.home(), ".novus", "deps")
+}
+
+// Cache directory name of a module: "https://host/x" -> "host/x",
+// "file:///tmp/lib" -> "tmp/lib"; plain module paths stay as they are.
+method moduleKey(string module): string {
+    var key = module
+    var at = key.indexOf("://")
+    if (at >= 0) {
+        key = key.substring(at + 3, key.length())
+    }
+    while (key.startsWith("/")) {
+        key = key.substring(1, key.length())
+    }
+    return key
+}
+
+method moduleUrl(string module): string {
+    if (module.contains("://")) {
+        return module
+    }
+    return "https://" + module
+}
+
+method dependencyDir(string module, string version): string {
+    return path.join(depsCacheDir(), moduleKey(module) + "@" + version)
+}
+
+method looksLikeCommit(string version): bool {
+    if (version.length() < 7) {
+        return false
+    }
+    var i = 0
+    while (i < version.length()) {
+        var c = version.charAt(i)
+        var hex = (c >= "0" && c <= "9") || (c >= "a" && c <= "f")
+        if (hex == false) {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+method quoted(string s): string {
+    return "\"" + s + "\""
+}
+
+// Clones the dependency when it is not cached yet; returns its directory.
+method fetchDependency(string module, string version): string {
+    var dir = dependencyDir(module, version)
+    if (os.isDir(dir)) {
+        return dir
+    }
+    if (exec("git --version > " + nullDevice() + " 2>&1") != 0) {
+        eprintln "novusc: git is required to fetch dependencies"
+        exit(1)
+    }
+    os.mkdir(path.dirname(dir))
+    println "fetching " + module + " @ " + version
+    os.setEnv("GIT_TERMINAL_PROMPT", "0")
+    var git = "git -c advice.detachedHead=false"
+    var url = moduleUrl(module)
+    var command = git + " clone --quiet --depth 1 " + quoted(url) + " " + quoted(dir)
+    if (version != "latest" && looksLikeCommit(version) == false) {
+        command = git + " clone --quiet --depth 1 --branch " + quoted(version) + " " + quoted(url) + " " + quoted(dir)
+    }
+    if (looksLikeCommit(version)) {
+        command = git + " clone --quiet " + quoted(url) + " " + quoted(dir) + " && " + git + " -C " + quoted(dir) + " checkout --quiet " + version
+    }
+    if (exec(command) != 0) {
+        os.removeAll(dir)
+        eprintln "novusc: could not fetch " + module + " @ " + version + " (" + url + ")"
+        exit(1)
+    }
+    return dir
+}
+
+method nullDevice(): string {
+    if (platform() == "windows") {
+        return "nul"
+    }
+    return "/dev/null"
+}
+
+// The file `import "<module>"` resolves to inside a dependency directory.
+method moduleEntry(string dir): string {
+    var manifest = path.join(dir, "project.nv")
+    if (fileExists(manifest)) {
+        var m = parseManifest(manifest)
+        return path.join(dir, m.entryFile())
+    }
+    if (fileExists(path.join(dir, "lib.nv"))) {
+        return path.join(dir, "lib.nv")
+    }
+    return path.join(dir, "main.nv")
+}
+
+// Fills `modules`: module -> entry file, module + "/" -> directory (the
+// module is spelled exactly as in `require`, and imported the same way).
+// Dependencies of dependencies are resolved as well; the first version
+// seen wins.
+method resolveModules(Manifest m, map<string, string> modules) {
+    for (d in m.requires()) {
+        var key = d.module()
+        if (modules.has(key)) {
+            continue
+        }
+        var dir = ""
+        if (m.replaces().has(d.module())) {
+            dir = path.absolute(path.join(m.dir(), m.replaces()[d.module()]))
+            if (os.isDir(dir) == false) {
+                eprintln "novusc: replace target for " + d.module() + " not found: " + dir
+                exit(1)
+            }
+        }
+        if (dir == "") {
+            dir = fetchDependency(d.module(), d.version())
+        }
+        modules[key] = moduleEntry(dir)
+        modules[key + "/"] = dir
+        var nested = path.join(dir, "project.nv")
+        if (fileExists(nested)) {
+            resolveModules(parseManifest(nested), modules)
+        }
+    }
+}
+
+// Module table for the project a source file belongs to ({} without one).
+method modulesFor(string manifestFile): map<string, string> {
+    var modules = {}
+    if (manifestFile == "") {
+        return modules
+    }
+    resolveModules(parseManifest(manifestFile), modules)
+    return modules
+}

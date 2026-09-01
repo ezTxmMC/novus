@@ -5,6 +5,7 @@ import { URI } from 'vscode-uri';
 import { Analysis } from './analyzer';
 import { builtinModules } from './builtins';
 import { NSymbol } from './symbols';
+import { resolveModuleImport } from './project';
 
 export interface Settings {
   diagnostics: {
@@ -37,6 +38,7 @@ export class Workspace {
       globalLookup: (name, excludeUri) => this.globalLookup(name, excludeUri),
       packageOf: fileUri => this.packageOf(fileUri),
       builtinModule: name => this.builtinModule(name),
+      resolveModuleImport: (fromUri, rel) => this.resolveModuleImport(fromUri, rel),
       undefinedSymbols: this.settings.diagnostics.undefinedSymbols,
       unusedVariables: this.settings.diagnostics.unusedVariables,
     });
@@ -145,6 +147,28 @@ export class Workspace {
     } catch {
       return false;
     }
+  }
+
+  private readonly indexedDependencyRoots = new Set<string>();
+
+  /** Resolves `import "<module>[/file]"` through project.nv and indexes the dependency once. */
+  resolveModuleImport(fromUri: string, rel: string): string | undefined {
+    let fromFile: string;
+    try {
+      fromFile = URI.parse(fromUri).fsPath;
+    } catch {
+      return undefined;
+    }
+    const resolved = resolveModuleImport(fromFile, rel);
+    if (!resolved) return undefined;
+    if (!this.indexedDependencyRoots.has(resolved.root)) {
+      this.indexedDependencyRoots.add(resolved.root);
+      for (const file of walkDir(resolved.root)) {
+        const uri = URI.file(file).toString();
+        if (!this.analyses.has(uri)) this.indexFile(uri, file);
+      }
+    }
+    return URI.file(resolved.file).toString();
   }
 
   /** Re-analyzes every non-open file so cross-file references pick up changes. */

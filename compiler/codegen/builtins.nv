@@ -49,7 +49,7 @@ method genBuiltinCall(string name, integer nargs, string args, map<string, strin
     }
     if (name == "typeOf") {
         expectArgs("typeOf", nargs, 1, ctx)
-        return "nv_type_of(" + args + ")"
+        return "nv_typeof_builtin(" + args + ")"
     }
     if (name == "exec") {
         expectArgs("exec", nargs, 1, ctx)

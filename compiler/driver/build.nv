@@ -5,21 +5,107 @@ import path
 
 import "../codegen/program.nv"
 import "../loader/loader.nv"
+import "../project/deps.nv"
+import "../project/manifest.nv"
 import "../runtime/runtime.nv"
 
 // Compiling programs: C generation, invoking the C compiler, run.
 
 // The generated C for a program (runtime embedded unless `mode` is "include").
+// Dependencies come from the nearest project.nv above the source file.
 method generate(string source, string mode): string {
     if (fileExists(source) == false) {
         eprintln "novusc: cannot open '${source}'"
         exit(1)
     }
-    var decls = loadProgram(source)
+    var modules = modulesFor(findManifest(path.dirname(source)))
+    var decls = loadProgramWith(source, modules)
     if (mode == "include") {
         return generateProgram(decls, "")
     }
     return generateProgram(decls, runtimeSource())
+}
+
+// The manifest of the current directory (or a parent); aborts when none.
+method currentProject(): Manifest {
+    var file = findManifest(".")
+    if (file == "") {
+        eprintln "novusc: no project.nv found here - pass a source file or run 'novusc init'"
+        exit(1)
+    }
+    return parseManifest(file)
+}
+
+// Source file for a command: the argument, or the project's main file.
+method sourceFor(array<string> arguments): string {
+    if (arguments.length() >= 2 && arguments[1].endsWith(".nv")) {
+        return arguments[1]
+    }
+    var m = currentProject()
+    return path.join(m.dir(), m.main())
+}
+
+// Build options start after the command and the optional source file.
+method optionStart(array<string> arguments): integer {
+    if (arguments.length() >= 2 && arguments[1].endsWith(".nv")) {
+        return 2
+    }
+    return 1
+}
+
+// novusc init [module-path]: creates project.nv and a hello-world main.nv.
+method initProject(array<string> arguments): integer {
+    if (fileExists("project.nv")) {
+        eprintln "novusc: project.nv already exists"
+        return 1
+    }
+    var name = path.basename(path.absolute)
+    if (arguments.length() >= 2) {
+        name = arguments[1]
+    }
+    writeFile("project.nv", "project \"${name}\"\nversion \"0.1.0\"\nmain \"main.nv\"\n\n// require \"github.com/user/library\" \"v1.0.0\"\n")
+    if (fileExists("main.nv") == false) {
+        writeFile("main.nv", "package main\n\nmethod main {\n    println \"Hello from ${name}!\"\n}\n")
+    }
+    println "created project.nv (project \"${name}\") - next: novusc run"
+    return 0
+}
+
+// novusc deps [update | add <module> [version]]
+method depsCommand(array<string> arguments): integer {
+    var m = currentProject()
+    if (arguments.length() >= 2 && arguments[1] == "add") {
+        if (arguments.length() < 3) {
+            eprintln "usage: novusc deps add <module> [version]"
+            return 1
+        }
+        var version = "latest"
+        if (arguments.length() >= 4) {
+            version = arguments[3]
+        }
+        os.appendFile(m.file(), "require \"${arguments[2]}\" \"${version}\"\n")
+        println "added require \"${arguments[2]}\" \"${version}\" to ${m.file()}"
+        m = parseManifest(m.file())
+    }
+    if (arguments.length() >= 2 && arguments[1] == "update") {
+        for (d in m.requires()) {
+            if (m.replaces().has(d.module()) == false) {
+                os.removeAll(dependencyDir(d.module(), d.version()))
+            }
+        }
+    }
+    var modules = {}
+    resolveModules(m, modules)
+    if (m.requires().length() == 0) {
+        println "no dependencies (add one with: novusc deps add <module> [version])"
+        return 0
+    }
+    for (key in modules) {
+        if (key.endsWith("/") == false) {
+            println "${key} -> ${modules[key]}"
+        }
+    }
+    return 0
 }
 
 method emitCommand(string source, map<string, string> options): integer {
@@ -85,6 +171,10 @@ method cFlags(map<string, string> options): string {
 
 method defaultOutput(string source, map<string, string> options): string {
     var out = path.stem(source)
+    var manifest = findManifest(path.dirname(source))
+    if (manifest != "") {
+        out = parseManifest(manifest).outputName()
+    }
     if (options.has("-o")) {
         out = options["-o"]
     }
@@ -137,7 +227,7 @@ method runCommand(string source, array<string> arguments): integer {
     options["-o"] = temp
     var exe = buildBinary(source, options)
     var command = quoted(exe)
-    var i = 2
+    var i = optionStart(arguments)
     while (i < arguments.length()) {
         command = command + " " + quoted(arguments[i])
         i = i + 1

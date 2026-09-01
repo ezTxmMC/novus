@@ -1,13 +1,14 @@
 /*
  * novus_rt.h - the C runtime embedded into every program that novusc emits.
  *
- * Values are dynamically typed (NvVal) like in the original tree-walking
- * interpreter, so integers, floats, bools, strings, arrays, maps, class
- * instances and enum constants can all flow through the same variables.
- * Memory is arena allocated and never freed (bootstrap-style runtime).
+ * Values are dynamically typed (NvVal): integers, floats, bools, strings,
+ * arrays, maps, class instances and enum constants all flow through the
+ * same variables. Integers up to 62 bits are encoded in the pointer itself
+ * (no allocation); everything else is arena allocated and never freed
+ * (bootstrap-style runtime).
  *
- * Portable C99: builds with gcc, clang, zig cc and mingw on Linux, macOS
- * and Windows.
+ * Portable C11 (anonymous unions): builds with gcc, clang, zig cc and
+ * mingw on 64-bit Linux, macOS and Windows.
  */
 #ifndef NOVUS_RT_H
 #define NOVUS_RT_H
@@ -29,6 +30,7 @@
 #include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -108,18 +110,33 @@ typedef struct NvObj {
     const char *name; /* enum constant name, NULL for class instances */
 } NvObj;
 
+/* A value is 24 bytes. Small integers (62 bit) are not allocated at all:
+ * they are encoded in the pointer itself (lowest bit set) - always go
+ * through nv_type_of() / nv_ival() instead of touching the fields. */
 struct NvVal {
     int type;
-    long long i;   /* NV_INT and NV_BOOL */
-    double f;      /* NV_FLOAT */
-    const char *s; /* NV_STR: slen bytes; NUL terminated unless a later
-                      concatenation appended into the shared buffer */
-    int slen;
-    int scap;      /* writable capacity of s (0: read-only / not owned) */
-    NvArr *a;
-    NvMap *m;
-    NvObj *o;
+    int slen; /* NV_STR: length of s in bytes */
+    int scap; /* NV_STR: writable capacity of s (0: read-only / not owned) */
+    union {
+        long long i;   /* NV_INT (heap fallback) and NV_BOOL */
+        double f;      /* NV_FLOAT */
+        const char *s; /* NV_STR: NUL terminated unless a later concatenation
+                          appended into the shared buffer (see nv_cstr) */
+        NvArr *a;
+        NvMap *m;
+        NvObj *o;
+    };
 };
+
+#define NV_TAG_LIMIT ((long long)1 << 61)
+
+static int nv_is_tagged(nv v) { return ((uintptr_t)v & 1) != 0; }
+
+static int nv_type_of(nv v) { return nv_is_tagged(v) ? NV_INT : v->type; }
+
+static long long nv_ival(nv v) { return nv_is_tagged(v) ? (long long)(((intptr_t)v) >> 1) : v->i; }
+
+static const char *nv_display(nv v);
 
 typedef nv (*NvMethodFn)(nv self, nv *args, int n);
 
@@ -246,11 +263,10 @@ static void nv_error(const char *fmt, ...) {
 /* Constructors                                                        */
 /* ------------------------------------------------------------------ */
 
-static NvVal nv_nil_val = {NV_NULL, 0, 0.0, "", 0, 0, 0, 0, 0};
-static NvVal nv_true_val = {NV_BOOL, 1, 0.0, "true", 4, 0, 0, 0, 0};
-static NvVal nv_false_val = {NV_BOOL, 0, 0.0, "false", 5, 0, 0, 0, 0};
-static NvVal nv_small_ints[1280];
-static int nv_small_ints_ready = 0;
+static NvVal nv_nil_val = {NV_NULL, 0, 0, {0}};
+static NvVal nv_true_val = {NV_BOOL, 0, 0, {1}};
+static NvVal nv_false_val = {NV_BOOL, 0, 0, {0}};
+static NvVal nv_empty_str_val = {NV_STR, 0, 0, {0}};
 static nv nv_nil = &nv_nil_val;
 static nv nv_char_table[256];
 
@@ -258,19 +274,20 @@ static nv nv_new(int type) {
     nv v = (nv)nv_alloc(sizeof(NvVal));
     memset(v, 0, sizeof(NvVal));
     v->type = type;
-    v->s = "";
     return v;
 }
 
 static nv nv_int(long long i) {
     nv v;
-    if (i >= -256 && i < 1024 && nv_small_ints_ready) {
-        return &nv_small_ints[i + 256];
+    if (i > -NV_TAG_LIMIT && i < NV_TAG_LIMIT) {
+        return (nv)(uintptr_t)(((uintptr_t)i << 1) | 1u);
     }
     v = nv_new(NV_INT);
     v->i = i;
     return v;
 }
+
+static int nv_exit_code(nv v) { return nv_type_of(v) == NV_INT ? (int)nv_ival(v) : 0; }
 
 static nv nv_float(double f) {
     nv v = nv_new(NV_FLOAT);
@@ -315,8 +332,8 @@ static nv nv_str_own(const char *s, int n) { /* s already arena allocated */
  * a longer string that was appended to in place; the terminator is then
  * gone and a private copy is made. */
 static const char *nv_cstr(nv v) {
-    if (v->type != NV_STR) {
-        return v->s;
+    if (nv_type_of(v) != NV_STR) {
+        return nv_display(v);
     }
     if (v->s[v->slen] == 0) {
         return v->s;
@@ -360,13 +377,15 @@ static nv nv_arr_of(int count, ...) {
     return v;
 }
 
-static NvMap *nv_map_new(void) {
+static NvMap *nv_map_new_cap(int cap) {
     NvMap *m = (NvMap *)nv_alloc(sizeof(NvMap));
     m->len = 0;
-    m->cap = 8;
+    m->cap = cap < 1 ? 1 : cap;
     m->items = (NvEntry *)nv_alloc(sizeof(NvEntry) * (size_t)m->cap);
     return m;
 }
+
+static NvMap *nv_map_new(void) { return nv_map_new_cap(4); }
 
 /* binary search; returns index of key or -(insertion point) - 1 */
 static int nv_map_find(NvMap *m, const char *key) {
@@ -384,6 +403,27 @@ static int nv_map_find(NvMap *m, const char *key) {
         }
     }
     return -lo - 1;
+}
+
+/* `key` must outlive the map (string literal, class table, arena string). */
+static void nv_map_set_static(NvMap *m, const char *key, nv val) {
+    int idx = nv_map_find(m, key);
+    int pos;
+    if (idx >= 0) {
+        m->items[idx].val = val;
+        return;
+    }
+    pos = -idx - 1;
+    if (m->len == m->cap) {
+        NvEntry *items = (NvEntry *)nv_alloc(sizeof(NvEntry) * (size_t)m->cap * 2);
+        memcpy(items, m->items, sizeof(NvEntry) * (size_t)m->len);
+        m->items = items;
+        m->cap *= 2;
+    }
+    memmove(m->items + pos + 1, m->items + pos, sizeof(NvEntry) * (size_t)(m->len - pos));
+    m->items[pos].key = key;
+    m->items[pos].val = val;
+    m->len++;
 }
 
 static void nv_map_set(NvMap *m, const char *key, nv val) {
@@ -449,7 +489,7 @@ static nv nv_map_of(int pairs, ...) {
 /* ------------------------------------------------------------------ */
 
 static const char *nv_type_name(nv v) {
-    switch (v->type) {
+    switch (nv_type_of(v)) {
     case NV_INT:
         return "integer";
     case NV_FLOAT:
@@ -502,13 +542,13 @@ static int nv_visit_enter(const void *container) {
 static void nv_visit_leave(void) { nv_visit_depth--; }
 
 static const void *nv_container_id(nv v) {
-    if (v->type == NV_ARR) {
+    if (nv_type_of(v) == NV_ARR) {
         return v->a;
     }
-    if (v->type == NV_MAP) {
+    if (nv_type_of(v) == NV_MAP) {
         return v->m;
     }
-    if (v->type == NV_OBJ) {
+    if (nv_type_of(v) == NV_OBJ) {
         return v->o;
     }
     return 0;
@@ -521,15 +561,15 @@ static void nv_display_into(NvSb *sb, nv v) {
         nv_sb_add(sb, "...");
         return;
     }
-    switch (v->type) {
+    switch (nv_type_of(v)) {
     case NV_INT:
-        nv_sb_add(sb, nv_fmt_int(v->i));
+        nv_sb_add(sb, nv_fmt_int(nv_ival(v)));
         break;
     case NV_FLOAT:
         nv_sb_add(sb, nv_fmt_float(v->f));
         break;
     case NV_BOOL:
-        nv_sb_add(sb, v->i ? "true" : "false");
+        nv_sb_add(sb, nv_ival(v) ? "true" : "false");
         break;
     case NV_STR:
         nv_sb_addn(sb, v->s, v->slen);
@@ -583,16 +623,16 @@ static void nv_display_into(NvSb *sb, nv v) {
 
 static const char *nv_display(nv v) {
     NvSb sb;
-    if (v->type == NV_STR) {
+    if (nv_type_of(v) == NV_STR) {
         return nv_cstr(v);
     }
-    if (v->type == NV_BOOL) {
-        return v->i ? "true" : "false";
+    if (nv_type_of(v) == NV_BOOL) {
+        return nv_ival(v) ? "true" : "false";
     }
-    if (v->type == NV_INT) {
-        return nv_fmt_int(v->i);
+    if (nv_type_of(v) == NV_INT) {
+        return nv_fmt_int(nv_ival(v));
     }
-    if (v->type == NV_FLOAT) {
+    if (nv_type_of(v) == NV_FLOAT) {
         return nv_fmt_float(v->f);
     }
     nv_sb_init(&sb);
@@ -602,7 +642,7 @@ static const char *nv_display(nv v) {
 
 /* The "data" of a value: what the interpreter compared strings against. */
 static const char *nv_data(nv v) {
-    switch (v->type) {
+    switch (nv_type_of(v)) {
     case NV_INT:
     case NV_FLOAT:
     case NV_BOOL:
@@ -615,41 +655,41 @@ static const char *nv_data(nv v) {
     }
 }
 
-static nv nv_to_str(nv v) { return v->type == NV_STR ? v : nv_str(nv_display(v)); }
+static nv nv_to_str(nv v) { return nv_type_of(v) == NV_STR ? v : nv_str(nv_display(v)); }
 
 /* ------------------------------------------------------------------ */
 /* Numbers, coercion, truthiness                                       */
 /* ------------------------------------------------------------------ */
 
-static int nv_is_num(nv v) { return v->type == NV_INT || v->type == NV_FLOAT; }
+static int nv_is_num(nv v) { return nv_type_of(v) == NV_INT || nv_type_of(v) == NV_FLOAT; }
 
 static double nv_as_double(nv v) {
-    if (v->type == NV_FLOAT) {
+    if (nv_type_of(v) == NV_FLOAT) {
         return v->f;
     }
-    if (v->type == NV_INT || v->type == NV_BOOL) {
-        return (double)v->i;
+    if (nv_type_of(v) == NV_INT || nv_type_of(v) == NV_BOOL) {
+        return (double)nv_ival(v);
     }
-    if (v->type == NV_STR) {
+    if (nv_type_of(v) == NV_STR) {
         return atof(nv_cstr(v));
     }
     return 0.0;
 }
 
 static long long nv_as_int(nv v) {
-    if (v->type == NV_INT || v->type == NV_BOOL) {
-        return v->i;
+    if (nv_type_of(v) == NV_INT || nv_type_of(v) == NV_BOOL) {
+        return nv_ival(v);
     }
-    if (v->type == NV_FLOAT) {
+    if (nv_type_of(v) == NV_FLOAT) {
         return (long long)v->f;
     }
-    if (v->type == NV_STR) {
+    if (nv_type_of(v) == NV_STR) {
         return atoll(nv_cstr(v));
     }
     return 0;
 }
 
-static int nv_truthy(nv v) { return v->type == NV_BOOL && v->i != 0; }
+static int nv_truthy(nv v) { return v == &nv_true_val; }
 
 static const char *nv_normalize_type(const char *t) {
     if (strcmp(t, "str") == 0) {
@@ -679,24 +719,33 @@ static int nv_type_is(nv v, const char *t) {
 static nv nv_coerce(nv v, const char *t) {
     t = nv_normalize_type(t);
     if (strcmp(t, "integer") == 0) {
-        if (v->type == NV_FLOAT) {
+        if (nv_type_of(v) == NV_FLOAT) {
             return nv_int((long long)v->f);
         }
         return v;
     }
     if (strcmp(t, "float") == 0) {
-        if (v->type == NV_INT) {
-            return nv_float((double)v->i);
+        if (nv_type_of(v) == NV_INT) {
+            return nv_float((double)nv_ival(v));
         }
         return v;
     }
     if (strcmp(t, "string") == 0) {
-        if (v->type != NV_STR && v->type != NV_NULL) {
+        if (nv_type_of(v) != NV_STR && nv_type_of(v) != NV_NULL) {
             return nv_str(nv_data(v));
         }
         return v;
     }
     return v;
+}
+
+static nv nv_coerce_int(nv v) { return nv_type_of(v) == NV_FLOAT ? nv_int((long long)v->f) : v; }
+
+static nv nv_coerce_float(nv v) { return nv_is_tagged(v) || nv_type_of(v) == NV_INT ? nv_float((double)nv_ival(v)) : v; }
+
+static nv nv_coerce_string(nv v) {
+    int t = nv_type_of(v);
+    return t == NV_STR || t == NV_NULL ? v : nv_str(nv_data(v));
 }
 
 static nv nv_default(const char *t) {
@@ -708,7 +757,7 @@ static nv nv_default(const char *t) {
         return nv_float(0.0);
     }
     if (strcmp(t, "string") == 0) {
-        return nv_str("");
+        return &nv_empty_str_val;
     }
     if (strcmp(t, "bool") == 0) {
         return nv_bool(0);
@@ -730,24 +779,24 @@ static nv nv_concat(nv l, nv r) {
     size_t ll, rl, cap;
     char *buf;
     nv v;
-    if (l->type == NV_STR) {
+    if (nv_type_of(l) == NV_STR) {
         ls = l->s;
         ll = (size_t)l->slen;
     } else {
         ls = nv_display(l);
         ll = strlen(ls);
     }
-    if (r->type == NV_STR) {
+    if (nv_type_of(r) == NV_STR) {
         rs = r->s;
         rl = (size_t)r->slen;
     } else {
         rs = nv_display(r);
         rl = strlen(rs);
     }
-    if (rl == 0 && l->type == NV_STR) {
+    if (rl == 0 && nv_type_of(l) == NV_STR) {
         return l;
     }
-    if (l->type == NV_STR && l->scap > 0 && l->s[l->slen] == 0 && rl > 0 && rs[0] != 0 &&
+    if (nv_type_of(l) == NV_STR && l->scap > 0 && l->s[l->slen] == 0 && rl > 0 && rs[0] != 0 &&
         (size_t)l->scap > ll + rl) {
         buf = (char *)l->s;
         memmove(buf + ll, rs, rl);
@@ -777,55 +826,64 @@ static void nv_arith_check(nv l, nv r, const char *op) {
 }
 
 static nv nv_add(nv l, nv r) {
-    if (l->type == NV_STR || r->type == NV_STR) {
+    if (nv_is_tagged(l) && nv_is_tagged(r)) {
+        return nv_int(nv_ival(l) + nv_ival(r));
+    }
+    if (nv_type_of(l) == NV_STR || nv_type_of(r) == NV_STR) {
         return nv_concat(l, r);
     }
     nv_arith_check(l, r, "+");
-    if (l->type == NV_FLOAT || r->type == NV_FLOAT) {
+    if (nv_type_of(l) == NV_FLOAT || nv_type_of(r) == NV_FLOAT) {
         return nv_float(nv_as_double(l) + nv_as_double(r));
     }
-    return nv_int(l->i + r->i);
+    return nv_int(nv_ival(l) + nv_ival(r));
 }
 
 static nv nv_sub(nv l, nv r) {
+    if (nv_is_tagged(l) && nv_is_tagged(r)) {
+        return nv_int(nv_ival(l) - nv_ival(r));
+    }
     nv_arith_check(l, r, "-");
-    if (l->type == NV_FLOAT || r->type == NV_FLOAT) {
+    if (nv_type_of(l) == NV_FLOAT || nv_type_of(r) == NV_FLOAT) {
         return nv_float(nv_as_double(l) - nv_as_double(r));
     }
-    return nv_int(l->i - r->i);
+    return nv_int(nv_ival(l) - nv_ival(r));
 }
 
 static nv nv_mul(nv l, nv r) {
+    if (nv_is_tagged(l) && nv_is_tagged(r)) {
+        return nv_int(nv_ival(l) * nv_ival(r));
+    }
     nv_arith_check(l, r, "*");
-    if (l->type == NV_FLOAT || r->type == NV_FLOAT) {
+    if (nv_type_of(l) == NV_FLOAT || nv_type_of(r) == NV_FLOAT) {
         return nv_float(nv_as_double(l) * nv_as_double(r));
     }
-    return nv_int(l->i * r->i);
+    return nv_int(nv_ival(l) * nv_ival(r));
 }
 
 static nv nv_div(nv l, nv r) {
     nv_arith_check(l, r, "/");
-    if (l->type == NV_FLOAT || r->type == NV_FLOAT) {
+    if (nv_type_of(l) == NV_FLOAT || nv_type_of(r) == NV_FLOAT) {
         double d = nv_as_double(r);
         return nv_float(d != 0.0 ? nv_as_double(l) / d : 0.0);
     }
-    return nv_int(r->i != 0 ? l->i / r->i : 0);
+    return nv_int(nv_ival(r) != 0 ? nv_ival(l) / nv_ival(r) : 0);
 }
 
 static nv nv_mod(nv l, nv r) {
     nv_arith_check(l, r, "%");
-    if (l->type == NV_FLOAT || r->type == NV_FLOAT) {
+    if (nv_type_of(l) == NV_FLOAT || nv_type_of(r) == NV_FLOAT) {
         return nv_float(fmod(nv_as_double(l), nv_as_double(r)));
     }
-    return nv_int(r->i != 0 ? l->i % r->i : 0);
+    return nv_int(nv_ival(r) != 0 ? nv_ival(l) % nv_ival(r) : 0);
 }
 
 static nv nv_neg(nv v) {
-    if (v->type == NV_FLOAT) {
+    if (nv_type_of(v) == NV_FLOAT) {
         return nv_float(-v->f);
     }
-    if (v->type == NV_INT) {
-        return nv_int(-v->i);
+    if (nv_type_of(v) == NV_INT) {
+        return nv_int(-nv_ival(v));
     }
     nv_error("cannot negate %s", nv_type_name(v));
     return nv_nil;
@@ -834,35 +892,42 @@ static nv nv_neg(nv v) {
 static nv nv_not(nv v) { return nv_bool(!nv_truthy(v)); }
 
 static int nv_equals(nv l, nv r) {
-    if (l->type == NV_STR || r->type == NV_STR) {
+    if (nv_is_tagged(l) && nv_is_tagged(r)) {
+        return l == r;
+    }
+    if (nv_type_of(l) == NV_STR || nv_type_of(r) == NV_STR) {
         return strcmp(nv_data(l), nv_data(r)) == 0;
     }
-    if (l->type == NV_BOOL || r->type == NV_BOOL) {
+    if (nv_type_of(l) == NV_BOOL || nv_type_of(r) == NV_BOOL) {
         return strcmp(nv_data(l), nv_data(r)) == 0;
     }
     if (nv_is_num(l) && nv_is_num(r)) {
         return nv_as_double(l) == nv_as_double(r);
     }
-    if (l->type == NV_OBJ && r->type == NV_OBJ) {
+    if (nv_type_of(l) == NV_OBJ && nv_type_of(r) == NV_OBJ) {
         if (l->o->name && r->o->name) {
             return strcmp(l->o->name, r->o->name) == 0 && l->o->cls == r->o->cls;
         }
         return l->o == r->o;
     }
-    if (l->type != r->type) {
+    if (nv_type_of(l) != nv_type_of(r)) {
         return 0;
     }
-    if (l->type == NV_ARR) {
+    if (nv_type_of(l) == NV_ARR) {
         return l->a == r->a;
     }
-    if (l->type == NV_MAP) {
+    if (nv_type_of(l) == NV_MAP) {
         return l->m == r->m;
     }
     return 1; /* nil == nil */
 }
 
 static int nv_compare(nv l, nv r, const char *op) {
-    if (l->type == NV_STR || r->type == NV_STR) {
+    if (nv_is_tagged(l) && nv_is_tagged(r)) {
+        long long a = nv_ival(l), b = nv_ival(r);
+        return a < b ? -1 : (a > b ? 1 : 0);
+    }
+    if (nv_type_of(l) == NV_STR || nv_type_of(r) == NV_STR) {
         return strcmp(nv_data(l), nv_data(r));
     }
     if (nv_is_num(l) && nv_is_num(r)) {
@@ -885,7 +950,7 @@ static nv nv_ge(nv l, nv r) { return nv_bool(nv_compare(l, r, ">=") >= 0); }
 /* ------------------------------------------------------------------ */
 
 static nv nv_index(nv t, nv k) {
-    if (t->type == NV_MAP) {
+    if (nv_type_of(t) == NV_MAP) {
         const char *key = nv_display(k);
         nv v = nv_map_get(t->m, key);
         if (!v) {
@@ -893,14 +958,14 @@ static nv nv_index(nv t, nv k) {
         }
         return v;
     }
-    if (t->type == NV_ARR) {
+    if (nv_type_of(t) == NV_ARR) {
         long long i = nv_as_int(k);
         if (i < 0 || i >= t->a->len) {
             nv_error("array index %lld out of bounds (size %d)", i, t->a->len);
         }
         return t->a->items[i];
     }
-    if (t->type == NV_STR) {
+    if (nv_type_of(t) == NV_STR) {
         long long i = nv_as_int(k);
         if (i < 0 || i >= t->slen) {
             nv_error("string index %lld out of bounds (length %d)", i, t->slen);
@@ -912,11 +977,11 @@ static nv nv_index(nv t, nv k) {
 }
 
 static void nv_index_set(nv t, nv k, nv v) {
-    if (t->type == NV_MAP) {
+    if (nv_type_of(t) == NV_MAP) {
         nv_map_set(t->m, nv_display(k), v);
         return;
     }
-    if (t->type == NV_ARR) {
+    if (nv_type_of(t) == NV_ARR) {
         long long i = nv_as_int(k);
         if (i < 0 || i >= t->a->len) {
             nv_error("array index %lld out of bounds (size %d)", i, t->a->len);
@@ -929,14 +994,14 @@ static void nv_index_set(nv t, nv k, nv v) {
 
 static nv nv_get_member(nv t, const char *name) {
     nv v = 0;
-    if (t->type == NV_OBJ) {
+    if (nv_type_of(t) == NV_OBJ) {
         v = nv_map_get(t->o->fields, name);
         if (!v) {
             nv_error("no property '%s' on value of type %s", name, t->o->cls->name);
         }
         return v;
     }
-    if (t->type == NV_MAP) {
+    if (nv_type_of(t) == NV_MAP) {
         v = nv_map_get(t->m, name);
         if (!v) {
             nv_error("no property '%s' in map", name);
@@ -948,11 +1013,11 @@ static nv nv_get_member(nv t, const char *name) {
 }
 
 static void nv_set_member(nv t, const char *name, nv v) {
-    if (t->type == NV_OBJ) {
-        nv_map_set(t->o->fields, name, v);
+    if (nv_type_of(t) == NV_OBJ) {
+        nv_map_set_static(t->o->fields, name, v); /* name is a literal */
         return;
     }
-    if (t->type == NV_MAP) {
+    if (nv_type_of(t) == NV_MAP) {
         nv_map_set(t->m, name, v);
         return;
     }
@@ -1084,26 +1149,48 @@ static void nv_init_fields(NvClass *c, NvMap *fields) {
         nv_init_fields(base, fields);
     }
     for (i = 0; i < c->nfields; i++) {
-        nv_map_set(fields, c->fieldNames[i], nv_default(c->fieldTypes[i]));
+        nv_map_set_static(fields, c->fieldNames[i], nv_default(c->fieldTypes[i]));
     }
 }
 
+static int nv_class_field_count(NvClass *c) {
+    int n = 0, guard = 0;
+    while (c && guard++ < 64) {
+        n += c->nfields;
+        c = nv_class_base(c);
+    }
+    return n;
+}
+
+/* Value, object and field map live in one arena block. */
+typedef struct NvObjBlock {
+    NvVal val;
+    NvObj obj;
+    NvMap map;
+} NvObjBlock;
+
 static nv nv_new_object(const char *className) {
     NvClass *c = nv_find_class(className);
-    nv v;
+    NvObjBlock *b;
+    int nfields;
     if (!c) {
         nv_error("unknown class '%s'", className);
     }
     if (c->isAbstract) {
         nv_error("cannot instantiate abstract class '%s'", className);
     }
-    v = nv_new(NV_OBJ);
-    v->o = (NvObj *)nv_alloc(sizeof(NvObj));
-    v->o->cls = c;
-    v->o->fields = nv_map_new();
-    v->o->name = 0;
-    nv_init_fields(c, v->o->fields);
-    return v;
+    nfields = nv_class_field_count(c);
+    b = (NvObjBlock *)nv_alloc(sizeof(NvObjBlock));
+    memset(b, 0, sizeof(NvObjBlock));
+    b->val.type = NV_OBJ;
+    b->val.o = &b->obj;
+    b->obj.cls = c;
+    b->obj.fields = &b->map;
+    b->obj.name = 0;
+    b->map.cap = nfields < 1 ? 1 : nfields;
+    b->map.items = (NvEntry *)nv_alloc(sizeof(NvEntry) * (size_t)b->map.cap);
+    nv_init_fields(c, &b->map);
+    return &b->val;
 }
 
 static nv nv_construct_args(const char *className, nv *args, int n) {
@@ -1120,7 +1207,6 @@ static nv nv_construct_args(const char *className, nv *args, int n) {
     /* no constructor: positional field initialization (base fields first) */
     {
         NvMap *f = obj->o->fields;
-        NvArr *order = nv_arr_new();
         NvClass *chain[64];
         int depth = 0, i, k = 0;
         for (c = obj->o->cls; c && depth < 64; c = nv_class_base(c)) {
@@ -1129,10 +1215,9 @@ static nv nv_construct_args(const char *className, nv *args, int n) {
         for (i = depth - 1; i >= 0; i--) {
             int j;
             for (j = 0; j < chain[i]->nfields && k < n; j++, k++) {
-                nv_map_set(f, chain[i]->fieldNames[j], nv_coerce(args[k], chain[i]->fieldTypes[j]));
+                nv_map_set_static(f, chain[i]->fieldNames[j], nv_coerce(args[k], chain[i]->fieldTypes[j]));
             }
         }
-        (void)order;
     }
     return obj;
 }
@@ -1158,7 +1243,7 @@ static nv nv_new_object_fields(const char *className, int n, ...) {
     for (i = 0; i < n; i++) {
         const char *name = va_arg(ap, const char *);
         nv val = va_arg(ap, nv);
-        nv_map_set(obj->o->fields, name, val);
+        nv_map_set_static(obj->o->fields, name, val);
     }
     va_end(ap);
     return obj;
@@ -1335,7 +1420,7 @@ static long long nv_arr_index_of(nv a, nv v) {
 /* ------------------------------------------------------------------ */
 
 static nv nv_invoke_args(nv t, const char *name, nv *args, int n) {
-    if (t->type == NV_OBJ) {
+    if (nv_type_of(t) == NV_OBJ) {
         const char *ftype = nv_class_field_type(t->o->cls, name);
         NvMethod *m;
         if (ftype) {
@@ -1343,7 +1428,7 @@ static nv nv_invoke_args(nv t, const char *name, nv *args, int n) {
                 nv v = nv_map_get(t->o->fields, name);
                 return v ? v : nv_nil;
             }
-            nv_map_set(t->o->fields, name, nv_coerce(args[0], ftype));
+            nv_map_set_static(t->o->fields, name, nv_coerce(args[0], ftype));
             return nv_nil;
         }
         m = nv_class_find_method(t->o->cls, name, n);
@@ -1353,18 +1438,18 @@ static nv nv_invoke_args(nv t, const char *name, nv *args, int n) {
         nv_error("unknown member '%s' on %s", name, t->o->cls->name);
     }
     if (strcmp(name, "length") == 0) {
-        if (t->type == NV_ARR) {
+        if (nv_type_of(t) == NV_ARR) {
             return nv_int(t->a->len);
         }
-        if (t->type == NV_MAP) {
+        if (nv_type_of(t) == NV_MAP) {
             return nv_int(t->m->len);
         }
-        if (t->type == NV_STR) {
+        if (nv_type_of(t) == NV_STR) {
             return nv_int(t->slen);
         }
         nv_error("'%s' has no length", nv_type_name(t));
     }
-    if (t->type == NV_ARR) {
+    if (nv_type_of(t) == NV_ARR) {
         if (strcmp(name, "append") == 0 || strcmp(name, "push") == 0) {
             int i;
             for (i = 0; i < n; i++) {
@@ -1417,7 +1502,7 @@ static nv nv_invoke_args(nv t, const char *name, nv *args, int n) {
             return nv_nil;
         }
     }
-    if (t->type == NV_MAP) {
+    if (nv_type_of(t) == NV_MAP) {
         if (strcmp(name, "has") == 0) {
             return nv_bool(n > 0 && nv_map_has(t->m, nv_display(args[0])));
         }
@@ -1448,7 +1533,7 @@ static nv nv_invoke_args(nv t, const char *name, nv *args, int n) {
             return v ? v : args[1];
         }
     }
-    if (t->type == NV_STR) {
+    if (nv_type_of(t) == NV_STR) {
         if (strcmp(name, "charAt") == 0) {
             long long i = n > 0 ? nv_as_int(args[0]) : 0;
             if (i < 0 || i >= t->slen) {
@@ -1516,19 +1601,19 @@ static nv nv_invoke(nv t, const char *name, int n, ...) {
 static NvArr *nv_iter(nv v) {
     NvArr *out = nv_arr_new();
     int i;
-    if (v->type == NV_ARR) {
+    if (nv_type_of(v) == NV_ARR) {
         for (i = 0; i < v->a->len; i++) {
             nv_arr_push(out, v->a->items[i]);
         }
         return out;
     }
-    if (v->type == NV_MAP) {
+    if (nv_type_of(v) == NV_MAP) {
         for (i = 0; i < v->m->len; i++) {
             nv_arr_push(out, nv_str(v->m->items[i].key));
         }
         return out;
     }
-    if (v->type == NV_STR) {
+    if (nv_type_of(v) == NV_STR) {
         for (i = 0; i < v->slen; i++) {
             nv_arr_push(out, nv_strn(v->s + i, 1));
         }
@@ -1572,13 +1657,7 @@ static void nv_init_args(int argc, char **argv) {
         v->scap = 0;
         nv_char_table[i] = v;
     }
-    for (i = 0; i < 1280; i++) {
-        memset(&nv_small_ints[i], 0, sizeof(NvVal));
-        nv_small_ints[i].type = NV_INT;
-        nv_small_ints[i].i = i - 256;
-        nv_small_ints[i].s = "";
-    }
-    nv_small_ints_ready = 1;
+    nv_empty_str_val.s = "";
     nv_args_global = nv_arr();
     for (i = 1; i < argc; i++) {
         nv_arr_push(nv_args_global->a, nv_str(argv[i]));
@@ -1643,17 +1722,17 @@ static nv nv_read_line(void) {
 }
 
 static nv nv_parse_int(nv v) {
-    if (v->type == NV_INT) {
+    if (nv_type_of(v) == NV_INT) {
         return v;
     }
-    if (v->type == NV_FLOAT) {
+    if (nv_type_of(v) == NV_FLOAT) {
         return nv_int((long long)v->f);
     }
     return nv_int(atoll(nv_display(v)));
 }
 
 static nv nv_parse_float(nv v) {
-    if (v->type == NV_FLOAT) {
+    if (nv_type_of(v) == NV_FLOAT) {
         return v;
     }
     return nv_float(nv_as_double(v));
@@ -1669,7 +1748,7 @@ static nv nv_ord(nv s) {
     return nv_int(p[0] ? (unsigned char)p[0] : 0);
 }
 
-static nv nv_type_of(nv v) { return nv_str(nv_type_name(v)); }
+static nv nv_typeof_builtin(nv v) { return nv_str(nv_type_name(v)); }
 
 /* cmd.exe strips the outer quotes of `"prog" "arg"`; one more pair of
  * quotes around the whole line keeps them intact. */
@@ -2288,7 +2367,7 @@ static nv nv_http_request(nv method, nv url, nv body, nv headers) {
     nv_sb_add(&cmd, nv_shell_quote(nv_cstr(errFile)));
     nv_sb_add(&cmd, " --write-out ");
     nv_sb_add(&cmd, nv_shell_quote("%{http_code}"));
-    if (headers && headers->type == NV_MAP) {
+    if (headers && nv_type_of(headers) == NV_MAP) {
         for (i = 0; i < headers->m->len; i++) {
             nv line = nv_concat(nv_concat(nv_str(headers->m->items[i].key), nv_str(": ")), headers->m->items[i].val);
             if (strcmp(nv_cstr(nv_str_case(nv_str(headers->m->items[i].key), 0)), "content-type") == 0) {
@@ -2298,9 +2377,9 @@ static nv nv_http_request(nv method, nv url, nv body, nv headers) {
             nv_sb_add(&cmd, nv_shell_quote(nv_cstr(line)));
         }
     }
-    if (body && body->type != NV_NULL && !(body->type == NV_STR && body->slen == 0)) {
+    if (body && nv_type_of(body) != NV_NULL && !(nv_type_of(body) == NV_STR && body->slen == 0)) {
         nv text = body;
-        if (body->type == NV_MAP || body->type == NV_ARR || body->type == NV_OBJ) {
+        if (nv_type_of(body) == NV_MAP || nv_type_of(body) == NV_ARR || nv_type_of(body) == NV_OBJ) {
             text = nv_json_stringify(body);
             if (!hasContentType) {
                 nv_sb_add(&cmd, " -H ");
@@ -2439,15 +2518,15 @@ static void nv_json_write(NvSb *sb, nv v, int indent, int depth) {
         nv_sb_add(sb, "null"); /* reference cycle */
         return;
     }
-    switch (v->type) {
+    switch (nv_type_of(v)) {
     case NV_INT:
-        nv_sb_add(sb, nv_fmt_int(v->i));
+        nv_sb_add(sb, nv_fmt_int(nv_ival(v)));
         break;
     case NV_FLOAT:
         nv_json_float(sb, v->f);
         break;
     case NV_BOOL:
-        nv_sb_add(sb, v->i ? "true" : "false");
+        nv_sb_add(sb, nv_ival(v) ? "true" : "false");
         break;
     case NV_STR:
         nv_json_string(sb, nv_cstr(v));
@@ -2470,8 +2549,8 @@ static void nv_json_write(NvSb *sb, nv v, int indent, int depth) {
         break;
     case NV_MAP:
     case NV_OBJ: {
-        NvMap *m = v->type == NV_MAP ? v->m : v->o->fields;
-        if (v->type == NV_OBJ && v->o->name && m->len == 0) {
+        NvMap *m = nv_type_of(v) == NV_MAP ? v->m : v->o->fields;
+        if (nv_type_of(v) == NV_OBJ && v->o->name && m->len == 0) {
             nv_json_string(sb, v->o->name);
             break;
         }
@@ -2633,7 +2712,7 @@ static nv nv_json_parse_value(NvJsonP *p) {
             }
             p->pos++;
             val = nv_json_parse_value(p);
-            nv_map_set(m->m, nv_cstr(key), val);
+            nv_map_set_static(m->m, nv_cstr(key), val); /* arena string, never extended */
             nv_json_ws(p);
             if (p->s[p->pos] == ',') {
                 p->pos++;
@@ -2725,7 +2804,7 @@ static nv nv_json_parse_value(NvJsonP *p) {
 static nv nv_json_parse(nv text) {
     NvJsonP p;
     nv v;
-    if (text->type != NV_STR) {
+    if (nv_type_of(text) != NV_STR) {
         /* already structured data: convert (objects become maps) */
         text = nv_json_stringify(text);
     }

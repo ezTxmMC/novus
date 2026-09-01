@@ -30,12 +30,37 @@ method isPrimitiveType(string t): bool {
     return n == "integer" || n == "float" || n == "string"
 }
 
-// nv_coerce(...) for declared primitive types, the expression otherwise.
+// Conversion to a declared primitive type, the expression otherwise.
 method coerceCode(string expr, string t): string {
-    if (isPrimitiveType(t)) {
-        return "nv_coerce(" + expr + ", " + cstr(normType(t)) + ")"
+    var n = normType(t)
+    if (n == "integer") {
+        return "nv_coerce_int(" + expr + ")"
+    }
+    if (n == "float") {
+        return "nv_coerce_float(" + expr + ")"
+    }
+    if (n == "string") {
+        return "nv_coerce_string(" + expr + ")"
     }
     return expr
+}
+
+// The value a method returns when it falls off the end.
+method defaultCode(string t): string {
+    var n = normType(t)
+    if (n == "integer") {
+        return "nv_int(0)"
+    }
+    if (n == "float") {
+        return "nv_float(0.0)"
+    }
+    if (n == "string") {
+        return "nv_lit(" + cstr("") + ")"
+    }
+    if (n == "bool") {
+        return "nv_bool(0)"
+    }
+    return "nv_nil"
 }
 
 method paramsNode(string m): string {

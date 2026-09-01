@@ -2,8 +2,10 @@
  * Semantic analysis: symbol tables, scopes, name resolution, light type
  * inference and diagnostics for a single Novus document.
  */
+import * as fs from 'fs';
 import * as path from 'path';
 import { URI } from 'vscode-uri';
+import { isManifestUri, parseManifestText } from './project';
 import * as ast from './ast';
 import { BUILTIN_ANNOTATIONS, builtinGlobals, builtinMembers, enumBuiltinMembers, isBoolType, isFloatType, isPrimitive, isStringType } from './builtins';
 import { Comment, Span } from './lexer';
@@ -52,11 +54,15 @@ export interface AnalyzeOptions {
   packageOf(uri: string): string;
   /** Builtin module (`http`, `json`, …) by name. */
   builtinModule(name: string): NSymbol | undefined;
+  /** Resolves a module import of the enclosing project to a file URI (and indexes it). */
+  resolveModuleImport?(fromUri: string, rel: string): string | undefined;
   undefinedSymbols: boolean;
   unusedVariables: boolean;
 }
 
 export class Analysis {
+  /** True for project.nv manifests (no Novus code inside). */
+  readonly isManifest: boolean;
   readonly program: ast.Program;
   readonly parseErrors: ParseError[];
   readonly comments: Comment[];
@@ -82,15 +88,26 @@ export class Analysis {
     readonly text: string,
     private readonly opts: AnalyzeOptions,
   ) {
-    const parsed = parse(text);
+    this.isManifest = isManifestUri(uri);
+    const parsed = parse(this.isManifest ? '' : text);
     this.program = parsed.program;
     this.parseErrors = parsed.errors;
     this.comments = parsed.comments;
-    this.lineMap = parsed.lineMap;
+    this.lineMap = this.isManifest ? new LineMap(text) : parsed.lineMap;
     this.moduleScope = this.newScope('module', { start: 0, end: text.length });
 
     for (const e of parsed.errors) {
       this.diagnostics.push({ span: e, message: e.message, severity: 'error' });
+    }
+    if (this.isManifest) {
+      // project.nv: validate the manifest syntax instead of parsing Novus code
+      const manifest = parseManifestText(URI.parse(uri).fsPath, text);
+      for (const d of manifest.diagnostics) {
+        const start = this.lineMap.offsetOf(d.line, 0);
+        const end = this.lineMap.offsetOf(d.line + 1, 0);
+        this.diagnostics.push({ span: { start, end: Math.max(start + 1, end - 1) }, message: d.message, severity: 'error' });
+      }
+      return;
     }
 
     this.declareTopLevel();
@@ -570,11 +587,16 @@ export class Analysis {
     return sym;
   }
 
-  /** URI of a file import target, resolved relative to this document. */
+  /** URI of a file import target: a project dependency module, else relative to this document. */
   private resolveFileImport(rel: string): string {
     try {
       const base = URI.parse(this.uri).fsPath;
-      return URI.file(path.resolve(path.dirname(base), rel)).toString();
+      const local = path.resolve(path.dirname(base), rel);
+      if (!fs.existsSync(local) && this.opts.resolveModuleImport) {
+        const module = this.opts.resolveModuleImport(this.uri, rel);
+        if (module) return module;
+      }
+      return URI.file(local).toString();
     } catch {
       return '';
     }

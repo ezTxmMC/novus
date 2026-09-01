@@ -5,11 +5,15 @@ import "driver/cli.nv"
 
 // novusc - the Novus compiler driver.
 //
-//   novusc run <file.nv> [args...]        compile to a temporary binary and run it
-//   novusc build <file.nv> [options]      compile to a native executable
-//   novusc emit <file.nv> [-o out.c]      write the generated C
-//   novusc check <file.nv>                parse and analyze only
+//   novusc run [file.nv] [args...]        compile to a temporary binary and run it
+//   novusc build [file.nv] [options]      compile to a native executable
+//   novusc emit [file.nv] [-o out.c]      write the generated C
+//   novusc check [file.nv]                parse and analyze only
+//   novusc init [module] | deps [...]     project.nv and dependencies
 //   novusc version | help
+//
+// Without a source file the commands use the project.nv of the current
+// directory (main file, output name, dependencies).
 //
 // See driver/cli.nv for the options and driver/build.nv for the build steps.
 
@@ -27,28 +31,28 @@ method main(array<string> arguments) {
         printUsage()
         return 0
     }
-    if (arguments.length() < 2) {
-        eprintln "novusc: '${command}' needs a source file"
-        printUsage()
-        return 1
+    if (command == "init") {
+        return initProject(arguments)
     }
-    var source = arguments[1]
+    if (command == "deps") {
+        return depsCommand(arguments)
+    }
     if (command == "emit") {
-        return emitCommand(source, optionsFrom(arguments, 2))
+        return emitCommand(sourceFor(arguments), optionsFrom(arguments, optionStart(arguments)))
     }
     if (command == "check") {
+        var source = sourceFor(arguments)
         generate(source, "")
         println "ok: ${source}"
         return 0
     }
     if (command == "build") {
-        var options = optionsFrom(arguments, 2)
-        var output = buildBinary(source, options)
+        var output = buildBinary(sourceFor(arguments), optionsFrom(arguments, optionStart(arguments)))
         println "built ${output}"
         return 0
     }
     if (command == "run") {
-        return runCommand(source, arguments)
+        return runCommand(sourceFor(arguments), arguments)
     }
     eprintln "novusc: unknown command '${command}'"
     printUsage()

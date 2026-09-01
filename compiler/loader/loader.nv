@@ -10,7 +10,35 @@ import "paths.nv"
 // NOTE: this file is part of the bootstrap chain: it must stay compilable
 // by the previous compiler snapshot (bootstrap/novusc.c).
 
-method loadFile(string path, string importedFrom, map<string, string> loaded, array<string> out): integer {
+// Longest module key that `rel` names ("" when it is a plain file import).
+method moduleOf(string rel, map<string, string> modules): string {
+    var best = ""
+    for (key in modules) {
+        if (key.endsWith("/")) {
+            continue
+        }
+        if (rel == key || rel.startsWith(key + "/")) {
+            if (key.length() > best.length()) {
+                best = key
+            }
+        }
+    }
+    return best
+}
+
+// Resolves an import path: dependency modules first, then relative files.
+method resolveImport(string dir, string rel, map<string, string> modules): string {
+    var module = moduleOf(rel, modules)
+    if (module == "") {
+        return joinPath(dir, rel)
+    }
+    if (rel == module) {
+        return modules[module]
+    }
+    return joinPath(modules[module + "/"], rel.substring(module.length() + 1, rel.length()))
+}
+
+method loadFile(string path, string importedFrom, map<string, string> loaded, array<string> out, map<string, string> modules): integer {
     var key = normalizePath(path)
     if (loaded.has(key)) {
         return 0
@@ -24,7 +52,7 @@ method loadFile(string path, string importedFrom, map<string, string> loaded, ar
     for (d in decls) {
         if (nodeHead(d) == "import") {
             var rel = sexpUnescape(nodeChild(d, 1))
-            loadFile(joinPath(dir, rel), fileLabel(path), loaded, out)
+            loadFile(resolveImport(dir, rel, modules), fileLabel(path), loaded, out, modules)
         } else {
             out.append(d)
         }
@@ -34,8 +62,13 @@ method loadFile(string path, string importedFrom, map<string, string> loaded, ar
 
 // All top-level declarations of the program rooted at mainFile.
 method loadProgram(string mainFile): array<string> {
+    return loadProgramWith(mainFile, {})
+}
+
+// Same, with dependency modules (key -> entry file, key + "/" -> directory).
+method loadProgramWith(string mainFile, map<string, string> modules): array<string> {
     var loaded = {}
     var decls = []
-    loadFile(mainFile, "command line", loaded, decls)
+    loadFile(mainFile, "command line", loaded, decls, modules)
     return decls
 }

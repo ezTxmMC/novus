@@ -1,0 +1,7 @@
+project "example.com/app"
+version "0.1.0"
+main "main.nv"
+output "geoapp"
+
+require "example.com/geo" "v1.0.0"
+replace "example.com/geo" "lib"

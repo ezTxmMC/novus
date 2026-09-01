@@ -60,6 +60,9 @@ what they use with `import "file.nv"` (relative to the importing file).
   (`checks.nv`) and emits C against `runtime/novus_rt.h` - expressions,
   statements, methods, whole program; `modules.nv` maps `json`/`path`/`os`/
   `http` calls to runtime functions.
+- `project/` parses `project.nv` manifests and fetches `require`d modules
+  with git into the cache; the loader resolves module imports through the
+  resulting module table.
 - `driver/` implements the command line and drives the C compiler;
   `runtime/runtime.nv` is the embedded copy of the C runtime.
 
@@ -86,7 +89,9 @@ expressions: atoms 123 1.5 true false name, (str "escaped"), (neg e), (! e),
 
 ### Generated C
 
-Every value is an `nv` (`NvVal*`). Locals are `l_name`, top-level constants
+Every value is an `nv` (`NvVal*`, 24 bytes; small integers are tagged
+pointers with the lowest bit set, so `nv_type_of()`/`nv_ival()` must be used
+instead of dereferencing). Locals are `l_name`, top-level constants
 `g_NAME`, free methods `f_name_N` (N = arity; same-arity overloads become
 `f_name_N_vK` plus a dispatcher that tests parameter types), class methods
 `m_Class_name_N(nv self, nv *args, int n)`, constructors `c_Class`. Classes

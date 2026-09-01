@@ -110,7 +110,7 @@ method genFreeMethod(string m, string cname, map<string, string> prog): string {
         out = "static int dep_" + cname + " = 0;" + nl() + out + dep
     }
     out = out + genBlock(nodeChild(m, 5), "    ", prog, ctx, locals)
-    return out + "    return nv_default(" + cstr(normType(methodRet(m))) + ");" + nl() + "}" + nl()
+    return out + "    return " + defaultCode(methodRet(m)) + ";" + nl() + "}" + nl()
 }
 
 method genDispatcher(string name, integer arity, integer variants, map<string, string> prog): string {
@@ -158,7 +158,7 @@ method genClassMethod(string cls, string m, string cname, map<string, string> pr
     }
     out = out + "    (void)n;" + nl()
     out = out + genBlock(nodeChild(m, 5), "    ", prog, ctx, locals)
-    return out + "    return nv_default(" + cstr(normType(methodRet(m))) + ");" + nl() + "}" + nl()
+    return out + "    return " + defaultCode(methodRet(m)) + ";" + nl() + "}" + nl()
 }
 
 method genCtor(string cls, string ctor, map<string, string> prog): string {

@@ -93,7 +93,7 @@ method genMainEntry(map<string, string> prog): string {
     out = out + "    nv_init_enums();" + nl()
     out = out + mainCallCode(hasMain0, hasMain1)
     out = out + "    fflush(stdout);" + nl()
-    out = out + "    return result->type == NV_INT ? (int)result->i : 0;" + nl()
+    out = out + "    return nv_exit_code(result);" + nl()
     return out + "}" + nl()
 }
 

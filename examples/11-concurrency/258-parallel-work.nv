@@ -1,0 +1,33 @@
+package main
+
+import thread
+
+// Splitting work over the processors: one virtual thread per chunk, then
+// await them all and put the answers back together.
+
+method sumRange(integer from, integer to): integer {
+    var total = 0
+    var i = from
+    while (i < to) {
+        total = total + i
+        i = i + 1
+    }
+    return total
+}
+
+method main {
+    var chunks = 8
+    var size = 125000
+    var tasks = []
+    var c = 0
+    while (c < chunks) {
+        tasks.append(virtual sumRange(c * size, (c + 1) * size))
+        c = c + 1
+    }
+    var total = 0
+    for (part in thread.joinAll(tasks)) {
+        total = total + part
+    }
+    println "sum of 0..${chunks * size - 1} is ${total}"
+    println "the same number in one thread: ${sumRange(0, chunks * size)}"
+}

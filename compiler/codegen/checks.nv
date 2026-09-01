@@ -23,7 +23,8 @@ method checkClasses(map<string, string> prog, array<string> decls): integer {
                 if (prog.has("iface:" + base)) {
                     var names = nodeChild(prog["iface:" + base], 2)
                     var i = 1
-                    while (i < nodeCount(names)) {
+                    var namesCount = nodeCount(names)
+                    while (i < namesCount) {
                         var required = nodeChild(names, i)
                         var found = findMethod(prog, name, required)
                         if (found == "" || isAbstractMethod(found)) {
@@ -41,7 +42,8 @@ method checkClasses(map<string, string> prog, array<string> decls): integer {
                     }
                     var methods = classMethods(node)
                     var k = 1
-                    while (k < nodeCount(methods)) {
+                    var methodsCount = nodeCount(methods)
+                    while (k < methodsCount) {
                         var m = nodeChild(methods, k)
                         if (isAbstractMethod(m)) {
                             var resolved = findMethod(prog, name, methodName(m))

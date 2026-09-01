@@ -1,0 +1,66 @@
+package crypto
+
+import bytes
+
+// Hashes, a block cipher and randomness - raw bytes in, raw bytes out.
+//
+// SHA-1 and MD5 are here because network protocols still ask for them
+// (session digests, version 3 UUIDs). Neither is a safe choice for new
+// designs; do not use them to store passwords.
+
+// 20 raw bytes.
+method sha1(string data): string native "nv_crypto_sha1"
+
+// 16 raw bytes.
+method md5(string data): string native "nv_crypto_md5"
+
+// Cryptographically strong random bytes (/dev/urandom where available).
+method random(integer count): string native "nv_crypto_random"
+
+// AES-128 in CFB-8: a byte-wise stream cipher. Both key and iv are 16 bytes.
+// The mode keeps a shift register between calls, so one handle per direction
+// of a stream; feed it the bytes in order. Returns a handle, -1 on a bad key.
+method cipher(string key, string iv, bool encrypt): integer native "nv_crypto_cipher_new"
+method update(integer handle, string data): string native "nv_crypto_cipher_update"
+method release(integer handle) native "nv_crypto_cipher_free"
+
+// The digest some session services expect: SHA-1 read as a signed big endian
+// number, printed in hex, negatives as "-" and the two's complement.
+method signedHexDigest(string data): string native "nv_crypto_mc_digest"
+
+// RSA.
+//
+// generate() makes a key pair and returns a handle; it looks for two random
+// primes, so it takes a moment and belongs at startup, not in a request.
+// publicDer() hands out the public key as a DER SubjectPublicKeyInfo, which
+// is the form a peer expects to be given. decrypt() undoes PKCS#1 v1.5
+// padding and returns "" when the block is not well formed.
+method rsaGenerate(integer bits): integer native "nv_crypto_rsa_generate"
+method rsaPublicDer(integer handle): string native "nv_crypto_rsa_public_der"
+method rsaDecrypt(integer handle, string data): string native "nv_crypto_rsa_decrypt"
+method rsaEncrypt(integer handle, string data): string native "nv_crypto_rsa_encrypt"
+method rsaRelease(integer handle) native "nv_crypto_rsa_free"
+
+// "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" of 16 raw bytes.
+method uuidText(string raw): string native "nv_crypto_uuid_text"
+
+// Lower case hex of a digest.
+method hex(string data): string {
+    return bytes.hex(data)
+}
+
+// A version 3 (MD5) UUID of `name` in `namespace`, as 16 raw bytes.
+method uuid3(string namespace, string name): string {
+    var digest = md5(namespace + name)
+    var version = 0x30 + (bytes.u8(digest, 6) % 16)
+    var variant = 0x80 + (bytes.u8(digest, 8) % 64)
+    return bytes.slice(digest, 0, 6) + bytes.putU8(version) + bytes.slice(digest, 7, 8) + bytes.putU8(variant) + bytes.slice(digest, 9, 16)
+}
+
+// A random version 4 UUID as 16 raw bytes.
+method uuid4(): string {
+    var raw = random(16)
+    var version = 0x40 + (bytes.u8(raw, 6) % 16)
+    var variant = 0x80 + (bytes.u8(raw, 8) % 64)
+    return bytes.slice(raw, 0, 6) + bytes.putU8(version) + bytes.slice(raw, 7, 8) + bytes.putU8(variant) + bytes.slice(raw, 9, 16)
+}

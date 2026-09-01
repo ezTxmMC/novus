@@ -19,7 +19,8 @@ method genBlock(string block, string indent, map<string, string> prog, map<strin
     var blockVars = {}
     var parts = []
     var i = 1
-    while (i < nodeCount(block)) {
+    var blockCount = nodeCount(block)
+    while (i < blockCount) {
         var at = nodeChild(block, i)
         var stmt = at
         if (nodeHead(at) == "at") {
@@ -122,10 +123,32 @@ method genStatement(string node, string indent, map<string, string> prog, map<st
         fail("invalid assignment target", ctx["pos"])
     }
     if (head == "return") {
+        // leaving a method leaves every sync block it is inside
+        var leaveAll = syncUnwind(syncHeld(ctx), "")
         if (nodeCount(node) > 1) {
-            return indent + "return " + coerceCode(genExpr(nodeChild(node, 1), prog, ctx, locals), ctx["ret"]) + ";" + nl()
+            return indent + leaveAll + "return " + coerceCode(genExpr(nodeChild(node, 1), prog, ctx, locals), ctx["ret"]) + ";" + nl()
         }
-        return indent + "return nv_nil;" + nl()
+        return indent + leaveAll + "return nv_nil;" + nl()
+    }
+    if (head == "sync") {
+        var lock = "nv_nil"
+        if (nodeChild(node, 1) != "-") {
+            lock = genExpr(nodeChild(node, 1), prog, ctx, locals)
+        }
+        var held = syncHeld(ctx)
+        var guard = "sy" + syncDepth(ctx)
+        var inner = indent + "    "
+        var out = indent + "{" + nl()
+        out = out + inner + "NvLock *" + guard + " = nv_sync_enter(" + lock + ");" + nl()
+        if (held == "") {
+            ctx["sync"] = guard
+        } else {
+            ctx["sync"] = held + " " + guard
+        }
+        out = out + genBlock(nodeChild(node, 2), inner, prog, ctx, locals)
+        ctx["sync"] = held
+        out = out + inner + "nv_sync_leave(" + guard + ");" + nl()
+        return out + indent + "}" + nl()
     }
     if (head == "println") {
         return indent + "nv_println(" + genExpr(nodeChild(node, 1), prog, ctx, locals) + ");" + nl()
@@ -152,7 +175,11 @@ method genStatement(string node, string indent, map<string, string> prog, map<st
     }
     if (head == "while") {
         var wout = indent + "while (" + genCondition(nodeChild(node, 1), prog, ctx, locals) + ") {" + nl()
-        return wout + genBlock(nodeChild(node, 2), indent + "    ", prog, ctx, locals) + indent + "}" + nl()
+        var wouter = syncLoopHeld(ctx)
+        ctx["syncloop"] = syncHeld(ctx)
+        wout = wout + genBlock(nodeChild(node, 2), indent + "    ", prog, ctx, locals)
+        ctx["syncloop"] = wouter
+        return wout + indent + "}" + nl()
     }
     if (head == "forin") {
         var v = nodeChild(node, 1)
@@ -165,15 +192,19 @@ method genStatement(string node, string indent, map<string, string> prog, map<st
         fout = fout + inner + "    nv l_" + v + " = it_" + v + "->items[i_" + v + "];" + nl()
         var bodyLocals = copyMap(locals)
         bodyLocals[v] = "l_" + v
+        var fouter = syncLoopHeld(ctx)
+        ctx["syncloop"] = syncHeld(ctx)
         fout = fout + genBlock(nodeChild(node, 3), inner + "    ", prog, ctx, bodyLocals)
+        ctx["syncloop"] = fouter
         fout = fout + inner + "}" + nl()
         return fout + indent + "}" + nl()
     }
     if (head == "break") {
-        return indent + "break;" + nl()
+        // only the sync blocks entered inside the loop are left behind
+        return indent + syncUnwind(syncHeld(ctx), syncLoopHeld(ctx)) + "break;" + nl()
     }
     if (head == "continue") {
-        return indent + "continue;" + nl()
+        return indent + syncUnwind(syncHeld(ctx), syncLoopHeld(ctx)) + "continue;" + nl()
     }
     return indent + "(void)" + genExpr(node, prog, ctx, locals) + ";" + nl()
 }

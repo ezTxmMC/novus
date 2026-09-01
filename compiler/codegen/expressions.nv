@@ -26,6 +26,12 @@ method isNumberAtom(string node): bool {
     if (node.length() == 0 || isList(node)) {
         return false
     }
+    // A hexadecimal literal whose value has the top bit set is lexed into a
+    // negative decimal - the same bit pattern, written the way C wants it -
+    // so a leading minus is part of the number, not an operator.
+    if (node.charAt(0) == "-" && node.length() > 1) {
+        return isDigit(node.charAt(1))
+    }
     return isDigit(node.charAt(0))
 }
 
@@ -115,6 +121,12 @@ method genInt(string node, map<string, string> prog, map<string, string> ctx, ma
     }
     if (head == "%") {
         return "nv_imod(" + left + ", " + right + ")"
+    }
+    if (head == "<<") {
+        return "nv_ishl(" + left + ", " + right + ")"
+    }
+    if (head == ">>") {
+        return "nv_ishr(" + left + ", " + right + ")"
     }
     return "(" + left + " " + head + " " + right + ")"
 }
@@ -219,7 +231,17 @@ method genExpr(string node, map<string, string> prog, map<string, string> ctx, m
     }
     var head = nodeHead(node)
     if (head == "str") {
-        return "nv_lit(" + nodeChild(node, 1) + ")"
+        return litRef(prog, nodeChild(node, 1))
+    }
+    if (head == "await") {
+        return "nv_await(" + genExpr(nodeChild(node, 1), prog, ctx, locals) + ")"
+    }
+    if (head == "spawn") {
+        return genSpawn(node, prog, ctx, locals)
+    }
+    if (head == "craw") {
+        // C written by the code generator itself - see genSpawn()
+        return sexpUnescape(nodeChild(node, 1))
     }
     if (head == "neg") {
         var operand = nodeChild(node, 1)
@@ -261,7 +283,8 @@ method genExpr(string node, map<string, string> prog, map<string, string> ctx, m
         }
         var out = "nv_new_object_fields_cached(&nv_cls_" + cls + ", " + cstr(cls) + ", " + (nodeCount(node) - 2)
         var i = 2
-        while (i < nodeCount(node)) {
+        var nodeCount = nodeCount(node)
+        while (i < nodeCount) {
             var f = nodeChild(node, i)
             out = out + ", " + cstr(nodeChild(f, 1)) + ", " + genExpr(nodeChild(f, 2), prog, ctx, locals)
             i = i + 1
@@ -348,7 +371,8 @@ method genExpr(string node, map<string, string> prog, map<string, string> ctx, m
     }
     // *_fast are inline wrappers that keep small-integer arithmetic in registers
     var ops = {"+": "nv_add_fast", "-": "nv_sub_fast", "*": "nv_mul_fast", "/": "nv_div", "%": "nv_mod",
-        "==": "nv_eq", "!=": "nv_ne", "<": "nv_lt", ">": "nv_gt", "<=": "nv_le", ">=": "nv_ge"}
+        "==": "nv_eq", "!=": "nv_ne", "<": "nv_lt", ">": "nv_gt", "<=": "nv_le", ">=": "nv_ge",
+        "&": "nv_band", "|": "nv_bor", "^": "nv_bxor", "<<": "nv_shl", ">>": "nv_shr"}
     if (ops.has(head) == false) {
         fail("unsupported expression '" + head + "'", ctx["pos"])
     }

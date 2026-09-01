@@ -54,6 +54,11 @@ method parseType(array<string> tokens, integer pos): map<string, string> {
             if (isSym(tokens, p, ">")) {
                 depth = depth - 1
             }
+            // array<array<integer>> lexes its tail as one ">>" token, the way
+            // C++ has to deal with it; here it simply closes two levels.
+            if (isSym(tokens, p, ">>")) {
+                depth = depth - 2
+            }
             name = name + v
             p = p + 1
             if (depth == 0) {

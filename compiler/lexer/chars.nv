@@ -15,11 +15,26 @@ method isKeywordWord(string word): bool {
 }
 
 method isTwoCharOp(string op): bool {
-    return op == "==" || op == "!=" || op == "<=" || op == ">=" || op == "&&" || op == "||" || op == "=>" || op == "=<"
+    return op == "==" || op == "!=" || op == "<=" || op == ">=" || op == "&&" || op == "||" || op == "=>" || op == "=<" || op == "<<" || op == ">>"
 }
 
 method isDigit(string c): bool {
     return c >= "0" && c <= "9"
+}
+
+method isHexDigit(string c): bool {
+    return isDigit(c) || (c >= "a" && c <= "f") || (c >= "A" && c <= "F")
+}
+
+// The value of a single hexadecimal digit.
+method hexValue(string c): integer {
+    if (isDigit(c)) {
+        return ord(c) - ord("0")
+    }
+    if (c >= "a" && c <= "f") {
+        return ord(c) - ord("a") + 10
+    }
+    return ord(c) - ord("A") + 10
 }
 
 method isAlpha(string c): bool {
@@ -33,7 +48,8 @@ method isAlphaNum(string c): bool {
 method isSymbolChar(string c): bool {
     var symbols = { "{": true, "}": true, "(": true, ")": true, "[": true, "]": true,
         ":": true, ";": true, ",": true, ".": true, "+": true, "-": true, "*": true,
-        "/": true, "%": true, "=": true, "<": true, ">": true, "!": true, "@": true }
+        "/": true, "%": true, "=": true, "<": true, ">": true, "!": true, "@": true,
+        "&": true, "|": true, "^": true }
     return symbols.has(c)
 }
 

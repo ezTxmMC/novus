@@ -203,7 +203,15 @@ method buildBinary(string source, map<string, string> options): string {
         cFile = output.substring(0, output.length() - 4) + ".c"
     }
     writeFile(cFile, code)
-    var command = cCompiler(options) + " " + cFlags(options) + " " + quoted(cFile) + " -o " + quoted(output) + " -lm"
+    var libraries = " -lm"
+    if (isWindows(options)) {
+        // there the runtime's sockets are winsock, and its threads and fibers
+        // come from the system itself - nothing to link for them
+        libraries = libraries + " -lws2_32"
+    } else {
+        libraries = libraries + " -lpthread"
+    }
+    var command = cCompiler(options) + " " + cFlags(options) + " " + quoted(cFile) + " -o " + quoted(output) + libraries
     var rc = exec(command)
     if (rc != 0) {
         eprintln "novusc: C compilation failed (generated file kept at ${cFile})"

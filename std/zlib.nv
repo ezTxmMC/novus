@@ -1,0 +1,22 @@
+package zlib
+
+// Deflate compression in the zlib container (RFC 1950/1951).
+//
+// Implemented in the runtime itself rather than against the system zlib, so a
+// program that compresses still needs nothing but a C compiler. Inflate reads
+// all three block types; compress writes fixed Huffman blocks.
+
+// Compresses to a zlib stream (78 9C header, Adler-32 trailer).
+method compress(string data): string native "nv_zlib_compress"
+
+// Decompresses a zlib stream. `limit` caps the output so that a small
+// hostile input cannot expand without bound; 0 means no limit. Returns ""
+// and sets failed() when the stream is damaged or exceeds the limit.
+method decompress(string data, integer limit): string native "nv_zlib_decompress"
+
+method failed(): bool native "nv_zlib_failed"
+
+// Decompression without an output limit.
+method inflate(string data): string {
+    return decompress(data, 0)
+}

@@ -97,7 +97,8 @@ method isIntValue(string node, map<string, string> locals): bool {
     if (head == "neg") {
         return isIntValue(nodeChild(node, 1), locals)
     }
-    var arithmetic = {"+": true, "-": true, "*": true, "/": true, "%": true}
+    var arithmetic = {"+": true, "-": true, "*": true, "/": true, "%": true,
+        "&": true, "|": true, "^": true, "<<": true, ">>": true}
     if (arithmetic.has(head) && nodeCount(node) == 3) {
         return isIntValue(nodeChild(node, 1), locals) && isIntValue(nodeChild(node, 2), locals)
     }
@@ -117,7 +118,8 @@ method isIntExpr(string node, map<string, string> ints): bool {
     if (head == "neg") {
         return isIntExpr(nodeChild(node, 1), ints)
     }
-    var arithmetic = {"+": true, "-": true, "*": true, "/": true, "%": true}
+    var arithmetic = {"+": true, "-": true, "*": true, "/": true, "%": true,
+        "&": true, "|": true, "^": true, "<<": true, ">>": true}
     if (arithmetic.has(head) && nodeCount(node) == 3) {
         return isIntExpr(nodeChild(node, 1), ints) && isIntExpr(nodeChild(node, 2), ints)
     }
@@ -135,7 +137,8 @@ method collectAssignments(string node, array<string> names, array<string> values
     }
     if (head == "block") {
         var i = 1
-        while (i < nodeCount(node)) {
+        var nodeCount = nodeCount(node)
+        while (i < nodeCount) {
             collectAssignments(nodeChild(node, i), names, values, flags)
             i = i + 1
         }
@@ -149,6 +152,10 @@ method collectAssignments(string node, array<string> names, array<string> values
         return
     }
     if (head == "while") {
+        collectAssignments(nodeChild(node, 2), names, values, flags)
+        return
+    }
+    if (head == "sync") {
         collectAssignments(nodeChild(node, 2), names, values, flags)
         return
     }

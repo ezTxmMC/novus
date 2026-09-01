@@ -1,0 +1,80 @@
+package bytes
+
+// Binary buffers.
+//
+// A Novus string carries an explicit byte length and charAt/substring work on
+// bytes, so a string is also the byte buffer: it holds NUL and every value in
+// 0..255 unchanged. This module reads and writes the fixed width and variable
+// length integers a binary protocol is made of, always big endian - the byte
+// order of the Minecraft, DNS and TLS wire formats alike.
+//
+// Reads past the end of a buffer do not abort the program: they yield 0 and
+// raise a flag, so a server survives a truncated or hostile packet.
+//   if (bytes.failed()) { ... bytes.clearError() }
+
+method size(string buffer): integer native "nv_bytes_size"
+method slice(string buffer, integer from, integer to): string native "nv_bytes_slice"
+method join(array<string> parts): string native "nv_bytes_join"
+method zeros(integer count): string native "nv_bytes_zeros"
+
+// Byte exact search and comparison (the string builtins stop at a NUL byte).
+method indexOf(string haystack, string needle, integer from): integer native "nv_bytes_index_of"
+method equal(string a, string b): bool native "nv_bytes_equal"
+
+method failed(): bool native "nv_bytes_failed"
+method clearError() native "nv_bytes_clear_error"
+
+// Reading at a byte offset.
+method u8(string buffer, integer offset): integer native "nv_bytes_u8"
+method u16(string buffer, integer offset): integer native "nv_bytes_u16"
+method u32(string buffer, integer offset): integer native "nv_bytes_u32"
+method i8(string buffer, integer offset): integer native "nv_bytes_i8"
+method i16(string buffer, integer offset): integer native "nv_bytes_i16"
+method i32(string buffer, integer offset): integer native "nv_bytes_i32"
+method i64(string buffer, integer offset): integer native "nv_bytes_i64"
+method f32(string buffer, integer offset): float native "nv_bytes_f32"
+method f64(string buffer, integer offset): float native "nv_bytes_f64"
+
+// Variable length integers: seven bits per byte, the high bit continues.
+// varIntSize() reports how many bytes the value occupies, 0 when the buffer
+// ends inside it and -1 when it is longer than the encoding allows.
+method varInt(string buffer, integer offset): integer native "nv_bytes_varint"
+method varIntSize(string buffer, integer offset): integer native "nv_bytes_varint_size"
+method varLong(string buffer, integer offset): integer native "nv_bytes_varlong"
+method varLongSize(string buffer, integer offset): integer native "nv_bytes_varlong_size"
+
+// Writing: each returns the encoded bytes.
+method putU8(integer value): string native "nv_bytes_put_u8"
+method putI16(integer value): string native "nv_bytes_put_i16"
+method putI32(integer value): string native "nv_bytes_put_i32"
+method putI64(integer value): string native "nv_bytes_put_i64"
+method putF32(float value): string native "nv_bytes_put_f32"
+method putF64(float value): string native "nv_bytes_put_f64"
+method putVarInt(integer value): string native "nv_bytes_put_varint"
+method putVarLong(integer value): string native "nv_bytes_put_varlong"
+
+// How many bytes putVarInt() will produce - needed to size a length prefix
+// before the body it describes exists.
+method varIntSizeOf(integer value): integer native "nv_bytes_varint_written"
+
+method hex(string buffer): string native "nv_bytes_hex"
+method fromHex(string text): string native "nv_bytes_from_hex"
+method toArray(string buffer): array<integer> native "nv_bytes_to_array"
+method ofArray(array<integer> values): string native "nv_bytes_of_array"
+
+// A bool is one byte, 0 or 1.
+method putBool(bool value): string {
+    if (value) {
+        return putU8(1)
+    }
+    return putU8(0)
+}
+
+method boolAt(string buffer, integer offset): bool {
+    return u8(buffer, offset) != 0
+}
+
+// A length prefixed UTF-8 string: a VarInt byte count, then the bytes.
+method putString(string text): string {
+    return putVarInt(size(text)) + text
+}

@@ -35,6 +35,14 @@ method clock(): float native "nv_os_clock"                      // seconds, sub-
 method sleep(integer milliseconds) native "nv_os_sleep"
 method readLine(): string native "nv_read_line"
 
+// Interrupts. catchInterrupt() asks the operating system to raise a flag when
+// the program is asked to stop - ctrl-C, or a terminate signal - instead of
+// killing it outright; interrupted() reads that flag and clears it. A program
+// with something worth writing out checks it in its main loop and shuts down
+// on its own terms.
+method catchInterrupt() native "nv_os_catch_interrupt"
+method interrupted(): bool native "nv_os_interrupted"
+
 // Whether a command is available on this system.
 method hasCommand(string name): bool {
     if (platform() == "windows") {

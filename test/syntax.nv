@@ -1,6 +1,7 @@
 import http
 import json
 import path
+import thread
 
 private final NAME = "Syntaxprogramm"
 
@@ -31,6 +32,46 @@ method main(array<str> args) {
   var personObject = json.parse(tom)
   var peoplePath = path.join(path.absolute, "people")
   json.save(personObject, peoplePath, "person.json")
+}
+
+var total = 0
+
+async method load(string name): string {
+  return "contents of ${name}"
+}
+
+method addOne(integer n): integer {
+  return n + 1
+}
+
+method concurrent(): integer {
+  var lock = thread.mutex()
+  var work = thread.channel(0)
+
+  var native = thread addOne(1)
+  var green = virtual addOne(2)
+  var text = await load("notes.txt")
+  println text
+
+  sync {
+    total = total + 1
+  }
+  sync (lock) {
+    total = total + 1
+  }
+
+  var many = [virtual addOne(3), virtual addOne(4)]
+  for (part in thread.joinAll(many)) {
+    total = total + part
+  }
+
+  thread.send(work, total)
+  var back = thread.recv(work)
+  if (thread.received()) {
+    thread.close(work)
+  }
+  thread.sleep(1)
+  return await native + await green + back
 }
 
 define class Person based IPerson {

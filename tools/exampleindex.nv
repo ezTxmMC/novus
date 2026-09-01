@@ -19,7 +19,8 @@ method chapterTitle(string folder): string {
         "07-classes": "Classes and objects",
         "08-stdlib": "Standard library",
         "09-algorithms": "Algorithms",
-        "10-projects": "Projects"
+        "10-projects": "Projects",
+        "11-concurrency": "Concurrency"
     }
     if (titles.has(folder)) {
         return titles[folder]
@@ -38,7 +39,8 @@ method chapterBlurb(string folder): string {
         "07-classes": "Fields, constructors, inheritance, interfaces, enums.",
         "08-stdlib": "One or two examples per module of std/.",
         "09-algorithms": "Searching, sorting, dynamic programming, graphs.",
-        "10-projects": "Longer programs that combine everything."
+        "10-projects": "Longer programs that combine everything.",
+        "11-concurrency": "Threads, virtual threads, await, sync and channels."
     }
     if (blurbs.has(folder)) {
         return blurbs[folder]

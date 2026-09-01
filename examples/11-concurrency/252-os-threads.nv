@@ -1,0 +1,16 @@
+package main
+
+// `thread` runs a method on an operating system thread. Reach for it when
+// the work blocks in a way the runtime cannot see - reading a file, waiting
+// on a command - and for `virtual` everywhere else.
+
+method describe(string word): string {
+    return "${word} has ${word.length()} letters"
+}
+
+method main {
+    var one = thread describe("concurrency")
+    var two = thread describe("parallelism")
+    println await one
+    println await two
+}

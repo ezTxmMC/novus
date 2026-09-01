@@ -1,5 +1,6 @@
 package parser
 
+import "../ast/sexp.nv"
 import "../ast/text.nv"
 import "../lexer/lexer.nv"
 import "../lexer/tokens.nv"
@@ -19,8 +20,11 @@ method precedenceOf(array<string> tokens, integer p): integer {
     if (tokKind(t) != "SYM") {
         return 0 - 1
     }
-    var precs = { "||": 1, "&&": 2, "==": 3, "!=": 3, "<": 4, ">": 4,
-        "<=": 4, ">=": 4, "+": 5, "-": 5, "*": 6, "/": 6, "%": 6 }
+    // C's order: the bitwise operators bind looser than the comparisons,
+    // the shifts tighter.
+    var precs = { "||": 1, "&&": 2, "|": 3, "^": 4, "&": 5, "==": 6, "!=": 6,
+        "<": 7, ">": 7, "<=": 7, ">=": 7, "<<": 8, ">>": 8,
+        "+": 9, "-": 9, "*": 10, "/": 10, "%": 10 }
     var op = tokVal(t)
     if (precs.has(op)) {
         return parseInt(precs[op])
@@ -205,7 +209,47 @@ method parsePrimary(array<string> tokens, integer pos): map<string, string> {
     return { "node": "", "pos": pos + 1 }
 }
 
+// Can a token begin an expression? `await` is only the operator when one
+// follows it, so `await` stays usable as a name everywhere else.
+method startsExpression(array<string> tokens, integer pos): bool {
+    if (atEnd(tokens, pos)) {
+        return false
+    }
+    var kind = tokKind(tokens[pos])
+    if (kind == "IDENT" || kind == "INT" || kind == "FLOAT" || kind == "STRING") {
+        return true
+    }
+    var val = tokVal(tokens[pos])
+    if (kind == "KEYWORD") {
+        return val == "true" || val == "false"
+    }
+    if (kind == "SYM") {
+        return val == "(" || val == "[" || val == "{" || val == "-" || val == "!"
+    }
+    return false
+}
+
+// await expr, thread call(...), virtual call(...)
 method parseUnary(array<string> tokens, integer pos): map<string, string> {
+    if (isIdent(tokens, pos)) {
+        var word = tokVal(tokens[pos])
+        if (word == "await" && startsExpression(tokens, pos + 1)) {
+            var awaited = parseUnary(tokens, pos + 1)
+            return { "node": "(await " + awaited["node"] + ")", "pos": parseInt(awaited["pos"]) }
+        }
+        if ((word == "thread" || word == "virtual") && isIdent(tokens, pos + 1)) {
+            var spawned = parseUnary(tokens, pos + 1)
+            var spawnedHead = nodeHead(spawned["node"])
+            if (spawnedHead != "call" && spawnedHead != "mcall") {
+                fail("'" + word + "' runs a method call: " + word + " work(...)", posOf(tokens, pos))
+            }
+            var kind = "virtual"
+            if (word == "thread") {
+                kind = "os"
+            }
+            return { "node": "(spawn " + kind + " " + spawned["node"] + ")", "pos": parseInt(spawned["pos"]) }
+        }
+    }
     return parsePrimary(tokens, pos)
 }
 

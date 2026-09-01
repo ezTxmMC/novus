@@ -1,0 +1,144 @@
+package thread
+
+// Threads, virtual threads, and the things they share.
+//
+// `thread f(...)` runs f on an operating system thread, `virtual f(...)` on a
+// virtual one: a stack of its own that a small pool of carrier threads runs,
+// so a program can have hundreds of thousands of them where it could not
+// have thousands of the other kind. Both hand back a task, and `await` is
+// the value it ends up with. An `async method` is one whose calls do that by
+// themselves:
+//
+//     var t = virtual render(scene)
+//     var image = await t
+//
+//     async method fetch(string url): string { ... }
+//     var body = await fetch("...")
+//
+// Blocking a virtual thread - await, sleep, a lock, a channel - parks it and
+// lets its carrier pick up the next one. Calls the runtime knows nothing
+// about (os.sleep, reading a file, exec) block the carrier itself, so inside
+// a virtual thread reach for thread.sleep() rather than os.sleep().
+//
+// A lock, channel, counter or group is an integer handle, the way a socket
+// is in `net`. Values are shared between threads as they are; anything two
+// threads write needs a lock, which `sync { ... }` is the short way to take:
+//
+//     sync { total = total + 1 }          // the program-wide lock
+//     sync (accounts) { ... }             // one from thread.mutex()
+//
+// The program ends when main returns, whatever is still running, so await
+// what has to finish.
+
+// --- tasks -----------------------------------------------------------
+
+// Waits for a task and answers with its result - the same thing `await`
+// does, for when a handle is passed around rather than awaited on the spot.
+method join(integer task): object native "nv_await"
+
+// Has the task finished? Answers straight away.
+method done(integer task): bool native "nv_task_is_done"
+
+// Waits for every task in the array and collects the results in order.
+method joinAll(array tasks): array native "nv_await_all"
+
+// --- the thread that is running --------------------------------------
+
+// Sleeps. In a virtual thread this parks it and the carrier goes on with
+// other work; on an operating system thread it is an ordinary sleep.
+method sleep(integer milliseconds) native "nv_thread_sleep"
+
+// Hands the processor to whatever is runnable next.
+method yield() native "nv_thread_yield"
+
+method isVirtual(): bool native "nv_thread_is_virtual"
+
+// A number that stays the same for one thread and differs between threads.
+method id(): integer native "nv_thread_self_id"
+
+// --- the carrier pool -------------------------------------------------
+
+method cpus(): integer native "nv_thread_cpus"              // processors of the machine
+method parallelism(): integer native "nv_thread_parallelism"  // carriers virtual threads may use
+method setParallelism(integer carriers) native "nv_thread_set_parallelism"
+method running(): integer native "nv_thread_running"        // virtual threads not finished yet
+
+// Whether virtual threads are real ones here. Where the platform has no
+// stack switching they fall back to operating system threads, which changes
+// nothing about what a program means - only how many of them fit.
+method supportsVirtual(): bool native "nv_thread_virtual_supported"
+
+// --- locks -------------------------------------------------------------
+
+// A re-entrant lock. `sync (m) { ... }` is the same thing without the
+// matching unlock to forget.
+method mutex(): integer native "nv_lock_new"
+method lock(integer mutex) native "nv_lock_acquire"
+method unlock(integer mutex) native "nv_lock_release"
+method tryLock(integer mutex): bool native "nv_lock_try_acquire"
+
+// --- channels -----------------------------------------------------------
+
+// A queue between threads. Capacity 0 is unbuffered: a send waits until the
+// value has been taken.
+method channel(integer capacity): integer native "nv_chan_new"
+
+// Waits for room and hands the value over. False means the channel was
+// closed and the value went nowhere.
+method send(integer channel, object value): bool native "nv_chan_send"
+
+// Waits for a value. A closed and empty channel has none left to give, and
+// since a channel may carry any value - the empty one included - received()
+// is what says whether there was one:
+//
+//     while (true) {
+//         var item = thread.recv(work)
+//         if (thread.received() == false) {
+//             break
+//         }
+//         handle(item)
+//     }
+method recv(integer channel): object native "nv_chan_recv"
+
+// A value if one is waiting, nothing otherwise - never blocks.
+method tryRecv(integer channel): object native "nv_chan_try_recv"
+
+// Did the last recv() or tryRecv() of this thread produce a value?
+method received(): bool native "nv_chan_received"
+
+// Wakes everyone waiting on the channel. Values already in it can still be
+// received; sending into it no longer works.
+method close(integer channel) native "nv_chan_close"
+
+method closed(integer channel): bool native "nv_chan_is_closed"
+method length(integer channel): integer native "nv_chan_length"
+
+// --- counters -------------------------------------------------------------
+
+// A number several threads may change without a lock of their own.
+method counter(integer initial): integer native "nv_counter_new"
+method add(integer counter, integer delta): integer native "nv_counter_add"  // the new value
+method get(integer counter): integer native "nv_counter_get"
+method set(integer counter, integer value) native "nv_counter_set"
+
+// Sets the counter to `value` if it still holds `expect`.
+method compareAndSet(integer counter, integer expect, integer value): bool native "nv_counter_swap"
+
+method increment(integer counter): integer {
+    return add(counter, 1)
+}
+
+method decrement(integer counter): integer {
+    return add(counter, 0 - 1)
+}
+
+// --- groups ---------------------------------------------------------------
+
+// Counts work that is still outstanding, for fan-outs whose tasks nobody
+// kept: groupAdd() what is about to start, groupDone() what finished,
+// groupWait() until nothing is left. With the task handles in hand,
+// joinAll() says the same thing more directly.
+method group(): integer native "nv_group_new"
+method groupAdd(integer group, integer count) native "nv_group_add"
+method groupDone(integer group) native "nv_group_done"
+method groupWait(integer group) native "nv_group_wait"

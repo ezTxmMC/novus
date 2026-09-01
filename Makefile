@@ -1,7 +1,7 @@
 # Novus - self-hosting compiler. Only a C compiler is required.
 #
 #   make            build build/novusc from the bootstrap snapshot
-#   make test       golden tests, 250 examples and the self-hosting check
+#   make test       golden tests, 258 examples and the self-hosting check
 #   make examples   run every example under examples/NN-*/
 #   make snapshot   regenerate bootstrap/novusc.c after compiler changes
 #   make cross      cross compile for all platforms (needs zig)

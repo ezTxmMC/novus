@@ -38,6 +38,7 @@ const CHAPTERS: Record<string, string> = {
   '08-stdlib': 'Standard library',
   '09-algorithms': 'Algorithms',
   '10-projects': 'Projects',
+  '11-concurrency': 'Concurrency',
 };
 
 function summaryOf(source: string): string {

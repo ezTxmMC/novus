@@ -14,13 +14,15 @@ import "statements.nv"
 method deprecationCode(string m, string indent, string flagName): string {
     var annos = nodeChild(m, 4)
     var i = 1
-    while (i < nodeCount(annos)) {
+    var annosCount = nodeCount(annos)
+    while (i < annosCount) {
         var anno = nodeChild(annos, i)
         if (nodeChild(anno, 1) == "Deprecated") {
             var text = cstr("")
             var since = cstr("")
             var k = 2
-            while (k < nodeCount(anno)) {
+            var annoCount = nodeCount(anno)
+            while (k < annoCount) {
                 var arg = nodeChild(anno, k)
                 if (nodeChild(arg, 1) == "text") {
                     text = nodeChild(arg, 2)
@@ -42,7 +44,8 @@ method bindArrayParams(string m, string indent, map<string, string> locals): str
     var params = paramsNode(m)
     var out = ""
     var i = 1
-    while (i < nodeCount(params)) {
+    var paramsCount = nodeCount(params)
+    while (i < paramsCount) {
         var p = nodeChild(params, i)
         var ptype = nodeChild(p, 1)
         var pname = nodeChild(p, 2)
@@ -58,7 +61,8 @@ method cParamList(string m): string {
     var params = paramsNode(m)
     var out = ""
     var i = 1
-    while (i < nodeCount(params)) {
+    var paramsCount = nodeCount(params)
+    while (i < paramsCount) {
         if (i > 1) {
             out = out + ", "
         }
@@ -92,7 +96,29 @@ method argNames(integer arity): string {
     return out
 }
 
+// An async method is the method it was written as, plus two lines: the body
+// moves aside under its own name and what callers reach starts it on a
+// virtual thread. Nothing at the call sites changes - `f(x)` hands back a
+// task there, and `await` is what turns it into the value.
 method genFreeMethod(string m, string cname, map<string, string> prog): string {
+    if (isAsyncMethod(m) == false) {
+        return genFreeMethodBody(m, cname, prog)
+    }
+    var inner = cname + "_body"
+    var arity = arityOf(m)
+    var out = genFreeMethodBody(m, inner, prog)
+    out = out + "static nv nv_async_" + cname + "(nv *a, int n) {" + nl()
+    out = out + "    (void)a;" + nl() + "    (void)n;" + nl()
+    out = out + "    return " + inner + "(" + argSlots(arity) + ");" + nl() + "}" + nl()
+    out = out + "static nv " + cname + "(" + cParamList(m) + ") {" + nl()
+    out = out + "    return nv_spawn(1, nv_async_" + cname + ", " + arity
+    if (arity > 0) {
+        out = out + ", " + argNames(arity)
+    }
+    return out + ");" + nl() + "}" + nl()
+}
+
+method genFreeMethodBody(string m, string cname, map<string, string> prog): string {
     var name = methodName(m)
     var ctx = {"class": "", "pkg": packageOf(name), "func": name, "ret": methodRet(m), "pos": "method " + name}
     var locals = {}
@@ -100,7 +126,8 @@ method genFreeMethod(string m, string cname, map<string, string> prog): string {
     var parameters = {}
     var candidates = {}
     var i = 1
-    while (i < nodeCount(params)) {
+    var paramsCount = nodeCount(params)
+    while (i < paramsCount) {
         var p = nodeChild(params, i)
         var pname = nodeChild(p, 2)
         parameters[pname] = "1"
@@ -116,7 +143,8 @@ method genFreeMethod(string m, string cname, map<string, string> prog): string {
     }
     var floatCandidates = {}
     i = 1
-    while (i < nodeCount(params)) {
+    var paramsCount = nodeCount(params)
+    while (i < paramsCount) {
         var fp = nodeChild(params, i)
         if (normType(nodeChild(fp, 1)) == "float") {
             floatCandidates[nodeChild(fp, 2)] = "1"
@@ -129,7 +157,8 @@ method genFreeMethod(string m, string cname, map<string, string> prog): string {
     }
     var out = "static nv " + cname + "(" + cParamList(m) + ") {" + nl()
     i = 1
-    while (i < nodeCount(params)) {
+    var paramsCount = nodeCount(params)
+    while (i < paramsCount) {
         var p = nodeChild(params, i)
         var pname = nodeChild(p, 2)
         if (ints.has(pname)) {
@@ -159,7 +188,8 @@ method genDispatcher(string name, integer arity, integer variants, map<string, s
         var params = paramsNode(m)
         var cond = ""
         var i = 1
-        while (i < nodeCount(params)) {
+        var paramsCount = nodeCount(params)
+        while (i < paramsCount) {
             if (i > 1) {
                 cond = cond + " && "
             }
@@ -210,7 +240,8 @@ method genCtor(string cls, string ctor, map<string, string> prog): string {
     var out = "static nv c_" + cls + "(nv self, nv *args, int n) {" + nl()
     var params = nodeChild(ctor, 1)
     var i = 1
-    while (i < nodeCount(params)) {
+    var paramsCount = nodeCount(params)
+    while (i < paramsCount) {
         var p = nodeChild(params, i)
         var pname = nodeChild(p, 2)
         var src = "(n > " + (i - 1) + " ? args[" + (i - 1) + "] : nv_nil)"

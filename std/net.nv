@@ -1,0 +1,86 @@
+package net
+
+import strings
+
+// TCP sockets.
+//
+// Sockets are non-blocking and are driven by poll(): one loop serves every
+// connection, which is what a program with a tick or frame loop wants. A
+// socket is an integer handle; -1 means the call produced none.
+//
+// A method cannot return a value and an error at once, so every call records
+// what happened and status() reports it:
+//   0  ok      - the call did what it says       (net.ok())
+//   1  again   - nothing was ready, not an error  (net.again())
+//   2  closed  - the peer hung up                 (net.closed())
+//   3  error   - see net.error() for the message  (net.failed())
+
+// Binds host:port and starts listening. "" or "0.0.0.0" as host takes every
+// interface. Returns the socket, or -1 (status ERROR).
+method listen(string host, integer port): integer native "nv_net_listen"
+
+// The next waiting connection, or -1 with status AGAIN when there is none.
+method accept(integer server): integer native "nv_net_accept"
+
+// Connects to host:port. Returns the socket, or -1 (status ERROR).
+method connect(string host, integer port): integer native "nv_net_connect"
+
+// Up to `max` bytes. An empty result with status AGAIN means nothing was
+// ready; with status CLOSED it means the peer is gone.
+method recv(integer socket, integer max): string native "nv_net_recv"
+
+// The number of bytes the kernel took, which may be fewer than offered: keep
+// the remainder and send it when the socket is writable again.
+method send(integer socket, string data): integer native "nv_net_send"
+
+method close(integer socket) native "nv_net_close"
+
+// The subset of `sockets` that can be read without blocking. A timeout of 0
+// polls, -1 waits indefinitely.
+method poll(array<integer> sockets, integer timeoutMs): array<integer> native "nv_net_poll"
+
+// The subset that can be written to - use it to drain a backed up send
+// buffer instead of spinning on it.
+method pollWrite(array<integer> sockets, integer timeoutMs): array<integer> native "nv_net_poll_write"
+
+method status(): integer native "nv_net_status"
+method error(): string native "nv_net_error"
+
+// "1.2.3.4:56789" of the connected peer, "" when it cannot be determined.
+method peer(integer socket): string native "nv_net_peer"
+
+method ok(): bool {
+    return status() == 0
+}
+
+// Whether the last call found nothing ready (not an error).
+method again(): bool {
+    return status() == 1
+}
+
+method closed(): bool {
+    return status() == 2
+}
+
+method failed(): bool {
+    return status() == 3
+}
+
+// The address part of peer(), without the port.
+method peerHost(integer socket): string {
+    var address = peer(socket)
+    var colon = strings.lastIndexOf(address, ":")
+    if (colon < 0) {
+        return address
+    }
+    return address.substring(0, colon)
+}
+
+// Sends everything that fits right now and returns what is left over.
+method sendSome(integer socket, string data): string {
+    var written = send(socket, data)
+    if (written >= data.length()) {
+        return ""
+    }
+    return data.substring(written, data.length())
+}

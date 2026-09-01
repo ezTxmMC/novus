@@ -207,6 +207,15 @@ method parseFile(string source, string file): array<string> {
             p = parseInt(an["pos"])
             continue
         }
+        // async method f(...): calling it starts the work on a virtual
+        // thread and hands back a task, so every call site is `await f(...)`
+        if (isIdentNamed(tokens, p, "async") && isKw(tokens, p + 1, "method")) {
+            var am = parseMethodDecl(tokens, p + 1, annos.substring(0, annos.length() - 1) + " (anno Async))")
+            decls.append(am["node"])
+            annos = "(annos)"
+            p = parseInt(am["pos"])
+            continue
+        }
         if (isKw(tokens, p, "method")) {
             var m = parseMethodDecl(tokens, p, annos)
             decls.append(m["node"])

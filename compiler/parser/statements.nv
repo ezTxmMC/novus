@@ -148,6 +148,18 @@ method parseStatement(array<string> tokens, integer pos): map<string, string> {
         }
         fail("unexpected keyword '" + val + "'", here)
     }
+    // sync { ... } takes the program-wide lock, sync (lock) { ... } that one
+    if (kind == "IDENT" && val == "sync" && (isSym(tokens, pos + 1, "{") || isSym(tokens, pos + 1, "("))) {
+        var sp = pos + 1
+        var lock = "-"
+        if (isSym(tokens, sp, "(")) {
+            var le = parseExpr(tokens, sp + 1, 0)
+            sp = expectSym(tokens, parseInt(le["pos"]), ")")
+            lock = le["node"]
+        }
+        var sb = parseBlock(tokens, sp)
+        return { "node": "(sync " + lock + " " + sb["node"] + ")", "pos": parseInt(sb["pos"]) }
+    }
     if (kind == "IDENT" && isSym(tokens, pos + 1, "=")) {
         var ae = parseExpr(tokens, pos + 2, 0)
         return { "node": "(assign " + val + " " + ae["node"] + ")", "pos": parseInt(ae["pos"]) }

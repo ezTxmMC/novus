@@ -110,16 +110,19 @@ fields (`private final string name: get, set`), constructors, `this`,
 implicit `this` for fields and methods, object literals (`Person{name="Tom"}`), `based`
 inheritance with polymorphism, interfaces, abstract classes, enums with
 constructors, annotations (`@Deprecated{...}` warns at call time), top-level
-constants, and the stdlib modules `os`, `path`, `json` and `http`.
+constants, concurrency (`thread`, `virtual`, `async`, `await`, `sync`) and
+the stdlib modules `os`, `path`, `json` and `http`.
 
 Values are dynamically typed at run time, but the compiler proves which
 locals are always integers and generates them as unboxed 64-bit values, so
 counting loops and numeric code compile to plain C. Arrays, maps and objects
 are passed by reference. Integers are 64 bit and never allocated (tagged
-pointers), objects are one block of header plus field slots (~48 bytes for a
-one-field class), maps are hash indexed but always iterate in key order.
-Missing interface/abstract implementations, unknown names and unknown fields
-are errors.
+pointers), a boxed value is 16 bytes, objects are one block of value, header
+and field slots (32 bytes for a one-field class), string literals are static
+values the compiler lays down rather than something the runtime boxes, and
+maps are hash indexed but always iterate in key order. Missing
+interface/abstract implementations, unknown names and unknown fields are
+errors.
 
 Statements `println`, `print`, `eprintln`.
 Strings: `length`, `charAt`, `substring`, `indexOf`, `contains`,
@@ -127,6 +130,73 @@ Strings: `length`, `charAt`, `substring`, `indexOf`, `contains`,
 Arrays: `length`, `append`, `pop`, `insert`, `remove`, `contains`,
 `indexOf`, `join`, `clear`. Maps: `length`, `has`, `keys`, `values`,
 `remove`, `get`.
+
+## Concurrency
+
+`thread f(...)` runs `f` on an operating system thread. `virtual f(...)` runs
+it on a virtual thread: a stack of its own, a hundred kilobytes reserved and
+only the pages it touches ever resident, that a small pool of carrier threads
+(one per processor by default) runs. Both hand back a task, and `await` is
+the value it ends up with.
+
+```nv
+import thread
+
+method render(integer frame): string {
+    return "frame ${frame}"
+}
+
+async method load(string name): string {   // its calls start on a virtual
+    return readFile(name)                  // thread and hand back a task
+}
+
+method main {
+    var tasks = []
+    for (n in [1, 2, 3]) {
+        tasks.append(virtual render(n))
+    }
+    println thread.joinAll(tasks)          // ["frame 1", "frame 2", "frame 3"]
+
+    println await load("notes.txt")
+    println await thread render(9)         // an operating system thread
+}
+```
+
+Blocking a virtual thread - `await`, `thread.sleep`, a lock, a channel -
+parks its stack and hands its carrier to the next runnable one, so a hundred
+thousand of them cost about as much memory as a hundred operating system
+threads. Blocking in a way the runtime cannot see (`os.sleep`, reading a
+file, `exec`) blocks the carrier itself, which is what `thread` is for.
+Stacks are switched with `ucontext` on unix and with fibers on Windows; where
+neither exists a virtual thread falls back to an operating system thread and
+nothing about the program's meaning changes.
+
+Threads share the values they are handed, so anything two of them write needs
+a lock. `sync { ... }` takes the program-wide one, `sync (lock) { ... }` one
+from `thread.mutex()`. Both are re-entrant and both give the lock back on
+every way out of the block, `return`, `break` and `continue` included.
+
+```nv
+var total = 0
+
+method count(integer times) {
+    var i = 0
+    while (i < times) {
+        sync {
+            total = total + 1
+        }
+        i = i + 1
+    }
+}
+```
+
+The [thread](std/thread.nv) module has the rest: channels, counters, locks,
+groups, `joinAll`, `sleep`, `yield` and the size of the pool. `NOVUS_THREADS`
+sets how many carriers virtual threads may use (default: the processors of
+the machine), `NOVUS_VSTACK` the stack of one in kilobytes (default 128).
+The program ends when `main` returns, whatever is still running - await what
+has to finish. [examples/11-concurrency](examples/11-concurrency) works
+through all of it.
 
 ## Standard library
 
@@ -156,6 +226,7 @@ implemented by the C runtime, everything else is plain Novus you can read.
 | [csv](std/csv.nv) | `parse`/`parseWith`, `stringify`/`stringifyWith` |
 | [io](std/io.nv) | `readLine`, `readAll`, `readLines`, `write`, `writeErr`, `flush`, `prompt` |
 | [test](std/test.nv) | `assert`, `assertEqual`, `report` |
+| [thread](std/thread.nv) | tasks (`join`, `joinAll`, `done`), `sleep`/`yield`, locks (`mutex`, `lock`, `tryLock`), channels (`channel`, `send`, `recv`, `close`), counters, groups, `cpus`/`parallelism` |
 
 Free builtins need no import: `readFile`, `writeFile`, `fileExists`,
 `removeFile`, `readLine`, `args`, `parseInt`, `parseFloat`, `chr`, `ord`,
@@ -177,7 +248,7 @@ Free builtins need no import: `readFile`, `writeFile`, `fileExists`,
 | `compiler/project/`    | `project.nv` manifests (`manifest.nv`) and git dependencies (`deps.nv`)      |
 | `compiler/driver/`     | The `novusc` command line (`cli.nv`) and build/run steps (`build.nv`)         |
 | `compiler/main.nv`     | Entry point                                                                   |
-| `runtime/novus_rt.h`    | The C runtime every compiled program embeds (values, classes, os/path/json/http) |
+| `runtime/novus_rt.h`    | The C runtime every compiled program embeds (values, classes, threads, os/path/json/http) |
 | `scripts/`              | `bootstrap.sh`/`.cmd`/`.ps1`, `snapshot.sh`, `cross.sh`                       |
 | `test/`                 | Golden tests (`run_tests.sh`) and the self-hosting ladder (`selfhost.sh`)     |
 | `examples/`             | Example programs ([overview](examples/README.md))                             |
@@ -244,15 +315,15 @@ cd website && bun install && bun run dev
 
 ## Examples
 
-[examples/](examples/README.md) holds 250 programs from `hello world` to a
+[examples/](examples/README.md) holds 258 programs from `hello world` to a
 small virtual machine, grouped from easy to complex: basics, control flow,
-methods, strings, arrays, maps, classes, the standard library, algorithms and
-complete projects. Each one runs on its own and is verified against a golden
-file.
+methods, strings, arrays, maps, classes, the standard library, algorithms,
+complete projects and concurrency. Each one runs on its own and is verified
+against a golden file.
 
 ```sh
 novusc run examples/01-basics/001-hello-world.nv
-make examples                    # run all 250
+make examples                    # run all 258
 ```
 
 ## Tests

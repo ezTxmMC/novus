@@ -43,6 +43,18 @@ method lex(string source, string file): array<string> {
         if (isDigit(c)) {
             var num = ""
             var numKind = "INT"
+            // 0x1f: converted right here, so everything downstream only ever
+            // sees a decimal integer literal.
+            if (c == "0" && i + 2 < n && (source.charAt(i + 1) == "x" || source.charAt(i + 1) == "X") && isHexDigit(source.charAt(i + 2))) {
+                var hex = 0
+                i = i + 2
+                while (i < n && isHexDigit(source.charAt(i))) {
+                    hex = hex * 16 + hexValue(source.charAt(i))
+                    i = i + 1
+                }
+                tokens.append("INT " + pos + " " + hex)
+                continue
+            }
             while (i < n && isDigit(source.charAt(i))) {
                 num = num + source.charAt(i)
                 i = i + 1

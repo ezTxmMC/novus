@@ -1,0 +1,150 @@
+# Concurrency
+
+Novus has two kinds of thread and one set of primitives that both use.
+
+A **thread** is an operating system thread. It costs what the system charges
+for one - a stack measured in megabytes - and the kernel schedules it, so a
+program has tens or hundreds of them.
+
+A **virtual thread** is a stack of its own (a hundred kilobytes reserved, of
+which only the pages it touches are ever backed by memory) that a small pool
+of carrier threads runs - one carrier per processor by default. Blocking one
+parks its stack and hands the carrier to the next runnable virtual thread
+instead of handing it back to the kernel, so a program can have as many of
+them as it has work.
+
+## Starting one
+
+`thread f(...)` and `virtual f(...)` run a method call somewhere else. The
+arguments are evaluated where the spawn is written, in the thread that
+spawns; the result is a **task**.
+
+```nv
+var slow = thread readFile("large.log")   // an operating system thread
+var fast = virtual checksum(bytes)        // a virtual thread
+```
+
+## await
+
+`await` is the value a task ends up with. It waits for the task to finish -
+parking the virtual thread it is written in, if it is written in one.
+
+```nv
+var text = await slow
+```
+
+Awaiting anything that is not a task is that value, so `await` may be written
+wherever a result is expected without knowing whether the call it came from
+was asynchronous.
+
+## async methods
+
+An `async method` is written like any other, but calling it starts it on a
+virtual thread and hands back a task. Nothing at the call sites changes
+except that they now say `await`.
+
+```nv
+async method load(string name): string {
+    return readFile(name)
+}
+
+method main {
+    var a = load("one.txt")    // both are already running
+    var b = load("two.txt")
+    println await a
+    println await b
+}
+```
+
+## sync
+
+Threads share the values they are handed, so anything two of them write needs
+a lock. `sync { ... }` takes the program-wide one for the length of the
+block, `sync (lock) { ... }` one made with `thread.mutex()`.
+
+```nv
+var total = 0
+
+method count(integer times) {
+    var i = 0
+    while (i < times) {
+        sync {
+            total = total + 1
+        }
+        i = i + 1
+    }
+}
+```
+
+Both are re-entrant - a `sync` block inside a method a `sync` block called
+walks straight in - and both give the lock back on every way out of the
+block, `return`, `break` and `continue` included.
+
+## Channels
+
+A channel hands values from one thread to another. Sending into a full one
+waits for room, receiving from an empty one waits for a value. Capacity 0 is
+unbuffered: the send waits until the value has been taken.
+
+```nv
+import thread
+
+var work = 0
+
+method produce(integer count) {
+    var i = 1
+    while (i <= count) {
+        thread.send(work, i)
+        i = i + 1
+    }
+    thread.close(work)
+}
+
+method consume(): integer {
+    var sum = 0
+    while (true) {
+        var item = thread.recv(work)
+        // a channel may carry any value, the empty one included, so
+        // received() is what says whether there was one
+        if (thread.received() == false) {
+            break
+        }
+        sum = sum + item
+    }
+    return sum
+}
+
+method main {
+    work = thread.channel(4)
+    var writer = virtual produce(100)
+    var reader = virtual consume()
+    await writer
+    println await reader
+}
+```
+
+## The rest of the module
+
+[thread](/stdlib) has tasks (`join`, `joinAll`, `done`), `sleep` and `yield`,
+locks (`mutex`, `lock`, `unlock`, `tryLock`), channels, counters several
+threads may change without a lock of their own (`counter`, `add`, `get`,
+`compareAndSet`), groups for fan-outs whose tasks nobody kept, and the size
+of the carrier pool (`cpus`, `parallelism`, `setParallelism`).
+
+## What to watch out for
+
+- Blocking in a way the runtime cannot see - `os.sleep`, reading a file,
+  `exec` - blocks the carrier itself rather than parking the virtual thread.
+  That is what `thread` is for; inside a virtual thread prefer
+  `thread.sleep()` over `os.sleep()`.
+- The program ends when `main` returns, whatever is still running. Await what
+  has to finish.
+- Arrays, maps and objects are passed by reference, and nothing locks them
+  for you.
+
+`NOVUS_THREADS` sets how many carriers virtual threads may use (default: the
+processors of the machine) and `NOVUS_VSTACK` the stack of one in kilobytes
+(default 128). Stacks are switched with `ucontext` on unix and with fibers on
+Windows; where neither exists a virtual thread falls back to an operating
+system thread, which changes nothing about what a program means - only how
+many of them fit.

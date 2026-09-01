@@ -20,11 +20,13 @@ mkdir -p "$DIST"
 
 for target in $TARGETS; do
     name="novusc-${target%%.*}"
+    libs="-lm"
     case "$target" in
         *windows*) name="$name.exe" ;;
+        *) libs="$libs -lpthread" ;;
     esac
     echo "$target -> dist/$name"
-    "$ZIG" cc -target "$target" -O2 -s "$DIST/novusc.c" -o "$DIST/$name" -lm
+    "$ZIG" cc -target "$target" -O2 -s "$DIST/novusc.c" -o "$DIST/$name" $libs
     rm -f "$DIST/${name%.exe}.pdb" "$DIST/$name.pdb"
 done
 rm -f "$DIST/novusc.c"

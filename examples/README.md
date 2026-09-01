@@ -1,12 +1,12 @@
 # Novus examples
 
-250 small programs, from the first line of Novus to complete projects.
+258 small programs, from the first line of Novus to complete projects.
 Every example is self contained, prints something and is checked against the
 `.golden` file next to it.
 
 ```sh
 novusc run examples/01-basics/001-hello-world.nv   # run a single example
-make examples                                      # run all 250
+make examples                                      # run all 258
 test/run_examples.sh strings                       # only matching paths
 ```
 
@@ -22,6 +22,7 @@ test/run_examples.sh strings                       # only matching paths
 | [Standard library](#standard-library-181-215) | 181-215 | One or two examples per module of std/ |
 | [Algorithms](#algorithms-216-238) | 216-238 | Searching, sorting, dynamic programming, graphs |
 | [Projects](#projects-239-250) | 239-250 | Longer programs that combine everything |
+| [Concurrency](#concurrency-251-258) | 251-258 | Threads, virtual threads, await, sync and channels |
 
 ## Basics (001-030)
 
@@ -342,6 +343,21 @@ Longer programs that combine everything.
 | 248 | [bank-system](10-projects/248-bank-system.nv) |  |
 | 249 | [tic-tac-toe](10-projects/249-tic-tac-toe.nv) | Playing a fixed sequence of moves and detecting the winner |
 | 250 | [stack-machine](10-projects/250-stack-machine.nv) | A tiny virtual machine: the last example puts everything together |
+
+## Concurrency (251-258)
+
+Threads, virtual threads, await, sync and channels.
+
+| # | Example | Shows |
+|---|---------|-------|
+| 251 | [virtual-threads](11-concurrency/251-virtual-threads.nv) | `virtual` runs a method on a virtual thread: a stack of its own that a small pool of carrier threads shares |
+| 252 | [os-threads](11-concurrency/252-os-threads.nv) | `thread` runs a method on an operating system thread |
+| 253 | [awaiting-many](11-concurrency/253-awaiting-many.nv) | thread.joinAll waits for a whole array of tasks and keeps the results in the order the tasks were started, however out of order they finished |
+| 254 | [async-methods](11-concurrency/254-async-methods.nv) | An `async method` starts on a virtual thread whenever it is called, so the call hands back a task instead of a value and `await` turns it into one |
+| 255 | [sync-blocks](11-concurrency/255-sync-blocks.nv) | Threads share the values they are given, so anything two of them write needs a lock |
+| 256 | [channels](11-concurrency/256-channels.nv) | A channel hands values from one thread to another |
+| 257 | [locks-and-counters](11-concurrency/257-locks-and-counters.nv) | A counter is a number several threads may change without a lock of their own |
+| 258 | [parallel-work](11-concurrency/258-parallel-work.nv) | Splitting work over the processors: one virtual thread per chunk, then await them all and put the answers back together |
 
 ## Showcase projects
 

@@ -1,0 +1,48 @@
+package main
+
+import thread
+
+// A counter is a number several threads may change without a lock of their
+// own. A mutex is the lock itself, for everything a counter cannot express -
+// `sync (m) { ... }` takes it and gives it back on every way out of the block.
+
+var tally = 0
+var guard = 0
+var log = []
+
+method count(integer times) {
+    var i = 0
+    while (i < times) {
+        thread.add(tally, 1)
+        i = i + 1
+    }
+}
+
+method record(string name) {
+    sync (guard) {
+        log.append(name)
+    }
+}
+
+method main {
+    tally = thread.counter(0)
+    guard = thread.mutex()
+
+    var workers = []
+    var w = 0
+    while (w < 6) {
+        workers.append(virtual count(1000))
+        w = w + 1
+    }
+    thread.joinAll(workers)
+    println "counted to ${thread.get(tally)}"
+
+    var writers = []
+    var k = 0
+    while (k < 5) {
+        writers.append(virtual record("worker"))
+        k = k + 1
+    }
+    thread.joinAll(writers)
+    println "the lock let ${log.length()} appends through"
+}

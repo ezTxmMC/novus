@@ -35,7 +35,8 @@ method genClassCode(string node, map<string, string> prog, array<string> protos,
     registry.append("    nv_cls_" + cls + " = c;" + nl())
     var fields = classFields(node)
     var i = 1
-    while (i < nodeCount(fields)) {
+    var fieldsCount = nodeCount(fields)
+    while (i < fieldsCount) {
         var f = nodeChild(fields, i)
         registry.append("    nv_class_field(c, " + cstr(nodeChild(f, 2)) + ", " + cstr(normType(nodeChild(f, 1))) + ");" + nl())
         i = i + 1
@@ -48,7 +49,8 @@ method genClassCode(string node, map<string, string> prog, array<string> protos,
     }
     var methods = classMethods(node)
     var k = 1
-    while (k < nodeCount(methods)) {
+    var methodsCount = nodeCount(methods)
+    while (k < methodsCount) {
         var m = nodeChild(methods, k)
         if (isAbstractMethod(m) == false) {
             var cname = methodCName(cls, m, methodVariant(methods, k))
@@ -68,7 +70,8 @@ method genEnumInit(string node, map<string, string> prog): string {
     var locals = {}
     var out = ""
     var i = 1
-    while (i < nodeCount(consts)) {
+    var constsCount = nodeCount(consts)
+    while (i < constsCount) {
         var c = nodeChild(consts, i)
         var nargs = nodeCount(c) - 2
         var constructor = "nv_construct(" + cstr(name) + ", " + nargs
@@ -89,6 +92,9 @@ method genMainEntry(map<string, string> prog): string {
     }
     var out = "int main(int argc, char **argv) {" + nl()
     out = out + "    nv result = nv_nil;" + nl()
+    if (prog.has("litn")) {
+        out = out + "    nv_init_literals(nv_lits, nv_lit_text, " + prog["litn"] + ");" + nl()
+    }
     out = out + "    nv_init_args(argc, argv);" + nl()
     out = out + "    nv_register_classes();" + nl()
     out = out + "    nv_init_globals();" + nl()
@@ -176,6 +182,8 @@ method generateProgram(array<string> decls, string runtime): string {
     }
     out.append(nl() + "/* declarations */" + nl())
     out.append(joinParts(protos))
+    out.append(literalTable(prog))
+    out.append(spawnBodies(prog))
     out.append(nl() + "static void nv_register_classes(void) {" + nl() + "    NvClass *c = 0;" + nl() + "    (void)c;" + nl())
     out.append(joinParts(registry))
     out.append("}" + nl() + nl() + "static void nv_init_globals(void) {" + nl())

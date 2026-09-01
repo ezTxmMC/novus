@@ -1,6 +1,7 @@
 package codegen
 
 import "../ast/sexp.nv"
+import "../ast/text.nv"
 import "../parser/errors.nv"
 import "../parser/types.nv"
 
@@ -15,6 +16,63 @@ method nl(): string {
 
 method cstr(string text): string {
     return q() + text + q()
+}
+
+// Every distinct string literal of a program is laid down as one static
+// value. A literal inside a loop is then a constant address instead of a
+// value the runtime has to box (or look up in a cache) on every pass.
+// `cText` is the literal already in C form, quotes included.
+method litRef(map<string, string> prog, string cText): string {
+    var key = "lit:" + cText
+    if (prog.has(key)) {
+        return "(&nv_lits[" + prog[key] + "])"
+    }
+    var index = 0
+    if (prog.has("litn")) {
+        index = parseInt(prog["litn"])
+    }
+    prog[key] = intToStr(index)
+    prog["litat:" + index] = cText
+    prog["litn"] = intToStr(index + 1)
+    return "(&nv_lits[" + index + "])"
+}
+
+// The literal table itself, in first-use order.
+method literalTable(map<string, string> prog): string {
+    if (prog.has("litn") == false) {
+        return ""
+    }
+    var count = parseInt(prog["litn"])
+    var parts = []
+    parts.append(nl() + "/* string literals */" + nl())
+    parts.append("static NvVal nv_lits[" + count + "];" + nl())
+    parts.append("static const char *const nv_lit_text[" + count + "] = {" + nl())
+    var i = 0
+    while (i < count) {
+        parts.append("    " + prog["litat:" + i] + "," + nl())
+        i = i + 1
+    }
+    parts.append("};" + nl())
+    return joinParts(parts)
+}
+
+// The bodies registered by spawnBody(), in the order the spawn sites were
+// generated.
+method spawnBodies(map<string, string> prog): string {
+    if (prog.has("spawnn") == false) {
+        return ""
+    }
+    var count = parseInt(prog["spawnn"])
+    var parts = []
+    parts.append(nl() + "/* bodies of thread, virtual and async spawns */" + nl())
+    var i = 0
+    while (i < count) {
+        parts.append("static nv nv_spawn_body_" + i + "(nv *a, int n) {" + nl())
+        parts.append("    (void)a;" + nl() + "    (void)n;" + nl())
+        parts.append("    return " + prog["spawnat:" + i] + ";" + nl() + "}" + nl())
+        i = i + 1
+    }
+    return joinParts(parts)
 }
 
 method copyMap(map<string, string> m): map<string, string> {
@@ -55,7 +113,7 @@ method defaultCode(string t): string {
         return "nv_float(0.0)"
     }
     if (n == "string") {
-        return "nv_lit(" + cstr("") + ")"
+        return "(&nv_empty_str_val)"
     }
     if (n == "bool") {
         return "nv_bool(0)"
@@ -95,6 +153,86 @@ method packageOf(string name): string {
         return ""
     }
     return name.substring(0, dot)
+}
+
+// Is `name` among the method's annotations? `async method` records itself
+// as one, so nothing else in the node had to change shape.
+method hasAnnotation(string m, string name): bool {
+    var annos = nodeChild(m, 4)
+    var i = 1
+    var count = nodeCount(annos)
+    while (i < count) {
+        if (nodeChild(nodeChild(annos, i), 1) == name) {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+
+method isAsyncMethod(string m): bool {
+    return hasAnnotation(m, "Async")
+}
+
+// "a[0], a[1], ..." - how a spawned body reaches the arguments the thread
+// that spawned it evaluated.
+method argSlots(integer arity): string {
+    var out = ""
+    var i = 0
+    while (i < arity) {
+        if (i > 0) {
+            out = out + ", "
+        }
+        out = out + "a[" + i + "]"
+        i = i + 1
+    }
+    return out
+}
+
+// How deeply the statement being generated sits inside sync blocks.
+method syncDepth(map<string, string> ctx): integer {
+    if (ctx.has("sync") == false || ctx["sync"] == "") {
+        return 0
+    }
+    return ctx["sync"].split(" ").length()
+}
+
+// The sync blocks the statement being generated sits inside, innermost last.
+method syncHeld(map<string, string> ctx): string {
+    if (ctx.has("sync")) {
+        return ctx["sync"]
+    }
+    return ""
+}
+
+// The same at the point the innermost enclosing loop began: what `break`
+// and `continue` have to leave behind, as opposed to `return`, which leaves
+// every one of them.
+method syncLoopHeld(map<string, string> ctx): string {
+    if (ctx.has("syncloop")) {
+        return ctx["syncloop"]
+    }
+    return ""
+}
+
+// C has no scope guards, so leaving a sync block early unlocks on the way
+// out: every lock between `held` and `outer`, innermost first.
+method syncUnwind(string held, string outer): string {
+    if (held == "") {
+        return ""
+    }
+    var names = held.split(" ")
+    var keep = 0
+    if (outer != "") {
+        keep = outer.split(" ").length()
+    }
+    var out = ""
+    var i = names.length() - 1
+    while (i >= keep) {
+        out = out + "nv_sync_leave(" + names[i] + "); "
+        i = i - 1
+    }
+    return out
 }
 
 method isNativeMethod(string m): bool {

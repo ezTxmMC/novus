@@ -123,6 +123,9 @@ method parseMembers(array<string> tokens, integer pos): map<string, string> {
             annos = "(annos)"
             continue
         }
+        if (isIdentNamed(tokens, p, "async") && isKw(tokens, p + 1, "method")) {
+            fail("'async' marks a method outside a class; inside one, start the call instead: virtual object.method(...)", posOf(tokens, p))
+        }
         if (isKw(tokens, p, "method")) {
             var m = parseMethodDecl(tokens, p, annos)
             methods = methods + " " + m["node"]

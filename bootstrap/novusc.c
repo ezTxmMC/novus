@@ -25,10 +25,19 @@
 #ifndef _DARWIN_C_SOURCE
 #define _DARWIN_C_SOURCE 1
 #endif
+#ifdef __APPLE__
+/* makecontext/swapcontext, which the virtual threads switch stacks with,
+ * are hidden there without it (and _DARWIN_C_SOURCE above keeps the BSD
+ * extensions that _XOPEN_SOURCE would otherwise take away) */
+#ifndef _XOPEN_SOURCE
+#define _XOPEN_SOURCE 700
+#endif
+#endif
 #endif
 
 #include <ctype.h>
 #include <math.h>
+#include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdint.h>
@@ -45,6 +54,8 @@
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
+#include <winsock2.h>
+#include <ws2tcpip.h>
 #include <direct.h>
 #include <fcntl.h>
 #include <io.h>
@@ -58,7 +69,15 @@
 #define NV_PCLOSE _pclose
 #define NV_GETPID _getpid
 #else
+#include <arpa/inet.h>
 #include <dirent.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <netdb.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <poll.h>
+#include <sys/socket.h>
 #include <sys/time.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -77,11 +96,28 @@
 #define NV_UNUSED
 #endif
 
+/* Thread local storage. Everything a thread mutates while it runs - its
+ * corner of the arena, the caches, the last error of a subsystem - lives
+ * here, so threads never contend for it and never see each other's. */
+#if defined(_MSC_VER)
+#define NV_TLS __declspec(thread)
+#elif defined(__GNUC__)
+#define NV_TLS __thread
+#else
+#define NV_TLS _Thread_local
+#endif
+
 /* ------------------------------------------------------------------ */
 /* Values                                                              */
 /* ------------------------------------------------------------------ */
 
 enum { NV_NULL = 0, NV_INT, NV_FLOAT, NV_BOOL, NV_STR, NV_ARR, NV_MAP, NV_OBJ };
+
+/* NV_F_STABLE: the bytes of this string are NUL terminated, live as long as
+ * the program and nothing will ever write at or past their end. A map can
+ * point its key straight at them instead of copying - which is most of what
+ * a program that builds maps out of literals used to spend on keys. */
+#define NV_F_STABLE 1u
 
 typedef struct NvVal NvVal;
 typedef NvVal *nv;
@@ -109,26 +145,32 @@ typedef struct NvMap {
     int *index;   /* slot -> position + 1 in items, 0 is empty */
     int mask;     /* index capacity - 1 (a power of two), 0 when absent */
     int sorted;   /* whether items are currently in key order */
+    int heap;     /* items came from malloc: grow with realloc, see NV_MAP_HEAP_AT */
+    int indexHeap; /* likewise for index, which is rebuilt rather than grown */
 } NvMap;
 
 typedef struct NvClass NvClass;
 
+/* Only an enum constant has a name, and enum constants are a handful per
+ * program while class instances are millions - so the name is not a field
+ * here. It sits in one extra slot behind the fields of enum objects, which
+ * takes eight bytes off every object a program allocates. */
 typedef struct NvObj {
     NvClass *cls;
-    const char *name; /* enum constant name, NULL for class instances */
     /* the field slots follow this header directly - see nv_fields() */
 } NvObj;
 
 /* One slot per field, in class order (see nv_field_index). */
 static inline nv *nv_fields(NvObj *o) { return (nv *)(o + 1); }
 
-/* A value is 24 bytes. Small integers (62 bit) are not allocated at all:
+/* A value is 16 bytes. Small integers (62 bit) are not allocated at all:
  * they are encoded in the pointer itself (lowest bit set) - always go
  * through nv_type_of() / nv_ival() instead of touching the fields. */
 struct NvVal {
-    int type;
+    unsigned char type;
+    unsigned char owns;  /* NV_STR: s has a capacity header, see nv_buf_cap */
+    unsigned short flags; /* NV_F_* */
     int slen; /* NV_STR: length of s in bytes */
-    int scap; /* NV_STR: writable capacity of s (0: read-only / not owned) */
     union {
         long long i;   /* NV_INT (heap fallback) and NV_BOOL */
         double f;      /* NV_FLOAT */
@@ -149,6 +191,8 @@ static int nv_type_of(nv v) { return nv_is_tagged(v) ? NV_INT : v->type; }
 static long long nv_ival(nv v) { return nv_is_tagged(v) ? (long long)(((intptr_t)v) >> 1) : v->i; }
 
 static const char *nv_display(nv v);
+static const char *nv_bin(nv v, int *len);
+static void nv_conc_init(void); /* see "Threads, virtual threads, tasks" */
 
 typedef nv (*NvMethodFn)(nv self, nv *args, int n);
 
@@ -191,12 +235,24 @@ static nv *nv_class_defaults(NvClass *c);
  * language always had (and the golden tests rely on). */
 static int *nv_field_order(NvClass *c, int count);
 
+/* The constant name of an enum object, NULL for anything else. */
+static const char *nv_obj_name(NvObj *o) {
+    if (!o->cls->isEnum) {
+        return 0;
+    }
+    return *(const char **)(nv_fields(o) + nv_class_field_count(o->cls));
+}
+
 /* ------------------------------------------------------------------ */
 /* Memory                                                              */
 /* ------------------------------------------------------------------ */
 
-static char *nv_arena_ptr = 0;
-static size_t nv_arena_left = 0;
+/* Every thread bump allocates in a chunk of its own, so allocation stays a
+ * pointer increment with no lock in sight. The chunks themselves come from
+ * malloc and are never handed back, so a value one thread allocated stays
+ * valid in every other. */
+static NV_TLS char *nv_arena_ptr = 0;
+static NV_TLS size_t nv_arena_left = 0;
 
 static void *nv_alloc(size_t n) {
     void *p;
@@ -230,6 +286,22 @@ static char *nv_strndup(const char *s, size_t n) {
     r[n] = 0;
     return r;
 }
+
+/* Growable string buffers.
+ *
+ * Only nv_concat() and nv_add_chain() leave spare room at the end of a
+ * buffer, and only they append into it. Those buffers - and no others -
+ * keep their capacity in a word right in front of the bytes, which takes it
+ * out of NvVal: a value is 16 bytes instead of 24, and the literals,
+ * substrings and plain copies that are almost every string in a program
+ * stop paying for a capacity they never had a use for. */
+static char *nv_buf_alloc(size_t cap) {
+    char *p = (char *)nv_alloc(sizeof(unsigned) + cap);
+    *(unsigned *)p = (unsigned)cap;
+    return p + sizeof(unsigned);
+}
+
+static size_t nv_buf_cap(const char *s) { return *(const unsigned *)(s - sizeof(unsigned)); }
 
 /* ------------------------------------------------------------------ */
 /* String builder                                                      */
@@ -290,17 +362,17 @@ static void nv_error(const char *fmt, ...) {
 /* Constructors                                                        */
 /* ------------------------------------------------------------------ */
 
-static NvVal nv_nil_val = {NV_NULL, 0, 0, {0}};
-static NvVal nv_true_val = {NV_BOOL, 0, 0, {1}};
-static NvVal nv_false_val = {NV_BOOL, 0, 0, {0}};
-static NvVal nv_empty_str_val = {NV_STR, 0, 0, {0}};
+static NvVal nv_nil_val = {NV_NULL, 0, 0, 0, {0}};
+static NvVal nv_true_val = {NV_BOOL, 0, 0, 0, {1}};
+static NvVal nv_false_val = {NV_BOOL, 0, 0, 0, {0}};
+static NvVal nv_empty_str_val = {NV_STR, 0, NV_F_STABLE, 0, {0}};
 static nv nv_nil = &nv_nil_val;
 static nv nv_char_table[256];
 
 static nv nv_new(int type) {
     nv v = (nv)nv_alloc(sizeof(NvVal));
     memset(v, 0, sizeof(NvVal));
-    v->type = type;
+    v->type = (unsigned char)type;
     return v;
 }
 
@@ -324,34 +396,49 @@ static nv nv_float(double f) {
 
 static nv nv_bool(int b) { return b ? &nv_true_val : &nv_false_val; }
 
+/* The value and its bytes come out of one block: one allocation instead of
+ * two, and no padding wasted between them. */
 static nv nv_strn(const char *s, int n) {
     nv v;
+    char *bytes;
     if (n == 1 && nv_char_table[(unsigned char)s[0]]) {
         return nv_char_table[(unsigned char)s[0]];
     }
-    v = nv_new(NV_STR);
-    v->s = nv_strndup(s, (size_t)n);
+    if (n <= 0) {
+        return &nv_empty_str_val;
+    }
+    v = (nv)nv_alloc(sizeof(NvVal) + (size_t)n + 1);
+    memset(v, 0, sizeof(NvVal));
+    bytes = (char *)(v + 1);
+    memcpy(bytes, s, (size_t)n);
+    bytes[n] = 0;
+    v->type = NV_STR;
+    v->flags = NV_F_STABLE;   /* private bytes, NUL terminated, never appended to */
+    v->s = bytes;
     v->slen = n;
-    v->scap = n + 1;
     return v;
 }
 
 static nv nv_str(const char *s) { return nv_strn(s, (int)strlen(s)); }
 
-/* String literal from generated code: points at the (immutable) literal. */
-static nv nv_lit(const char *s) {
-    nv v = nv_new(NV_STR);
-    v->s = s;
-    v->slen = (int)strlen(s);
-    v->scap = 0;
-    return v;
+/* Every string literal in a program is one value, laid down by the compiler
+ * as a static and filled in once at startup - no boxing, no hash lookup and
+ * no allocation when the expression it sits in runs. */
+static void nv_init_literals(NvVal *vals, const char *const *texts, int n) {
+    int i;
+    for (i = 0; i < n; i++) {
+        vals[i].type = NV_STR;
+        vals[i].owns = 0;
+        vals[i].flags = NV_F_STABLE;
+        vals[i].slen = (int)strlen(texts[i]);
+        vals[i].s = texts[i];
+    }
 }
 
-static nv nv_str_own(const char *s, int n) { /* s already arena allocated */
+static nv nv_str_own(const char *s, int n) {
     nv v = nv_new(NV_STR);
     v->s = s;
     v->slen = n;
-    v->scap = n + 1;
     return v;
 }
 
@@ -368,18 +455,23 @@ static const char *nv_cstr(nv v) {
     return nv_strndup(v->s, (size_t)v->slen);
 }
 
-static NvArr *nv_arr_new(void) {
+static NvArr *nv_arr_new_cap(int cap) {
     NvArr *a = (NvArr *)nv_alloc(sizeof(NvArr));
     a->len = 0;
     a->heap = 0;
-    a->cap = 8;
+    a->cap = cap < 4 ? 4 : cap;
     a->items = (nv *)nv_alloc(sizeof(nv) * (size_t)a->cap);
     return a;
 }
 
-/* Growing inside the arena leaves every previous copy behind, which doubles
- * the memory of a large array. Above this size we switch to realloc. */
-#define NV_ARR_HEAP_AT 4096
+static NvArr *nv_arr_new(void) { return nv_arr_new_cap(4); }
+
+/* Growing inside the arena leaves every previous copy behind - the arena
+ * never hands anything back - so a table that doubles its way to N entries
+ * costs 2N. malloc does hand the old one back, and realloc often widens the
+ * table where it stands, so everything past a small table grows there. The
+ * threshold only keeps the many tiny arrays out of malloc's bookkeeping. */
+#define NV_ARR_HEAP_AT 64
 
 static void nv_arr_grow(NvArr *a) {
     int cap = a->cap * 2;
@@ -416,10 +508,13 @@ static nv nv_arr(void) {
     return v;
 }
 
+/* An array literal knows how many items it holds: sizing the block for them
+ * up front skips the growth copies, which the arena would keep forever. */
 static nv nv_arr_of(int count, ...) {
-    nv v = nv_arr();
+    nv v = nv_new(NV_ARR);
     va_list ap;
     int i;
+    v->a = nv_arr_new_cap(count);
     va_start(ap, count);
     for (i = 0; i < count; i++) {
         nv_arr_push(v->a, va_arg(ap, nv));
@@ -444,19 +539,47 @@ static NvMap *nv_map_new_cap(int cap) {
     m->index = 0;
     m->mask = 0;
     m->sorted = 1;
+    m->heap = 0;
+    m->indexHeap = 0;
     return m;
 }
 
 static NvMap *nv_map_new(void) { return nv_map_new_cap(4); }
 
+/* The same trap arrays avoid with NV_ARR_HEAP_AT: a map that doubles its way
+ * to N entries leaves 2N behind in the arena. Maps are smaller and far more
+ * numerous than arrays (every object literal, every set of options), so the
+ * threshold is lower - past eight entries the entry table comes from malloc,
+ * and the index does from twice that. */
+#define NV_MAP_HEAP_AT 8
+
+/* Slots for `len` entries: a power of two with half again as much room as
+ * the entries need. Two slots per entry (what this used to ask for) rounds
+ * up to the next power of two on top of that and spends twice the memory for
+ * a probe count nothing could measure. */
+#define NV_MAP_SLOTS_FOR(len) ((len) + 1 + ((len) + 1) / 2)
+
 /* (Re)builds the hash index; called when it grows or entries move. */
 static void nv_map_reindex(NvMap *m, int slots) {
     int i;
-    while (slots < (m->len + 1) * 2) {
+    while (slots < NV_MAP_SLOTS_FOR(m->len)) {
         slots *= 2;
     }
     m->mask = slots - 1;
-    m->index = (int *)nv_alloc(sizeof(int) * (size_t)slots);
+    if (slots >= NV_MAP_HEAP_AT * 2) {
+        /* the index is rebuilt from nothing, so the old one is dead the
+         * moment the new one exists: hand it back rather than leak it */
+        if (m->indexHeap) {
+            free(m->index);
+        }
+        m->index = (int *)malloc(sizeof(int) * (size_t)slots);
+        if (!m->index) {
+            nv_error("out of memory");
+        }
+        m->indexHeap = 1;
+    } else {
+        m->index = (int *)nv_alloc(sizeof(int) * (size_t)slots);
+    }
     memset(m->index, 0, sizeof(int) * (size_t)slots);
     for (i = 0; i < m->len; i++) {
         unsigned slot = nv_key_hash(m->items[i].key) & (unsigned)m->mask;
@@ -503,10 +626,27 @@ static int nv_map_find(NvMap *m, const char *key) {
 static void nv_map_append(NvMap *m, const char *key, nv val) {
     unsigned slot;
     if (m->len == m->cap) {
-        NvEntry *items = (NvEntry *)nv_alloc(sizeof(NvEntry) * (size_t)m->cap * 2);
-        memcpy(items, m->items, sizeof(NvEntry) * (size_t)m->len);
-        m->items = items;
-        m->cap *= 2;
+        int cap = m->cap * 2;
+        if (cap >= NV_MAP_HEAP_AT) {
+            if (m->heap) {
+                m->items = (NvEntry *)realloc(m->items, sizeof(NvEntry) * (size_t)cap);
+            } else {
+                NvEntry *items = (NvEntry *)malloc(sizeof(NvEntry) * (size_t)cap);
+                if (items) {
+                    memcpy(items, m->items, sizeof(NvEntry) * (size_t)m->len);
+                }
+                m->items = items;
+                m->heap = 1;
+            }
+            if (!m->items) {
+                nv_error("out of memory");
+            }
+        } else {
+            NvEntry *items = (NvEntry *)nv_alloc(sizeof(NvEntry) * (size_t)cap);
+            memcpy(items, m->items, sizeof(NvEntry) * (size_t)m->len);
+            m->items = items;
+        }
+        m->cap = cap;
     }
     m->items[m->len].key = key;
     m->items[m->len].val = val;
@@ -521,7 +661,7 @@ static void nv_map_append(NvMap *m, const char *key, nv val) {
         nv_map_reindex(m, 16);
         return;
     }
-    if ((m->len + 1) * 2 > m->mask + 1) {
+    if (NV_MAP_SLOTS_FOR(m->len) > m->mask + 1) {
         nv_map_reindex(m, m->mask + 1);
         return;
     }
@@ -549,6 +689,27 @@ static void nv_map_set(NvMap *m, const char *key, nv val) {
         return;
     }
     nv_map_append(m, nv_strndup(key, strlen(key)), val);
+}
+
+/* A map key is a NUL terminated string that outlives the map, so handing it
+ * out means pointing at it - no copy of the bytes, and it goes straight back
+ * into another map as a key without one either. */
+static nv nv_map_key_view(const char *key) {
+    nv v = nv_new(NV_STR);
+    v->flags = NV_F_STABLE;
+    v->s = key;
+    v->slen = (int)strlen(key);
+    return v;
+}
+
+/* The bytes a stable string points at outlive any map, so the entry can use
+ * them as its key directly. */
+static void nv_map_set_key(NvMap *m, nv key, nv val) {
+    if (nv_type_of(key) == NV_STR && (key->flags & NV_F_STABLE)) {
+        nv_map_set_static(m, key->s, val);
+        return;
+    }
+    nv_map_set(m, nv_display(key), val);
 }
 
 static nv nv_map_get(NvMap *m, const char *key) {
@@ -594,15 +755,18 @@ static nv nv_map(void) {
 
 static const char *nv_display(nv v);
 
+/* Like nv_arr_of: the literal's size is known, so the entry table is right
+ * the first time. */
 static nv nv_map_of(int pairs, ...) {
-    nv v = nv_map();
+    nv v = nv_new(NV_MAP);
     va_list ap;
     int i;
+    v->m = nv_map_new_cap(pairs);
     va_start(ap, pairs);
     for (i = 0; i < pairs; i++) {
         nv k = va_arg(ap, nv);
         nv val = va_arg(ap, nv);
-        nv_map_set(v->m, nv_display(k), val);
+        nv_map_set_key(v->m, k, val);
     }
     va_end(ap);
     return v;
@@ -663,8 +827,8 @@ static const char *nv_fmt_float(double f) {
 }
 
 /* Containers currently being printed/serialized, to cut reference cycles. */
-static const void *nv_visit_stack[256];
-static int nv_visit_depth = 0;
+static NV_TLS const void *nv_visit_stack[256];
+static NV_TLS int nv_visit_depth = 0;
 
 static int nv_visit_enter(const void *container) {
     int i;
@@ -738,9 +902,10 @@ static void nv_display_into(NvSb *sb, nv v) {
         }
         nv_sb_addc(sb, '}');
         break;
-    case NV_OBJ:
-        if (v->o->name) {
-            nv_sb_add(sb, v->o->name);
+    case NV_OBJ: {
+        const char *constName = nv_obj_name(v->o);
+        if (constName) {
+            nv_sb_add(sb, constName);
             break;
         }
         nv_sb_add(sb, v->o->cls->name);
@@ -759,6 +924,7 @@ static void nv_display_into(NvSb *sb, nv v) {
         }
         nv_sb_addc(sb, '}');
         break;
+    }
     default:
         break;
     }
@@ -794,8 +960,10 @@ static const char *nv_data(nv v) {
     case NV_BOOL:
     case NV_STR:
         return nv_display(v);
-    case NV_OBJ:
-        return v->o->name ? v->o->name : "";
+    case NV_OBJ: {
+        const char *constName = nv_obj_name(v->o);
+        return constName ? constName : "";
+    }
     default:
         return "";
     }
@@ -919,6 +1087,19 @@ static nv nv_default(const char *t) {
  * operand still owns the end of its buffer the right side is appended in
  * place, so `s = s + x` loops run in amortized linear time. Older values
  * sharing the buffer keep their length; nv_cstr() copies them on demand. */
+/* How much room a concatenation asks for.
+ *
+ * Most concatenations are one-shot - `"a" + b` in an argument, a key, a
+ * message - and never grow again, so they get exactly what they need. A left
+ * side that already owns a buffer is the second or later step of `s = s + x`,
+ * and that one doubles: the copies stay amortized O(1) and the buffers the
+ * arena can never hand back stay a bounded multiple of the string. Telling
+ * the two apart is what `owns` is for. */
+#define NV_STR_EXACT(need) ((need) + 1)
+#define NV_STR_GROW(need) ((need) * 2 + 16)
+#define NV_STR_CAP(l, need) \
+    (nv_type_of(l) == NV_STR && (l)->owns ? NV_STR_GROW(need) : NV_STR_EXACT(need))
+
 static nv nv_concat(nv l, nv r) {
     const char *ls;
     const char *rs;
@@ -942,26 +1123,26 @@ static nv nv_concat(nv l, nv r) {
     if (rl == 0 && nv_type_of(l) == NV_STR) {
         return l;
     }
-    if (nv_type_of(l) == NV_STR && l->scap > 0 && l->s[l->slen] == 0 && rl > 0 && rs[0] != 0 &&
-        (size_t)l->scap > ll + rl) {
+    if (nv_type_of(l) == NV_STR && l->owns && l->s[l->slen] == 0 && rl > 0 && rs[0] != 0 &&
+        nv_buf_cap(l->s) > ll + rl) {
         buf = (char *)l->s;
         memmove(buf + ll, rs, rl);
         buf[ll + rl] = 0;
         v = nv_new(NV_STR);
         v->s = buf;
         v->slen = (int)(ll + rl);
-        v->scap = l->scap;
+        v->owns = 1;
         return v;
     }
-    cap = (ll + rl) * 2 + 16;
-    buf = (char *)nv_alloc(cap);
+    cap = NV_STR_CAP(l, ll + rl);
+    buf = nv_buf_alloc(cap);
     memcpy(buf, ls, ll);
     memcpy(buf + ll, rs, rl);
     buf[ll + rl] = 0;
     v = nv_new(NV_STR);
     v->s = buf;
     v->slen = (int)(ll + rl);
-    v->scap = (int)cap;
+    v->owns = 1;
     return v;
 }
 
@@ -1023,14 +1204,14 @@ static nv nv_add_chain(int n, ...) {
         return acc;
     }
     at = (size_t)acc->slen;
-    if (acc->scap > 0 && acc->s[acc->slen] == 0 && (size_t)acc->scap > at + total) {
+    if (acc->owns && acc->s[acc->slen] == 0 && nv_buf_cap(acc->s) > at + total) {
         buf = (char *)acc->s;             /* still owns the end of its buffer */
-        cap = (size_t)acc->scap;
     } else {
-        cap = (at + total) * 2 + 16;
-        buf = (char *)nv_alloc(cap);
+        cap = NV_STR_CAP(acc, at + total);
+        buf = nv_buf_alloc(cap);
         memcpy(buf, acc->s, at);
     }
+    (void)cap;
     for (j = 0; j < m; j++) {
         memmove(buf + at, strs[j], lens[j]);   /* a part may live in buf */
         at += lens[j];
@@ -1039,7 +1220,7 @@ static nv nv_add_chain(int n, ...) {
     v = nv_new(NV_STR);
     v->s = buf;
     v->slen = (int)at;
-    v->scap = (int)cap;
+    v->owns = 1;
     return v;
 }
 
@@ -1129,8 +1310,10 @@ static int nv_equals(nv l, nv r) {
         return nv_as_double(l) == nv_as_double(r);
     }
     if (nv_type_of(l) == NV_OBJ && nv_type_of(r) == NV_OBJ) {
-        if (l->o->name && r->o->name) {
-            return strcmp(l->o->name, r->o->name) == 0 && l->o->cls == r->o->cls;
+        const char *ln = nv_obj_name(l->o);
+        const char *rn = nv_obj_name(r->o);
+        if (ln && rn) {
+            return strcmp(ln, rn) == 0 && l->o->cls == r->o->cls;
         }
         return l->o == r->o;
     }
@@ -1182,6 +1365,22 @@ static inline double nv_fmod_(double a, double b) { return b != 0.0 ? fmod(a, b)
 /* Unboxed integer helpers: division by zero is 0 in Novus, not a trap. */
 static inline long long nv_idiv(long long a, long long b) { return b ? a / b : 0; }
 static inline long long nv_imod(long long a, long long b) { return b ? a % b : 0; }
+
+/* Shifts on unboxed integers. A count of 64 or more, or a negative one, is
+ * undefined in C but not here - see nv_shl/nv_shr, which these mirror. */
+static inline long long nv_ishl(long long v, long long n) {
+    if (n < 0) {
+        return n <= -64 ? (v < 0 ? -1 : 0) : (v >> -n);
+    }
+    return n >= 64 ? 0 : (long long)((unsigned long long)v << n);
+}
+
+static inline long long nv_ishr(long long v, long long n) {
+    if (n < 0) {
+        return n <= -64 ? 0 : (long long)((unsigned long long)v << -n);
+    }
+    return n >= 64 ? (v < 0 ? -1 : 0) : (v >> n);
+}
 
 static inline nv nv_add_fast(nv l, nv r) {
     if (nv_both_tagged(l, r)) {
@@ -1270,7 +1469,7 @@ static nv nv_index(nv t, nv k) {
 
 static void nv_index_set(nv t, nv k, nv v) {
     if (nv_type_of(t) == NV_MAP) {
-        nv_map_set(t->m, nv_display(k), v);
+        nv_map_set_key(t->m, k, v);
         return;
     }
     if (nv_type_of(t) == NV_ARR) {
@@ -1606,14 +1805,20 @@ static nv nv_new_object_of(NvClass *c) {
         nv_error("cannot instantiate abstract class '%s'", c->name);
     }
     nfields = nv_class_field_count(c);
-    b = (NvObjBlock *)nv_alloc(sizeof(NvObjBlock) + sizeof(nv) * (size_t)(nfields < 1 ? 1 : nfields));
+    /* enum objects carry their constant name in one slot behind the fields */
+    b = (NvObjBlock *)nv_alloc(sizeof(NvObjBlock) +
+                               sizeof(nv) * (size_t)(nfields < 1 ? 1 : nfields) +
+                               (c->isEnum ? sizeof(const char *) : 0));
     b->val.type = NV_OBJ;
+    b->val.owns = 0;
+    b->val.flags = 0;
     b->val.slen = 0;
-    b->val.scap = 0;
     b->val.o = &b->obj;
     b->obj.cls = c;
-    b->obj.name = 0;
     nv_init_fields(c, nv_fields(&b->obj));
+    if (c->isEnum) {
+        *(const char **)(nv_fields(&b->obj) + nfields) = 0;
+    }
     return &b->val;
 }
 
@@ -1742,7 +1947,7 @@ static nv nv_new_object_fields(const char *className, int n, ...) {
 
 static void nv_enum_add(const char *enumName, const char *constName, nv obj) {
     NvClass *c = nv_find_class(enumName);
-    obj->o->name = constName;
+    *(const char **)(nv_fields(obj->o) + nv_class_field_count(obj->o->cls)) = constName;
     nv_map_set(c->constants, constName, obj);
     nv_arr_push(c->constantOrder, obj);
 }
@@ -1789,8 +1994,20 @@ static void nv_warn_deprecated(int *flag, const char *method, const char *since,
 /* Strings helpers                                                     */
 /* ------------------------------------------------------------------ */
 
+/* A substring shares its parent's bytes instead of copying them: it owns
+ * nothing of its own.
+ *
+ * Nothing can observe the difference. The in-place append of nv_concat only
+ * runs when the left side owns its buffer, so a view always takes
+ * the copying path; nv_cstr() makes a private copy when the terminator it
+ * needs is not there; and everything else works from slen. What changes is
+ * the cost: a program that slices a large string - which is what the compiler
+ * does to every node of its own AST - stops allocating a copy per slice.
+ * That is the difference between compiling a large program in a few hundred
+ * megabytes and in tens of gigabytes, because the arena never frees. */
 static nv nv_substr(nv s, long long start, long long end) {
     long long n = s->slen;
+    nv v;
     if (start < 0) {
         start = 0;
     }
@@ -1800,7 +2017,14 @@ static nv nv_substr(nv s, long long start, long long end) {
     if (start > end) {
         start = end;
     }
-    return nv_strn(s->s + start, (int)(end - start));
+    /* one character and the empty string are cached or trivial: copy them */
+    if (end - start <= 1) {
+        return nv_strn(s->s + start, (int)(end - start));
+    }
+    v = nv_new(NV_STR);
+    v->s = s->s + start;
+    v->slen = (int)(end - start);
+    return v;
 }
 
 static long long nv_str_index_of(nv s, nv needle, long long from) {
@@ -1946,7 +2170,7 @@ typedef struct NvMember {
     signed char kind;  /* nv_type_kind of ftype */
     NvMethodFn fn;
 } NvMember;
-static NvMember nv_mcache[NV_MCACHE];
+static NV_TLS NvMember nv_mcache[NV_MCACHE];
 
 /* The resolved member, or 0 when the class has neither field nor method. */
 static NvMember *nv_resolve_member(NvClass *c, const char *name, int arity) {
@@ -2069,18 +2293,20 @@ static nv nv_invoke_args(nv t, const char *name, nv *args, int n) {
             return nv_bool(n > 0 && nv_map_has(t->m, nv_display(args[0])));
         }
         if (strcmp(name, "keys") == 0) {
-            nv out = nv_arr();
+            nv out = nv_new(NV_ARR);
             int i;
             nv_map_order(t->m);
+            out->a = nv_arr_new_cap(t->m->len);
             for (i = 0; i < t->m->len; i++) {
-                nv_arr_push(out->a, nv_str(t->m->items[i].key));
+                nv_arr_push(out->a, nv_map_key_view(t->m->items[i].key));
             }
             return out;
         }
         if (strcmp(name, "values") == 0) {
-            nv out = nv_arr();
+            nv out = nv_new(NV_ARR);
             int i;
             nv_map_order(t->m);
+            out->a = nv_arr_new_cap(t->m->len);
             for (i = 0; i < t->m->len; i++) {
                 nv_arr_push(out->a, t->m->items[i].val);
             }
@@ -2269,22 +2495,26 @@ static NvArr *nv_iter(nv v) {
         out->len = v->a->len;
         return out;
     }
-    out = nv_arr_new();
     if (nv_type_of(v) == NV_MAP) {
+        /* A key already is a NUL terminated string that outlives the loop, so
+         * the loop variable points at it instead of copying it - and stays
+         * usable as a key of another map without a copy either. */
         nv_map_order(v->m);
+        out = nv_arr_with_capacity(v->m->len);
         for (i = 0; i < v->m->len; i++) {
-            nv_arr_push(out, nv_str(v->m->items[i].key));
+            nv_arr_push(out, nv_map_key_view(v->m->items[i].key));
         }
         return out;
     }
     if (nv_type_of(v) == NV_STR) {
+        out = nv_arr_with_capacity(v->slen);
         for (i = 0; i < v->slen; i++) {
             nv_arr_push(out, nv_strn(v->s + i, 1));
         }
         return out;
     }
     nv_error("cannot iterate over a value of type %s", nv_type_name(v));
-    return out;
+    return nv_arr_new();
 }
 
 /* ------------------------------------------------------------------ */
@@ -2316,12 +2546,13 @@ static void nv_init_args(int argc, char **argv) {
     for (i = 0; i < 256; i++) {
         char c = (char)i;
         nv v = nv_new(NV_STR);
+        v->flags = NV_F_STABLE;
         v->s = nv_strndup(&c, 1);
         v->slen = 1;
-        v->scap = 0;
         nv_char_table[i] = v;
     }
     nv_empty_str_val.s = "";
+    nv_conc_init();
     nv_args_global = nv_arr();
     for (i = 1; i < argc; i++) {
         nv_arr_push(nv_args_global->a, nv_str(argv[i]));
@@ -2351,11 +2582,14 @@ static nv nv_read_file(nv path) {
 static nv nv_write_file(nv path, nv content) {
     FILE *f = fopen(nv_display(path), "wb");
     const char *s;
+    int len;
     if (!f) {
         nv_error("cannot write file '%s'", nv_display(path));
     }
-    s = nv_display(content);
-    fwrite(s, 1, strlen(s), f);
+    /* by byte length, not to the first NUL: readFile() already returns
+     * binary content faithfully, and writing it back has to match */
+    s = nv_bin(content, &len);
+    fwrite(s, 1, (size_t)len, f);
     fclose(f);
     return nv_nil;
 }
@@ -2870,11 +3104,12 @@ static nv nv_os_modified(nv p) {
 static nv nv_append_file(nv path, nv content) {
     FILE *f = fopen(nv_display(path), "ab");
     const char *s;
+    int len;
     if (!f) {
         nv_error("cannot write file '%s'", nv_display(path));
     }
-    s = nv_display(content);
-    fwrite(s, 1, strlen(s), f);
+    s = nv_bin(content, &len);
+    fwrite(s, 1, (size_t)len, f);
     fclose(f);
     return nv_nil;
 }
@@ -2946,6 +3181,33 @@ static nv nv_os_home(void) {
     return nv_path_slashes(h ? h : "");
 }
 
+/* Interrupts.
+ *
+ * A program that owns something worth writing out - a world, a database, an
+ * open file - has to be told that it is being asked to stop, rather than
+ * simply being killed. The handler only raises a flag; interrupted() reads it
+ * and clears it, so the program decides when and where to act on it. */
+static volatile sig_atomic_t nv_interrupt_flag = 0;
+
+static void nv_interrupt_handler(int signal_number) {
+    (void)signal_number;
+    nv_interrupt_flag = 1;
+}
+
+static nv nv_os_catch_interrupt(void) {
+    signal(SIGINT, nv_interrupt_handler);
+#ifdef SIGTERM
+    signal(SIGTERM, nv_interrupt_handler);
+#endif
+    return nv_nil;
+}
+
+static nv nv_os_interrupted(void) {
+    int raised = nv_interrupt_flag != 0;
+    nv_interrupt_flag = 0;
+    return nv_bool(raised);
+}
+
 static nv nv_os_pid(void) { return nv_int((long long)NV_GETPID()); }
 
 /* ------------------------------------------------------------------ */
@@ -3002,7 +3264,9 @@ static nv nv_time_parts(nv unixSeconds) {
     return m;
 }
 
-static unsigned long long nv_rng_state = 0;
+/* Per thread, so two threads drawing numbers never step on one another -
+ * and so seed() makes the thread that calls it reproducible. */
+static NV_TLS unsigned long long nv_rng_state = 0;
 
 static nv nv_random_seed(nv value) {
     nv_rng_state = (unsigned long long)nv_as_int(value) * 2654435761ULL + 88172645463325252ULL;
@@ -3474,8 +3738,9 @@ static void nv_json_write(NvSb *sb, nv v, int indent, int depth) {
     case NV_OBJ: {
         int count = nv_class_field_count(v->o->cls);
         int *order = nv_field_order(v->o->cls, count);
-        if (v->o->name && count == 0) {
-            nv_json_string(sb, v->o->name);
+        const char *constName = nv_obj_name(v->o);
+        if (constName && count == 0) {
+            nv_json_string(sb, constName);
             break;
         }
         if (count == 0) {
@@ -3880,6 +4145,3999 @@ static nv nv_json_is_valid(nv text) {
     return nv_bool(p.s[p.pos] == 0);
 }
 
+
+/* ------------------------------------------------------------------ */
+/* Bitwise operations                                                  */
+/* ------------------------------------------------------------------ */
+
+/* The operators &, |, ^, << and >> on 64 bit integers. A float operand is
+ * truncated first, the way an integer declaration truncates one. */
+static long long nv_bit_operand(nv v, const char *op) {
+    int type = nv_type_of(v);
+    if (type != NV_INT && type != NV_FLOAT) {
+        nv_error("cannot apply '%s' to %s", op, nv_type_name(v));
+    }
+    return nv_as_int(v);
+}
+
+static nv nv_band(nv l, nv r) {
+    return nv_int(nv_bit_operand(l, "&") & nv_bit_operand(r, "&"));
+}
+
+static nv nv_bor(nv l, nv r) {
+    return nv_int(nv_bit_operand(l, "|") | nv_bit_operand(r, "|"));
+}
+
+static nv nv_bxor(nv l, nv r) {
+    return nv_int(nv_bit_operand(l, "^") ^ nv_bit_operand(r, "^"));
+}
+
+/* A shift of 64 or more is undefined in C; it yields 0 here, and a negative
+ * count shifts the other way, so that neither can be a source of surprise. */
+static nv nv_shl(nv l, nv r) {
+    long long value = nv_bit_operand(l, "<<");
+    long long count = nv_bit_operand(r, "<<");
+    if (count < 0) {
+        count = -count;
+        if (count >= 64) {
+            return nv_int(value < 0 ? -1 : 0);
+        }
+        return nv_int(value >> count);
+    }
+    if (count >= 64) {
+        return nv_int(0);
+    }
+    return nv_int((long long)((unsigned long long)value << count));
+}
+
+/* Arithmetic shift: the sign bit is kept, as it is in Rust and Java's >>. */
+static nv nv_shr(nv l, nv r) {
+    long long value = nv_bit_operand(l, ">>");
+    long long count = nv_bit_operand(r, ">>");
+    if (count < 0) {
+        count = -count;
+        if (count >= 64) {
+            return nv_int(0);
+        }
+        return nv_int((long long)((unsigned long long)value << count));
+    }
+    if (count >= 64) {
+        return nv_int(value < 0 ? -1 : 0);
+    }
+    return nv_int(value >> count);
+}
+
+/* The operations that have no operator. */
+static nv nv_bits_not(nv v) { return nv_int(~nv_bit_operand(v, "not")); }
+
+/* Logical right shift: zeros are shifted in, Java's >>>. */
+static nv nv_bits_ushr(nv l, nv r) {
+    unsigned long long value = (unsigned long long)nv_bit_operand(l, "ushr");
+    long long count = nv_bit_operand(r, "ushr");
+    if (count <= 0 || count >= 64) {
+        return nv_int(count == 0 ? (long long)value : 0);
+    }
+    return nv_int((long long)(value >> count));
+}
+
+static nv nv_bits_rotl(nv l, nv r) {
+    unsigned long long value = (unsigned long long)nv_bit_operand(l, "rotl");
+    long long count = nv_bit_operand(r, "rotl") & 63;
+    if (count == 0) {
+        return nv_int((long long)value);
+    }
+    return nv_int((long long)((value << count) | (value >> (64 - count))));
+}
+
+static nv nv_bits_rotr(nv l, nv r) {
+    unsigned long long value = (unsigned long long)nv_bit_operand(l, "rotr");
+    long long count = nv_bit_operand(r, "rotr") & 63;
+    if (count == 0) {
+        return nv_int((long long)value);
+    }
+    return nv_int((long long)((value >> count) | (value << (64 - count))));
+}
+
+/* Addition and multiplication that wrap at 64 bits instead of overflowing.
+ *
+ * Signed overflow is undefined in C, so a compiler is free to assume it never
+ * happens - which is exactly what an algorithm built on wrapping arithmetic
+ * relies on. Doing it unsigned makes the wrap the defined behaviour it has to
+ * be. Anything reproducing another language's random numbers needs these. */
+static nv nv_bits_wrapping_add(nv a, nv b) {
+    unsigned long long x = (unsigned long long)nv_bit_operand(a, "wrappingAdd");
+    unsigned long long y = (unsigned long long)nv_bit_operand(b, "wrappingAdd");
+    return nv_int((long long)(x + y));
+}
+
+static nv nv_bits_wrapping_sub(nv a, nv b) {
+    unsigned long long x = (unsigned long long)nv_bit_operand(a, "wrappingSub");
+    unsigned long long y = (unsigned long long)nv_bit_operand(b, "wrappingSub");
+    return nv_int((long long)(x - y));
+}
+
+static nv nv_bits_wrapping_mul(nv a, nv b) {
+    unsigned long long x = (unsigned long long)nv_bit_operand(a, "wrappingMul");
+    unsigned long long y = (unsigned long long)nv_bit_operand(b, "wrappingMul");
+    return nv_int((long long)(x * y));
+}
+
+/* The low 32 bits, read as a signed 32 bit number. */
+static nv nv_bits_to_i32(nv v) {
+    return nv_int((int)(unsigned int)nv_bit_operand(v, "toI32"));
+}
+
+/* An unsigned 64 bit value as a double, which a signed cast would get wrong
+ * for anything with the top bit set. */
+static nv nv_bits_to_unsigned_float(nv v) {
+    unsigned long long x = (unsigned long long)nv_bit_operand(v, "toUnsignedFloat");
+    return nv_float((double)x);
+}
+
+/* The low `count` bits of `value`. */
+static nv nv_bits_mask(nv value, nv count) {
+    long long bits = nv_bit_operand(count, "mask");
+    if (bits <= 0) {
+        return nv_int(0);
+    }
+    if (bits >= 64) {
+        return nv_int(nv_bit_operand(value, "mask"));
+    }
+    return nv_int(nv_bit_operand(value, "mask") & (((long long)1 << bits) - 1));
+}
+
+/* How many bits are set. */
+static nv nv_bits_count_ones(nv v) {
+    unsigned long long value = (unsigned long long)nv_bit_operand(v, "countOnes");
+    int n = 0;
+    while (value) {
+        n += (int)(value & 1);
+        value >>= 1;
+    }
+    return nv_int(n);
+}
+
+/* The position of the highest set bit, -1 for zero. */
+static nv nv_bits_highest(nv v) {
+    unsigned long long value = (unsigned long long)nv_bit_operand(v, "highestBit");
+    int n = -1;
+    while (value) {
+        value >>= 1;
+        n++;
+    }
+    return nv_int(n);
+}
+
+/* ------------------------------------------------------------------ */
+/* Binary buffers                                                      */
+/* ------------------------------------------------------------------ */
+
+/* Novus strings carry an explicit length (slen) and charAt/substring work on
+ * bytes, so a string is also the natural byte buffer: it survives NUL bytes
+ * and every value in 0..255. Only the NUL terminated views (nv_cstr,
+ * nv_display) would truncate, so everything below goes through nv_bin(). */
+static const char *nv_bin(nv v, int *len) {
+    if (nv_type_of(v) == NV_STR) {
+        *len = v->slen;
+        return v->s;
+    }
+    {
+        const char *s = nv_display(v);
+        *len = (int)strlen(s);
+        return s;
+    }
+}
+
+/* Reads past the end of a buffer set this flag instead of aborting: a server
+ * has to survive a truncated or hostile packet. bytes.failed() reads it. */
+static NV_TLS int nv_bytes_err = 0;
+
+static nv nv_bytes_failed(void) { return nv_bool(nv_bytes_err != 0); }
+static nv nv_bytes_clear_error(void) {
+    nv_bytes_err = 0;
+    return nv_nil;
+}
+
+/* Unsigned big endian read of `n` bytes at `off`; 0 and the error flag when
+ * the buffer is too short. */
+static unsigned long long nv_bytes_raw(nv b, long long off, int n) {
+    int len;
+    const char *s = nv_bin(b, &len);
+    unsigned long long v = 0;
+    int i;
+    if (off < 0 || off + n > len) {
+        nv_bytes_err = 1;
+        return 0;
+    }
+    for (i = 0; i < n; i++) {
+        v = (v << 8) | (unsigned char)s[off + i];
+    }
+    return v;
+}
+
+static nv nv_bytes_u8(nv b, nv off) { return nv_int((long long)nv_bytes_raw(b, nv_as_int(off), 1)); }
+static nv nv_bytes_u16(nv b, nv off) { return nv_int((long long)nv_bytes_raw(b, nv_as_int(off), 2)); }
+static nv nv_bytes_u32(nv b, nv off) { return nv_int((long long)nv_bytes_raw(b, nv_as_int(off), 4)); }
+
+static nv nv_bytes_i8(nv b, nv off) {
+    return nv_int((signed char)(unsigned char)nv_bytes_raw(b, nv_as_int(off), 1));
+}
+static nv nv_bytes_i16(nv b, nv off) {
+    return nv_int((short)(unsigned short)nv_bytes_raw(b, nv_as_int(off), 2));
+}
+static nv nv_bytes_i32(nv b, nv off) {
+    return nv_int((int)(unsigned int)nv_bytes_raw(b, nv_as_int(off), 4));
+}
+static nv nv_bytes_i64(nv b, nv off) {
+    return nv_int((long long)nv_bytes_raw(b, nv_as_int(off), 8));
+}
+
+static nv nv_bytes_f32(nv b, nv off) {
+    unsigned int bits = (unsigned int)nv_bytes_raw(b, nv_as_int(off), 4);
+    float f;
+    memcpy(&f, &bits, 4);
+    return nv_float((double)f);
+}
+
+static nv nv_bytes_f64(nv b, nv off) {
+    unsigned long long bits = nv_bytes_raw(b, nv_as_int(off), 8);
+    double d;
+    memcpy(&d, &bits, 8);
+    return nv_float(d);
+}
+
+/* VarInt/VarLong: seven bits per byte, high bit continues. varIntSize()
+ * returns how many bytes the value at `off` occupies, or 0 when the buffer
+ * ends inside it (an incomplete read, not an error) and -1 when it is longer
+ * than the protocol allows. */
+static int nv_varint_len(const char *s, int len, long long off, int maxBytes) {
+    int i;
+    for (i = 0; i < maxBytes; i++) {
+        if (off + i >= len) {
+            return 0;
+        }
+        if (((unsigned char)s[off + i] & 0x80) == 0) {
+            return i + 1;
+        }
+    }
+    return -1;
+}
+
+static nv nv_bytes_varint_size(nv b, nv off) {
+    int len;
+    const char *s = nv_bin(b, &len);
+    return nv_int(nv_varint_len(s, len, nv_as_int(off), 5));
+}
+
+static nv nv_bytes_varlong_size(nv b, nv off) {
+    int len;
+    const char *s = nv_bin(b, &len);
+    return nv_int(nv_varint_len(s, len, nv_as_int(off), 10));
+}
+
+static unsigned long long nv_varint_value(nv b, long long off, int maxBytes) {
+    int len;
+    const char *s = nv_bin(b, &len);
+    unsigned long long v = 0;
+    int i;
+    for (i = 0; i < maxBytes; i++) {
+        unsigned char byte;
+        if (off + i >= len) {
+            nv_bytes_err = 1;
+            return 0;
+        }
+        byte = (unsigned char)s[off + i];
+        v |= (unsigned long long)(byte & 0x7f) << (i * 7);
+        if ((byte & 0x80) == 0) {
+            return v;
+        }
+    }
+    nv_bytes_err = 1;
+    return 0;
+}
+
+static nv nv_bytes_varint(nv b, nv off) {
+    return nv_int((int)(unsigned int)nv_varint_value(b, nv_as_int(off), 5));
+}
+
+static nv nv_bytes_varlong(nv b, nv off) {
+    return nv_int((long long)nv_varint_value(b, nv_as_int(off), 10));
+}
+
+/* Writers: every one returns the encoded bytes as a fresh string. */
+static nv nv_bytes_put_raw(unsigned long long v, int n) {
+    char buf[8];
+    int i;
+    for (i = 0; i < n; i++) {
+        buf[i] = (char)((v >> ((n - 1 - i) * 8)) & 0xff);
+    }
+    return nv_strn(buf, n);
+}
+
+static nv nv_bytes_put_u8(nv v) { return nv_bytes_put_raw((unsigned long long)nv_as_int(v), 1); }
+static nv nv_bytes_put_i16(nv v) { return nv_bytes_put_raw((unsigned long long)nv_as_int(v), 2); }
+static nv nv_bytes_put_i32(nv v) { return nv_bytes_put_raw((unsigned long long)nv_as_int(v), 4); }
+static nv nv_bytes_put_i64(nv v) { return nv_bytes_put_raw((unsigned long long)nv_as_int(v), 8); }
+
+static nv nv_bytes_put_f32(nv v) {
+    float f = (float)nv_as_double(v);
+    unsigned int bits;
+    memcpy(&bits, &f, 4);
+    return nv_bytes_put_raw(bits, 4);
+}
+
+static nv nv_bytes_put_f64(nv v) {
+    double d = nv_as_double(v);
+    unsigned long long bits;
+    memcpy(&bits, &d, 8);
+    return nv_bytes_put_raw(bits, 8);
+}
+
+static nv nv_bytes_put_varnum(unsigned long long v, int maxBytes) {
+    char buf[10];
+    int n = 0;
+    while (n < maxBytes) {
+        unsigned char byte = (unsigned char)(v & 0x7f);
+        v >>= 7;
+        if (v == 0) {
+            buf[n++] = (char)byte;
+            break;
+        }
+        buf[n++] = (char)(byte | 0x80);
+    }
+    return nv_strn(buf, n);
+}
+
+static nv nv_bytes_put_varint(nv v) {
+    return nv_bytes_put_varnum((unsigned long long)(unsigned int)(int)nv_as_int(v), 5);
+}
+
+static nv nv_bytes_put_varlong(nv v) {
+    return nv_bytes_put_varnum((unsigned long long)nv_as_int(v), 10);
+}
+
+/* The number of bytes writeVarInt() would produce - the protocol needs it to
+ * reserve the length prefix before the body is known. */
+static nv nv_bytes_varint_written(nv v) {
+    unsigned int val = (unsigned int)(int)nv_as_int(v);
+    int n = 1;
+    while (val >= 0x80) {
+        val >>= 7;
+        n++;
+    }
+    return nv_int(n);
+}
+
+static nv nv_bytes_slice(nv b, nv from, nv to) {
+    int len;
+    const char *s = nv_bin(b, &len);
+    long long a = nv_as_int(from);
+    long long z = nv_as_int(to);
+    if (a < 0) {
+        a = 0;
+    }
+    if (z > len) {
+        z = len;
+    }
+    if (z <= a) {
+        return nv_str("");
+    }
+    return nv_strn(s + a, (int)(z - a));
+}
+
+static nv nv_bytes_size(nv b) {
+    int len;
+    nv_bin(b, &len);
+    return nv_int(len);
+}
+
+/* Joins an array of byte strings in one pass - the packet writer builds its
+ * payload as a list of pieces and flattens it once. */
+static nv nv_bytes_join(nv parts) {
+    NvArr *a;
+    int total = 0;
+    int i;
+    char *buf;
+    int at = 0;
+    if (nv_type_of(parts) != NV_ARR) {
+        return nv_str("");
+    }
+    a = parts->a;
+    for (i = 0; i < a->len; i++) {
+        int len;
+        nv_bin(a->items[i], &len);
+        total += len;
+    }
+    buf = (char *)nv_alloc((size_t)total + 1);
+    for (i = 0; i < a->len; i++) {
+        int len;
+        const char *s = nv_bin(a->items[i], &len);
+        memcpy(buf + at, s, (size_t)len);
+        at += len;
+    }
+    buf[total] = 0;
+    return nv_str_own(buf, total);
+}
+
+/* n zero bytes. */
+static nv nv_bytes_zeros(nv count) {
+    long long n = nv_as_int(count);
+    char *buf;
+    if (n <= 0) {
+        return nv_str("");
+    }
+    buf = (char *)nv_alloc((size_t)n + 1);
+    memset(buf, 0, (size_t)n + 1);
+    return nv_str_own(buf, (int)n);
+}
+
+static nv nv_bytes_hex(nv b) {
+    static const char *digits = "0123456789abcdef";
+    int len;
+    const char *s = nv_bin(b, &len);
+    char *buf = (char *)nv_alloc((size_t)len * 2 + 1);
+    int i;
+    for (i = 0; i < len; i++) {
+        buf[i * 2] = digits[((unsigned char)s[i]) >> 4];
+        buf[i * 2 + 1] = digits[((unsigned char)s[i]) & 0xf];
+    }
+    buf[len * 2] = 0;
+    return nv_str_own(buf, len * 2);
+}
+
+static int nv_hex_digit(char c) {
+    if (c >= '0' && c <= '9') {
+        return c - '0';
+    }
+    if (c >= 'a' && c <= 'f') {
+        return c - 'a' + 10;
+    }
+    if (c >= 'A' && c <= 'F') {
+        return c - 'A' + 10;
+    }
+    return -1;
+}
+
+static nv nv_bytes_from_hex(nv text) {
+    int len;
+    const char *s = nv_bin(text, &len);
+    char *buf = (char *)nv_alloc((size_t)len / 2 + 1);
+    int n = 0;
+    int i = 0;
+    while (i + 1 < len) {
+        int hi = nv_hex_digit(s[i]);
+        int lo = nv_hex_digit(s[i + 1]);
+        if (hi < 0 || lo < 0) {
+            break;
+        }
+        buf[n++] = (char)((hi << 4) | lo);
+        i += 2;
+    }
+    buf[n] = 0;
+    return nv_str_own(buf, n);
+}
+
+/* array<integer> of the byte values, and back. */
+static nv nv_bytes_to_array(nv b) {
+    int len;
+    const char *s = nv_bin(b, &len);
+    nv out = nv_arr();
+    int i;
+    for (i = 0; i < len; i++) {
+        nv_arr_push(out->a, nv_int((unsigned char)s[i]));
+    }
+    return out;
+}
+
+static nv nv_bytes_of_array(nv values) {
+    NvArr *a;
+    char *buf;
+    int i;
+    if (nv_type_of(values) != NV_ARR) {
+        return nv_str("");
+    }
+    a = values->a;
+    buf = (char *)nv_alloc((size_t)a->len + 1);
+    for (i = 0; i < a->len; i++) {
+        buf[i] = (char)(nv_as_int(a->items[i]) & 0xff);
+    }
+    buf[a->len] = 0;
+    return nv_str_own(buf, a->len);
+}
+
+/* Index of `needle` in `haystack` at or after `from`, byte exact (-1 when
+ * absent). The string builtin stops at a NUL byte; this one does not. */
+static nv nv_bytes_index_of(nv haystack, nv needle, nv from) {
+    int hlen;
+    int nlen;
+    const char *h = nv_bin(haystack, &hlen);
+    const char *n = nv_bin(needle, &nlen);
+    long long start = nv_as_int(from);
+    long long i;
+    if (start < 0) {
+        start = 0;
+    }
+    if (nlen == 0) {
+        return nv_int(start <= hlen ? start : -1);
+    }
+    for (i = start; i + nlen <= hlen; i++) {
+        if (memcmp(h + i, n, (size_t)nlen) == 0) {
+            return nv_int(i);
+        }
+    }
+    return nv_int(-1);
+}
+
+/* Byte exact equality (the == operator compares NUL terminated views). */
+static nv nv_bytes_equal(nv a, nv b) {
+    int alen;
+    int blen;
+    const char *x = nv_bin(a, &alen);
+    const char *y = nv_bin(b, &blen);
+    return nv_bool(alen == blen && memcmp(x, y, (size_t)alen) == 0);
+}
+
+/* ------------------------------------------------------------------ */
+/* TCP sockets                                                         */
+/* ------------------------------------------------------------------ */
+
+/* Non-blocking sockets plus poll(): one thread drives every connection, which
+ * is what a tick loop wants anyway. A socket is an integer handle in Novus;
+ * net.status() reports what the last call did, because a Novus method cannot
+ * return a value and an error at once. */
+#ifdef _WIN32
+typedef SOCKET nv_sock;
+#define NV_BADSOCK INVALID_SOCKET
+#define NV_SOCKERR(e) (WSAGetLastError() == (e))
+#define NV_EWOULDBLOCK WSAEWOULDBLOCK
+#else
+typedef int nv_sock;
+#define NV_BADSOCK (-1)
+#define NV_SOCKERR(e) (errno == (e))
+#define NV_EWOULDBLOCK EWOULDBLOCK
+#endif
+
+enum { NV_NET_OK = 0, NV_NET_AGAIN = 1, NV_NET_CLOSED = 2, NV_NET_ERROR = 3 };
+
+static NV_TLS int nv_net_last = NV_NET_OK;
+static NV_TLS char nv_net_message[256];
+
+static void nv_net_fail(const char *what) {
+    nv_net_last = NV_NET_ERROR;
+#ifdef _WIN32
+    snprintf(nv_net_message, sizeof(nv_net_message), "%s: winsock error %d", what, WSAGetLastError());
+#else
+    snprintf(nv_net_message, sizeof(nv_net_message), "%s: %s", what, strerror(errno));
+#endif
+}
+
+static void nv_net_start(void) {
+#ifdef _WIN32
+    static int started = 0;
+    if (!started) {
+        WSADATA data;
+        WSAStartup(MAKEWORD(2, 2), &data);
+        started = 1;
+    }
+#endif
+}
+
+static int nv_net_would_block(void) {
+#ifdef _WIN32
+    int e = WSAGetLastError();
+    return e == WSAEWOULDBLOCK || e == WSAEINPROGRESS;
+#else
+    return errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR;
+#endif
+}
+
+static void nv_net_nonblocking(nv_sock s) {
+#ifdef _WIN32
+    u_long on = 1;
+    ioctlsocket(s, FIONBIO, &on);
+#else
+    int flags = fcntl(s, F_GETFL, 0);
+    fcntl(s, F_SETFL, flags | O_NONBLOCK);
+#endif
+}
+
+static void nv_net_shutclose(nv_sock s) {
+#ifdef _WIN32
+    closesocket(s);
+#else
+    close(s);
+#endif
+}
+
+/* Resolves host:port. An empty or "0.0.0.0" host binds every interface. */
+static struct addrinfo *nv_net_resolve(const char *host, int port, int passive) {
+    struct addrinfo hints;
+    struct addrinfo *result = 0;
+    char service[16];
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_protocol = IPPROTO_TCP;
+    if (passive) {
+        hints.ai_flags = AI_PASSIVE;
+    }
+    snprintf(service, sizeof(service), "%d", port);
+    if (getaddrinfo((host && host[0]) ? host : 0, service, &hints, &result) != 0) {
+        return 0;
+    }
+    return result;
+}
+
+static nv nv_net_listen(nv host, nv port) {
+    struct addrinfo *info;
+    nv_sock s;
+    int on = 1;
+    nv_net_start();
+    nv_net_last = NV_NET_OK;
+    info = nv_net_resolve(nv_cstr(host), (int)nv_as_int(port), 1);
+    if (!info) {
+        nv_net_last = NV_NET_ERROR;
+        snprintf(nv_net_message, sizeof(nv_net_message), "listen: cannot resolve host");
+        return nv_int(-1);
+    }
+    s = socket(info->ai_family, info->ai_socktype, info->ai_protocol);
+    if (s == NV_BADSOCK) {
+        nv_net_fail("socket");
+        freeaddrinfo(info);
+        return nv_int(-1);
+    }
+    setsockopt(s, SOL_SOCKET, SO_REUSEADDR, (const char *)&on, sizeof(on));
+    if (bind(s, info->ai_addr, (int)info->ai_addrlen) != 0) {
+        nv_net_fail("bind");
+        nv_net_shutclose(s);
+        freeaddrinfo(info);
+        return nv_int(-1);
+    }
+    freeaddrinfo(info);
+    if (listen(s, 128) != 0) {
+        nv_net_fail("listen");
+        nv_net_shutclose(s);
+        return nv_int(-1);
+    }
+    nv_net_nonblocking(s);
+    return nv_int((long long)s);
+}
+
+/* -1 and status AGAIN when no connection is waiting. */
+static nv nv_net_accept(nv server) {
+    nv_sock s = (nv_sock)nv_as_int(server);
+    nv_sock c;
+    int on = 1;
+    nv_net_last = NV_NET_OK;
+    c = accept(s, 0, 0);
+    if (c == NV_BADSOCK) {
+        nv_net_last = nv_net_would_block() ? NV_NET_AGAIN : NV_NET_ERROR;
+        if (nv_net_last == NV_NET_ERROR) {
+            nv_net_fail("accept");
+        }
+        return nv_int(-1);
+    }
+    nv_net_nonblocking(c);
+    setsockopt(c, IPPROTO_TCP, TCP_NODELAY, (const char *)&on, sizeof(on));
+    return nv_int((long long)c);
+}
+
+static nv nv_net_connect(nv host, nv port) {
+    struct addrinfo *info;
+    nv_sock s;
+    int on = 1;
+    nv_net_start();
+    nv_net_last = NV_NET_OK;
+    info = nv_net_resolve(nv_cstr(host), (int)nv_as_int(port), 0);
+    if (!info) {
+        nv_net_last = NV_NET_ERROR;
+        snprintf(nv_net_message, sizeof(nv_net_message), "connect: cannot resolve host");
+        return nv_int(-1);
+    }
+    s = socket(info->ai_family, info->ai_socktype, info->ai_protocol);
+    if (s == NV_BADSOCK) {
+        nv_net_fail("socket");
+        freeaddrinfo(info);
+        return nv_int(-1);
+    }
+    if (connect(s, info->ai_addr, (int)info->ai_addrlen) != 0) {
+        nv_net_fail("connect");
+        nv_net_shutclose(s);
+        freeaddrinfo(info);
+        return nv_int(-1);
+    }
+    freeaddrinfo(info);
+    nv_net_nonblocking(s);
+    setsockopt(s, IPPROTO_TCP, TCP_NODELAY, (const char *)&on, sizeof(on));
+    return nv_int((long long)s);
+}
+
+/* Up to `max` bytes. "" with status AGAIN means nothing was ready, "" with
+ * status CLOSED means the peer hung up. */
+static nv nv_net_recv(nv sock, nv max) {
+    nv_sock s = (nv_sock)nv_as_int(sock);
+    long long want = nv_as_int(max);
+    char *buf;
+    long long got;
+    nv_net_last = NV_NET_OK;
+    if (want <= 0) {
+        return nv_str("");
+    }
+    if (want > 1024 * 1024) {
+        want = 1024 * 1024;
+    }
+    buf = (char *)nv_alloc((size_t)want + 1);
+    got = (long long)recv(s, buf, (int)want, 0);
+    if (got == 0) {
+        nv_net_last = NV_NET_CLOSED;
+        return nv_str("");
+    }
+    if (got < 0) {
+        nv_net_last = nv_net_would_block() ? NV_NET_AGAIN : NV_NET_ERROR;
+        if (nv_net_last == NV_NET_ERROR) {
+            nv_net_fail("recv");
+        }
+        return nv_str("");
+    }
+    buf[got] = 0;
+    return nv_str_own(buf, (int)got);
+}
+
+/* Bytes actually handed to the kernel; the caller keeps the remainder in its
+ * own out-buffer and retries (status AGAIN when the socket is full). */
+static nv nv_net_send(nv sock, nv data) {
+    nv_sock s = (nv_sock)nv_as_int(sock);
+    int len;
+    const char *bytes = nv_bin(data, &len);
+    long long sent;
+    nv_net_last = NV_NET_OK;
+    if (len == 0) {
+        return nv_int(0);
+    }
+#ifdef MSG_NOSIGNAL
+    sent = (long long)send(s, bytes, len, MSG_NOSIGNAL);
+#else
+    sent = (long long)send(s, bytes, len, 0);
+#endif
+    if (sent < 0) {
+        nv_net_last = nv_net_would_block() ? NV_NET_AGAIN : NV_NET_ERROR;
+        if (nv_net_last == NV_NET_ERROR) {
+            nv_net_fail("send");
+        }
+        return nv_int(0);
+    }
+    return nv_int(sent);
+}
+
+static nv nv_net_close(nv sock) {
+    nv_sock s = (nv_sock)nv_as_int(sock);
+    if ((long long)s >= 0) {
+        nv_net_shutclose(s);
+    }
+    return nv_nil;
+}
+
+/* Waits until one of `sockets` is readable (or `timeoutMs` passes) and
+ * returns those that are. A timeout of 0 polls, -1 blocks. */
+static nv nv_net_poll(nv sockets, nv timeoutMs) {
+    NvArr *a;
+    nv out = nv_arr();
+    int i;
+    int count;
+#ifdef _WIN32
+    WSAPOLLFD *fds;
+#else
+    struct pollfd *fds;
+#endif
+    nv_net_last = NV_NET_OK;
+    if (nv_type_of(sockets) != NV_ARR) {
+        return out;
+    }
+    a = sockets->a;
+    if (a->len == 0) {
+        return out;
+    }
+#ifdef _WIN32
+    fds = (WSAPOLLFD *)nv_alloc(sizeof(WSAPOLLFD) * (size_t)a->len);
+#else
+    fds = (struct pollfd *)nv_alloc(sizeof(struct pollfd) * (size_t)a->len);
+#endif
+    for (i = 0; i < a->len; i++) {
+        fds[i].fd = (nv_sock)nv_as_int(a->items[i]);
+        fds[i].events = POLLIN;
+        fds[i].revents = 0;
+    }
+#ifdef _WIN32
+    count = WSAPoll(fds, (ULONG)a->len, (INT)nv_as_int(timeoutMs));
+#else
+    count = poll(fds, (nfds_t)a->len, (int)nv_as_int(timeoutMs));
+#endif
+    if (count < 0) {
+        if (!nv_net_would_block()) {
+            nv_net_fail("poll");
+        }
+        return out;
+    }
+    for (i = 0; i < a->len; i++) {
+        if (fds[i].revents != 0) {
+            nv_arr_push(out->a, a->items[i]);
+        }
+    }
+    return out;
+}
+
+/* Like poll(), but reports writability - used to drain a backed up send
+ * buffer without spinning. */
+static nv nv_net_poll_write(nv sockets, nv timeoutMs) {
+    NvArr *a;
+    nv out = nv_arr();
+    int i;
+    int count;
+#ifdef _WIN32
+    WSAPOLLFD *fds;
+#else
+    struct pollfd *fds;
+#endif
+    nv_net_last = NV_NET_OK;
+    if (nv_type_of(sockets) != NV_ARR) {
+        return out;
+    }
+    a = sockets->a;
+    if (a->len == 0) {
+        return out;
+    }
+#ifdef _WIN32
+    fds = (WSAPOLLFD *)nv_alloc(sizeof(WSAPOLLFD) * (size_t)a->len);
+#else
+    fds = (struct pollfd *)nv_alloc(sizeof(struct pollfd) * (size_t)a->len);
+#endif
+    for (i = 0; i < a->len; i++) {
+        fds[i].fd = (nv_sock)nv_as_int(a->items[i]);
+        fds[i].events = POLLOUT;
+        fds[i].revents = 0;
+    }
+#ifdef _WIN32
+    count = WSAPoll(fds, (ULONG)a->len, (INT)nv_as_int(timeoutMs));
+#else
+    count = poll(fds, (nfds_t)a->len, (int)nv_as_int(timeoutMs));
+#endif
+    if (count < 0) {
+        return out;
+    }
+    for (i = 0; i < a->len; i++) {
+        if (fds[i].revents != 0) {
+            nv_arr_push(out->a, a->items[i]);
+        }
+    }
+    return out;
+}
+
+static nv nv_net_status(void) { return nv_int(nv_net_last); }
+static nv nv_net_error(void) { return nv_str(nv_net_message); }
+
+/* "1.2.3.4:56789" of the connected peer. */
+static nv nv_net_peer(nv sock) {
+    nv_sock s = (nv_sock)nv_as_int(sock);
+    struct sockaddr_storage addr;
+    char host[64];
+    char out[96];
+#ifdef _WIN32
+    int len = (int)sizeof(addr);
+#else
+    socklen_t len = (socklen_t)sizeof(addr);
+#endif
+    if (getpeername(s, (struct sockaddr *)&addr, &len) != 0) {
+        return nv_str("");
+    }
+    if (addr.ss_family == AF_INET) {
+        struct sockaddr_in *v4 = (struct sockaddr_in *)&addr;
+        if (!inet_ntop(AF_INET, &v4->sin_addr, host, sizeof(host))) {
+            return nv_str("");
+        }
+        snprintf(out, sizeof(out), "%s:%d", host, (int)ntohs(v4->sin_port));
+        return nv_str(out);
+    }
+    return nv_str("");
+}
+
+/* ------------------------------------------------------------------ */
+/* zlib (RFC 1950) and deflate (RFC 1951)                              */
+/* ------------------------------------------------------------------ */
+
+/* Self contained on purpose: a Novus program only ever needs a C compiler,
+ * so linking against the system zlib is not an option. Inflate handles all
+ * three block types; deflate emits fixed Huffman blocks with an LZ77 hash
+ * chain, which is what a game protocol wants (fast, good enough ratio). */
+
+static unsigned long nv_adler32(const unsigned char *data, size_t len) {
+    unsigned long a = 1;
+    unsigned long b = 0;
+    size_t i;
+    for (i = 0; i < len; i++) {
+        a = (a + data[i]) % 65521;
+        b = (b + a) % 65521;
+    }
+    return (b << 16) | a;
+}
+
+/* ---- bit reader ---- */
+
+typedef struct {
+    const unsigned char *in;
+    size_t inlen;
+    size_t inpos;
+    int bitbuf;
+    int bitcnt;
+    unsigned char *out;
+    size_t outlen;
+    size_t outcap;
+    int error;
+} NvInfl;
+
+static void nv_infl_put(NvInfl *s, unsigned char c) {
+    if (s->outlen == s->outcap) {
+        size_t cap = s->outcap ? s->outcap * 2 : 1024;
+        unsigned char *grown = (unsigned char *)realloc(s->out, cap);
+        if (!grown) {
+            s->error = 1;
+            return;
+        }
+        s->out = grown;
+        s->outcap = cap;
+    }
+    s->out[s->outlen++] = c;
+}
+
+static int nv_infl_bits(NvInfl *s, int need) {
+    long value = s->bitbuf;
+    while (s->bitcnt < need) {
+        if (s->inpos >= s->inlen) {
+            s->error = 1;
+            return 0;
+        }
+        value |= (long)s->in[s->inpos++] << s->bitcnt;
+        s->bitcnt += 8;
+    }
+    s->bitbuf = (int)(value >> need);
+    s->bitcnt -= need;
+    return (int)(value & ((1L << need) - 1));
+}
+
+/* ---- canonical Huffman ---- */
+
+typedef struct {
+    short *count;  /* number of codes of each length 0..15 */
+    short *symbol; /* symbols in canonical order */
+} NvHuff;
+
+static int nv_huff_decode(NvInfl *s, const NvHuff *h) {
+    int len;
+    int code = 0;
+    int first = 0;
+    int index = 0;
+    for (len = 1; len <= 15; len++) {
+        int count;
+        code |= nv_infl_bits(s, 1);
+        if (s->error) {
+            return -1;
+        }
+        count = h->count[len];
+        if (code - count < first) {
+            return h->symbol[index + (code - first)];
+        }
+        index += count;
+        first += count;
+        first <<= 1;
+        code <<= 1;
+    }
+    return -1;
+}
+
+static int nv_huff_build(NvHuff *h, const short *lengths, int n) {
+    int symbol;
+    int len;
+    int left;
+    short offs[16];
+    for (len = 0; len <= 15; len++) {
+        h->count[len] = 0;
+    }
+    for (symbol = 0; symbol < n; symbol++) {
+        h->count[lengths[symbol]]++;
+    }
+    if (h->count[0] == n) {
+        return 0; /* no codes at all - an empty (but legal) table */
+    }
+    left = 1;
+    for (len = 1; len <= 15; len++) {
+        left <<= 1;
+        left -= h->count[len];
+        if (left < 0) {
+            return -1; /* over-subscribed */
+        }
+    }
+    offs[1] = 0;
+    for (len = 1; len < 15; len++) {
+        offs[len + 1] = (short)(offs[len] + h->count[len]);
+    }
+    for (symbol = 0; symbol < n; symbol++) {
+        if (lengths[symbol] != 0) {
+            h->symbol[offs[lengths[symbol]]++] = (short)symbol;
+        }
+    }
+    return 0;
+}
+
+static const short nv_len_base[29] = {3,  4,  5,  6,  7,  8,  9,  10,  11,  13,
+                                      15, 17, 19, 23, 27, 31, 35, 43,  51,  59,
+                                      67, 83, 99, 115, 131, 163, 195, 227, 258};
+static const short nv_len_extra[29] = {0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2,
+                                       2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0};
+static const short nv_dist_base[30] = {1,    2,    3,    4,    5,    7,     9,    13,
+                                       17,   25,   33,   49,   65,   97,    129,  193,
+                                       257,  385,  513,  769,  1025, 1537,  2049, 3073,
+                                       4097, 6145, 8193, 12289, 16385, 24577};
+static const short nv_dist_extra[30] = {0, 0, 0,  0,  1,  1,  2,  2,  3,  3,
+                                        4, 4, 5,  5,  6,  6,  7,  7,  8,  8,
+                                        9, 9, 10, 10, 11, 11, 12, 12, 13, 13};
+
+static int nv_infl_codes(NvInfl *s, const NvHuff *lencode, const NvHuff *distcode) {
+    for (;;) {
+        int symbol = nv_huff_decode(s, lencode);
+        if (symbol < 0) {
+            return -1;
+        }
+        if (symbol < 256) {
+            nv_infl_put(s, (unsigned char)symbol);
+            if (s->error) {
+                return -1;
+            }
+            continue;
+        }
+        if (symbol == 256) {
+            return 0;
+        }
+        symbol -= 257;
+        if (symbol >= 29) {
+            return -1;
+        }
+        {
+            int length = nv_len_base[symbol] + nv_infl_bits(s, nv_len_extra[symbol]);
+            int dsym = nv_huff_decode(s, distcode);
+            size_t dist;
+            int i;
+            if (dsym < 0 || dsym >= 30) {
+                return -1;
+            }
+            dist = (size_t)(nv_dist_base[dsym] + nv_infl_bits(s, nv_dist_extra[dsym]));
+            if (s->error || dist > s->outlen) {
+                return -1;
+            }
+            for (i = 0; i < length; i++) {
+                nv_infl_put(s, s->out[s->outlen - dist]);
+                if (s->error) {
+                    return -1;
+                }
+            }
+        }
+    }
+}
+
+static int nv_infl_stored(NvInfl *s) {
+    unsigned len;
+    s->bitbuf = 0;
+    s->bitcnt = 0;
+    if (s->inpos + 4 > s->inlen) {
+        return -1;
+    }
+    len = (unsigned)s->in[s->inpos] | ((unsigned)s->in[s->inpos + 1] << 8);
+    s->inpos += 4; /* LEN and its complement NLEN */
+    if (s->inpos + len > s->inlen) {
+        return -1;
+    }
+    while (len--) {
+        nv_infl_put(s, s->in[s->inpos++]);
+        if (s->error) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static int nv_infl_fixed(NvInfl *s) {
+    static short lencnt[16];
+    static short lensym[288];
+    static short distcnt[16];
+    static short distsym[30];
+    static NvHuff lencode;
+    static NvHuff distcode;
+    static int built = 0;
+    if (!built) {
+        short lengths[288];
+        int symbol;
+        for (symbol = 0; symbol < 144; symbol++) {
+            lengths[symbol] = 8;
+        }
+        for (; symbol < 256; symbol++) {
+            lengths[symbol] = 9;
+        }
+        for (; symbol < 280; symbol++) {
+            lengths[symbol] = 7;
+        }
+        for (; symbol < 288; symbol++) {
+            lengths[symbol] = 8;
+        }
+        lencode.count = lencnt;
+        lencode.symbol = lensym;
+        nv_huff_build(&lencode, lengths, 288);
+        for (symbol = 0; symbol < 30; symbol++) {
+            lengths[symbol] = 5;
+        }
+        distcode.count = distcnt;
+        distcode.symbol = distsym;
+        nv_huff_build(&distcode, lengths, 30);
+        built = 1;
+    }
+    return nv_infl_codes(s, &lencode, &distcode);
+}
+
+static int nv_infl_dynamic(NvInfl *s) {
+    static const short order[19] = {16, 17, 18, 0, 8,  7, 9,  6, 10, 5,
+                                    11, 4,  12, 3, 13, 2, 14, 1, 15};
+    short lencnt[16];
+    short lensym[288];
+    short distcnt[16];
+    short distsym[30];
+    NvHuff lencode;
+    NvHuff distcode;
+    short lengths[320];
+    int nlen;
+    int ndist;
+    int ncode;
+    int index;
+    nlen = nv_infl_bits(s, 5) + 257;
+    ndist = nv_infl_bits(s, 5) + 1;
+    ncode = nv_infl_bits(s, 4) + 4;
+    if (s->error || nlen > 286 || ndist > 30) {
+        return -1;
+    }
+    for (index = 0; index < ncode; index++) {
+        lengths[order[index]] = (short)nv_infl_bits(s, 3);
+    }
+    for (; index < 19; index++) {
+        lengths[order[index]] = 0;
+    }
+    lencode.count = lencnt;
+    lencode.symbol = lensym;
+    if (nv_huff_build(&lencode, lengths, 19) != 0) {
+        return -1;
+    }
+    index = 0;
+    while (index < nlen + ndist) {
+        int symbol = nv_huff_decode(s, &lencode);
+        if (symbol < 0) {
+            return -1;
+        }
+        if (symbol < 16) {
+            lengths[index++] = (short)symbol;
+            continue;
+        }
+        {
+            short len = 0;
+            int repeat;
+            if (symbol == 16) {
+                if (index == 0) {
+                    return -1;
+                }
+                len = lengths[index - 1];
+                repeat = 3 + nv_infl_bits(s, 2);
+            } else if (symbol == 17) {
+                repeat = 3 + nv_infl_bits(s, 3);
+            } else {
+                repeat = 11 + nv_infl_bits(s, 7);
+            }
+            if (index + repeat > nlen + ndist) {
+                return -1;
+            }
+            while (repeat--) {
+                lengths[index++] = len;
+            }
+        }
+    }
+    if (lengths[256] == 0) {
+        return -1; /* no end-of-block code */
+    }
+    lencode.count = lencnt;
+    lencode.symbol = lensym;
+    if (nv_huff_build(&lencode, lengths, nlen) != 0) {
+        return -1;
+    }
+    distcode.count = distcnt;
+    distcode.symbol = distsym;
+    if (nv_huff_build(&distcode, lengths + nlen, ndist) != 0) {
+        return -1;
+    }
+    return nv_infl_codes(s, &lencode, &distcode);
+}
+
+/* Raw deflate stream -> bytes. `limit` (when > 0) caps the output so a tiny
+ * hostile packet cannot expand into gigabytes. */
+static int nv_inflate_raw(const unsigned char *in, size_t inlen, size_t limit, unsigned char **out,
+                          size_t *outlen) {
+    NvInfl s;
+    int last;
+    memset(&s, 0, sizeof(s));
+    s.in = in;
+    s.inlen = inlen;
+    do {
+        int type;
+        int rc;
+        last = nv_infl_bits(&s, 1);
+        type = nv_infl_bits(&s, 2);
+        if (s.error) {
+            free(s.out);
+            return -1;
+        }
+        if (type == 0) {
+            rc = nv_infl_stored(&s);
+        } else if (type == 1) {
+            rc = nv_infl_fixed(&s);
+        } else if (type == 2) {
+            rc = nv_infl_dynamic(&s);
+        } else {
+            rc = -1;
+        }
+        if (rc != 0 || s.error) {
+            free(s.out);
+            return -1;
+        }
+        if (limit > 0 && s.outlen > limit) {
+            free(s.out);
+            return -1;
+        }
+    } while (!last);
+    *out = s.out;
+    *outlen = s.outlen;
+    return 0;
+}
+
+/* ---- deflate ---- */
+
+typedef struct {
+    unsigned char *out;
+    size_t len;
+    size_t cap;
+    int bitbuf;
+    int bitcnt;
+    int error;
+} NvDefl;
+
+static void nv_defl_byte(NvDefl *s, unsigned char c) {
+    if (s->len == s->cap) {
+        size_t cap = s->cap ? s->cap * 2 : 1024;
+        unsigned char *grown = (unsigned char *)realloc(s->out, cap);
+        if (!grown) {
+            s->error = 1;
+            return;
+        }
+        s->out = grown;
+        s->cap = cap;
+    }
+    s->out[s->len++] = c;
+}
+
+/* Deflate is a little endian bit stream: values go in LSB first. */
+static void nv_defl_bits(NvDefl *s, int value, int count) {
+    s->bitbuf |= value << s->bitcnt;
+    s->bitcnt += count;
+    while (s->bitcnt >= 8) {
+        nv_defl_byte(s, (unsigned char)(s->bitbuf & 0xff));
+        s->bitbuf >>= 8;
+        s->bitcnt -= 8;
+    }
+}
+
+/* Huffman codes travel MSB first, so they are reversed into the stream. */
+static void nv_defl_huff(NvDefl *s, int code, int count) {
+    int i;
+    for (i = count - 1; i >= 0; i--) {
+        nv_defl_bits(s, (code >> i) & 1, 1);
+    }
+}
+
+static void nv_defl_literal(NvDefl *s, int symbol) {
+    if (symbol < 144) {
+        nv_defl_huff(s, 0x30 + symbol, 8);
+    } else if (symbol < 256) {
+        nv_defl_huff(s, 0x190 + symbol - 144, 9);
+    } else if (symbol < 280) {
+        nv_defl_huff(s, symbol - 256, 7);
+    } else {
+        nv_defl_huff(s, 0xc0 + symbol - 280, 8);
+    }
+}
+
+#define NV_DEFL_WBITS 15
+#define NV_DEFL_WSIZE (1 << NV_DEFL_WBITS)
+#define NV_DEFL_HBITS 15
+#define NV_DEFL_HSIZE (1 << NV_DEFL_HBITS)
+#define NV_DEFL_MAXMATCH 258
+#define NV_DEFL_MINMATCH 3
+#define NV_DEFL_CHAIN 32
+
+static int nv_defl_length_code(int length) {
+    int i;
+    for (i = 28; i >= 0; i--) {
+        if (length >= nv_len_base[i]) {
+            return i;
+        }
+    }
+    return 0;
+}
+
+static int nv_defl_dist_code(int dist) {
+    int i;
+    for (i = 29; i >= 0; i--) {
+        if (dist >= nv_dist_base[i]) {
+            return i;
+        }
+    }
+    return 0;
+}
+
+/* Raw deflate: one fixed Huffman block with LZ77 matches found through a
+ * hash of three bytes and a chain of previous positions. */
+static int nv_deflate_raw(const unsigned char *in, size_t inlen, unsigned char **out,
+                          size_t *outlen) {
+    NvDefl s;
+    int *head = 0;
+    int *prev = 0;
+    size_t pos = 0;
+    size_t i;
+    memset(&s, 0, sizeof(s));
+    head = (int *)malloc(sizeof(int) * NV_DEFL_HSIZE);
+    prev = (int *)malloc(sizeof(int) * (inlen > 0 ? inlen : 1));
+    if (!head || !prev) {
+        free(head);
+        free(prev);
+        return -1;
+    }
+    for (i = 0; i < NV_DEFL_HSIZE; i++) {
+        head[i] = -1;
+    }
+    nv_defl_bits(&s, 1, 1); /* BFINAL */
+    nv_defl_bits(&s, 1, 2); /* fixed Huffman */
+    while (pos < inlen) {
+        int bestLen = 0;
+        size_t bestDist = 0;
+        unsigned hash = 0;
+        if (pos + NV_DEFL_MINMATCH <= inlen) {
+            hash = ((unsigned)in[pos] << 10) ^ ((unsigned)in[pos + 1] << 5) ^ (unsigned)in[pos + 2];
+            hash &= NV_DEFL_HSIZE - 1;
+            {
+                int candidate = head[hash];
+                int tries = NV_DEFL_CHAIN;
+                while (candidate >= 0 && tries-- > 0) {
+                    size_t dist = pos - (size_t)candidate;
+                    int len = 0;
+                    if (dist == 0 || dist > NV_DEFL_WSIZE) {
+                        break;
+                    }
+                    while (len < NV_DEFL_MAXMATCH && pos + len < inlen &&
+                           in[(size_t)candidate + len] == in[pos + len]) {
+                        len++;
+                    }
+                    if (len > bestLen) {
+                        bestLen = len;
+                        bestDist = dist;
+                        if (len >= NV_DEFL_MAXMATCH) {
+                            break;
+                        }
+                    }
+                    candidate = prev[candidate];
+                }
+            }
+            prev[pos] = head[hash];
+            head[hash] = (int)pos;
+        }
+        if (bestLen >= NV_DEFL_MINMATCH) {
+            int lc = nv_defl_length_code(bestLen);
+            int dc = nv_defl_dist_code((int)bestDist);
+            nv_defl_literal(&s, 257 + lc);
+            nv_defl_bits(&s, bestLen - nv_len_base[lc], nv_len_extra[lc]);
+            nv_defl_huff(&s, dc, 5);
+            nv_defl_bits(&s, (int)bestDist - nv_dist_base[dc], nv_dist_extra[dc]);
+            /* every skipped position still has to enter the hash chain */
+            for (i = 1; i < (size_t)bestLen; i++) {
+                size_t at = pos + i;
+                if (at + NV_DEFL_MINMATCH <= inlen) {
+                    unsigned h = ((unsigned)in[at] << 10) ^ ((unsigned)in[at + 1] << 5) ^
+                                 (unsigned)in[at + 2];
+                    h &= NV_DEFL_HSIZE - 1;
+                    prev[at] = head[h];
+                    head[h] = (int)at;
+                }
+            }
+            pos += (size_t)bestLen;
+            continue;
+        }
+        nv_defl_literal(&s, in[pos]);
+        pos++;
+    }
+    nv_defl_literal(&s, 256); /* end of block */
+    if (s.bitcnt > 0) {
+        nv_defl_byte(&s, (unsigned char)(s.bitbuf & 0xff));
+    }
+    free(head);
+    free(prev);
+    if (s.error) {
+        free(s.out);
+        return -1;
+    }
+    *out = s.out;
+    *outlen = s.len;
+    return 0;
+}
+
+/* ---- the Novus facing calls ---- */
+
+/* zlib container: 0x78 0x9C, deflate data, big endian Adler-32. */
+static nv nv_zlib_compress(nv data) {
+    int len;
+    const char *bytes = nv_bin(data, &len);
+    unsigned char *raw = 0;
+    size_t rawlen = 0;
+    unsigned long adler;
+    char *result;
+    size_t total;
+    if (nv_deflate_raw((const unsigned char *)bytes, (size_t)len, &raw, &rawlen) != 0) {
+        free(raw);
+        return nv_str("");
+    }
+    adler = nv_adler32((const unsigned char *)bytes, (size_t)len);
+    total = rawlen + 6;
+    result = (char *)nv_alloc(total + 1);
+    result[0] = (char)0x78;
+    result[1] = (char)0x9c;
+    memcpy(result + 2, raw, rawlen);
+    result[rawlen + 2] = (char)((adler >> 24) & 0xff);
+    result[rawlen + 3] = (char)((adler >> 16) & 0xff);
+    result[rawlen + 4] = (char)((adler >> 8) & 0xff);
+    result[rawlen + 5] = (char)(adler & 0xff);
+    result[total] = 0;
+    free(raw);
+    return nv_str_own(result, (int)total);
+}
+
+/* `limit` > 0 rejects a stream that expands beyond it. "" on any failure -
+ * zlib.failed() tells the two apart from an empty input. */
+static NV_TLS int nv_zlib_err = 0;
+
+static nv nv_zlib_decompress(nv data, nv limit) {
+    int len;
+    const char *bytes = nv_bin(data, &len);
+    unsigned char *raw = 0;
+    size_t rawlen = 0;
+    size_t cap = (size_t)nv_as_int(limit);
+    char *result;
+    nv_zlib_err = 0;
+    if (len < 2) {
+        nv_zlib_err = 1;
+        return nv_str("");
+    }
+    /* skip the 2 byte zlib header; FDICT (bit 5 of FLG) is not supported */
+    if (((unsigned char)bytes[1] & 0x20) != 0) {
+        nv_zlib_err = 1;
+        return nv_str("");
+    }
+    if (nv_inflate_raw((const unsigned char *)bytes + 2, (size_t)len - 2, cap, &raw, &rawlen) != 0) {
+        free(raw);
+        nv_zlib_err = 1;
+        return nv_str("");
+    }
+    result = (char *)nv_alloc(rawlen + 1);
+    memcpy(result, raw, rawlen);
+    result[rawlen] = 0;
+    free(raw);
+    return nv_str_own(result, (int)rawlen);
+}
+
+static nv nv_zlib_failed(void) { return nv_bool(nv_zlib_err != 0); }
+
+/* ------------------------------------------------------------------ */
+/* Crypto: SHA-1, MD5, AES-128-CFB8, random bytes                      */
+/* ------------------------------------------------------------------ */
+
+/* Only what a Minecraft style handshake needs: SHA-1 for the session server
+ * digest, MD5 for offline UUIDs (version 3 of "OfflinePlayer:<name>") and
+ * AES-128 in CFB-8 for the encrypted stream. All produce raw bytes. */
+
+/* ---- SHA-1 ---- */
+
+typedef struct {
+    unsigned int h[5];
+    unsigned char block[64];
+    size_t len;
+    int fill;
+} NvSha1;
+
+static unsigned int nv_rotl32(unsigned int v, int n) { return (v << n) | (v >> (32 - n)); }
+
+static void nv_sha1_block(NvSha1 *s, const unsigned char *p) {
+    unsigned int w[80];
+    unsigned int a, b, c, d, e;
+    int i;
+    for (i = 0; i < 16; i++) {
+        w[i] = ((unsigned int)p[i * 4] << 24) | ((unsigned int)p[i * 4 + 1] << 16) |
+               ((unsigned int)p[i * 4 + 2] << 8) | (unsigned int)p[i * 4 + 3];
+    }
+    for (i = 16; i < 80; i++) {
+        w[i] = nv_rotl32(w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16], 1);
+    }
+    a = s->h[0];
+    b = s->h[1];
+    c = s->h[2];
+    d = s->h[3];
+    e = s->h[4];
+    for (i = 0; i < 80; i++) {
+        unsigned int f;
+        unsigned int k;
+        if (i < 20) {
+            f = (b & c) | (~b & d);
+            k = 0x5a827999u;
+        } else if (i < 40) {
+            f = b ^ c ^ d;
+            k = 0x6ed9eba1u;
+        } else if (i < 60) {
+            f = (b & c) | (b & d) | (c & d);
+            k = 0x8f1bbcdcu;
+        } else {
+            f = b ^ c ^ d;
+            k = 0xca62c1d6u;
+        }
+        {
+            unsigned int t = nv_rotl32(a, 5) + f + e + k + w[i];
+            e = d;
+            d = c;
+            c = nv_rotl32(b, 30);
+            b = a;
+            a = t;
+        }
+    }
+    s->h[0] += a;
+    s->h[1] += b;
+    s->h[2] += c;
+    s->h[3] += d;
+    s->h[4] += e;
+}
+
+static void nv_sha1(const unsigned char *data, size_t len, unsigned char out[20]) {
+    NvSha1 s;
+    size_t i;
+    unsigned long long bits = (unsigned long long)len * 8;
+    s.h[0] = 0x67452301u;
+    s.h[1] = 0xefcdab89u;
+    s.h[2] = 0x98badcfeu;
+    s.h[3] = 0x10325476u;
+    s.h[4] = 0xc3d2e1f0u;
+    s.fill = 0;
+    for (i = 0; i < len; i++) {
+        s.block[s.fill++] = data[i];
+        if (s.fill == 64) {
+            nv_sha1_block(&s, s.block);
+            s.fill = 0;
+        }
+    }
+    s.block[s.fill++] = 0x80;
+    if (s.fill > 56) {
+        while (s.fill < 64) {
+            s.block[s.fill++] = 0;
+        }
+        nv_sha1_block(&s, s.block);
+        s.fill = 0;
+    }
+    while (s.fill < 56) {
+        s.block[s.fill++] = 0;
+    }
+    for (i = 0; i < 8; i++) {
+        s.block[56 + i] = (unsigned char)((bits >> ((7 - i) * 8)) & 0xff);
+    }
+    nv_sha1_block(&s, s.block);
+    for (i = 0; i < 5; i++) {
+        out[i * 4] = (unsigned char)((s.h[i] >> 24) & 0xff);
+        out[i * 4 + 1] = (unsigned char)((s.h[i] >> 16) & 0xff);
+        out[i * 4 + 2] = (unsigned char)((s.h[i] >> 8) & 0xff);
+        out[i * 4 + 3] = (unsigned char)(s.h[i] & 0xff);
+    }
+}
+
+/* ---- MD5 ---- */
+
+static const unsigned int nv_md5_k[64] = {
+    0xd76aa478u, 0xe8c7b756u, 0x242070dbu, 0xc1bdceeeu, 0xf57c0fafu, 0x4787c62au, 0xa8304613u,
+    0xfd469501u, 0x698098d8u, 0x8b44f7afu, 0xffff5bb1u, 0x895cd7beu, 0x6b901122u, 0xfd987193u,
+    0xa679438eu, 0x49b40821u, 0xf61e2562u, 0xc040b340u, 0x265e5a51u, 0xe9b6c7aau, 0xd62f105du,
+    0x02441453u, 0xd8a1e681u, 0xe7d3fbc8u, 0x21e1cde6u, 0xc33707d6u, 0xf4d50d87u, 0x455a14edu,
+    0xa9e3e905u, 0xfcefa3f8u, 0x676f02d9u, 0x8d2a4c8au, 0xfffa3942u, 0x8771f681u, 0x6d9d6122u,
+    0xfde5380cu, 0xa4beea44u, 0x4bdecfa9u, 0xf6bb4b60u, 0xbebfbc70u, 0x289b7ec6u, 0xeaa127fau,
+    0xd4ef3085u, 0x04881d05u, 0xd9d4d039u, 0xe6db99e5u, 0x1fa27cf8u, 0xc4ac5665u, 0xf4292244u,
+    0x432aff97u, 0xab9423a7u, 0xfc93a039u, 0x655b59c3u, 0x8f0ccc92u, 0xffeff47du, 0x85845dd1u,
+    0x6fa87e4fu, 0xfe2ce6e0u, 0xa3014314u, 0x4e0811a1u, 0xf7537e82u, 0xbd3af235u, 0x2ad7d2bbu,
+    0xeb86d391u};
+
+static const int nv_md5_r[64] = {7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22,
+                                 5, 9,  14, 20, 5, 9,  14, 20, 5, 9,  14, 20, 5, 9,  14, 20,
+                                 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23,
+                                 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21};
+
+static void nv_md5_block(unsigned int h[4], const unsigned char *p) {
+    unsigned int w[16];
+    unsigned int a = h[0];
+    unsigned int b = h[1];
+    unsigned int c = h[2];
+    unsigned int d = h[3];
+    int i;
+    for (i = 0; i < 16; i++) {
+        w[i] = (unsigned int)p[i * 4] | ((unsigned int)p[i * 4 + 1] << 8) |
+               ((unsigned int)p[i * 4 + 2] << 16) | ((unsigned int)p[i * 4 + 3] << 24);
+    }
+    for (i = 0; i < 64; i++) {
+        unsigned int f;
+        int g;
+        if (i < 16) {
+            f = (b & c) | (~b & d);
+            g = i;
+        } else if (i < 32) {
+            f = (d & b) | (~d & c);
+            g = (5 * i + 1) % 16;
+        } else if (i < 48) {
+            f = b ^ c ^ d;
+            g = (3 * i + 5) % 16;
+        } else {
+            f = c ^ (b | ~d);
+            g = (7 * i) % 16;
+        }
+        {
+            unsigned int t = d;
+            unsigned int sum = a + f + nv_md5_k[i] + w[g];
+            d = c;
+            c = b;
+            b = b + nv_rotl32(sum, nv_md5_r[i]);
+            a = t;
+        }
+    }
+    h[0] += a;
+    h[1] += b;
+    h[2] += c;
+    h[3] += d;
+}
+
+static void nv_md5(const unsigned char *data, size_t len, unsigned char out[16]) {
+    unsigned int h[4];
+    unsigned char block[64];
+    size_t i;
+    int fill = 0;
+    unsigned long long bits = (unsigned long long)len * 8;
+    h[0] = 0x67452301u;
+    h[1] = 0xefcdab89u;
+    h[2] = 0x98badcfeu;
+    h[3] = 0x10325476u;
+    for (i = 0; i < len; i++) {
+        block[fill++] = data[i];
+        if (fill == 64) {
+            nv_md5_block(h, block);
+            fill = 0;
+        }
+    }
+    block[fill++] = 0x80;
+    if (fill > 56) {
+        while (fill < 64) {
+            block[fill++] = 0;
+        }
+        nv_md5_block(h, block);
+        fill = 0;
+    }
+    while (fill < 56) {
+        block[fill++] = 0;
+    }
+    for (i = 0; i < 8; i++) {
+        block[56 + i] = (unsigned char)((bits >> (i * 8)) & 0xff);
+    }
+    nv_md5_block(h, block);
+    for (i = 0; i < 4; i++) {
+        out[i * 4] = (unsigned char)(h[i] & 0xff);
+        out[i * 4 + 1] = (unsigned char)((h[i] >> 8) & 0xff);
+        out[i * 4 + 2] = (unsigned char)((h[i] >> 16) & 0xff);
+        out[i * 4 + 3] = (unsigned char)((h[i] >> 24) & 0xff);
+    }
+}
+
+/* ---- AES-128 ---- */
+
+static const unsigned char nv_aes_sbox[256] = {
+    0x63, 0x7c, 0x77, 0x7b, 0xf2, 0x6b, 0x6f, 0xc5, 0x30, 0x01, 0x67, 0x2b, 0xfe, 0xd7, 0xab, 0x76,
+    0xca, 0x82, 0xc9, 0x7d, 0xfa, 0x59, 0x47, 0xf0, 0xad, 0xd4, 0xa2, 0xaf, 0x9c, 0xa4, 0x72, 0xc0,
+    0xb7, 0xfd, 0x93, 0x26, 0x36, 0x3f, 0xf7, 0xcc, 0x34, 0xa5, 0xe5, 0xf1, 0x71, 0xd8, 0x31, 0x15,
+    0x04, 0xc7, 0x23, 0xc3, 0x18, 0x96, 0x05, 0x9a, 0x07, 0x12, 0x80, 0xe2, 0xeb, 0x27, 0xb2, 0x75,
+    0x09, 0x83, 0x2c, 0x1a, 0x1b, 0x6e, 0x5a, 0xa0, 0x52, 0x3b, 0xd6, 0xb3, 0x29, 0xe3, 0x2f, 0x84,
+    0x53, 0xd1, 0x00, 0xed, 0x20, 0xfc, 0xb1, 0x5b, 0x6a, 0xcb, 0xbe, 0x39, 0x4a, 0x4c, 0x58, 0xcf,
+    0xd0, 0xef, 0xaa, 0xfb, 0x43, 0x4d, 0x33, 0x85, 0x45, 0xf9, 0x02, 0x7f, 0x50, 0x3c, 0x9f, 0xa8,
+    0x51, 0xa3, 0x40, 0x8f, 0x92, 0x9d, 0x38, 0xf5, 0xbc, 0xb6, 0xda, 0x21, 0x10, 0xff, 0xf3, 0xd2,
+    0xcd, 0x0c, 0x13, 0xec, 0x5f, 0x97, 0x44, 0x17, 0xc4, 0xa7, 0x7e, 0x3d, 0x64, 0x5d, 0x19, 0x73,
+    0x60, 0x81, 0x4f, 0xdc, 0x22, 0x2a, 0x90, 0x88, 0x46, 0xee, 0xb8, 0x14, 0xde, 0x5e, 0x0b, 0xdb,
+    0xe0, 0x32, 0x3a, 0x0a, 0x49, 0x06, 0x24, 0x5c, 0xc2, 0xd3, 0xac, 0x62, 0x91, 0x95, 0xe4, 0x79,
+    0xe7, 0xc8, 0x37, 0x6d, 0x8d, 0xd5, 0x4e, 0xa9, 0x6c, 0x56, 0xf4, 0xea, 0x65, 0x7a, 0xae, 0x08,
+    0xba, 0x78, 0x25, 0x2e, 0x1c, 0xa6, 0xb4, 0xc6, 0xe8, 0xdd, 0x74, 0x1f, 0x4b, 0xbd, 0x8b, 0x8a,
+    0x70, 0x3e, 0xb5, 0x66, 0x48, 0x03, 0xf6, 0x0e, 0x61, 0x35, 0x57, 0xb9, 0x86, 0xc1, 0x1d, 0x9e,
+    0xe1, 0xf8, 0x98, 0x11, 0x69, 0xd9, 0x8e, 0x94, 0x9b, 0x1e, 0x87, 0xe9, 0xce, 0x55, 0x28, 0xdf,
+    0x8c, 0xa1, 0x89, 0x0d, 0xbf, 0xe6, 0x42, 0x68, 0x41, 0x99, 0x2d, 0x0f, 0xb0, 0x54, 0xbb, 0x16};
+
+static unsigned char nv_aes_xtime(unsigned char x) {
+    return (unsigned char)((x << 1) ^ ((x & 0x80) ? 0x1b : 0x00));
+}
+
+/* AES-128: 11 round keys of 16 bytes. */
+static void nv_aes_expand(const unsigned char key[16], unsigned char rk[176]) {
+    static const unsigned char rcon[10] = {0x01, 0x02, 0x04, 0x08, 0x10,
+                                           0x20, 0x40, 0x80, 0x1b, 0x36};
+    int i;
+    memcpy(rk, key, 16);
+    for (i = 4; i < 44; i++) {
+        unsigned char t[4];
+        memcpy(t, rk + (i - 1) * 4, 4);
+        if (i % 4 == 0) {
+            unsigned char tmp = t[0];
+            t[0] = (unsigned char)(nv_aes_sbox[t[1]] ^ rcon[i / 4 - 1]);
+            t[1] = nv_aes_sbox[t[2]];
+            t[2] = nv_aes_sbox[t[3]];
+            t[3] = nv_aes_sbox[tmp];
+        }
+        rk[i * 4] = (unsigned char)(rk[(i - 4) * 4] ^ t[0]);
+        rk[i * 4 + 1] = (unsigned char)(rk[(i - 4) * 4 + 1] ^ t[1]);
+        rk[i * 4 + 2] = (unsigned char)(rk[(i - 4) * 4 + 2] ^ t[2]);
+        rk[i * 4 + 3] = (unsigned char)(rk[(i - 4) * 4 + 3] ^ t[3]);
+    }
+}
+
+/* CFB-8 only ever encrypts blocks, in both directions - no inverse cipher. */
+static void nv_aes_encrypt_block(const unsigned char rk[176], const unsigned char in[16],
+                                 unsigned char out[16]) {
+    unsigned char s[16];
+    int round;
+    int i;
+    for (i = 0; i < 16; i++) {
+        s[i] = (unsigned char)(in[i] ^ rk[i]);
+    }
+    for (round = 1; round <= 10; round++) {
+        unsigned char t[16];
+        for (i = 0; i < 16; i++) {
+            s[i] = nv_aes_sbox[s[i]];
+        }
+        /* ShiftRows on the column major state */
+        t[0] = s[0];   t[4] = s[4];   t[8] = s[8];    t[12] = s[12];
+        t[1] = s[5];   t[5] = s[9];   t[9] = s[13];   t[13] = s[1];
+        t[2] = s[10];  t[6] = s[14];  t[10] = s[2];   t[14] = s[6];
+        t[3] = s[15];  t[7] = s[3];   t[11] = s[7];   t[15] = s[11];
+        memcpy(s, t, 16);
+        if (round != 10) {
+            for (i = 0; i < 16; i += 4) {
+                unsigned char a0 = s[i];
+                unsigned char a1 = s[i + 1];
+                unsigned char a2 = s[i + 2];
+                unsigned char a3 = s[i + 3];
+                unsigned char all = (unsigned char)(a0 ^ a1 ^ a2 ^ a3);
+                s[i] = (unsigned char)(a0 ^ all ^ nv_aes_xtime((unsigned char)(a0 ^ a1)));
+                s[i + 1] = (unsigned char)(a1 ^ all ^ nv_aes_xtime((unsigned char)(a1 ^ a2)));
+                s[i + 2] = (unsigned char)(a2 ^ all ^ nv_aes_xtime((unsigned char)(a2 ^ a3)));
+                s[i + 3] = (unsigned char)(a3 ^ all ^ nv_aes_xtime((unsigned char)(a3 ^ a0)));
+            }
+        }
+        for (i = 0; i < 16; i++) {
+            s[i] = (unsigned char)(s[i] ^ rk[round * 16 + i]);
+        }
+    }
+    memcpy(out, s, 16);
+}
+
+/* A CFB-8 stream keeps its shift register between calls, so one handle per
+ * direction per connection. */
+typedef struct {
+    unsigned char rk[176];
+    unsigned char iv[16];
+    int encrypt;
+    int used;
+} NvCipher;
+
+#define NV_CIPHER_MAX 4096
+static NvCipher nv_ciphers[NV_CIPHER_MAX];
+static int nv_cipher_count = 0;
+
+static nv nv_crypto_cipher_new(nv key, nv iv, nv encrypt) {
+    int klen;
+    int ivlen;
+    const char *k = nv_bin(key, &klen);
+    const char *v = nv_bin(iv, &ivlen);
+    int slot;
+    if (klen != 16 || ivlen != 16) {
+        return nv_int(-1);
+    }
+    for (slot = 0; slot < nv_cipher_count; slot++) {
+        if (!nv_ciphers[slot].used) {
+            break;
+        }
+    }
+    if (slot == nv_cipher_count) {
+        if (nv_cipher_count >= NV_CIPHER_MAX) {
+            return nv_int(-1);
+        }
+        nv_cipher_count++;
+    }
+    nv_aes_expand((const unsigned char *)k, nv_ciphers[slot].rk);
+    memcpy(nv_ciphers[slot].iv, v, 16);
+    nv_ciphers[slot].encrypt = nv_truthy(encrypt);
+    nv_ciphers[slot].used = 1;
+    return nv_int(slot);
+}
+
+static nv nv_crypto_cipher_free(nv handle) {
+    long long h = nv_as_int(handle);
+    if (h >= 0 && h < nv_cipher_count) {
+        nv_ciphers[h].used = 0;
+    }
+    return nv_nil;
+}
+
+/* CFB-8: encrypt the register, XOR one byte, shift the ciphertext byte in. */
+static nv nv_crypto_cipher_update(nv handle, nv data) {
+    long long h = nv_as_int(handle);
+    int len;
+    const char *in = nv_bin(data, &len);
+    NvCipher *c;
+    char *out;
+    int i;
+    if (h < 0 || h >= nv_cipher_count || !nv_ciphers[h].used) {
+        return nv_str("");
+    }
+    c = &nv_ciphers[h];
+    out = (char *)nv_alloc((size_t)len + 1);
+    for (i = 0; i < len; i++) {
+        unsigned char keystream[16];
+        unsigned char plain = (unsigned char)in[i];
+        unsigned char cipher;
+        nv_aes_encrypt_block(c->rk, c->iv, keystream);
+        cipher = (unsigned char)(plain ^ keystream[0]);
+        memmove(c->iv, c->iv + 1, 15);
+        c->iv[15] = c->encrypt ? cipher : plain;
+        out[i] = (char)cipher;
+    }
+    out[len] = 0;
+    return nv_str_own(out, len);
+}
+
+/* ---- hashes and randomness for Novus ---- */
+
+static nv nv_crypto_sha1(nv data) {
+    int len;
+    const char *bytes = nv_bin(data, &len);
+    unsigned char digest[20];
+    nv_sha1((const unsigned char *)bytes, (size_t)len, digest);
+    return nv_strn((const char *)digest, 20);
+}
+
+static nv nv_crypto_md5(nv data) {
+    int len;
+    const char *bytes = nv_bin(data, &len);
+    unsigned char digest[16];
+    nv_md5((const unsigned char *)bytes, (size_t)len, digest);
+    return nv_strn((const char *)digest, 16);
+}
+
+/* Minecraft's session digest: SHA-1 read as a signed big endian number and
+ * printed in hex, negative values as the two's complement with a leading "-". */
+static nv nv_crypto_mc_digest(nv data) {
+    int len;
+    const char *bytes = nv_bin(data, &len);
+    unsigned char digest[20];
+    int negative;
+    int i;
+    char hex[48];
+    int at = 0;
+    int leading = 1;
+    nv_sha1((const unsigned char *)bytes, (size_t)len, digest);
+    negative = (digest[0] & 0x80) != 0;
+    if (negative) {
+        int carry = 1;
+        for (i = 19; i >= 0; i--) {
+            int value = (~digest[i] & 0xff) + carry;
+            digest[i] = (unsigned char)(value & 0xff);
+            carry = value >> 8;
+        }
+        hex[at++] = '-';
+    }
+    for (i = 0; i < 20; i++) {
+        static const char *digits = "0123456789abcdef";
+        int hi = digest[i] >> 4;
+        int lo = digest[i] & 0xf;
+        if (leading && hi == 0) {
+            /* skip */
+        } else {
+            hex[at++] = digits[hi];
+            leading = 0;
+        }
+        if (leading && lo == 0) {
+            continue;
+        }
+        hex[at++] = digits[lo];
+        leading = 0;
+    }
+    if (at == 0 || (at == 1 && hex[0] == '-')) {
+        hex[at++] = '0';
+    }
+    return nv_strn(hex, at);
+}
+
+/* Fills `out` with `count` strong random bytes, falling back to rand() only
+ * where /dev/urandom is not there. */
+static void nv_random_bytes_into(unsigned char *out, int count) {
+    if (count <= 0) {
+        return;
+    }
+#ifndef _WIN32
+    {
+        FILE *f = fopen("/dev/urandom", "rb");
+        if (f) {
+            size_t got = fread(out, 1, (size_t)count, f);
+            fclose(f);
+            if (got == (size_t)count) {
+                return;
+            }
+        }
+    }
+#endif
+    {
+        static int seeded = 0;
+        int i;
+        if (!seeded) {
+            srand((unsigned)time(0) ^ (unsigned)NV_GETPID());
+            seeded = 1;
+        }
+        for (i = 0; i < count; i++) {
+            out[i] = (unsigned char)(rand() & 0xff);
+        }
+    }
+}
+
+static nv nv_crypto_random(nv count) {
+    long long n = nv_as_int(count);
+    char *buf;
+    if (n <= 0) {
+        return nv_str("");
+    }
+    buf = (char *)nv_alloc((size_t)n + 1);
+    nv_random_bytes_into((unsigned char *)buf, (int)n);
+    buf[n] = 0;
+    return nv_str_own(buf, (int)n);
+}
+
+/* Canonical UUID text ("xxxxxxxx-xxxx-...") of 16 raw bytes. */
+static nv nv_crypto_uuid_text(nv data) {
+    static const char *digits = "0123456789abcdef";
+    int len;
+    const char *bytes = nv_bin(data, &len);
+    char out[36];
+    int at = 0;
+    int i;
+    if (len < 16) {
+        return nv_str("");
+    }
+    for (i = 0; i < 16; i++) {
+        if (i == 4 || i == 6 || i == 8 || i == 10) {
+            out[at++] = '-';
+        }
+        out[at++] = digits[((unsigned char)bytes[i]) >> 4];
+        out[at++] = digits[((unsigned char)bytes[i]) & 0xf];
+    }
+    return nv_strn(out, at);
+}
+
+/* ------------------------------------------------------------------ */
+/* RSA                                                                 */
+/* ------------------------------------------------------------------ */
+
+/* Enough RSA for a key exchange: generate a key pair, hand out the public
+ * key as DER, and decrypt what was sent to it with PKCS#1 v1.5 padding.
+ *
+ * Big integers are fixed length arrays of 32 bit limbs, least significant
+ * first. Modular arithmetic goes through Montgomery multiplication, which
+ * needs an odd modulus - an RSA modulus always is - and replaces the
+ * division a modexp would otherwise do per step. */
+
+#define NV_BN_LIMBS 64 /* 2048 bits, twice what a 1024 bit key needs */
+
+typedef struct {
+    unsigned int limb[NV_BN_LIMBS];
+    int len; /* limbs in use */
+} NvBn;
+
+static void nv_bn_zero(NvBn *a) {
+    memset(a->limb, 0, sizeof(a->limb));
+    a->len = 0;
+}
+
+static void nv_bn_trim(NvBn *a) {
+    while (a->len > 0 && a->limb[a->len - 1] == 0) {
+        a->len--;
+    }
+}
+
+static void nv_bn_from_u32(NvBn *a, unsigned int v) {
+    nv_bn_zero(a);
+    a->limb[0] = v;
+    a->len = v ? 1 : 0;
+}
+
+/* Big endian bytes in, which is how every RSA value travels. */
+static void nv_bn_from_bytes(NvBn *a, const unsigned char *bytes, int len) {
+    int i;
+    nv_bn_zero(a);
+    for (i = 0; i < len; i++) {
+        int index = (len - 1 - i) / 4;
+        int shift = ((len - 1 - i) % 4) * 8;
+        if (index >= NV_BN_LIMBS) {
+            break;
+        }
+        a->limb[index] |= (unsigned int)bytes[i] << shift;
+        if (index + 1 > a->len) {
+            a->len = index + 1;
+        }
+    }
+    nv_bn_trim(a);
+}
+
+/* Big endian bytes out, left padded to `len`. */
+static void nv_bn_to_bytes(const NvBn *a, unsigned char *out, int len) {
+    int i;
+    for (i = 0; i < len; i++) {
+        int index = (len - 1 - i) / 4;
+        int shift = ((len - 1 - i) % 4) * 8;
+        out[i] = (unsigned char)(index < NV_BN_LIMBS ? (a->limb[index] >> shift) & 0xff : 0);
+    }
+}
+
+static int nv_bn_cmp(const NvBn *a, const NvBn *b) {
+    int i = a->len > b->len ? a->len : b->len;
+    while (i-- > 0) {
+        unsigned int x = i < a->len ? a->limb[i] : 0;
+        unsigned int y = i < b->len ? b->limb[i] : 0;
+        if (x != y) {
+            return x < y ? -1 : 1;
+        }
+    }
+    return 0;
+}
+
+static int nv_bn_is_zero(const NvBn *a) { return a->len == 0; }
+
+static int nv_bn_bit(const NvBn *a, int index) {
+    int limb = index / 32;
+    if (limb >= a->len) {
+        return 0;
+    }
+    return (int)((a->limb[limb] >> (index % 32)) & 1);
+}
+
+static int nv_bn_bits(const NvBn *a) {
+    int top;
+    unsigned int word;
+    int n = 0;
+    if (a->len == 0) {
+        return 0;
+    }
+    top = a->len - 1;
+    word = a->limb[top];
+    while (word) {
+        word >>= 1;
+        n++;
+    }
+    return top * 32 + n;
+}
+
+/* out = a + b */
+static void nv_bn_add(NvBn *out, const NvBn *a, const NvBn *b) {
+    unsigned long long carry = 0;
+    int n = a->len > b->len ? a->len : b->len;
+    int i;
+    for (i = 0; i < n || carry; i++) {
+        unsigned long long sum = carry;
+        if (i < a->len) {
+            sum += a->limb[i];
+        }
+        if (i < b->len) {
+            sum += b->limb[i];
+        }
+        if (i >= NV_BN_LIMBS) {
+            break;
+        }
+        out->limb[i] = (unsigned int)(sum & 0xffffffffu);
+        carry = sum >> 32;
+    }
+    {
+        int j;
+        for (j = i; j < NV_BN_LIMBS; j++) {
+            out->limb[j] = 0;
+        }
+    }
+    out->len = i;
+    nv_bn_trim(out);
+}
+
+/* out = a - b, assuming a >= b */
+static void nv_bn_sub(NvBn *out, const NvBn *a, const NvBn *b) {
+    long long borrow = 0;
+    int i;
+    for (i = 0; i < NV_BN_LIMBS; i++) {
+        long long diff = (long long)(i < a->len ? a->limb[i] : 0) - borrow -
+                         (long long)(i < b->len ? b->limb[i] : 0);
+        if (diff < 0) {
+            diff += 0x100000000LL;
+            borrow = 1;
+        } else {
+            borrow = 0;
+        }
+        out->limb[i] = (unsigned int)diff;
+    }
+    out->len = a->len;
+    nv_bn_trim(out);
+}
+
+/* out = a * b, schoolbook. */
+static void nv_bn_mul(NvBn *out, const NvBn *a, const NvBn *b) {
+    NvBn result;
+    int i;
+    nv_bn_zero(&result);
+    for (i = 0; i < a->len; i++) {
+        unsigned long long carry = 0;
+        int j;
+        for (j = 0; j < b->len || carry; j++) {
+            unsigned long long cur;
+            if (i + j >= NV_BN_LIMBS) {
+                break;
+            }
+            cur = result.limb[i + j] + carry;
+            if (j < b->len) {
+                cur += (unsigned long long)a->limb[i] * b->limb[j];
+            }
+            result.limb[i + j] = (unsigned int)(cur & 0xffffffffu);
+            carry = cur >> 32;
+        }
+    }
+    result.len = a->len + b->len;
+    if (result.len > NV_BN_LIMBS) {
+        result.len = NV_BN_LIMBS;
+    }
+    nv_bn_trim(&result);
+    *out = result;
+}
+
+/* out = a >> 1 */
+static void nv_bn_shr1(NvBn *out, const NvBn *a) {
+    int i;
+    for (i = 0; i < NV_BN_LIMBS - 1; i++) {
+        out->limb[i] = (a->limb[i] >> 1) | (a->limb[i + 1] << 31);
+    }
+    out->limb[NV_BN_LIMBS - 1] = a->limb[NV_BN_LIMBS - 1] >> 1;
+    out->len = a->len;
+    nv_bn_trim(out);
+}
+
+/* out = a << 1 */
+static void nv_bn_shl1(NvBn *out, const NvBn *a) {
+    int i;
+    unsigned int carry = 0;
+    for (i = 0; i < NV_BN_LIMBS; i++) {
+        unsigned int next = a->limb[i] >> 31;
+        out->limb[i] = (a->limb[i] << 1) | carry;
+        carry = next;
+    }
+    out->len = a->len + 1 > NV_BN_LIMBS ? NV_BN_LIMBS : a->len + 1;
+    nv_bn_trim(out);
+}
+
+/* Bit by bit long division. Used only where speed does not matter: reducing
+ * a value once, and the extended gcd. */
+static void nv_bn_divmod(NvBn *quotient, NvBn *remainder, const NvBn *a, const NvBn *m) {
+    NvBn q;
+    NvBn r;
+    int i;
+    nv_bn_zero(&q);
+    nv_bn_zero(&r);
+    if (nv_bn_is_zero(m)) {
+        *quotient = q;
+        *remainder = r;
+        return;
+    }
+    for (i = nv_bn_bits(a) - 1; i >= 0; i--) {
+        NvBn shifted;
+        nv_bn_shl1(&shifted, &r);
+        r = shifted;
+        if (nv_bn_bit(a, i)) {
+            r.limb[0] |= 1;
+            if (r.len == 0) {
+                r.len = 1;
+            }
+        }
+        if (nv_bn_cmp(&r, m) >= 0) {
+            NvBn reduced;
+            nv_bn_sub(&reduced, &r, m);
+            r = reduced;
+            q.limb[i / 32] |= 1u << (i % 32);
+            if (i / 32 + 1 > q.len) {
+                q.len = i / 32 + 1;
+            }
+        }
+    }
+    nv_bn_trim(&q);
+    nv_bn_trim(&r);
+    if (quotient) {
+        *quotient = q;
+    }
+    if (remainder) {
+        *remainder = r;
+    }
+}
+
+static void nv_bn_mod(NvBn *out, const NvBn *a, const NvBn *m) {
+    nv_bn_divmod(0, out, a, m);
+}
+
+/* ---- Montgomery arithmetic ---- */
+
+typedef struct {
+    NvBn n;         /* the modulus, odd */
+    NvBn rr;        /* R^2 mod n, for entering the domain */
+    unsigned int n0inv; /* -n^-1 mod 2^32 */
+    int len;        /* limbs of n */
+} NvMont;
+
+/* -n^-1 mod 2^32 by Newton iteration; exact after five steps for 32 bits. */
+static unsigned int nv_mont_n0inv(unsigned int n0) {
+    unsigned int x = 1;
+    int i;
+    for (i = 0; i < 5; i++) {
+        x = x * (2u - n0 * x);
+    }
+    return (unsigned int)(0u - x);
+}
+
+static int nv_mont_init(NvMont *mont, const NvBn *n) {
+    NvBn r;
+    int i;
+    if (n->len == 0 || (n->limb[0] & 1) == 0) {
+        return -1; /* Montgomery needs an odd modulus */
+    }
+    mont->n = *n;
+    mont->len = n->len;
+    mont->n0inv = nv_mont_n0inv(n->limb[0]);
+    /* R^2 mod n: start at 1 and double 2 * len * 32 times */
+    nv_bn_from_u32(&r, 1);
+    for (i = 0; i < 2 * mont->len * 32; i++) {
+        NvBn doubled;
+        nv_bn_shl1(&doubled, &r);
+        if (nv_bn_cmp(&doubled, n) >= 0) {
+            NvBn reduced;
+            nv_bn_sub(&reduced, &doubled, n);
+            r = reduced;
+        } else {
+            r = doubled;
+        }
+    }
+    mont->rr = r;
+    return 0;
+}
+
+/* out = a * b * R^-1 mod n (CIOS). */
+static void nv_mont_mul(NvBn *out, const NvBn *a, const NvBn *b, const NvMont *mont) {
+    unsigned int t[NV_BN_LIMBS + 2];
+    int len = mont->len;
+    int i;
+    memset(t, 0, sizeof(unsigned int) * (size_t)(len + 2));
+    for (i = 0; i < len; i++) {
+        unsigned long long carry = 0;
+        unsigned int m;
+        int j;
+        unsigned int ai = i < a->len ? a->limb[i] : 0;
+        for (j = 0; j < len; j++) {
+            unsigned long long cur = (unsigned long long)t[j] + carry +
+                                     (unsigned long long)ai * (j < b->len ? b->limb[j] : 0);
+            t[j] = (unsigned int)(cur & 0xffffffffu);
+            carry = cur >> 32;
+        }
+        {
+            unsigned long long cur = (unsigned long long)t[len] + carry;
+            t[len] = (unsigned int)(cur & 0xffffffffu);
+            t[len + 1] = (unsigned int)(cur >> 32);
+        }
+        m = (unsigned int)((unsigned long long)t[0] * mont->n0inv);
+        carry = 0;
+        for (j = 0; j < len; j++) {
+            unsigned long long cur =
+                (unsigned long long)t[j] + carry + (unsigned long long)m * mont->n.limb[j];
+            t[j] = (unsigned int)(cur & 0xffffffffu);
+            carry = cur >> 32;
+        }
+        {
+            unsigned long long cur = (unsigned long long)t[len] + carry;
+            t[len] = (unsigned int)(cur & 0xffffffffu);
+            t[len + 1] += (unsigned int)(cur >> 32);
+        }
+        /* shift down by one limb */
+        for (j = 0; j <= len; j++) {
+            t[j] = t[j + 1];
+        }
+        t[len + 1] = 0;
+    }
+    nv_bn_zero(out);
+    for (i = 0; i < len + 1 && i < NV_BN_LIMBS; i++) {
+        out->limb[i] = t[i];
+    }
+    out->len = len + 1 > NV_BN_LIMBS ? NV_BN_LIMBS : len + 1;
+    nv_bn_trim(out);
+    if (nv_bn_cmp(out, &mont->n) >= 0) {
+        NvBn reduced;
+        nv_bn_sub(&reduced, out, &mont->n);
+        *out = reduced;
+    }
+}
+
+/* out = base^exponent mod n, square and multiply in the Montgomery domain. */
+static void nv_bn_modexp(NvBn *out, const NvBn *base, const NvBn *exponent, const NvBn *n) {
+    NvMont mont;
+    NvBn reduced;
+    NvBn one;
+    NvBn acc;
+    NvBn factor;
+    int i;
+    if (nv_mont_init(&mont, n) != 0) {
+        nv_bn_from_u32(out, 0);
+        return;
+    }
+    nv_bn_mod(&reduced, base, n);
+    nv_bn_from_u32(&one, 1);
+    nv_mont_mul(&acc, &one, &mont.rr, &mont);     /* 1 in the domain */
+    nv_mont_mul(&factor, &reduced, &mont.rr, &mont); /* base in the domain */
+    for (i = 0; i < nv_bn_bits(exponent); i++) {
+        if (nv_bn_bit(exponent, i)) {
+            NvBn product;
+            nv_mont_mul(&product, &acc, &factor, &mont);
+            acc = product;
+        }
+        {
+            NvBn squared;
+            nv_mont_mul(&squared, &factor, &factor, &mont);
+            factor = squared;
+        }
+    }
+    nv_mont_mul(out, &acc, &one, &mont); /* back out of the domain */
+}
+
+/* ---- primes ---- */
+
+static const unsigned int nv_small_primes[] = {
+    3,   5,   7,   11,  13,  17,  19,  23,  29,  31,  37,  41,  43,  47,  53,  59,  61,  67,
+    71,  73,  79,  83,  89,  97,  101, 103, 107, 109, 113, 127, 131, 137, 139, 149, 151, 157,
+    163, 167, 173, 179, 181, 191, 193, 197, 199, 211, 223, 227, 229, 233, 239, 241, 251};
+
+/* a mod m for a small m, by folding the limbs. */
+static unsigned int nv_bn_mod_u32(const NvBn *a, unsigned int m) {
+    unsigned long long rest = 0;
+    int i;
+    for (i = a->len - 1; i >= 0; i--) {
+        rest = ((rest << 32) | a->limb[i]) % m;
+    }
+    return (unsigned int)rest;
+}
+
+/* Miller-Rabin with `rounds` random bases. */
+static int nv_bn_is_probable_prime(const NvBn *n, int rounds) {
+    NvBn nMinusOne;
+    NvBn d;
+    NvBn one;
+    NvBn two;
+    int s = 0;
+    int i;
+    size_t p;
+    if (n->len == 0 || (n->limb[0] & 1) == 0) {
+        return 0;
+    }
+    for (p = 0; p < sizeof(nv_small_primes) / sizeof(nv_small_primes[0]); p++) {
+        if (nv_bn_mod_u32(n, nv_small_primes[p]) == 0) {
+            return 0;
+        }
+    }
+    nv_bn_from_u32(&one, 1);
+    nv_bn_from_u32(&two, 2);
+    nv_bn_sub(&nMinusOne, n, &one);
+    d = nMinusOne;
+    while (nv_bn_bit(&d, 0) == 0 && !nv_bn_is_zero(&d)) {
+        NvBn half;
+        nv_bn_shr1(&half, &d);
+        d = half;
+        s++;
+    }
+    for (i = 0; i < rounds; i++) {
+        NvBn a;
+        NvBn x;
+        int j;
+        int witness;
+        nv_bn_from_u32(&a, nv_small_primes[i % (int)(sizeof(nv_small_primes) / sizeof(nv_small_primes[0]))]);
+        nv_bn_modexp(&x, &a, &d, n);
+        if (nv_bn_cmp(&x, &one) == 0 || nv_bn_cmp(&x, &nMinusOne) == 0) {
+            continue;
+        }
+        witness = 1;
+        for (j = 0; j < s - 1; j++) {
+            NvBn squared;
+            nv_bn_modexp(&squared, &x, &two, n);
+            x = squared;
+            if (nv_bn_cmp(&x, &nMinusOne) == 0) {
+                witness = 0;
+                break;
+            }
+        }
+        if (witness) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* A random prime of `bits` bits, with the top two bits set so that the
+ * product of two of them has exactly twice the length. */
+static void nv_bn_random_prime(NvBn *out, int bits) {
+    unsigned char buffer[256];
+    int bytes = bits / 8;
+    for (;;) {
+        nv_random_bytes_into(buffer, bytes);
+        buffer[0] |= 0xc0;        /* the top two bits */
+        buffer[bytes - 1] |= 1;   /* odd */
+        nv_bn_from_bytes(out, buffer, bytes);
+        if (nv_bn_is_probable_prime(out, 8)) {
+            return;
+        }
+    }
+}
+
+/* d with d * e = 1 mod m, by the extended Euclidean algorithm on
+ * non-negative values (the classic formulation with a sign flag). */
+static int nv_bn_modinv(NvBn *out, const NvBn *e, const NvBn *m) {
+    NvBn r0 = *m;
+    NvBn r1 = *e;
+    NvBn t0;
+    NvBn t1;
+    int t0neg = 0;
+    int t1neg = 0;
+    nv_bn_from_u32(&t0, 0);
+    nv_bn_from_u32(&t1, 1);
+    while (!nv_bn_is_zero(&r1)) {
+        NvBn q;
+        NvBn rest;
+        NvBn product;
+        NvBn next;
+        int nextNeg;
+        nv_bn_divmod(&q, &rest, &r0, &r1);
+        r0 = r1;
+        r1 = rest;
+        nv_bn_mul(&product, &q, &t1);
+        /* next = t0 - q * t1, tracking the sign by hand */
+        if (t0neg == t1neg) {
+            if (nv_bn_cmp(&t0, &product) >= 0) {
+                nv_bn_sub(&next, &t0, &product);
+                nextNeg = t0neg;
+            } else {
+                nv_bn_sub(&next, &product, &t0);
+                nextNeg = !t0neg;
+            }
+        } else {
+            nv_bn_add(&next, &t0, &product);
+            nextNeg = t0neg;
+        }
+        t0 = t1;
+        t0neg = t1neg;
+        t1 = next;
+        t1neg = nextNeg;
+    }
+    {
+        NvBn one;
+        nv_bn_from_u32(&one, 1);
+        if (nv_bn_cmp(&r0, &one) != 0) {
+            return -1; /* not invertible */
+        }
+    }
+    if (t0neg) {
+        NvBn positive;
+        NvBn reduced;
+        nv_bn_mod(&reduced, &t0, m);
+        nv_bn_sub(&positive, m, &reduced);
+        nv_bn_mod(out, &positive, m);
+        return 0;
+    }
+    nv_bn_mod(out, &t0, m);
+    return 0;
+}
+
+/* ---- key pairs ---- */
+
+typedef struct {
+    NvBn n;
+    NvBn e;
+    NvBn d;
+    int bits;
+    int used;
+} NvRsaKey;
+
+#define NV_RSA_MAX 8
+static NvRsaKey nv_rsa_keys[NV_RSA_MAX];
+static int nv_rsa_count = 0;
+
+static nv nv_crypto_rsa_generate(nv bitsValue) {
+    int bits = (int)nv_as_int(bitsValue);
+    int slot;
+    NvBn p;
+    NvBn q;
+    NvBn one;
+    NvBn pMinus;
+    NvBn qMinus;
+    NvBn phi;
+    NvRsaKey *key;
+    if (bits != 1024 && bits != 512 && bits != 2048) {
+        return nv_int(-1);
+    }
+    for (slot = 0; slot < nv_rsa_count; slot++) {
+        if (!nv_rsa_keys[slot].used) {
+            break;
+        }
+    }
+    if (slot == nv_rsa_count) {
+        if (nv_rsa_count >= NV_RSA_MAX) {
+            return nv_int(-1);
+        }
+        nv_rsa_count++;
+    }
+    key = &nv_rsa_keys[slot];
+    nv_bn_from_u32(&one, 1);
+    nv_bn_from_u32(&key->e, 65537);
+    for (;;) {
+        nv_bn_random_prime(&p, bits / 2);
+        nv_bn_random_prime(&q, bits / 2);
+        if (nv_bn_cmp(&p, &q) == 0) {
+            continue;
+        }
+        nv_bn_mul(&key->n, &p, &q);
+        nv_bn_sub(&pMinus, &p, &one);
+        nv_bn_sub(&qMinus, &q, &one);
+        nv_bn_mul(&phi, &pMinus, &qMinus);
+        if (nv_bn_modinv(&key->d, &key->e, &phi) == 0) {
+            break;
+        }
+    }
+    key->bits = bits;
+    key->used = 1;
+    return nv_int(slot);
+}
+
+static nv nv_crypto_rsa_free(nv handle) {
+    long long h = nv_as_int(handle);
+    if (h >= 0 && h < nv_rsa_count) {
+        nv_rsa_keys[h].used = 0;
+    }
+    return nv_nil;
+}
+
+/* ---- DER ---- */
+
+/* A DER length: short form below 128, else the byte count then the bytes. */
+static int nv_der_len(unsigned char *out, int length) {
+    if (length < 128) {
+        out[0] = (unsigned char)length;
+        return 1;
+    }
+    if (length < 256) {
+        out[0] = 0x81;
+        out[1] = (unsigned char)length;
+        return 2;
+    }
+    out[0] = 0x82;
+    out[1] = (unsigned char)((length >> 8) & 0xff);
+    out[2] = (unsigned char)(length & 0xff);
+    return 3;
+}
+
+/* An INTEGER, with the leading zero DER wants when the top bit is set. */
+static int nv_der_integer(unsigned char *out, const NvBn *value) {
+    unsigned char raw[NV_BN_LIMBS * 4];
+    int bytes = (nv_bn_bits(value) + 7) / 8;
+    int at = 0;
+    int pad;
+    if (bytes == 0) {
+        bytes = 1;
+    }
+    nv_bn_to_bytes(value, raw, bytes);
+    pad = (raw[0] & 0x80) ? 1 : 0;
+    out[at++] = 0x02;
+    at += nv_der_len(out + at, bytes + pad);
+    if (pad) {
+        out[at++] = 0x00;
+    }
+    memcpy(out + at, raw, (size_t)bytes);
+    return at + bytes;
+}
+
+/* The public key as a SubjectPublicKeyInfo, which is what the handshake
+ * expects: an AlgorithmIdentifier of rsaEncryption plus a BIT STRING holding
+ * the RSAPublicKey SEQUENCE of modulus and exponent. */
+static nv nv_crypto_rsa_public_der(nv handle) {
+    long long h = nv_as_int(handle);
+    unsigned char inner[NV_BN_LIMBS * 4 + 64];
+    unsigned char rsaKey[NV_BN_LIMBS * 4 + 96];
+    unsigned char out[NV_BN_LIMBS * 4 + 160];
+    static const unsigned char algorithm[] = {0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48,
+                                              0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01, 0x05, 0x00};
+    NvRsaKey *key;
+    int innerLen = 0;
+    int rsaLen = 0;
+    int at = 0;
+    int bodyLen;
+    unsigned char lengthBytes[3];
+    int lengthSize;
+    if (h < 0 || h >= nv_rsa_count || !nv_rsa_keys[h].used) {
+        return nv_str("");
+    }
+    key = &nv_rsa_keys[h];
+    innerLen += nv_der_integer(inner + innerLen, &key->n);
+    innerLen += nv_der_integer(inner + innerLen, &key->e);
+
+    /* SEQUENCE { modulus, exponent } */
+    rsaKey[rsaLen++] = 0x30;
+    rsaLen += nv_der_len(rsaKey + rsaLen, innerLen);
+    memcpy(rsaKey + rsaLen, inner, (size_t)innerLen);
+    rsaLen += innerLen;
+
+    /* the outer SEQUENCE { algorithm, BIT STRING { rsaKey } } */
+    /* algorithm, then the BIT STRING: its tag, its length, the unused-bits
+     * byte and the key itself. */
+    bodyLen = (int)sizeof(algorithm) + 1 + nv_der_len(lengthBytes, rsaLen + 1) + 1 + rsaLen;
+    out[at++] = 0x30;
+    at += nv_der_len(out + at, bodyLen);
+    memcpy(out + at, algorithm, sizeof(algorithm));
+    at += (int)sizeof(algorithm);
+    out[at++] = 0x03; /* BIT STRING */
+    lengthSize = nv_der_len(lengthBytes, rsaLen + 1);
+    memcpy(out + at, lengthBytes, (size_t)lengthSize);
+    at += lengthSize;
+    out[at++] = 0x00; /* no unused bits */
+    memcpy(out + at, rsaKey, (size_t)rsaLen);
+    at += rsaLen;
+    return nv_strn((const char *)out, at);
+}
+
+/* Decrypts a PKCS#1 v1.5 block and returns the payload, "" when the padding
+ * is not what it must be. */
+static nv nv_crypto_rsa_decrypt(nv handle, nv data) {
+    long long h = nv_as_int(handle);
+    int len;
+    const char *bytes = nv_bin(data, &len);
+    NvBn cipher;
+    NvBn plain;
+    unsigned char block[NV_BN_LIMBS * 4];
+    int size;
+    int at;
+    NvRsaKey *key;
+    if (h < 0 || h >= nv_rsa_count || !nv_rsa_keys[h].used) {
+        return nv_str("");
+    }
+    key = &nv_rsa_keys[h];
+    size = key->bits / 8;
+    if (len > size) {
+        return nv_str("");
+    }
+    nv_bn_from_bytes(&cipher, (const unsigned char *)bytes, len);
+    if (nv_bn_cmp(&cipher, &key->n) >= 0) {
+        return nv_str("");
+    }
+    nv_bn_modexp(&plain, &cipher, &key->d, &key->n);
+    nv_bn_to_bytes(&plain, block, size);
+    /* 00 02 <at least eight non-zero bytes> 00 <payload> */
+    if (block[0] != 0x00 || block[1] != 0x02) {
+        return nv_str("");
+    }
+    at = 2;
+    while (at < size && block[at] != 0x00) {
+        at++;
+    }
+    if (at >= size || at < 10) {
+        return nv_str("");
+    }
+    at++;
+    return nv_strn((const char *)block + at, size - at);
+}
+
+/* Encrypting is only needed to test the pair; the client does the real one. */
+static nv nv_crypto_rsa_encrypt(nv handle, nv data) {
+    long long h = nv_as_int(handle);
+    int len;
+    const char *bytes = nv_bin(data, &len);
+    NvBn plain;
+    NvBn cipher;
+    unsigned char block[NV_BN_LIMBS * 4];
+    unsigned char out[NV_BN_LIMBS * 4];
+    int size;
+    int at;
+    NvRsaKey *key;
+    if (h < 0 || h >= nv_rsa_count || !nv_rsa_keys[h].used) {
+        return nv_str("");
+    }
+    key = &nv_rsa_keys[h];
+    size = key->bits / 8;
+    if (len > size - 11) {
+        return nv_str("");
+    }
+    block[0] = 0x00;
+    block[1] = 0x02;
+    for (at = 2; at < size - len - 1; at++) {
+        unsigned char filler;
+        do {
+            nv_random_bytes_into(&filler, 1);
+        } while (filler == 0);
+        block[at] = filler;
+    }
+    block[at++] = 0x00;
+    memcpy(block + at, bytes, (size_t)len);
+    nv_bn_from_bytes(&plain, block, size);
+    nv_bn_modexp(&cipher, &plain, &key->e, &key->n);
+    nv_bn_to_bytes(&cipher, out, size);
+    return nv_strn((const char *)out, size);
+}
+
+/* ------------------------------------------------------------------ */
+/* Threads, virtual threads, tasks                                     */
+/* ------------------------------------------------------------------ */
+
+/* Two kinds of thread, one set of primitives.
+ *
+ * A `thread` is an operating system thread. It costs what the system charges
+ * for one - a stack measured in megabytes - and the kernel schedules it, so
+ * a program has tens or hundreds of them, not millions.
+ *
+ * A `virtual` thread is a stack of its own (a hundred kilobytes reserved, of
+ * which only the pages it touches are ever backed by memory) that a small
+ * pool of carrier threads runs. Blocking one - awaiting a task, a channel, a
+ * lock, thread.sleep - parks its stack and hands the carrier to the next
+ * runnable virtual thread instead of handing it back to the kernel, so a
+ * program can have as many of them as it has work. The stacks are switched
+ * with ucontext on unix and with fibers on Windows.
+ *
+ * Everything that blocks goes through one parking lot: a queue of waiters on
+ * an object, each of them either a virtual thread to make runnable again or
+ * an operating system thread to signal. That is why a lock, a channel or an
+ * await reads the same whichever kind of thread runs into it, and why a
+ * virtual thread that blocks costs no operating system thread.
+ *
+ * A virtual thread never moves to another carrier. It could - the run queue
+ * would only have to be shared - but a stack that is switched under the feet
+ * of the compiler must not be allowed to wake up on a different thread: the
+ * address of a thread local is a value like any other, and a compiler is
+ * free to keep one in a register across the switch. Staying put keeps every
+ * thread local (the thread's arena above all) the one the code that reads it
+ * was compiled to reach. */
+
+#ifdef _WIN32
+
+typedef CRITICAL_SECTION NvMutexRaw;
+typedef CONDITION_VARIABLE NvCondRaw;
+#define NV_MUTEX_INIT(m) InitializeCriticalSection(m)
+#define NV_MUTEX_LOCK(m) EnterCriticalSection(m)
+#define NV_MUTEX_UNLOCK(m) LeaveCriticalSection(m)
+#define NV_COND_INIT(c) InitializeConditionVariable(c)
+#define NV_COND_WAIT(c, m) SleepConditionVariableCS(c, m, INFINITE)
+#define NV_COND_WAIT_MS(c, m, ms) SleepConditionVariableCS(c, m, (DWORD)(ms))
+#define NV_COND_SIGNAL(c) WakeConditionVariable(c)
+#define NV_COND_BROADCAST(c) WakeAllConditionVariable(c)
+#define NV_HAVE_FIBERS 1
+
+#else
+
+#include <pthread.h>
+#include <sched.h>
+#if defined(__unix__) || defined(__APPLE__)
+#include <sys/mman.h>
+#include <ucontext.h>
+#define NV_HAVE_FIBERS 1
+#else
+#define NV_HAVE_FIBERS 0
+#endif
+
+typedef pthread_mutex_t NvMutexRaw;
+typedef pthread_cond_t NvCondRaw;
+#define NV_MUTEX_INIT(m) pthread_mutex_init(m, 0)
+#define NV_MUTEX_LOCK(m) pthread_mutex_lock(m)
+#define NV_MUTEX_UNLOCK(m) pthread_mutex_unlock(m)
+#define NV_COND_INIT(c) pthread_cond_init(c, 0)
+#define NV_COND_WAIT(c, m) pthread_cond_wait(c, m)
+#define NV_COND_SIGNAL(c) pthread_cond_signal(c)
+#define NV_COND_BROADCAST(c) pthread_cond_broadcast(c)
+
+static void nv_cond_wait_ms(NvCondRaw *c, NvMutexRaw *m, long long ms) {
+    struct timespec ts;
+#if defined(CLOCK_REALTIME)
+    clock_gettime(CLOCK_REALTIME, &ts);
+#else
+    ts.tv_sec = time(0);
+    ts.tv_nsec = 0;
+#endif
+    ts.tv_sec += (time_t)(ms / 1000);
+    ts.tv_nsec += (long)((ms % 1000) * 1000000L);
+    if (ts.tv_nsec >= 1000000000L) {
+        ts.tv_sec += 1;
+        ts.tv_nsec -= 1000000000L;
+    }
+    pthread_cond_timedwait(c, m, &ts);
+}
+#define NV_COND_WAIT_MS(c, m, ms) nv_cond_wait_ms(c, m, ms)
+
+#endif
+
+static long long nv_now_ms(void) {
+#ifdef _WIN32
+    return (long long)GetTickCount64();
+#elif defined(CLOCK_MONOTONIC)
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+#else
+    return (long long)time(0) * 1000;
+#endif
+}
+
+static int nv_cpu_count(void) {
+#ifdef _WIN32
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    return si.dwNumberOfProcessors < 1 ? 1 : (int)si.dwNumberOfProcessors;
+#elif defined(_SC_NPROCESSORS_ONLN)
+    long n = sysconf(_SC_NPROCESSORS_ONLN);
+    return n < 1 ? 1 : (int)n;
+#else
+    return 1;
+#endif
+}
+
+enum { NV_VT_NEW = 0, NV_VT_READY, NV_VT_RUNNING, NV_VT_PARKED, NV_VT_DONE };
+
+typedef nv (*NvSpawnFn)(nv *args, int n);
+
+typedef struct NvVThread NvVThread;
+typedef struct NvCarrier NvCarrier;
+
+#if NV_HAVE_FIBERS
+#ifdef _WIN32
+typedef LPVOID NvCtx;
+#else
+typedef ucontext_t NvCtx;
+#endif
+#else
+typedef int NvCtx;
+#endif
+
+struct NvVThread {
+    NvCtx ctx;
+    void *stackBase;      /* what has to be handed back, guard page included */
+    size_t stackSize;     /* usable bytes */
+    NvCarrier *carrier;   /* the one carrier that ever runs this stack */
+    NvSpawnFn fn;
+    nv *args;
+    int nargs;
+    int task;             /* the task this virtual thread completes */
+    int state;
+    NvMutexRaw *parkLock; /* the carrier releases it once the stack is off */
+    long long wakeAt;     /* deadline while on the timer queue */
+    NvVThread *next;      /* run queue, timer queue or free list */
+};
+
+struct NvCarrier {
+    NvCtx sched;
+    NvMutexRaw lock;
+    NvCondRaw cond;
+    NvVThread *runHead, *runTail;
+    NvVThread *timers; /* sorted by wakeAt */
+    NvVThread *pool;   /* finished stacks, ready to run something else */
+};
+
+static NV_TLS NvVThread *nv_cur_vt = 0;
+static NV_TLS NvCarrier *nv_cur_carrier = 0;
+static NV_TLS int nv_tls_anchor = 0; /* its address identifies an os thread */
+
+/* Who is running: the virtual thread when there is one, the operating system
+ * thread otherwise. A lock compares owners with it. */
+static void *nv_runner(void) {
+    return nv_cur_vt ? (void *)nv_cur_vt : (void *)&nv_tls_anchor;
+}
+
+/* --- parking lot --------------------------------------------------- */
+
+typedef struct NvWaiter {
+    struct NvWaiter *next;
+    NvVThread *vt;   /* the waiter is a virtual thread ... */
+    NvCondRaw *cond; /* ... or an operating system thread with this condition */
+    int ready;
+} NvWaiter;
+
+typedef struct NvPark {
+    NvWaiter *head;
+    NvWaiter *tail;
+} NvPark;
+
+static NV_TLS NvCondRaw nv_self_cond_storage;
+static NV_TLS int nv_self_cond_made = 0;
+
+static NvCondRaw *nv_self_cond(void) {
+    if (!nv_self_cond_made) {
+        NV_COND_INIT(&nv_self_cond_storage);
+        nv_self_cond_made = 1;
+    }
+    return &nv_self_cond_storage;
+}
+
+static void nv_carrier_wake(NvVThread *vt);
+static void nv_vt_park(NvMutexRaw *m);
+
+/* Blocks the current runner on `p`. `m` must be held on the way in and is
+ * held again on the way out, so the condition `p` stands for gets re-checked
+ * in a loop, exactly the way a condition variable wants it. */
+static void nv_park_self(NvPark *p, NvMutexRaw *m) {
+    NvWaiter w;
+    w.next = 0;
+    w.ready = 0;
+    w.vt = nv_cur_vt;
+    w.cond = w.vt ? 0 : nv_self_cond();
+    if (p->tail) {
+        p->tail->next = &w;
+    } else {
+        p->head = &w;
+    }
+    p->tail = &w;
+    if (w.vt) {
+        nv_vt_park(m);
+    } else {
+        while (!w.ready) {
+            NV_COND_WAIT(w.cond, m);
+        }
+    }
+}
+
+/* Both are called with the mutex that guards `p` held. */
+static void nv_unpark_one(NvPark *p) {
+    NvWaiter *w = p->head;
+    if (!w) {
+        return;
+    }
+    p->head = w->next;
+    if (!p->head) {
+        p->tail = 0;
+    }
+    w->ready = 1;
+    if (w->vt) {
+        nv_carrier_wake(w->vt);
+    } else {
+        NV_COND_SIGNAL(w->cond);
+    }
+}
+
+static void nv_unpark_all(NvPark *p) {
+    while (p->head) {
+        nv_unpark_one(p);
+    }
+}
+
+/* --- the carrier pool ---------------------------------------------- */
+
+#define NV_MAX_CARRIERS 256
+
+static NvMutexRaw nv_sched_lock; /* the carrier table and the live count */
+static NvMutexRaw nv_rt_lock;    /* handles and task state */
+static NvCarrier *nv_carrier_table[NV_MAX_CARRIERS];
+static int nv_carriers_running = 0;
+static int nv_carriers_wanted = 0;
+static int nv_spawn_turn = 0;
+static int nv_vt_live = 0;
+static size_t nv_vstack_size = 0;
+static int nv_conc_ready = 0;
+
+/* Set up before any second thread exists: nv_init_args() calls this, and so
+ * does every entry point that can be the first one a program reaches. */
+static void nv_conc_init(void) {
+    const char *env;
+    if (nv_conc_ready) {
+        return;
+    }
+    nv_conc_ready = 1;
+    NV_MUTEX_INIT(&nv_sched_lock);
+    NV_MUTEX_INIT(&nv_rt_lock);
+    nv_carriers_wanted = nv_cpu_count();
+    if (nv_carriers_wanted > NV_MAX_CARRIERS) {
+        nv_carriers_wanted = NV_MAX_CARRIERS;
+    }
+    env = getenv("NOVUS_THREADS");
+    if (env && atoi(env) > 0) {
+        nv_carriers_wanted = atoi(env) > NV_MAX_CARRIERS ? NV_MAX_CARRIERS : atoi(env);
+    }
+    nv_vstack_size = 128 * 1024;
+    env = getenv("NOVUS_VSTACK");
+    if (env && atoi(env) > 0) {
+        nv_vstack_size = (size_t)atoi(env) * 1024;
+    }
+}
+
+/* Called with c->lock held. */
+static void nv_runq_push(NvCarrier *c, NvVThread *vt) {
+    vt->state = NV_VT_READY;
+    vt->next = 0;
+    if (c->runTail) {
+        c->runTail->next = vt;
+    } else {
+        c->runHead = vt;
+    }
+    c->runTail = vt;
+    NV_COND_SIGNAL(&c->cond);
+}
+
+static void nv_carrier_wake(NvVThread *vt) {
+    NvCarrier *c = vt->carrier;
+    NV_MUTEX_LOCK(&c->lock);
+    nv_runq_push(c, vt);
+    NV_MUTEX_UNLOCK(&c->lock);
+}
+
+/* Called with c->lock held: everything whose deadline has passed. */
+static void nv_timers_fire(NvCarrier *c, long long now) {
+    while (c->timers && c->timers->wakeAt <= now) {
+        NvVThread *vt = c->timers;
+        c->timers = vt->next;
+        nv_runq_push(c, vt);
+    }
+}
+
+static NvVThread *nv_runq_take(NvCarrier *c) {
+    NvVThread *vt;
+    NV_MUTEX_LOCK(&c->lock);
+    for (;;) {
+        long long now = nv_now_ms();
+        nv_timers_fire(c, now);
+        if (c->runHead) {
+            vt = c->runHead;
+            c->runHead = vt->next;
+            if (!c->runHead) {
+                c->runTail = 0;
+            }
+            vt->next = 0;
+            NV_MUTEX_UNLOCK(&c->lock);
+            return vt;
+        }
+        if (c->timers) {
+            long long wait = c->timers->wakeAt - now;
+            NV_COND_WAIT_MS(&c->cond, &c->lock, wait < 1 ? 1 : wait);
+        } else {
+            NV_COND_WAIT(&c->cond, &c->lock);
+        }
+    }
+}
+
+/* --- stacks and contexts ------------------------------------------- */
+
+#if NV_HAVE_FIBERS && !defined(_WIN32)
+static size_t nv_page_size(void) {
+    long n = sysconf(_SC_PAGESIZE);
+    return n < 1 ? 4096 : (size_t)n;
+}
+#endif
+
+static void nv_vt_body(NvVThread *vt);
+
+#if NV_HAVE_FIBERS
+#ifdef _WIN32
+static VOID CALLBACK nv_fiber_entry(PVOID arg) {
+    (void)arg;
+    for (;;) {
+        nv_vt_body(nv_cur_vt);
+    }
+}
+static void nv_ctx_switch(NvCtx *from, NvCtx *to) {
+    (void)from;
+    SwitchToFiber(*to);
+}
+static int nv_ctx_start(NvVThread *vt) {
+    vt->ctx = CreateFiber(vt->stackSize, nv_fiber_entry, vt);
+    return vt->ctx != 0;
+}
+static void nv_carrier_enter(NvCarrier *c) { c->sched = ConvertThreadToFiber(0); }
+#else
+#ifdef __APPLE__
+/* ucontext is marked deprecated there and has no replacement; every use of
+ * it is in the three functions below */
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+#endif
+static void nv_ucontext_entry(void) {
+    for (;;) {
+        nv_vt_body(nv_cur_vt);
+    }
+}
+static void nv_ctx_switch(NvCtx *from, NvCtx *to) { swapcontext(from, to); }
+static int nv_ctx_start(NvVThread *vt) {
+    size_t page = nv_page_size();
+    char *base = (char *)mmap(0, vt->stackSize + page, PROT_READ | PROT_WRITE,
+                              MAP_PRIVATE | MAP_ANONYMOUS
+#ifdef MAP_NORESERVE
+                                  | MAP_NORESERVE
+#endif
+                              ,
+                              -1, 0);
+    if (base == MAP_FAILED) {
+        return 0;
+    }
+    /* a page the stack must not grow into, so an overflow faults instead of
+     * quietly becoming somebody else's memory */
+    mprotect(base, page, PROT_NONE);
+    vt->stackBase = base;
+    if (getcontext(&vt->ctx) != 0) {
+        munmap(base, vt->stackSize + page);
+        vt->stackBase = 0;
+        return 0;
+    }
+    vt->ctx.uc_stack.ss_sp = base + page;
+    vt->ctx.uc_stack.ss_size = vt->stackSize;
+    vt->ctx.uc_link = 0;
+    makecontext(&vt->ctx, nv_ucontext_entry, 0);
+    return 1;
+}
+#ifdef __APPLE__
+#pragma clang diagnostic pop
+#endif
+static void nv_carrier_enter(NvCarrier *c) { (void)c; }
+#endif
+#else /* no contexts here: `virtual` falls back to an operating system thread */
+static void nv_ctx_switch(NvCtx *from, NvCtx *to) {
+    (void)from;
+    (void)to;
+}
+static int nv_ctx_start(NvVThread *vt) {
+    (void)vt;
+    return 0;
+}
+static void nv_carrier_enter(NvCarrier *c) { (void)c; }
+#endif
+
+/* Parks the running virtual thread. `m` is held on the way in; the carrier
+ * releases it once this stack is off the processor, because releasing it
+ * here would let the unparker resume a stack that is still running. It is
+ * held again when the virtual thread comes back. */
+static void nv_vt_park(NvMutexRaw *m) {
+    NvVThread *vt = nv_cur_vt;
+    vt->state = NV_VT_PARKED;
+    vt->parkLock = m;
+    nv_ctx_switch(&vt->ctx, &vt->carrier->sched);
+    NV_MUTEX_LOCK(m);
+}
+
+static void nv_task_complete(int handle, nv result);
+
+static void nv_vt_body(NvVThread *vt) {
+    nv result = vt->fn ? vt->fn(vt->args, vt->nargs) : nv_nil;
+    vt->fn = 0;
+    vt->args = 0;
+    vt->state = NV_VT_DONE;
+    nv_task_complete(vt->task, result);
+    /* Back to the carrier. If this virtual thread comes out of the pool for
+     * another task the carrier resumes it right here, and the loop in the
+     * entry function runs the next body on the same stack. */
+    nv_ctx_switch(&vt->ctx, &vt->carrier->sched);
+}
+
+static void nv_carrier_loop(NvCarrier *c) {
+    nv_carrier_enter(c);
+    nv_cur_carrier = c;
+    for (;;) {
+        NvVThread *vt = nv_runq_take(c);
+        int state;
+        NvMutexRaw *held;
+        nv_cur_vt = vt;
+        vt->state = NV_VT_RUNNING;
+        nv_ctx_switch(&c->sched, &vt->ctx);
+        nv_cur_vt = 0;
+        /* Read the state before releasing the lock the virtual thread parked
+         * under - after that release the unparker owns it. */
+        state = vt->state;
+        held = vt->parkLock;
+        vt->parkLock = 0;
+        if (held) {
+            NV_MUTEX_UNLOCK(held);
+        }
+        if (state == NV_VT_DONE) {
+            NV_MUTEX_LOCK(&c->lock);
+            vt->next = c->pool;
+            c->pool = vt;
+            NV_MUTEX_UNLOCK(&c->lock);
+            NV_MUTEX_LOCK(&nv_sched_lock);
+            nv_vt_live--;
+            NV_MUTEX_UNLOCK(&nv_sched_lock);
+        } else if (state == NV_VT_READY) {
+            nv_carrier_wake(vt); /* yielded */
+        }
+    }
+}
+
+/* --- operating system threads -------------------------------------- */
+
+#ifdef _WIN32
+static DWORD WINAPI nv_carrier_main(LPVOID arg) {
+    nv_carrier_loop((NvCarrier *)arg);
+    return 0;
+}
+static int nv_thread_start(LPTHREAD_START_ROUTINE fn, void *arg) {
+    HANDLE h = CreateThread(0, 0, fn, arg, 0, 0);
+    if (!h) {
+        return 0;
+    }
+    CloseHandle(h);
+    return 1;
+}
+#else
+static void *nv_carrier_main(void *arg) {
+    nv_carrier_loop((NvCarrier *)arg);
+    return 0;
+}
+static int nv_thread_start(void *(*fn)(void *), void *arg) {
+    pthread_t t;
+    pthread_attr_t attr;
+    int rc;
+    pthread_attr_init(&attr);
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+    rc = pthread_create(&t, &attr, fn, arg);
+    pthread_attr_destroy(&attr);
+    return rc == 0;
+}
+#endif
+
+/* Called with nv_sched_lock held. */
+static NvCarrier *nv_carrier_add(void) {
+    NvCarrier *c;
+    if (nv_carriers_running >= nv_carriers_wanted) {
+        return 0;
+    }
+    c = (NvCarrier *)calloc(1, sizeof(NvCarrier));
+    if (!c) {
+        return 0;
+    }
+    NV_MUTEX_INIT(&c->lock);
+    NV_COND_INIT(&c->cond);
+    nv_carrier_table[nv_carriers_running] = c;
+    if (!nv_thread_start(nv_carrier_main, c)) {
+        free(c);
+        return 0;
+    }
+    nv_carriers_running++;
+    return c;
+}
+
+/* --- handles ------------------------------------------------------- */
+
+enum { NV_H_TASK = 1, NV_H_LOCK, NV_H_CHAN, NV_H_ATOMIC, NV_H_WG };
+
+typedef struct NvHandleSlot {
+    unsigned char kind;
+    void *ptr;
+} NvHandleSlot;
+
+static NvHandleSlot *nv_handles = 0;
+static int nv_handle_len = 0;
+static int nv_handle_cap = 0;
+
+/* Called with nv_rt_lock held. Handles are one based; 0 is "none". */
+static int nv_handle_new(unsigned char kind, void *ptr) {
+    if (nv_handle_len == nv_handle_cap) {
+        int cap = nv_handle_cap < 16 ? 16 : nv_handle_cap * 2;
+        NvHandleSlot *grown = (NvHandleSlot *)realloc(nv_handles, sizeof(NvHandleSlot) * (size_t)cap);
+        if (!grown) {
+            nv_error("out of memory");
+        }
+        nv_handles = grown;
+        nv_handle_cap = cap;
+    }
+    nv_handles[nv_handle_len].kind = kind;
+    nv_handles[nv_handle_len].ptr = ptr;
+    return ++nv_handle_len;
+}
+
+static void *nv_handle_of(nv v, unsigned char kind, const char *what) {
+    long long i = nv_type_of(v) == NV_INT ? nv_ival(v) : -1;
+    void *p = 0;
+    nv_conc_init();
+    NV_MUTEX_LOCK(&nv_rt_lock);
+    if (i >= 1 && i <= nv_handle_len && nv_handles[i - 1].kind == kind) {
+        p = nv_handles[i - 1].ptr;
+    }
+    NV_MUTEX_UNLOCK(&nv_rt_lock);
+    if (!p) {
+        nv_error("not a %s handle: %s", what, nv_display(v));
+    }
+    return p;
+}
+
+/* --- tasks --------------------------------------------------------- */
+
+typedef struct NvTask {
+    int done;
+    nv result;
+    NvPark park;
+} NvTask;
+
+static void nv_task_complete(int handle, nv result) {
+    NvTask *t;
+    NV_MUTEX_LOCK(&nv_rt_lock);
+    t = (NvTask *)nv_handles[handle - 1].ptr;
+    t->result = result;
+    t->done = 1;
+    nv_unpark_all(&t->park);
+    NV_MUTEX_UNLOCK(&nv_rt_lock);
+}
+
+typedef struct NvOsTask {
+    NvSpawnFn fn;
+    nv *args;
+    int nargs;
+    int task;
+} NvOsTask;
+
+#ifdef _WIN32
+static DWORD WINAPI nv_os_task_main(LPVOID arg) {
+#else
+static void *nv_os_task_main(void *arg) {
+#endif
+    NvOsTask *a = (NvOsTask *)arg;
+    int task = a->task;
+    nv result = a->fn(a->args, a->nargs);
+    free(a);
+    nv_task_complete(task, result);
+    return 0;
+}
+
+/* Everything the runtime builds on first use - the field layout of a class,
+ * its fields in name order, its defaults, which constructor a subclass
+ * inherits. Built here, on one thread, so that no two threads race to build
+ * the same cache once a program has more than one. */
+static void nv_class_warm_all(void) {
+    int i;
+    for (i = 0; i < nv_nclasses; i++) {
+        NvClass *c = nv_classes[i];
+        nv_class_layout(c);
+        nv_field_order(c, nv_class_field_count(c));
+        nv_class_defaults(c);
+        if (!c->ctorResolved) {
+            NvClass *walk = c;
+            int guard = 0;
+            while (walk && guard++ < 64) {
+                if (walk->ctor) {
+                    c->resolvedCtor = walk->ctor;
+                    break;
+                }
+                walk = nv_class_base(walk);
+            }
+            c->ctorResolved = 1;
+        }
+    }
+}
+
+/* The first spawn of a program happens while it is still single threaded,
+ * which is the moment to build everything the runtime would otherwise build
+ * on first use - class layouts, field orders, defaults - so that no two
+ * threads ever race to build the same cache. */
+static void nv_conc_boot(void) {
+    static int booted = 0;
+    nv_conc_init();
+    if (booted) {
+        return;
+    }
+    booted = 1;
+    nv_class_warm_all();
+}
+
+/* Called with c->lock held. */
+static NvVThread *nv_vt_take(NvCarrier *c) {
+    NvVThread *vt = c->pool;
+    if (vt) {
+        c->pool = vt->next;
+        vt->next = 0;
+        return vt;
+    }
+    vt = (NvVThread *)calloc(1, sizeof(NvVThread));
+    if (!vt) {
+        return 0;
+    }
+    vt->stackSize = nv_vstack_size;
+    vt->carrier = c;
+    if (!nv_ctx_start(vt)) {
+        free(vt);
+        return 0;
+    }
+    return vt;
+}
+
+/* `thread f(...)` and `virtual f(...)`. The arguments were evaluated by the
+ * thread that spawns and are handed to the new one; the result is a task
+ * handle to await. */
+static nv nv_spawn(int wantVirtual, NvSpawnFn fn, int nargs, ...) {
+    va_list ap;
+    NvTask *task;
+    nv *args = 0;
+    int handle, i;
+    nv_conc_boot();
+    if (nargs > 0) {
+        args = (nv *)nv_alloc(sizeof(nv) * (size_t)nargs);
+        va_start(ap, nargs);
+        for (i = 0; i < nargs; i++) {
+            args[i] = va_arg(ap, nv);
+        }
+        va_end(ap);
+    }
+    task = (NvTask *)calloc(1, sizeof(NvTask));
+    if (!task) {
+        nv_error("out of memory");
+    }
+    task->result = nv_nil;
+    NV_MUTEX_LOCK(&nv_rt_lock);
+    handle = nv_handle_new(NV_H_TASK, task);
+    NV_MUTEX_UNLOCK(&nv_rt_lock);
+#if NV_HAVE_FIBERS
+    if (wantVirtual) {
+        NvCarrier *c = 0;
+        NvVThread *vt;
+        NV_MUTEX_LOCK(&nv_sched_lock);
+        /* one carrier to begin with, another whenever the virtual threads
+         * outnumber the carriers, up to the parallelism of the machine */
+        if (nv_carriers_running == 0 || nv_vt_live >= nv_carriers_running) {
+            nv_carrier_add();
+        }
+        if (nv_carriers_running > 0) {
+            c = nv_carrier_table[nv_spawn_turn++ % nv_carriers_running];
+            nv_vt_live++;
+        }
+        NV_MUTEX_UNLOCK(&nv_sched_lock);
+        if (c) {
+            NV_MUTEX_LOCK(&c->lock);
+            vt = nv_vt_take(c);
+            if (vt) {
+                vt->fn = fn;
+                vt->args = args;
+                vt->nargs = nargs;
+                vt->task = handle;
+                nv_runq_push(c, vt);
+                NV_MUTEX_UNLOCK(&c->lock);
+                return nv_int(handle);
+            }
+            NV_MUTEX_UNLOCK(&c->lock);
+            NV_MUTEX_LOCK(&nv_sched_lock);
+            nv_vt_live--;
+            NV_MUTEX_UNLOCK(&nv_sched_lock);
+            /* no stack to be had: an operating system thread will do */
+        }
+    }
+#else
+    (void)wantVirtual;
+#endif
+    {
+        NvOsTask *a = (NvOsTask *)malloc(sizeof(NvOsTask));
+        if (!a) {
+            nv_error("out of memory");
+        }
+        a->fn = fn;
+        a->args = args;
+        a->nargs = nargs;
+        a->task = handle;
+        if (!nv_thread_start(nv_os_task_main, a)) {
+            /* the system refused a thread: run the work here rather than
+             * leave a task that is never going to complete */
+            free(a);
+            nv_task_complete(handle, fn(args, nargs));
+        }
+    }
+    return nv_int(handle);
+}
+
+/* await: the value of a task, once it has one. Awaiting anything that is not
+ * a task is that value, so `await` may be written wherever a result is
+ * expected without knowing whether the call it came from was async. */
+static nv nv_await(nv v) {
+    NvTask *t;
+    nv result;
+    long long i = nv_type_of(v) == NV_INT ? nv_ival(v) : -1;
+    if (i < 1 || !nv_conc_ready) {
+        return v;
+    }
+    NV_MUTEX_LOCK(&nv_rt_lock);
+    if (i > nv_handle_len || nv_handles[i - 1].kind != NV_H_TASK) {
+        NV_MUTEX_UNLOCK(&nv_rt_lock);
+        return v;
+    }
+    t = (NvTask *)nv_handles[i - 1].ptr;
+    while (!t->done) {
+        nv_park_self(&t->park, &nv_rt_lock);
+    }
+    result = t->result;
+    NV_MUTEX_UNLOCK(&nv_rt_lock);
+    return result;
+}
+
+static nv nv_task_is_done(nv v) {
+    NvTask *t = (NvTask *)nv_handle_of(v, NV_H_TASK, "task");
+    int done;
+    NV_MUTEX_LOCK(&nv_rt_lock);
+    done = t->done;
+    NV_MUTEX_UNLOCK(&nv_rt_lock);
+    return nv_bool(done);
+}
+
+static nv nv_await_all(nv tasks) {
+    nv out;
+    int i;
+    if (nv_type_of(tasks) != NV_ARR) {
+        nv_error("awaitAll expects an array of tasks");
+    }
+    out = nv_new(NV_ARR);
+    out->a = nv_arr_new_cap(tasks->a->len);
+    for (i = 0; i < tasks->a->len; i++) {
+        nv_arr_push(out->a, nv_await(tasks->a->items[i]));
+    }
+    return out;
+}
+
+/* --- giving up the processor --------------------------------------- */
+
+static nv nv_thread_yield(void) {
+    NvVThread *vt = nv_cur_vt;
+    if (!vt) {
+#ifdef _WIN32
+        SwitchToThread();
+#else
+        sched_yield();
+#endif
+        return nv_nil;
+    }
+    vt->state = NV_VT_READY;
+    nv_ctx_switch(&vt->ctx, &vt->carrier->sched);
+    return nv_nil;
+}
+
+/* Sleeping a virtual thread parks it on its carrier's timer queue; the
+ * carrier goes on running other virtual threads and wakes it when due. */
+static nv nv_thread_sleep(nv msValue) {
+    long long ms = nv_as_int(msValue);
+    NvVThread *vt = nv_cur_vt;
+    NvCarrier *c;
+    NvVThread **at;
+    if (ms <= 0) {
+        return nv_thread_yield();
+    }
+    if (!vt) {
+        return nv_os_sleep(msValue);
+    }
+    c = vt->carrier;
+    NV_MUTEX_LOCK(&c->lock);
+    vt->wakeAt = nv_now_ms() + ms;
+    at = &c->timers;
+    while (*at && (*at)->wakeAt <= vt->wakeAt) {
+        at = &(*at)->next;
+    }
+    vt->next = *at;
+    *at = vt;
+    nv_vt_park(&c->lock);
+    NV_MUTEX_UNLOCK(&c->lock);
+    return nv_nil;
+}
+
+static nv nv_thread_cpus(void) { return nv_int(nv_cpu_count()); }
+
+static nv nv_thread_parallelism(void) {
+    nv_conc_init();
+    return nv_int(nv_carriers_wanted);
+}
+
+static nv nv_thread_set_parallelism(nv n) {
+    long long want = nv_as_int(n);
+    nv_conc_init();
+    if (want < 1) {
+        want = 1;
+    }
+    if (want > NV_MAX_CARRIERS) {
+        want = NV_MAX_CARRIERS;
+    }
+    NV_MUTEX_LOCK(&nv_sched_lock);
+    nv_carriers_wanted = (int)want;
+    NV_MUTEX_UNLOCK(&nv_sched_lock);
+    return nv_nil;
+}
+
+static nv nv_thread_is_virtual(void) { return nv_bool(nv_cur_vt != 0); }
+
+static nv nv_thread_virtual_supported(void) { return nv_bool(NV_HAVE_FIBERS != 0); }
+
+/* A number that is the same for every call from one runner and different for
+ * every other runner. */
+static nv nv_thread_self_id(void) {
+    return nv_int((long long)(((uintptr_t)nv_runner() >> 4) & 0x7fffffff));
+}
+
+static nv nv_thread_running(void) {
+    int n;
+    nv_conc_init();
+    NV_MUTEX_LOCK(&nv_sched_lock);
+    n = nv_vt_live;
+    NV_MUTEX_UNLOCK(&nv_sched_lock);
+    return nv_int(n);
+}
+
+/* --- locks --------------------------------------------------------- */
+
+typedef struct NvLock {
+    NvMutexRaw m;
+    void *owner;
+    int count;
+    NvPark park;
+} NvLock;
+
+static NvLock *nv_lock_make(void) {
+    NvLock *l = (NvLock *)calloc(1, sizeof(NvLock));
+    if (!l) {
+        nv_error("out of memory");
+    }
+    NV_MUTEX_INIT(&l->m);
+    return l;
+}
+
+static nv nv_lock_new(void) {
+    NvLock *l;
+    int handle;
+    nv_conc_init();
+    l = nv_lock_make();
+    NV_MUTEX_LOCK(&nv_rt_lock);
+    handle = nv_handle_new(NV_H_LOCK, l);
+    NV_MUTEX_UNLOCK(&nv_rt_lock);
+    return nv_int(handle);
+}
+
+/* Re-entrant: the runner that holds a lock walks back into it, which is what
+ * a `sync` block inside a method a `sync` block called needs. */
+static void nv_lock_enter(NvLock *l) {
+    void *me = nv_runner();
+    NV_MUTEX_LOCK(&l->m);
+    if (l->owner == me) {
+        l->count++;
+        NV_MUTEX_UNLOCK(&l->m);
+        return;
+    }
+    while (l->owner) {
+        nv_park_self(&l->park, &l->m);
+    }
+    l->owner = me;
+    l->count = 1;
+    NV_MUTEX_UNLOCK(&l->m);
+}
+
+static void nv_lock_leave(NvLock *l) {
+    NV_MUTEX_LOCK(&l->m);
+    if (l->count > 0 && --l->count == 0) {
+        l->owner = 0;
+        nv_unpark_one(&l->park);
+    }
+    NV_MUTEX_UNLOCK(&l->m);
+}
+
+static nv nv_lock_acquire(nv h) {
+    nv_lock_enter((NvLock *)nv_handle_of(h, NV_H_LOCK, "lock"));
+    return nv_nil;
+}
+
+static nv nv_lock_release(nv h) {
+    nv_lock_leave((NvLock *)nv_handle_of(h, NV_H_LOCK, "lock"));
+    return nv_nil;
+}
+
+static nv nv_lock_try_acquire(nv h) {
+    NvLock *l = (NvLock *)nv_handle_of(h, NV_H_LOCK, "lock");
+    void *me = nv_runner();
+    int got = 0;
+    NV_MUTEX_LOCK(&l->m);
+    if (l->owner == me) {
+        l->count++;
+        got = 1;
+    } else if (!l->owner) {
+        l->owner = me;
+        l->count = 1;
+        got = 1;
+    }
+    NV_MUTEX_UNLOCK(&l->m);
+    return nv_bool(got);
+}
+
+/* The lock behind a bare `sync { ... }`: one per program, made on first use.
+ * `sync (lock) { ... }` names one instead. */
+static NvLock *nv_sync_default = 0;
+
+static NvLock *nv_sync_enter(nv lock) {
+    NvLock *l;
+    nv_conc_init();
+    if (nv_type_of(lock) == NV_INT) {
+        l = (NvLock *)nv_handle_of(lock, NV_H_LOCK, "lock");
+    } else {
+        NV_MUTEX_LOCK(&nv_rt_lock);
+        if (!nv_sync_default) {
+            nv_sync_default = nv_lock_make();
+        }
+        l = nv_sync_default;
+        NV_MUTEX_UNLOCK(&nv_rt_lock);
+    }
+    nv_lock_enter(l);
+    return l;
+}
+
+static void nv_sync_leave(NvLock *l) { nv_lock_leave(l); }
+
+/* --- channels ------------------------------------------------------ */
+
+typedef struct NvChan {
+    NvMutexRaw m;
+    nv *items;
+    int cap;      /* slots in items */
+    int declared; /* what the program asked for; 0 is unbuffered */
+    int len;
+    int head;
+    int closed;
+    NvPark senders;
+    NvPark receivers;
+} NvChan;
+
+static nv nv_chan_new(nv capValue) {
+    long long want = nv_as_int(capValue);
+    NvChan *c;
+    int handle;
+    nv_conc_init();
+    c = (NvChan *)calloc(1, sizeof(NvChan));
+    if (!c) {
+        nv_error("out of memory");
+    }
+    NV_MUTEX_INIT(&c->m);
+    c->declared = want < 0 ? 0 : (int)want;
+    c->cap = c->declared < 1 ? 1 : c->declared;
+    c->items = (nv *)malloc(sizeof(nv) * (size_t)c->cap);
+    if (!c->items) {
+        nv_error("out of memory");
+    }
+    NV_MUTEX_LOCK(&nv_rt_lock);
+    handle = nv_handle_new(NV_H_CHAN, c);
+    NV_MUTEX_UNLOCK(&nv_rt_lock);
+    return nv_int(handle);
+}
+
+/* false when the channel was closed and the value could not be delivered. */
+static nv nv_chan_send(nv h, nv value) {
+    NvChan *c = (NvChan *)nv_handle_of(h, NV_H_CHAN, "channel");
+    NV_MUTEX_LOCK(&c->m);
+    while (!c->closed && c->len == c->cap) {
+        nv_park_self(&c->senders, &c->m);
+    }
+    if (c->closed) {
+        NV_MUTEX_UNLOCK(&c->m);
+        return nv_bool(0);
+    }
+    c->items[(c->head + c->len) % c->cap] = value;
+    c->len++;
+    nv_unpark_one(&c->receivers);
+    if (c->declared == 0) {
+        /* unbuffered: the send is over when the value has been taken */
+        while (!c->closed && c->len > 0) {
+            nv_park_self(&c->senders, &c->m);
+        }
+    }
+    NV_MUTEX_UNLOCK(&c->m);
+    return nv_bool(1);
+}
+
+/* A received value can be anything, the absence of one included, so the
+ * receiving thread is told which of the two it got - the same way `net`
+ * reports what its last call did. */
+static NV_TLS int nv_chan_got = 0;
+
+static nv nv_chan_received(void) { return nv_bool(nv_chan_got); }
+
+static nv nv_chan_recv(nv h) {
+    NvChan *c = (NvChan *)nv_handle_of(h, NV_H_CHAN, "channel");
+    nv v;
+    nv_chan_got = 0;
+    NV_MUTEX_LOCK(&c->m);
+    while (c->len == 0 && !c->closed) {
+        nv_park_self(&c->receivers, &c->m);
+    }
+    if (c->len == 0) {
+        NV_MUTEX_UNLOCK(&c->m); /* closed and drained */
+        return nv_nil;
+    }
+    nv_chan_got = 1;
+    v = c->items[c->head];
+    c->head = (c->head + 1) % c->cap;
+    c->len--;
+    nv_unpark_all(&c->senders);
+    NV_MUTEX_UNLOCK(&c->m);
+    return v;
+}
+
+static nv nv_chan_try_recv(nv h) {
+    NvChan *c = (NvChan *)nv_handle_of(h, NV_H_CHAN, "channel");
+    nv v = nv_nil;
+    nv_chan_got = 0;
+    NV_MUTEX_LOCK(&c->m);
+    if (c->len > 0) {
+        nv_chan_got = 1;
+        v = c->items[c->head];
+        c->head = (c->head + 1) % c->cap;
+        c->len--;
+        nv_unpark_all(&c->senders);
+    }
+    NV_MUTEX_UNLOCK(&c->m);
+    return v;
+}
+
+static nv nv_chan_close(nv h) {
+    NvChan *c = (NvChan *)nv_handle_of(h, NV_H_CHAN, "channel");
+    NV_MUTEX_LOCK(&c->m);
+    c->closed = 1;
+    nv_unpark_all(&c->senders);
+    nv_unpark_all(&c->receivers);
+    NV_MUTEX_UNLOCK(&c->m);
+    return nv_nil;
+}
+
+static nv nv_chan_is_closed(nv h) {
+    NvChan *c = (NvChan *)nv_handle_of(h, NV_H_CHAN, "channel");
+    int closed;
+    NV_MUTEX_LOCK(&c->m);
+    closed = c->closed;
+    NV_MUTEX_UNLOCK(&c->m);
+    return nv_bool(closed);
+}
+
+static nv nv_chan_length(nv h) {
+    NvChan *c = (NvChan *)nv_handle_of(h, NV_H_CHAN, "channel");
+    int len;
+    NV_MUTEX_LOCK(&c->m);
+    len = c->len;
+    NV_MUTEX_UNLOCK(&c->m);
+    return nv_int(len);
+}
+
+/* --- counters ------------------------------------------------------ */
+
+typedef struct NvCounter {
+    NvMutexRaw m;
+    long long value;
+} NvCounter;
+
+static nv nv_counter_new(nv initial) {
+    NvCounter *a;
+    int handle;
+    nv_conc_init();
+    a = (NvCounter *)calloc(1, sizeof(NvCounter));
+    if (!a) {
+        nv_error("out of memory");
+    }
+    NV_MUTEX_INIT(&a->m);
+    a->value = nv_as_int(initial);
+    NV_MUTEX_LOCK(&nv_rt_lock);
+    handle = nv_handle_new(NV_H_ATOMIC, a);
+    NV_MUTEX_UNLOCK(&nv_rt_lock);
+    return nv_int(handle);
+}
+
+static nv nv_counter_add(nv h, nv delta) {
+    NvCounter *a = (NvCounter *)nv_handle_of(h, NV_H_ATOMIC, "counter");
+    long long v;
+    NV_MUTEX_LOCK(&a->m);
+    a->value += nv_as_int(delta);
+    v = a->value;
+    NV_MUTEX_UNLOCK(&a->m);
+    return nv_int(v);
+}
+
+static nv nv_counter_get(nv h) {
+    NvCounter *a = (NvCounter *)nv_handle_of(h, NV_H_ATOMIC, "counter");
+    long long v;
+    NV_MUTEX_LOCK(&a->m);
+    v = a->value;
+    NV_MUTEX_UNLOCK(&a->m);
+    return nv_int(v);
+}
+
+static nv nv_counter_set(nv h, nv value) {
+    NvCounter *a = (NvCounter *)nv_handle_of(h, NV_H_ATOMIC, "counter");
+    NV_MUTEX_LOCK(&a->m);
+    a->value = nv_as_int(value);
+    NV_MUTEX_UNLOCK(&a->m);
+    return nv_nil;
+}
+
+static nv nv_counter_swap(nv h, nv expect, nv value) {
+    NvCounter *a = (NvCounter *)nv_handle_of(h, NV_H_ATOMIC, "counter");
+    int swapped = 0;
+    NV_MUTEX_LOCK(&a->m);
+    if (a->value == nv_as_int(expect)) {
+        a->value = nv_as_int(value);
+        swapped = 1;
+    }
+    NV_MUTEX_UNLOCK(&a->m);
+    return nv_bool(swapped);
+}
+
+/* --- groups -------------------------------------------------------- */
+
+typedef struct NvGroup {
+    NvMutexRaw m;
+    int count;
+    NvPark park;
+} NvGroup;
+
+static nv nv_group_new(void) {
+    NvGroup *g;
+    int handle;
+    nv_conc_init();
+    g = (NvGroup *)calloc(1, sizeof(NvGroup));
+    if (!g) {
+        nv_error("out of memory");
+    }
+    NV_MUTEX_INIT(&g->m);
+    NV_MUTEX_LOCK(&nv_rt_lock);
+    handle = nv_handle_new(NV_H_WG, g);
+    NV_MUTEX_UNLOCK(&nv_rt_lock);
+    return nv_int(handle);
+}
+
+static nv nv_group_add(nv h, nv n) {
+    NvGroup *g = (NvGroup *)nv_handle_of(h, NV_H_WG, "group");
+    NV_MUTEX_LOCK(&g->m);
+    g->count += (int)nv_as_int(n);
+    if (g->count <= 0) {
+        nv_unpark_all(&g->park);
+    }
+    NV_MUTEX_UNLOCK(&g->m);
+    return nv_nil;
+}
+
+static nv nv_group_done(nv h) {
+    NvGroup *g = (NvGroup *)nv_handle_of(h, NV_H_WG, "group");
+    NV_MUTEX_LOCK(&g->m);
+    g->count--;
+    if (g->count <= 0) {
+        nv_unpark_all(&g->park);
+    }
+    NV_MUTEX_UNLOCK(&g->m);
+    return nv_nil;
+}
+
+static nv nv_group_wait(nv h) {
+    NvGroup *g = (NvGroup *)nv_handle_of(h, NV_H_WG, "group");
+    NV_MUTEX_LOCK(&g->m);
+    while (g->count > 0) {
+        nv_park_self(&g->park, &g->m);
+    }
+    NV_MUTEX_UNLOCK(&g->m);
+    return nv_nil;
+}
+
 #endif /* NOVUS_RT_H */
 
 /* declarations */
@@ -3922,6 +8180,9 @@ static nv f_genBuiltinCall_4(nv a0, nv a1, nv a2, nv a3);
 static nv f_isCoreBuiltin_1(nv a0);
 static nv f_nl_0(void);
 static nv f_cstr_1(nv a0);
+static nv f_litRef_2(nv a0, nv a1);
+static nv f_literalTable_1(nv a0);
+static nv f_spawnBodies_1(nv a0);
 static nv f_copyMap_1(nv a0);
 static nv f_isPrimitiveType_1(nv a0);
 static nv f_coerceCode_2(nv a0, nv a1);
@@ -3933,6 +8194,13 @@ static nv f_methodName_1(nv a0);
 static nv f_methodRet_1(nv a0);
 static nv f_cName_1(nv a0);
 static nv f_packageOf_1(nv a0);
+static nv f_hasAnnotation_2(nv a0, nv a1);
+static nv f_isAsyncMethod_1(nv a0);
+static nv f_argSlots_1(nv a0);
+static nv f_syncDepth_1(nv a0);
+static nv f_syncHeld_1(nv a0);
+static nv f_syncLoopHeld_1(nv a0);
+static nv f_syncUnwind_2(nv a0, nv a1);
 static nv f_isNativeMethod_1(nv a0);
 static nv f_intToStr_1(nv a0);
 static nv f_invokeCall_4(nv a0, nv a1, nv a2, nv a3);
@@ -3941,6 +8209,8 @@ static nv f_invokeCall0_2(nv a0, nv a1);
 static nv f_isKeywordWord_1(nv a0);
 static nv f_isTwoCharOp_1(nv a0);
 static nv f_isDigit_1(nv a0);
+static nv f_isHexDigit_1(nv a0);
+static nv f_hexValue_1(nv a0);
 static nv f_isAlpha_1(nv a0);
 static nv f_isAlphaNum_1(nv a0);
 static nv f_isSymbolChar_1(nv a0);
@@ -3955,6 +8225,7 @@ static nv f_classMethods_1(nv a0);
 static nv f_classIsAbstract_1(nv a0);
 static nv f_findMethod_3(nv a0, nv a1, nv a2);
 static nv f_classFieldCount_2(nv a0, nv a1);
+static nv f_indexClassFields_2(nv a0, nv a1);
 static nv f_fieldSlot_3(nv a0, nv a1, nv a2);
 static nv f_classHasField_3(nv a0, nv a1, nv a2);
 static nv f_isImplicitField_4(nv a0, nv a1, nv a2, nv a3);
@@ -3983,6 +8254,8 @@ static nv f_genAddChain_4(nv a0, nv a1, nv a2, nv a3);
 static nv f_genArgs_5(nv a0, nv a1, nv a2, nv a3, nv a4);
 static nv f_genResolvedCall_4(nv a0, nv a1, nv a2, nv a3);
 static nv f_genQualifiedCall_7(nv a0, nv a1, nv a2, nv a3, nv a4, nv a5, nv a6);
+static nv f_spawnBody_2(nv a0, nv a1);
+static nv f_genSpawn_4(nv a0, nv a1, nv a2, nv a3);
 static nv f_genCall_4(nv a0, nv a1, nv a2, nv a3);
 static nv f_checkClasses_2(nv a0, nv a1);
 static nv f_genBlock_5(nv a0, nv a1, nv a2, nv a3, nv a4);
@@ -3995,6 +8268,7 @@ static nv f_cParamList_1(nv a0);
 static nv f_funcCName_4(nv a0, nv a1, nv a2, nv a3);
 static nv f_argNames_1(nv a0);
 static nv f_genFreeMethod_3(nv a0, nv a1, nv a2);
+static nv f_genFreeMethodBody_3(nv a0, nv a1, nv a2);
 static nv f_genDispatcher_4(nv a0, nv a1, nv a2, nv a3);
 static nv f_methodCName_3(nv a0, nv a1, nv a2);
 static nv f_genClassMethod_4(nv a0, nv a1, nv a2, nv a3);
@@ -4011,6 +8285,7 @@ static nv f_afterListItem_4(nv a0, nv a1, nv a2, nv a3);
 static nv f_parseArgs_2(nv a0, nv a1);
 static nv f_parseInterpolated_2(nv a0, nv a1);
 static nv f_parsePrimary_2(nv a0, nv a1);
+static nv f_startsExpression_2(nv a0, nv a1);
 static nv f_parseUnary_2(nv a0, nv a1);
 static nv f_parsePostfix_3(nv a0, nv a1, nv a2);
 static nv f_parseExpr_3(nv a0, nv a1, nv a2);
@@ -4086,6 +8361,778 @@ static nv f_printUsage_0(void);
 static nv f_optionsFrom_2(nv a0, nv a1);
 static nv f_main_1(nv a0);
 
+/* string literals */
+static NvVal nv_lits[767];
+static const char *const nv_lit_text[767] = {
+    "windows",
+    "where ",
+    " > nul 2>&1",
+    "command -v ",
+    " > /dev/null 2>&1",
+    "",
+    "/",
+    "(",
+    ")",
+    " ",
+    "n",
+    "r",
+    "t",
+    "\?",
+    "error: ",
+    ": ",
+    "SYM",
+    "KEYWORD",
+    "IDENT",
+    "EOF",
+    "end of file",
+    "'",
+    "expected '",
+    "' but found ",
+    "expected ",
+    " but found ",
+    "<",
+    "str",
+    "string",
+    "int",
+    "integer",
+    "boolean",
+    "bool",
+    "doub",
+    "double",
+    "float",
+    "expected a type but found ",
+    ">",
+    ">>",
+    "node",
+    "pos",
+    "(params",
+    "unterminated parameter list",
+    "parameter name",
+    " (p ",
+    ",",
+    "arrays",
+    "base64",
+    "bits",
+    "bytes",
+    "cli",
+    "crypto",
+    "csv",
+    "fmt",
+    "hash",
+    "http",
+    "io",
+    "json",
+    "log",
+    "maps",
+    "math",
+    "net",
+    "os",
+    "path",
+    "random",
+    "strings",
+    "test",
+    "thread",
+    "time",
+    "zlib",
+    "package arrays\n\n// Array helpers beyond the builtin methods (length, append, pop, insert,\n// remove, contains, indexOf, join, clear).\n\nmethod sort(array<object> items): array<object> native \"nv_arr_sorted\"   // ascending, numbers or strings\nmethod sortDesc(array<object> items): array<object> {\n    return reverse(sort(items))\n}\n\nmethod reverse(array<object> items): array<object> {\n    var out = []\n    var i = items.length()\n    while (i > 0) {\n        out.append(items[i - 1])\n        i = i - 1\n    }\n    return out\n}\n\nmethod unique(array<object> items): array<object> {\n    var out = []\n    for (x in items) {\n        if (out.contains(x) == false) {\n            out.append(x)\n        }\n    }\n    return out\n}\n\n// [from, to) as integers\nmethod range(integer from, integer to): array<integer> {\n    var out = []\n    var i = from\n    while (i < to) {\n        out.append(i)\n        i = i + 1\n    }\n    return out\n}\n\nmethod slice(array<object> items, integer from, integer to): array<object> {\n    var out = []\n    var i = from\n    if (i < 0) {\n        i = 0\n    }\n    while (i < to && i < items.length()) {\n        out.append(items[i])\n        i = i + 1\n    }\n    return out\n}\n\nmethod concat(array<object> a, array<object> b): array<object> {\n    var out = []\n    for (x in a) {\n        out.append(x)\n    }\n    for (x in b) {\n        out.append(x)\n    }\n    return out\n}\n\nmethod sum(array<object> numbers): object {\n    var total = 0\n    for (x in numbers) {\n        total = total + x\n    }\n    return total\n}\n\nmethod min(array<object> items): object {\n    var best = items[0]\n    for (x in items) {\n        if (x < best) {\n            best = x\n        }\n    }\n    return best\n}\n\nmethod max(array<object> items): object {\n    var best = items[0]\n    for (x in items) {\n        if (x > best) {\n            best = x\n        }\n    }\n    return best\n}\n\nmethod first(array<object> items): object {\n    return items[0]\n}\n\nmethod last(array<object> items): object {\n    return items[items.length() - 1]\n}\n\nmethod isEmpty(array<object> items): bool {\n    return items.length() == 0\n}\n\n// Number of elements equal to `value`.\nmethod countOf(array<object> items, object value): integer {\n    var n = 0\n    for (x in items) {\n        if (x == value) {\n            n = n + 1\n        }\n    }\n    return n\n}\n\n// Copies the array (shallow).\nmethod copy(array<object> items): array<object> {\n    return slice(items, 0, items.length())\n}\n\n// Splits into chunks of `size` elements.\nmethod chunk(array<object> items, integer size): array<object> {\n    var out = []\n    var i = 0\n    while (i < items.length()) {\n        out.append(slice(items, i, i + size))\n        i = i + size\n    }\n    return out\n}\n",
+    "package base64\n\nimport math\n\n// Base64 encoding (RFC 4648, with padding).\n\nmethod alphabet(): string {\n    return \"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/\"\n}\n\nmethod encode(string text): string {\n    var table = alphabet()\n    var out = \"\"\n    var i = 0\n    var n = text.length()\n    while (i < n) {\n        var b0 = ord(text.charAt(i))\n        var b1 = 0\n        var b2 = 0\n        if (i + 1 < n) {\n            b1 = ord(text.charAt(i + 1))\n        }\n        if (i + 2 < n) {\n            b2 = ord(text.charAt(i + 2))\n        }\n        var triple = b0 * 65536 + b1 * 256 + b2\n        out = out + table.charAt(triple / 262144)\n        out = out + table.charAt((triple / 4096) % 64)\n        if (i + 1 < n) {\n            out = out + table.charAt((triple / 64) % 64)\n        }\n        if (i + 1 >= n) {\n            out = out + \"=\"\n        }\n        if (i + 2 < n) {\n            out = out + table.charAt(triple % 64)\n        }\n        if (i + 2 >= n) {\n            out = out + \"=\"\n        }\n        i = i + 3\n    }\n    return out\n}\n\nmethod decode(string encoded): string {\n    var table = alphabet()\n    var out = \"\"\n    var bits = 0\n    var value = 0\n    for (c in encoded) {\n        if (c == \"=\" || c == \"\\n\" || c == \"\\r\" || c == \" \") {\n            continue\n        }\n        var index = table.indexOf(c)\n        if (index < 0) {\n            continue\n        }\n        value = value * 64 + index\n        bits = bits + 6\n        if (bits >= 8) {\n            bits = bits - 8\n            var byte = value / math.powInt(2, bits)\n            out = out + chr(byte % 256)\n            value = value % math.powInt(2, bits)\n        }\n    }\n    return out\n}\n",
+    "package bits\n\n// Bit operations that have no operator.\n//\n// The operators &, |, ^, << and >> are part of the language and work on 64\n// bit integers; >> keeps the sign. What is left over lives here.\n\n// Logical right shift - zeros are shifted in, unlike >>.\nmethod ushr(integer value, integer count): integer native \"nv_bits_ushr\"\n\n// The complement of every bit.\nmethod not(integer value): integer native \"nv_bits_not\"\n\nmethod rotateLeft(integer value, integer count): integer native \"nv_bits_rotl\"\nmethod rotateRight(integer value, integer count): integer native \"nv_bits_rotr\"\n\n// The low `count` bits of `value`.\nmethod mask(integer value, integer count): integer native \"nv_bits_mask\"\n\n// Arithmetic that wraps at 64 bits rather than overflowing. Signed overflow\n// is undefined in C, which the generated code is, so an algorithm that relies\n// on wrapping - a random number generator reproducing another language's, for\n// instance - has to say so explicitly.\nmethod wrappingAdd(integer a, integer b): integer native \"nv_bits_wrapping_add\"\nmethod wrappingSub(integer a, integer b): integer native \"nv_bits_wrapping_sub\"\nmethod wrappingMul(integer a, integer b): integer native \"nv_bits_wrapping_mul\"\n\n// The low 32 bits, read as a signed 32 bit number.\nmethod toI32(integer value): integer native \"nv_bits_to_i32\"\n\n// An unsigned 64 bit value as a float. A plain conversion reads the top bit\n// as a sign; this one does not.\nmethod toUnsignedFloat(integer value): float native \"nv_bits_to_unsigned_float\"\n\n// How many bits are set.\nmethod countOnes(integer value): integer native \"nv_bits_count_ones\"\n\n// The position of the highest set bit, -1 when `value` is zero. The number\n// of bits it takes to store a value is one more than this.\nmethod highestBit(integer value): integer native \"nv_bits_highest\"\n\n// Whether bit `index` is set.\nmethod isSet(integer value, integer index): bool {\n    return ushr(value, index) & 1 == 1\n}\n\n// `value` with bit `index` set.\nmethod set(integer value, integer index): integer {\n    return value | (1 << index)\n}\n\n// `value` with bit `index` cleared.\nmethod clear(integer value, integer index): integer {\n    return value & not(1 << index)\n}\n\n// The number of bits needed to represent values 0..count-1, at least 1.\nmethod bitsFor(integer count): integer {\n    if (count <= 1) {\n        return 1\n    }\n    return highestBit(count - 1) + 1\n}\n",
+    "package bytes\n\n// Binary buffers.\n//\n// A Novus string carries an explicit byte length and charAt/substring work on\n// bytes, so a string is also the byte buffer: it holds NUL and every value in\n// 0..255 unchanged. This module reads and writes the fixed width and variable\n// length integers a binary protocol is made of, always big endian - the byte\n// order of the Minecraft, DNS and TLS wire formats alike.\n//\n// Reads past the end of a buffer do not abort the program: they yield 0 and\n// raise a flag, so a server survives a truncated or hostile packet.\n//   if (bytes.failed()) { ... bytes.clearError() }\n\nmethod size(string buffer): integer native \"nv_bytes_size\"\nmethod slice(string buffer, integer from, integer to): string native \"nv_bytes_slice\"\nmethod join(array<string> parts): string native \"nv_bytes_join\"\nmethod zeros(integer count): string native \"nv_bytes_zeros\"\n\n// Byte exact search and comparison (the string builtins stop at a NUL byte).\nmethod indexOf(string haystack, string needle, integer from): integer native \"nv_bytes_index_of\"\nmethod equal(string a, string b): bool native \"nv_bytes_equal\"\n\nmethod failed(): bool native \"nv_bytes_failed\"\nmethod clearError() native \"nv_bytes_clear_error\"\n\n// Reading at a byte offset.\nmethod u8(string buffer, integer offset): integer native \"nv_bytes_u8\"\nmethod u16(string buffer, integer offset): integer native \"nv_bytes_u16\"\nmethod u32(string buffer, integer offset): integer native \"nv_bytes_u32\"\nmethod i8(string buffer, integer offset): integer native \"nv_bytes_i8\"\nmethod i16(string buffer, integer offset): integer native \"nv_bytes_i16\"\nmethod i32(string buffer, integer offset): integer native \"nv_bytes_i32\"\nmethod i64(string buffer, integer offset): integer native \"nv_bytes_i64\"\nmethod f32(string buffer, integer offset): float native \"nv_bytes_f32\"\nmethod f64(string buffer, integer offset): float native \"nv_bytes_f64\"\n\n// Variable length integers: seven bits per byte, the high bit continues.\n// varIntSize() reports how many bytes the value occupies, 0 when the buffer\n// ends inside it and -1 when it is longer than the encoding allows.\nmethod varInt(string buffer, integer offset): integer native \"nv_bytes_varint\"\nmethod varIntSize(string buffer, integer offset): integer native \"nv_bytes_varint_size\"\nmethod varLong(string buffer, integer offset): integer native \"nv_bytes_varlong\"\nmethod varLongSize(string buffer, integer offset): integer native \"nv_bytes_varlong_size\"\n\n// Writing: each returns the encoded bytes.\nmethod putU8(integer value): string native \"nv_bytes_put_u8\"\nmethod putI16(integer value): string native \"nv_bytes_put_i16\"\nmethod putI32(integer value): string native \"nv_bytes_put_i32\"\nmethod putI64(integer value): string native \"nv_bytes_put_i64\"\nmethod putF32(float value): string native \"nv_bytes_put_f32\"\nmethod putF64(float value): string native \"nv_bytes_put_f64\"\nmethod putVarInt(integer value): string native \"nv_bytes_put_varint\"\nmethod putVarLong(integer value): string native \"nv_bytes_put_varlong\"\n\n// How many bytes putVarInt() will produce - needed to size a length prefix\n// before the body it describes exists.\nmethod varIntSizeOf(integer value): integer native \"nv_bytes_varint_written\"\n\nmethod hex(string buffer): string native \"nv_bytes_hex\"\nmethod fromHex(string text): string native \"nv_bytes_from_hex\"\nmethod toArray(string buffer): array<integer> native \"nv_bytes_to_array\"\nmethod ofArray(array<integer> values): string native \"nv_bytes_of_array\"\n\n// A bool is one byte, 0 or 1.\nmethod putBool(bool value): string {\n    if (value) {\n        return putU8(1)\n    }\n    return putU8(0)\n}\n\nmethod boolAt(string buffer, integer offset): bool {\n    return u8(buffer, offset) != 0\n}\n\n// A length prefixed UTF-8 string: a VarInt byte count, then the bytes.\nmethod putString(string text): string {\n    return putVarInt(size(text)) + text\n}\n",
+    "package cli\n\n// Command line parsing: `cli.parse(args)` splits positional arguments from\n// options: --name value, --name=value, --flag, -x.\n//   { \"args\": [...], \"opts\": { \"name\": \"value\", \"flag\": \"true\" } }\n\nmethod parse(array<string> arguments): map<string, object> {\n    var positional = []\n    var options = {}\n    var i = 0\n    while (i < arguments.length()) {\n        var a = arguments[i]\n        if (a == \"--\") {\n            i = i + 1\n            while (i < arguments.length()) {\n                positional.append(arguments[i])\n                i = i + 1\n            }\n            break\n        }\n        if (a.startsWith(\"--\")) {\n            var body = a.substring(2, a.length())\n            var eq = body.indexOf(\"=\")\n            if (eq >= 0) {\n                options[body.substring(0, eq)] = body.substring(eq + 1, body.length())\n                i = i + 1\n                continue\n            }\n            if (i + 1 < arguments.length() && arguments[i + 1].startsWith(\"-\") == false) {\n                options[body] = arguments[i + 1]\n                i = i + 2\n                continue\n            }\n            options[body] = \"true\"\n            i = i + 1\n            continue\n        }\n        if (a.startsWith(\"-\") && a.length() > 1) {\n            options[a.substring(1, a.length())] = \"true\"\n            i = i + 1\n            continue\n        }\n        positional.append(a)\n        i = i + 1\n    }\n    return { \"args\": positional, \"opts\": options }\n}\n\n// Option value or a fallback.\nmethod option(map<string, object> parsed, string name, string fallback): string {\n    var opts = parsed[\"opts\"]\n    if (opts.has(name)) {\n        return opts[name]\n    }\n    return fallback\n}\n\nmethod flag(map<string, object> parsed, string name): bool {\n    var opts = parsed[\"opts\"]\n    return opts.has(name)\n}\n\n// Positional argument at `index` or a fallback.\nmethod argument(map<string, object> parsed, integer index, string fallback): string {\n    var args = parsed[\"args\"]\n    if (index < args.length()) {\n        return args[index]\n    }\n    return fallback\n}\n",
+    "package crypto\n\nimport bytes\n\n// Hashes, a block cipher and randomness - raw bytes in, raw bytes out.\n//\n// SHA-1 and MD5 are here because network protocols still ask for them\n// (session digests, version 3 UUIDs). Neither is a safe choice for new\n// designs; do not use them to store passwords.\n\n// 20 raw bytes.\nmethod sha1(string data): string native \"nv_crypto_sha1\"\n\n// 16 raw bytes.\nmethod md5(string data): string native \"nv_crypto_md5\"\n\n// Cryptographically strong random bytes (/dev/urandom where available).\nmethod random(integer count): string native \"nv_crypto_random\"\n\n// AES-128 in CFB-8: a byte-wise stream cipher. Both key and iv are 16 bytes.\n// The mode keeps a shift register between calls, so one handle per direction\n// of a stream; feed it the bytes in order. Returns a handle, -1 on a bad key.\nmethod cipher(string key, string iv, bool encrypt): integer native \"nv_crypto_cipher_new\"\nmethod update(integer handle, string data): string native \"nv_crypto_cipher_update\"\nmethod release(integer handle) native \"nv_crypto_cipher_free\"\n\n// The digest some session services expect: SHA-1 read as a signed big endian\n// number, printed in hex, negatives as \"-\" and the two's complement.\nmethod signedHexDigest(string data): string native \"nv_crypto_mc_digest\"\n\n// RSA.\n//\n// generate() makes a key pair and returns a handle; it looks for two random\n// primes, so it takes a moment and belongs at startup, not in a request.\n// publicDer() hands out the public key as a DER SubjectPublicKeyInfo, which\n// is the form a peer expects to be given. decrypt() undoes PKCS#1 v1.5\n// padding and returns \"\" when the block is not well formed.\nmethod rsaGenerate(integer bits): integer native \"nv_crypto_rsa_generate\"\nmethod rsaPublicDer(integer handle): string native \"nv_crypto_rsa_public_der\"\nmethod rsaDecrypt(integer handle, string data): string native \"nv_crypto_rsa_decrypt\"\nmethod rsaEncrypt(integer handle, string data): string native \"nv_crypto_rsa_encrypt\"\nmethod rsaRelease(integer handle) native \"nv_crypto_rsa_free\"\n\n// \"xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx\" of 16 raw bytes.\nmethod uuidText(string raw): string native \"nv_crypto_uuid_text\"\n\n// Lower case hex of a digest.\nmethod hex(string data): string {\n    return bytes.hex(data)\n}\n\n// A version 3 (MD5) UUID of `name` in `namespace`, as 16 raw bytes.\nmethod uuid3(string namespace, string name): string {\n    var digest = md5(namespace + name)\n    var version = 0x30 + (bytes.u8(digest, 6) % 16)\n    var variant = 0x80 + (bytes.u8(digest, 8) % 64)\n    return bytes.slice(digest, 0, 6) + bytes.putU8(version) + bytes.slice(digest, 7, 8) + bytes.putU8(variant) + bytes.slice(digest, 9, 16)\n}\n\n// A random version 4 UUID as 16 raw bytes.\nmethod uuid4(): string {\n    var raw = random(16)\n    var version = 0x40 + (bytes.u8(raw, 6) % 16)\n    var variant = 0x80 + (bytes.u8(raw, 8) % 64)\n    return bytes.slice(raw, 0, 6) + bytes.putU8(version) + bytes.slice(raw, 7, 8) + bytes.putU8(variant) + bytes.slice(raw, 9, 16)\n}\n",
+    "package csv\n\n// Comma separated values with quoting (\"\" inside quoted fields).\n\nmethod parse(string text): array<object> {\n    return parseWith(text, \",\")\n}\n\nmethod parseWith(string text, string separator): array<object> {\n    var rows = []\n    var row = []\n    var field = \"\"\n    var quoted = false\n    var i = 0\n    var n = text.length()\n    while (i < n) {\n        var c = text.charAt(i)\n        if (quoted) {\n            if (c == \"\\\"\" && i + 1 < n && text.charAt(i + 1) == \"\\\"\") {\n                field = field + \"\\\"\"\n                i = i + 2\n                continue\n            }\n            if (c == \"\\\"\") {\n                quoted = false\n                i = i + 1\n                continue\n            }\n            field = field + c\n            i = i + 1\n            continue\n        }\n        if (c == \"\\\"\") {\n            quoted = true\n            i = i + 1\n            continue\n        }\n        if (c == separator) {\n            row.append(field)\n            field = \"\"\n            i = i + 1\n            continue\n        }\n        if (c == \"\\n\" || c == \"\\r\") {\n            if (c == \"\\r\" && i + 1 < n && text.charAt(i + 1) == \"\\n\") {\n                i = i + 1\n            }\n            row.append(field)\n            rows.append(row)\n            row = []\n            field = \"\"\n            i = i + 1\n            continue\n        }\n        field = field + c\n        i = i + 1\n    }\n    if (field != \"\" || row.length() > 0) {\n        row.append(field)\n        rows.append(row)\n    }\n    return rows\n}\n\nmethod stringify(array<object> rows): string {\n    return stringifyWith(rows, \",\")\n}\n\nmethod stringifyWith(array<object> rows, string separator): string {\n    var lines = []\n    for (row in rows) {\n        var fields = []\n        for (value in row) {\n            fields.append(quote(\"\" + value, separator))\n        }\n        lines.append(fields.join(separator))\n    }\n    return lines.join(\"\\n\")\n}\n\nmethod quote(string value, string separator): string {\n    if (value.contains(separator) || value.contains(\"\\\"\") || value.contains(\"\\n\")) {\n        return \"\\\"\" + value.replace(\"\\\"\", \"\\\"\\\"\") + \"\\\"\"\n    }\n    return value\n}\n",
+    "package fmt\n\nimport math\nimport strings\n\n// Human friendly formatting of numbers and sizes.\n\nmethod fixed(float x, integer decimals): string native \"nv_fmt_fixed\"   // \"3.14\"\n\n// 1234567 -> \"1,234,567\"\nmethod thousands(integer n): string {\n    var digits = \"\" + math.abs(n)\n    var out = \"\"\n    var i = digits.length()\n    while (i > 0) {\n        var start = i - 3\n        if (start < 0) {\n            start = 0\n        }\n        var group = digits.substring(start, i)\n        if (out == \"\") {\n            out = group\n        }\n        if (out != group) {\n            out = group + \",\" + out\n        }\n        i = start\n    }\n    if (n < 0) {\n        return \"-\" + out\n    }\n    return out\n}\n\n// 1536 -> \"1.5 KB\"\nmethod bytes(integer n): string {\n    if (n < 1024) {\n        return \"",
+    "{n} B\"\n    }\n    var units = [\"KB\", \"MB\", \"GB\", \"TB\"]\n    var value = math.toFloat(n)\n    var unit = \"\"\n    for (u in units) {\n        value = value / 1024.0\n        unit = u\n        if (value < 1024.0) {\n            break\n        }\n    }\n    return fixed(value, 1) + \" \" + unit\n}\n\n// 0.256 -> \"25.6%\"\nmethod percent(float ratio, integer decimals): string {\n    return fixed(ratio * 100.0, decimals) + \"%\"\n}\n\n// Two-column table: rows of [label, value].\nmethod table(array<object> rows): string {\n    var width = 0\n    for (row in rows) {\n        var label = \"\" + row[0]\n        if (label.length() > width) {\n            width = label.length()\n        }\n    }\n    var lines = []\n    for (row in rows) {\n        lines.append(strings.padRight(\"\" + row[0], width) + \"  \" + row[1])\n    }\n    return lines.join(\"\\n\")\n}\n",
+    "package hash\n\n// Non-cryptographic hashes.\n\nmethod fnv1a(string text): integer native \"nv_hash_fnv1a\"   // 64-bit FNV-1a, always >= 0\nmethod crc32(string text): integer native \"nv_hash_crc32\"\n\n// Stable small hash for bucketing: 0 .. buckets-1\nmethod bucket(string text, integer buckets): integer {\n    return fnv1a(text) % buckets\n}\n\n// Hex string of a hash value.\nmethod hex(integer value): string {\n    var digits = \"0123456789abcdef\"\n    var out = \"\"\n    var v = value\n    if (v == 0) {\n        return \"0\"\n    }\n    while (v > 0) {\n        out = digits.charAt(v % 16) + out\n        v = v / 16\n    }\n    return out\n}\n",
+    "package http\n\nimport json\n\n// HTTP client driven by the curl command line tool (https included).\n// get/post/put/delete return the body and abort on transport errors;\n// request never aborts and returns {status, ok, body, headers, error}.\n\nmethod get(string url): string native \"nv_http_get\"\nmethod post(string url, object body): string native \"nv_http_post\"     // maps/arrays are sent as JSON\nmethod put(string url, object body): string native \"nv_http_put\"\nmethod delete(string url): string native \"nv_http_delete\"\nmethod request(string verb, string url, object body, map<string, string> headers): map<string, object> native \"nv_http_request\"\nmethod download(string url, string file): bool native \"nv_http_download\"\n\n// GET that parses the response as JSON.\nmethod getJson(string url): object {\n    return json.parse(get(url))\n}\n\n// POST with a JSON body, parsing the JSON response.\nmethod postJson(string url, object body): object {\n    return json.parse(post(url, body))\n}\n",
+    "package io\n\n// Standard input and output.\n\nmethod readLine(): string native \"nv_read_line\"\nmethod readAll(): string native \"nv_read_all\"          // everything from stdin\nmethod write(string text) native \"nv_io_write\"          // stdout without newline\nmethod writeErr(string text) native \"nv_io_write_err\"   // stderr without newline\nmethod flush() native \"nv_io_flush\"\n\nmethod readLines(): array<string> {\n    var out = []\n    for (line in readAll().replace(\"\\r\\n\", \"\\n\").split(\"\\n\")) {\n        out.append(line)\n    }\n    if (out.length() > 0 && out[out.length() - 1] == \"\") {\n        out.pop()\n    }\n    return out\n}\n\n// Asks a question on stdout and reads the answer.\nmethod prompt(string question): string {\n    write(question)\n    flush()\n    return readLine()\n}\n",
+    "package json\n\n// JSON: text <-> maps, arrays, primitives (objects serialize their fields).\n\nmethod stringify(object value): string native \"nv_json_stringify\"\nmethod pretty(object value): string native \"nv_json_pretty\"          // 2-space indented\nmethod parse(string text): object native \"nv_json_parse\"             // aborts on invalid input\nmethod isValid(string text): bool native \"nv_json_is_valid\"\nmethod load(string file): object native \"nv_json_load\"\nmethod save(object value, string dir, string file) native \"nv_json_save\"  // creates dir, pretty printed\n\n// Parses text, or returns `fallback` when it is not valid JSON.\nmethod parseOr(string text, object fallback): object {\n    if (isValid(text)) {\n        return parse(text)\n    }\n    return fallback\n}\n",
+    "package log\n\nimport strings\nimport time\n\n// Leveled logging to stderr: debug < info < warn < error.\n\nvar minimumLevel = 1\nvar showTime = true\n\nmethod setLevel(string level) {\n    minimumLevel = levelValue(level)\n}\n\nmethod setTimestamps(bool enabled) {\n    showTime = enabled\n}\n\nmethod debug(string message) {\n    write(0, \"DEBUG\", message)\n}\n\nmethod info(string message) {\n    write(1, \"INFO\", message)\n}\n\nmethod warn(string message) {\n    write(2, \"WARN\", message)\n}\n\nmethod error(string message) {\n    write(3, \"ERROR\", message)\n}\n\nmethod levelValue(string level): integer {\n    var levels = { \"debug\": 0, \"info\": 1, \"warn\": 2, \"error\": 3 }\n    if (levels.has(level.toLower())) {\n        return levels[level.toLower()]\n    }\n    return 1\n}\n\nmethod write(integer level, string name, string message) {\n    if (level < minimumLevel) {\n        return\n    }\n    var prefix = \"\"\n    if (showTime) {\n        prefix = time.nowIso() + \" \"\n    }\n    eprintln prefix + strings.padRight(name, 5) + \" \" + message\n}\n",
+    "package maps\n\n// Map helpers beyond the builtin methods (length, has, keys, values, remove, get).\n\n// Copies `b` over `a` into a new map.\nmethod merge(map<string, object> a, map<string, object> b): map<string, object> {\n    var out = {}\n    for (k in a) {\n        out[k] = a[k]\n    }\n    for (k in b) {\n        out[k] = b[k]\n    }\n    return out\n}\n\nmethod fromPairs(array<string> keys, array<object> values): map<string, object> {\n    var out = {}\n    var i = 0\n    while (i < keys.length() && i < values.length()) {\n        out[keys[i]] = values[i]\n        i = i + 1\n    }\n    return out\n}\n\n// Swaps keys and values (values become string keys).\nmethod invert(map<string, object> m): map<string, string> {\n    var out = {}\n    for (k in m) {\n        out[\"\" + m[k]] = k\n    }\n    return out\n}\n\nmethod copy(map<string, object> m): map<string, object> {\n    return merge({}, m)\n}\n\nmethod isEmpty(map<string, object> m): bool {\n    return m.length() == 0\n}\n\n// Entries as [key, value] pairs in key order.\nmethod entries(map<string, object> m): array<object> {\n    var out = []\n    for (k in m) {\n        out.append([k, m[k]])\n    }\n    return out\n}\n\n// Counts how often each element occurs.\nmethod countValues(array<object> items): map<string, integer> {\n    var out = {}\n    for (x in items) {\n        var key = \"\" + x\n        if (out.has(key)) {\n            out[key] = out[key] + 1\n            continue\n        }\n        out[key] = 1\n    }\n    return out\n}\n",
+    "package math\n\n// Numbers: integer and float helpers plus the usual functions.\n\nmethod sqrt(float x): float native \"nv_math_sqrt\"\nmethod pow(float base, float exponent): float native \"nv_math_pow\"\nmethod floor(float x): integer native \"nv_math_floor\"\nmethod ceil(float x): integer native \"nv_math_ceil\"\nmethod round(float x): integer native \"nv_math_round\"\nmethod sin(float x): float native \"nv_math_sin\"\nmethod cos(float x): float native \"nv_math_cos\"\nmethod tan(float x): float native \"nv_math_tan\"\nmethod atan2(float y, float x): float native \"nv_math_atan2\"\nmethod log(float x): float native \"nv_math_log\"\nmethod exp(float x): float native \"nv_math_exp\"\nmethod toFloat(object x): float native \"nv_parse_float\"\nmethod toInt(object x): integer native \"nv_parse_int\"\n\nmethod pi(): float {\n    return 3.141592653589793\n}\n\nmethod abs(object x): object {\n    if (x < 0) {\n        return 0 - x\n    }\n    return x\n}\n\nmethod min(object a, object b): object {\n    if (a < b) {\n        return a\n    }\n    return b\n}\n\nmethod max(object a, object b): object {\n    if (a > b) {\n        return a\n    }\n    return b\n}\n\nmethod clamp(object x, object low, object high): object {\n    return max(low, min(x, high))\n}\n\nmethod sign(object x): integer {\n    if (x < 0) {\n        return -1\n    }\n    if (x > 0) {\n        return 1\n    }\n    return 0\n}\n\nmethod isEven(integer n): bool {\n    return n % 2 == 0\n}\n\nmethod isOdd(integer n): bool {\n    return n % 2 != 0\n}\n\nmethod gcd(integer a, integer b): integer {\n    var x = abs(a)\n    var y = abs(b)\n    while (y != 0) {\n        var t = y\n        y = x % y\n        x = t\n    }\n    return x\n}\n\nmethod lcm(integer a, integer b): integer {\n    if (a == 0 || b == 0) {\n        return 0\n    }\n    return abs(a * b) / gcd(a, b)\n}\n\n// Integer power (exponent >= 0).\nmethod powInt(integer base, integer exponent): integer {\n    var result = 1\n    var i = 0\n    while (i < exponent) {\n        result = result * base\n        i = i + 1\n    }\n    return result\n}\n\nmethod isPrime(integer n): bool {\n    if (n < 2) {\n        return false\n    }\n    var i = 2\n    while (i * i <= n) {\n        if (n % i == 0) {\n            return false\n        }\n        i = i + 1\n    }\n    return true\n}\n\n// Rounds a float to `decimals` places.\nmethod roundTo(float x, integer decimals): float {\n    var factor = pow(10.0, toFloat(decimals))\n    return toFloat(round(x * factor)) / factor\n}\n",
+    "package net\n\nimport strings\n\n// TCP sockets.\n//\n// Sockets are non-blocking and are driven by poll(): one loop serves every\n// connection, which is what a program with a tick or frame loop wants. A\n// socket is an integer handle; -1 means the call produced none.\n//\n// A method cannot return a value and an error at once, so every call records\n// what happened and status() reports it:\n//   0  ok      - the call did what it says       (net.ok())\n//   1  again   - nothing was ready, not an error  (net.again())\n//   2  closed  - the peer hung up                 (net.closed())\n//   3  error   - see net.error() for the message  (net.failed())\n\n// Binds host:port and starts listening. \"\" or \"0.0.0.0\" as host takes every\n// interface. Returns the socket, or -1 (status ERROR).\nmethod listen(string host, integer port): integer native \"nv_net_listen\"\n\n// The next waiting connection, or -1 with status AGAIN when there is none.\nmethod accept(integer server): integer native \"nv_net_accept\"\n\n// Connects to host:port. Returns the socket, or -1 (status ERROR).\nmethod connect(string host, integer port): integer native \"nv_net_connect\"\n\n// Up to `max` bytes. An empty result with status AGAIN means nothing was\n// ready; with status CLOSED it means the peer is gone.\nmethod recv(integer socket, integer max): string native \"nv_net_recv\"\n\n// The number of bytes the kernel took, which may be fewer than offered: keep\n// the remainder and send it when the socket is writable again.\nmethod send(integer socket, string data): integer native \"nv_net_send\"\n\nmethod close(integer socket) native \"nv_net_close\"\n\n// The subset of `sockets` that can be read without blocking. A timeout of 0\n// polls, -1 waits indefinitely.\nmethod poll(array<integer> sockets, integer timeoutMs): array<integer> native \"nv_net_poll\"\n\n// The subset that can be written to - use it to drain a backed up send\n// buffer instead of spinning on it.\nmethod pollWrite(array<integer> sockets, integer timeoutMs): array<integer> native \"nv_net_poll_write\"\n\nmethod status(): integer native \"nv_net_status\"\nmethod error(): string native \"nv_net_error\"\n\n// \"1.2.3.4:56789\" of the connected peer, \"\" when it cannot be determined.\nmethod peer(integer socket): string native \"nv_net_peer\"\n\nmethod ok(): bool {\n    return status() == 0\n}\n\n// Whether the last call found nothing ready (not an error).\nmethod again(): bool {\n    return status() == 1\n}\n\nmethod closed(): bool {\n    return status() == 2\n}\n\nmethod failed(): bool {\n    return status() == 3\n}\n\n// The address part of peer(), without the port.\nmethod peerHost(integer socket): string {\n    var address = peer(socket)\n    var colon = strings.lastIndexOf(address, \":\")\n    if (colon < 0) {\n        return address\n    }\n    return address.substring(0, colon)\n}\n\n// Sends everything that fits right now and returns what is left over.\nmethod sendSome(integer socket, string data): string {\n    var written = send(socket, data)\n    if (written >= data.length()) {\n        return \"\"\n    }\n    return data.substring(written, data.length())\n}\n",
+    "package os\n\n// Operating system: files, directories, processes, environment, time.\n// Functions marked `native` are implemented by the C runtime.\n\nmethod mkdir(string path): bool native \"nv_os_mkdir\"           // creates missing parents\nmethod rmdir(string path): bool native \"nv_os_rmdir\"           // removes an empty directory\nmethod remove(string path): bool native \"nv_remove_file\"       // deletes a file\nmethod removeAll(string path): bool native \"nv_os_remove_all\"  // deletes a file or directory tree\nmethod listDir(string path): array<string> native \"nv_os_list_dir\"\nmethod exists(string path): bool native \"nv_path_exists\"\nmethod isDir(string path): bool native \"nv_os_is_dir\"\nmethod isFile(string path): bool native \"nv_os_is_file\"\nmethod rename(string from, string to): bool native \"nv_os_rename\"\nmethod copy(string from, string to): bool native \"nv_os_copy\"\nmethod fileSize(string path): integer native \"nv_os_file_size\"   // -1 when missing\nmethod modified(string path): integer native \"nv_os_modified\"    // unix seconds, -1 when missing\nmethod readFile(string path): string native \"nv_read_file\"\nmethod writeFile(string path, string content) native \"nv_write_file\"\nmethod appendFile(string path, string content) native \"nv_append_file\"\nmethod cwd(): string native \"nv_path_absolute\"\nmethod chdir(string path): bool native \"nv_os_chdir\"\nmethod temp(): string native \"nv_path_temp\"\nmethod home(): string native \"nv_os_home\"\nmethod exec(string command): integer native \"nv_exec\"           // exit code\nmethod output(string command): string native \"nv_os_output\"     // captured stdout\nmethod env(string name): string native \"nv_env\"\nmethod setEnv(string name, string value): bool native \"nv_os_set_env\"\nmethod exit(integer code) native \"nv_exit\"\nmethod platform(): string native \"nv_platform\"                  // linux | macos | windows | unix\nmethod args(): array<string> native \"nv_args\"\nmethod pid(): integer native \"nv_os_pid\"\nmethod time(): integer native \"nv_os_time\"                      // unix seconds\nmethod clock(): float native \"nv_os_clock\"                      // seconds, sub-second precision\nmethod sleep(integer milliseconds) native \"nv_os_sleep\"\nmethod readLine(): string native \"nv_read_line\"\n\n// Interrupts. catchInterrupt() asks the operating system to raise a flag when\n// the program is asked to stop - ctrl-C, or a terminate signal - instead of\n// killing it outright; interrupted() reads that flag and clears it. A program\n// with something worth writing out checks it in its main loop and shuts down\n// on its own terms.\nmethod catchInterrupt() native \"nv_os_catch_interrupt\"\nmethod interrupted(): bool native \"nv_os_interrupted\"\n\n// Whether a command is available on this system.\nmethod hasCommand(string name): bool {\n    if (platform() == \"windows\") {\n        return exec(\"where \" + name + \" > nul 2>&1\") == 0\n    }\n    return exec(\"command -v \" + name + \" > /dev/null 2>&1\") == 0\n}\n\n// Environment variable or a fallback when unset.\nmethod envOr(string name, string fallback): string {\n    var value = env(name)\n    if (value == \"\") {\n        return fallback\n    }\n    return value\n}\n",
+    "package path\n\n// File system paths (pure string handling, forward slashes everywhere).\n\nmethod join(string parts): string native \"nv_path_join\" variadic\nmethod absolute(): string native \"nv_path_absolute\"             // the working directory\nmethod absolute(string path): string native \"nv_path_absolute_of\"\nmethod normalize(string path): string native \"nv_path_normalize\"\nmethod relative(string base, string target): string native \"nv_path_relative\"\nmethod dirname(string path): string native \"nv_path_dirname\"\nmethod basename(string path): string native \"nv_path_basename\"\nmethod stem(string path): string native \"nv_path_stem\"            // basename without extension\nmethod extension(string path): string native \"nv_path_extension\"  // \".txt\", \"\" when none\nmethod isAbsolute(string path): bool native \"nv_path_is_absolute\"\nmethod exists(string path): bool native \"nv_path_exists\"\nmethod isDir(string path): bool native \"nv_os_is_dir\"\nmethod isFile(string path): bool native \"nv_os_is_file\"\nmethod temp(): string native \"nv_path_temp\"\nmethod separator(): string native \"nv_path_separator\"\n\n// \"a/b/c.txt\" with a new extension: withExtension(\"a/b/c.txt\", \".md\")\nmethod withExtension(string p, string ext): string {\n    var current = extension(p)\n    return p.substring(0, p.length() - current.length()) + ext\n}\n\n// The path segments: \"a/b/c\" -> [a, b, c]\nmethod segments(string p): array<string> {\n    var out = []\n    for (s in normalize(p).split(\"/\")) {\n        if (s != \"\") {\n            out.append(s)\n        }\n    }\n    return out\n}\n",
+    "package random\n\nimport arrays\nimport math\n\n// Pseudo random numbers (xorshift, seeded from the clock unless seed() is called).\n\nmethod seed(integer value) native \"nv_random_seed\"\nmethod next(): integer native \"nv_random_next\"     // 0 .. 2^62-1\n\n// Integer in [low, high].\nmethod int(integer low, integer high): integer {\n    if (high <= low) {\n        return low\n    }\n    return low + next() % (high - low + 1)\n}\n\n// Float in [0, 1).\nmethod float(): float {\n    return math.toFloat(next() % 1000000000) / 1000000000.0\n}\n\nmethod bool(): bool {\n    return next() % 2 == 0\n}\n\nmethod pick(array<object> items): object {\n    return items[int(0, items.length() - 1)]\n}\n\n// A shuffled copy (Fisher-Yates).\nmethod shuffle(array<object> items): array<object> {\n    var out = arrays.copy(items)\n    var i = out.length() - 1\n    while (i > 0) {\n        var j = int(0, i)\n        var t = out[i]\n        out[i] = out[j]\n        out[j] = t\n        i = i - 1\n    }\n    return out\n}\n\n// Random string of `length` characters from `alphabet`.\nmethod string(integer length, string alphabet): string {\n    var out = \"\"\n    var i = 0\n    while (i < length) {\n        out = out + alphabet.charAt(int(0, alphabet.length() - 1))\n        i = i + 1\n    }\n    return out\n}\n",
+    "package strings\n\n// String helpers beyond the builtin methods (length, charAt, substring,\n// indexOf, contains, startsWith, endsWith, split, replace, trim, toUpper,\n// toLower).\n\nmethod repeat(string s, integer times): string {\n    var out = \"\"\n    var i = 0\n    while (i < times) {\n        out = out + s\n        i = i + 1\n    }\n    return out\n}\n\nmethod padLeft(string s, integer width): string {\n    return padLeftWith(s, width, \" \")\n}\n\nmethod padRight(string s, integer width): string {\n    return padRightWith(s, width, \" \")\n}\n\nmethod padLeftWith(string s, integer width, string fill): string {\n    var out = s\n    while (out.length() < width) {\n        out = fill + out\n    }\n    return out\n}\n\nmethod padRightWith(string s, integer width, string fill): string {\n    var out = s\n    while (out.length() < width) {\n        out = out + fill\n    }\n    return out\n}\n\nmethod reverse(string s): string {\n    var out = \"\"\n    var i = s.length()\n    while (i > 0) {\n        out = out + s.charAt(i - 1)\n        i = i - 1\n    }\n    return out\n}\n\nmethod lines(string s): array<string> {\n    return s.replace(\"\\r\\n\", \"\\n\").split(\"\\n\")\n}\n\n// Words separated by any run of whitespace.\nmethod words(string s): array<string> native \"nv_str_words\"\n\nmethod count(string s, string sub): integer {\n    if (sub == \"\") {\n        return 0\n    }\n    var n = 0\n    var at = s.indexOf(sub)\n    while (at >= 0) {\n        n = n + 1\n        at = s.indexOf(sub, at + sub.length())\n    }\n    return n\n}\n\nmethod lastIndexOf(string s, string sub): integer {\n    var last = -1\n    var at = s.indexOf(sub)\n    while (at >= 0) {\n        last = at\n        at = s.indexOf(sub, at + 1)\n    }\n    return last\n}\n\nmethod capitalize(string s): string {\n    if (s == \"\") {\n        return s\n    }\n    return s.charAt(0).toUpper() + s.substring(1, s.length())\n}\n\nmethod isDigit(string c): bool {\n    return c >= \"0\" && c <= \"9\"\n}\n\nmethod isAlpha(string c): bool {\n    return (c >= \"a\" && c <= \"z\") || (c >= \"A\" && c <= \"Z\")\n}\n\nmethod isSpace(string c): bool {\n    return c == \" \" || c == \"\\t\" || c == \"\\n\" || c == \"\\r\"\n}\n\nmethod isNumeric(string s): bool {\n    if (s == \"\") {\n        return false\n    }\n    var i = 0\n    if (s.charAt(0) == \"-\") {\n        i = 1\n    }\n    if (i >= s.length()) {\n        return false\n    }\n    while (i < s.length()) {\n        if (isDigit(s.charAt(i)) == false) {\n            return false\n        }\n        i = i + 1\n    }\n    return true\n}\n\nmethod chars(string s): array<string> {\n    return s.split(\"\")\n}\n\n// Removes `prefix` when present.\nmethod stripPrefix(string s, string prefix): string {\n    if (s.startsWith(prefix)) {\n        return s.substring(prefix.length(), s.length())\n    }\n    return s\n}\n\nmethod stripSuffix(string s, string suffix): string {\n    if (suffix != \"\" && s.endsWith(suffix)) {\n        return s.substring(0, s.length() - suffix.length())\n    }\n    return s\n}\n\n// Shortens to `width` characters, ending with \"...\" when cut.\nmethod truncate(string s, integer width): string {\n    if (s.length() <= width) {\n        return s\n    }\n    if (width <= 3) {\n        return s.substring(0, width)\n    }\n    return s.substring(0, width - 3) + \"...\"\n}\n\nmethod compare(string a, string b): integer {\n    if (a < b) {\n        return -1\n    }\n    if (a > b) {\n        return 1\n    }\n    return 0\n}\n",
+    "package test\n\n// Minimal test helpers: assertions count failures, report() prints a\n// summary and returns the exit code.\n\nvar passed = 0\nvar failed = 0\n\nmethod assert(bool condition, string name) {\n    if (condition) {\n        passed = passed + 1\n        return\n    }\n    failed = failed + 1\n    eprintln \"FAIL \" + name\n}\n\nmethod assertEqual(object actual, object expected, string name) {\n    if (actual == expected) {\n        passed = passed + 1\n        return\n    }\n    failed = failed + 1\n    eprintln \"FAIL \" + name + \": expected \" + expected + \" but got \" + actual\n}\n\nmethod report(): integer {\n    println \"",
+    "{passed} passed, ",
+    "{failed} failed\"\n    if (failed > 0) {\n        return 1\n    }\n    return 0\n}\n",
+    "package thread\n\n// Threads, virtual threads, and the things they share.\n//\n// `thread f(...)` runs f on an operating system thread, `virtual f(...)` on a\n// virtual one: a stack of its own that a small pool of carrier threads runs,\n// so a program can have hundreds of thousands of them where it could not\n// have thousands of the other kind. Both hand back a task, and `await` is\n// the value it ends up with. An `async method` is one whose calls do that by\n// themselves:\n//\n//     var t = virtual render(scene)\n//     var image = await t\n//\n//     async method fetch(string url): string { ... }\n//     var body = await fetch(\"...\")\n//\n// Blocking a virtual thread - await, sleep, a lock, a channel - parks it and\n// lets its carrier pick up the next one. Calls the runtime knows nothing\n// about (os.sleep, reading a file, exec) block the carrier itself, so inside\n// a virtual thread reach for thread.sleep() rather than os.sleep().\n//\n// A lock, channel, counter or group is an integer handle, the way a socket\n// is in `net`. Values are shared between threads as they are; anything two\n// threads write needs a lock, which `sync { ... }` is the short way to take:\n//\n//     sync { total = total + 1 }          // the program-wide lock\n//     sync (accounts) { ... }             // one from thread.mutex()\n//\n// The program ends when main returns, whatever is still running, so await\n// what has to finish.\n\n// --- tasks -----------------------------------------------------------\n\n// Waits for a task and answers with its result - the same thing `await`\n// does, for when a handle is passed around rather than awaited on the spot.\nmethod join(integer task): object native \"nv_await\"\n\n// Has the task finished\? Answers straight away.\nmethod done(integer task): bool native \"nv_task_is_done\"\n\n// Waits for every task in the array and collects the results in order.\nmethod joinAll(array tasks): array native \"nv_await_all\"\n\n// --- the thread that is running --------------------------------------\n\n// Sleeps. In a virtual thread this parks it and the carrier goes on with\n// other work; on an operating system thread it is an ordinary sleep.\nmethod sleep(integer milliseconds) native \"nv_thread_sleep\"\n\n// Hands the processor to whatever is runnable next.\nmethod yield() native \"nv_thread_yield\"\n\nmethod isVirtual(): bool native \"nv_thread_is_virtual\"\n\n// A number that stays the same for one thread and differs between threads.\nmethod id(): integer native \"nv_thread_self_id\"\n\n// --- the carrier pool -------------------------------------------------\n\nmethod cpus(): integer native \"nv_thread_cpus\"              // processors of the machine\nmethod parallelism(): integer native \"nv_thread_parallelism\"  // carriers virtual threads may use\nmethod setParallelism(integer carriers) native \"nv_thread_set_parallelism\"\nmethod running(): integer native \"nv_thread_running\"        // virtual threads not finished yet\n\n// Whether virtual threads are real ones here. Where the platform has no\n// stack switching they fall back to operating system threads, which changes\n// nothing about what a program means - only how many of them fit.\nmethod supportsVirtual(): bool native \"nv_thread_virtual_supported\"\n\n// --- locks -------------------------------------------------------------\n\n// A re-entrant lock. `sync (m) { ... }` is the same thing without the\n// matching unlock to forget.\nmethod mutex(): integer native \"nv_lock_new\"\nmethod lock(integer mutex) native \"nv_lock_acquire\"\nmethod unlock(integer mutex) native \"nv_lock_release\"\nmethod tryLock(integer mutex): bool native \"nv_lock_try_acquire\"\n\n// --- channels -----------------------------------------------------------\n\n// A queue between threads. Capacity 0 is unbuffered: a send waits until the\n// value has been taken.\nmethod channel(integer capacity): integer native \"nv_chan_new\"\n\n// Waits for room and hands the value over. False means the channel was\n// closed and the value went nowhere.\nmethod send(integer channel, object value): bool native \"nv_chan_send\"\n\n// Waits for a value. A closed and empty channel has none left to give, and\n// since a channel may carry any value - the empty one included - received()\n// is what says whether there was one:\n//\n//     while (true) {\n//         var item = thread.recv(work)\n//         if (thread.received() == false) {\n//             break\n//         }\n//         handle(item)\n//     }\nmethod recv(integer channel): object native \"nv_chan_recv\"\n\n// A value if one is waiting, nothing otherwise - never blocks.\nmethod tryRecv(integer channel): object native \"nv_chan_try_recv\"\n\n// Did the last recv() or tryRecv() of this thread produce a value\?\nmethod received(): bool native \"nv_chan_received\"\n\n// Wakes everyone waiting on the channel. Values already in it can still be\n// received; sending into it no longer works.\nmethod close(integer channel) native \"nv_chan_close\"\n\nmethod closed(integer channel): bool native \"nv_chan_is_closed\"\nmethod length(integer channel): integer native \"nv_chan_length\"\n\n// --- counters -------------------------------------------------------------\n\n// A number several threads may change without a lock of their own.\nmethod counter(integer initial): integer native \"nv_counter_new\"\nmethod add(integer counter, integer delta): integer native \"nv_counter_add\"  // the new value\nmethod get(integer counter): integer native \"nv_counter_get\"\nmethod set(integer counter, integer value) native \"nv_counter_set\"\n\n// Sets the counter to `value` if it still holds `expect`.\nmethod compareAndSet(integer counter, integer expect, integer value): bool native \"nv_counter_swap\"\n\nmethod increment(integer counter): integer {\n    return add(counter, 1)\n}\n\nmethod decrement(integer counter): integer {\n    return add(counter, 0 - 1)\n}\n\n// --- groups ---------------------------------------------------------------\n\n// Counts work that is still outstanding, for fan-outs whose tasks nobody\n// kept: groupAdd() what is about to start, groupDone() what finished,\n// groupWait() until nothing is left. With the task handles in hand,\n// joinAll() says the same thing more directly.\nmethod group(): integer native \"nv_group_new\"\nmethod groupAdd(integer group, integer count) native \"nv_group_add\"\nmethod groupDone(integer group) native \"nv_group_done\"\nmethod groupWait(integer group) native \"nv_group_wait\"\n",
+    "package time\n\nimport math\n\n// Time: unix seconds, wall clock, formatting.\n\nmethod now(): integer native \"nv_os_time\"          // unix seconds\nmethod clock(): float native \"nv_os_clock\"         // seconds with sub-second precision\nmethod sleep(integer milliseconds) native \"nv_os_sleep\"\nmethod iso(integer unixSeconds): string native \"nv_time_iso\"        // 2026-09-01T12:34:56Z (UTC)\nmethod format(integer unixSeconds, string layout): string native \"nv_time_format\"  // strftime layout, UTC\nmethod parts(integer unixSeconds): map<string, integer> native \"nv_time_parts\"     // year, month, day, hour, minute, second, weekday, yearday (UTC)\n\nmethod nowIso(): string {\n    return iso(now())\n}\n\n// Milliseconds since `startClock` (from clock()).\nmethod elapsedMs(float startClock): integer {\n    return math.round((clock() - startClock) * 1000.0)\n}\n\n// \"1h 2m 3s\" style duration for a number of seconds.\nmethod duration(integer seconds): string {\n    if (seconds < 60) {\n        return \"",
+    "{seconds}s\"\n    }\n    if (seconds < 3600) {\n        return \"",
+    "{seconds / 60}m ",
+    "{seconds % 60}s\"\n    }\n    if (seconds < 86400) {\n        return \"",
+    "{seconds / 3600}h ",
+    "{(seconds % 3600) / 60}m\"\n    }\n    return \"",
+    "{seconds / 86400}d ",
+    "{(seconds % 86400) / 3600}h\"\n}\n",
+    "package zlib\n\n// Deflate compression in the zlib container (RFC 1950/1951).\n//\n// Implemented in the runtime itself rather than against the system zlib, so a\n// program that compresses still needs nothing but a C compiler. Inflate reads\n// all three block types; compress writes fixed Huffman blocks.\n\n// Compresses to a zlib stream (78 9C header, Adler-32 trailer).\nmethod compress(string data): string native \"nv_zlib_compress\"\n\n// Decompresses a zlib stream. `limit` caps the output so that a small\n// hostile input cannot expand without bound; 0 means no limit. Returns \"\"\n// and sets failed() when the stream is damaged or exceeds the limit.\nmethod decompress(string data, integer limit): string native \"nv_zlib_decompress\"\n\nmethod failed(): bool native \"nv_zlib_failed\"\n\n// Decompression without an output limit.\nmethod inflate(string data): string {\n    return decompress(data, 0)\n}\n",
+    " expects ",
+    " argument(s) but got ",
+    "readFile",
+    "nv_read_file(",
+    "writeFile",
+    "nv_write_file(",
+    "fileExists",
+    "nv_file_exists(",
+    "args",
+    "nv_args()",
+    "parseInt",
+    "nv_parse_int(",
+    "parseFloat",
+    "nv_parse_float(",
+    "chr",
+    "nv_chr(",
+    "ord",
+    "nv_ord(",
+    "typeOf",
+    "nv_typeof_builtin(",
+    "exec",
+    "nv_exec(",
+    "env",
+    "nv_env(",
+    "exit",
+    "nv_exit(",
+    "platform",
+    "nv_platform()",
+    "readLine",
+    "nv_read_line()",
+    "removeFile",
+    "nv_remove_file(",
+    "lit:",
+    "(&nv_lits[",
+    "])",
+    "litn",
+    "litat:",
+    "/* string literals */",
+    "static NvVal nv_lits[",
+    "];",
+    "static const char *const nv_lit_text[",
+    "] = {",
+    "    ",
+    "};",
+    "spawnn",
+    "/* bodies of thread, virtual and async spawns */",
+    "static nv nv_spawn_body_",
+    "(nv *a, int n) {",
+    "    (void)a;",
+    "    (void)n;",
+    "    return ",
+    "spawnat:",
+    ";",
+    "}",
+    "nv_coerce_int(",
+    "nv_coerce_float(",
+    "nv_coerce_string(",
+    "nv_int(0)",
+    "nv_float(0.0)",
+    "(&nv_empty_str_val)",
+    "nv_bool(0)",
+    "nv_nil",
+    "(abstract)",
+    ".",
+    "__",
+    "Async",
+    ", ",
+    "a[",
+    "]",
+    "sync",
+    "syncloop",
+    "nv_sync_leave(",
+    "); ",
+    "native",
+    "has",
+    "nv_has_key(",
+    "push",
+    "append",
+    "nv_append(",
+    "nv_invoke",
+    "nv_invoke(",
+    "(setexpr",
+    "(call",
+    "(mcall",
+    "nv_iter(",
+    "nv_iter_live(",
+    "length",
+    "nv_length_of(",
+    "nv_invoke0(",
+    "package",
+    "import",
+    "method",
+    "var",
+    "println",
+    "print",
+    "eprintln",
+    "private",
+    "final",
+    "return",
+    "if",
+    "else",
+    "while",
+    "for",
+    "in",
+    "true",
+    "false",
+    "break",
+    "continue",
+    "==",
+    "!=",
+    "<=",
+    ">=",
+    "&&",
+    "||",
+    "=>",
+    "=<",
+    "<<",
+    "0",
+    "9",
+    "a",
+    "f",
+    "A",
+    "F",
+    "z",
+    "Z",
+    "_",
+    "{",
+    "[",
+    ":",
+    "+",
+    "-",
+    "*",
+    "%",
+    "=",
+    "!",
+    "@",
+    "&",
+    "|",
+    "^",
+    "func:",
+    "fnode:",
+    "1",
+    "hasfunc:",
+    "pkg:",
+    "/*/0",
+    "/*",
+    "enum",
+    "class",
+    "iface:",
+    "duplicate definition of '",
+    "global",
+    "annodef",
+    "iface",
+    "class:",
+    "enum:",
+    "fieldcount:",
+    "fieldsindexed:",
+    "fieldslot:",
+    "global:",
+    "int:",
+    "float:",
+    "neg",
+    "at",
+    "block",
+    "forin",
+    "loop:",
+    "assign",
+    "(none)",
+    "declared:",
+    "tvar",
+    "type:",
+    "mixed",
+    "this",
+    "self",
+    "pkg",
+    "g_",
+    "(-",
+    "(double)(",
+    "nv_fdiv(",
+    "nv_fmod_(",
+    "LL",
+    "internal: '",
+    "' inferred as an integer but not a local",
+    "nv_idiv(",
+    "nv_imod(",
+    "nv_ishl(",
+    "nv_ishr(",
+    "' is a module - call one of its functions, e.g. ",
+    ".x()",
+    "module '",
+    "' is not imported - add 'import ",
+    " && ",
+    " || ",
+    "(!(",
+    "))",
+    "nv_lt_bool",
+    "nv_gt_bool",
+    "nv_le_bool",
+    "nv_ge_bool",
+    "nv_eq_bool",
+    "nv_ne_bool",
+    "nv_truthy(",
+    "nv_bool(1)",
+    "nv_float(",
+    "nv_int(",
+    "LL)",
+    "nv_fields(self->o)[",
+    "' is a type, not a value",
+    "'this' is only available inside classes",
+    "unknown variable '",
+    "await",
+    "nv_await(",
+    "spawn",
+    "craw",
+    "nv_float(-",
+    "nv_int(-",
+    "nv_neg(",
+    "nv_not(",
+    "arr",
+    "nv_arr()",
+    "nv_arr_of(",
+    "mapl",
+    "nv_map()",
+    "nv_map_of(",
+    "obj",
+    "unknown class '",
+    "' is an enum and cannot be constructed",
+    "cannot instantiate abstract class '",
+    "nv_new_object_fields_cached(&nv_cls_",
+    "idx",
+    "nv_index(",
+    "mget",
+    "nv_enum_get(",
+    "nv_get_member(",
+    "mcall",
+    "values",
+    "nv_enum_values(",
+    "unknown enum function ",
+    "()",
+    "call",
+    "nv_bool(nv_truthy(",
+    ") && nv_truthy(",
+    ") || nv_truthy(",
+    "nv_add_fast",
+    "nv_sub_fast",
+    "nv_mul_fast",
+    "nv_div",
+    "nv_mod",
+    "nv_eq",
+    "nv_ne",
+    "nv_lt",
+    "nv_gt",
+    "nv_le",
+    "nv_ge",
+    "nv_band",
+    "nv_bor",
+    "nv_bxor",
+    "nv_shl",
+    "nv_shr",
+    "unsupported expression '",
+    "nv_add_chain(",
+    "/0",
+    "(0)",
+    "f_",
+    "no overload of ",
+    "() takes ",
+    " argument(s)",
+    "' has no function '",
+    "nv_spawn_body_",
+    "(mcall (craw ",
+    "a[0]",
+    ") ",
+    " (craw ",
+    "(call ",
+    "nv_spawn(",
+    "nv_construct",
+    "(&nv_cls_",
+    "nv_construct_cached(&nv_cls_",
+    "no overload of '",
+    "' takes ",
+    "cannot instantiate interface '",
+    "unknown method '",
+    "()'",
+    "class ",
+    "unknown base type '",
+    "class '",
+    "' does not implement '",
+    "()' from interface ",
+    "' must implement abstract method '",
+    "nv ",
+    "long long ",
+    "double ",
+    "l_",
+    " = ",
+    "(void)",
+    "nop",
+    "0.0",
+    "] = ",
+    "setexpr",
+    "nv_index_set(",
+    ");",
+    "nv_set_member(",
+    "invalid assignment target",
+    "return ",
+    "ret",
+    "return nv_nil;",
+    "sy",
+    "NvLock *",
+    " = nv_sync_enter(",
+    "nv_println(",
+    "nv_print(",
+    "nv_eprintln(",
+    "if (",
+    ") {",
+    " else ",
+    " else {",
+    "while (",
+    "NvArr *it_",
+    "int n_",
+    " = it_",
+    "->len;",
+    "for (int i_",
+    " = 0; i_",
+    " < n_",
+    "; i_",
+    "++) {",
+    "    nv l_",
+    "->items[i_",
+    "break;",
+    "continue;",
+    "Deprecated",
+    "text",
+    "since",
+    "nv_warn_deprecated(&",
+    "(n > ",
+    " \? args[",
+    "] : nv_nil)",
+    "nv l_",
+    "nv a",
+    "void",
+    "_v",
+    "_body",
+    "static nv nv_async_",
+    "static nv ",
+    "    return nv_spawn(1, nv_async_",
+    "func",
+    "method ",
+    "    long long l_",
+    " = nv_as_int(a",
+    "    double l_",
+    " = nv_as_double(a",
+    "dep_",
+    "static int dep_",
+    " = 0;",
+    "nv_type_is(a",
+    "    if (",
+    "        return ",
+    "    }",
+    "m_",
+    "(nv self, nv *args, int n) {",
+    "construct",
+    "constructor of ",
+    "static nv c_",
+    "    return nv_nil;",
+    "static NvClass *nv_cls_",
+    "    c = nv_class_define(",
+    "    nv_cls_",
+    " = c;",
+    "    nv_class_field(c, ",
+    "ctor",
+    "(nv self, nv *args, int n);",
+    "    nv_class_ctor(c, ",
+    ", c_",
+    "    nv_class_method(c, ",
+    "enum ",
+    "nv_construct(",
+    "    nv_enum_add(",
+    "));",
+    "func:main/0",
+    "func:main/1",
+    "no 'method main' found",
+    "program",
+    "int main(int argc, char **argv) {",
+    "    nv result = nv_nil;",
+    "    nv_init_literals(nv_lits, nv_lit_text, ",
+    "    nv_init_args(argc, argv);",
+    "    nv_register_classes();",
+    "    nv_init_globals();",
+    "    nv_init_enums();",
+    "    fflush(stdout);",
+    "    return nv_exit_code(result);",
+    "    if (argc > 1) {",
+    "        result = f_main_1(nv_args());",
+    "    } else {",
+    "        result = f_main_0();",
+    "    result = f_main_1(nv_args());",
+    "    result = f_main_0();",
+    "constant ",
+    "static nv g_",
+    "    g_",
+    "/* generated by novusc - do not edit */",
+    "#include ",
+    "novus_rt.h",
+    "/* declarations */",
+    "static void nv_register_classes(void) {",
+    "    NvClass *c = 0;",
+    "    (void)c;",
+    "static void nv_init_globals(void) {",
+    "static void nv_init_enums(void) {",
+    "INT",
+    "X",
+    "x",
+    "INT ",
+    "FLOAT",
+    "STRING ",
+    "//",
+    "SYM ",
+    "EOF ",
+    "expected ',' or '",
+    "' in ",
+    "unterminated argument list",
+    "argument list",
+    "(str ",
+    "(+ ",
+    " (str ",
+    "unexpected end of file in expression",
+    "(! ",
+    "(neg ",
+    "(arr",
+    "unterminated array literal",
+    "array literal",
+    "(mapl",
+    "unterminated map literal",
+    "map literal",
+    "unexpected ",
+    " in expression",
+    "STRING",
+    "unexpected keyword '",
+    "' in expression",
+    "(obj ",
+    "unterminated object literal",
+    "field name in object literal",
+    " (f ",
+    "object literal",
+    "(await ",
+    "virtual",
+    "' runs a method call: ",
+    " work(...)",
+    "(spawn ",
+    "(idx ",
+    "member name after '.'",
+    "(mcall ",
+    "(mget ",
+    "(block",
+    "unterminated block (missing '}')",
+    "(nop)",
+    " (at ",
+    "(if ",
+    "variable name",
+    "(tvar ",
+    "(var ",
+    "(return)",
+    "(return ",
+    "(while ",
+    "loop variable name",
+    "expected 'in' in for loop but found ",
+    "(forin ",
+    "(break)",
+    "(continue)",
+    "(sync ",
+    "(assign ",
+    "(setexpr ",
+    "annotation name after '@'",
+    "(anno ",
+    "unterminated annotation arguments",
+    " (a ",
+    "method name",
+    "(params)",
+    "expected the C function name after 'native'",
+    "(native ",
+    "variadic",
+    " variadic",
+    "(method ",
+    "(fields",
+    "(noctor)",
+    "(methods",
+    "(annos)",
+    "unterminated class body (missing '}')",
+    "abstract",
+    "method name after 'abstract method'",
+    " (method ",
+    " (abstract))",
+    "async",
+    "'async' marks a method outside a class; inside one, start the call instead: virtual object.method(...)",
+    "(ctor ",
+    "field name",
+    "set",
+    "get",
+    "class name",
+    "based",
+    "base name after 'based'",
+    "(class ",
+    "enum name",
+    "(consts",
+    " (c ",
+    "(enum ",
+    "interface name",
+    "(names",
+    "unterminated interface body",
+    "(iface ",
+    "interface",
+    "annotation",
+    "annotation name",
+    "(annodef ",
+    "unknown definition kind '",
+    "constant name",
+    "(global ",
+    "package name",
+    "(import ",
+    "module name or file path after 'import'",
+    "(importmod ",
+    " (anno Async))",
+    "define",
+    " at top level",
+    "..",
+    "cannot open '",
+    "importmod",
+    "std:",
+    "unknown module '",
+    "' (standard modules: ",
+    "std/",
+    ".nv",
+    "std",
+    "command line",
+    "main.nv",
+    "app",
+    "expected a setting such as project, version, main, require or replace but found '",
+    "values in project.nv must be quoted strings (near '",
+    "')",
+    "require",
+    "require needs a module path and an optional version",
+    "latest",
+    "replace",
+    "replace needs a module path and a local directory",
+    "' takes exactly one value",
+    "project",
+    "version",
+    "main",
+    "lib",
+    "output",
+    "novus",
+    "unknown setting '",
+    "' (known: project, version, main, lib, output, novus, require, replace)",
+    "project.nv",
+    "NOVUS_DEPS",
+    ".novus",
+    "deps",
+    "://",
+    "https://",
+    "\"",
+    "git --version > ",
+    " 2>&1",
+    "novusc: git is required to fetch dependencies",
+    "fetching ",
+    " @ ",
+    "GIT_TERMINAL_PROMPT",
+    "git -c advice.detachedHead=false",
+    " clone --quiet --depth 1 ",
+    " clone --quiet --depth 1 --branch ",
+    " clone --quiet ",
+    " -C ",
+    " checkout --quiet ",
+    "novusc: could not fetch ",
+    " (",
+    "nul",
+    "/dev/null",
+    "lib.nv",
+    "novusc: replace target for ",
+    " not found: ",
+    "/*\n * novus_rt.h - the C runtime embedded into every program that novusc emits.\n *\n * Values are dynamically typed (NvVal): integers, floats, bools, strings,\n * arrays, maps, class instances and enum constants all flow through the\n * same variables. Integers up to 62 bits are encoded in the pointer itself\n * (no allocation); everything else is arena allocated and never freed\n * (bootstrap-style runtime).\n *\n * Portable C11 (anonymous unions): builds with gcc, clang, zig cc and\n * mingw on 64-bit Linux, macOS and Windows.\n */\n#ifndef NOVUS_RT_H\n#define NOVUS_RT_H\n\n/* POSIX extensions (popen, setenv, gettimeofday, nanosleep, dirent) */\n#if !defined(_WIN32)\n#ifndef _POSIX_C_SOURCE\n#define _POSIX_C_SOURCE 200809L\n#endif\n#ifndef _DEFAULT_SOURCE\n#define _DEFAULT_SOURCE 1\n#endif\n#ifndef _DARWIN_C_SOURCE\n#define _DARWIN_C_SOURCE 1\n#endif\n#ifdef __APPLE__\n/* makecontext/swapcontext, which the virtual threads switch stacks with,\n * are hidden there without it (and _DARWIN_C_SOURCE above keeps the BSD\n * extensions that _XOPEN_SOURCE would otherwise take away) */\n#ifndef _XOPEN_SOURCE\n#define _XOPEN_SOURCE 700\n#endif\n#endif\n#endif\n\n#include <ctype.h>\n#include <math.h>\n#include <signal.h>\n#include <stdarg.h>\n#include <stdio.h>\n#include <stdint.h>\n#include <stdlib.h>\n#include <string.h>\n#include <sys/stat.h>\n\n#include <time.h>\n\n#ifdef _WIN32\n#ifndef WIN32_LEAN_AND_MEAN\n#define WIN32_LEAN_AND_MEAN\n#endif\n#ifndef NOMINMAX\n#define NOMINMAX\n#endif\n#include <winsock2.h>\n#include <ws2tcpip.h>\n#include <direct.h>\n#include <fcntl.h>\n#include <io.h>\n#include <process.h>\n#include <windows.h>\n#define NV_GETCWD _getcwd\n#define NV_CHDIR _chdir\n#define NV_RMDIR _rmdir\n#define NV_MKDIR(p) _mkdir(p)\n#define NV_POPEN _popen\n#define NV_PCLOSE _pclose\n#define NV_GETPID _getpid\n#else\n#include <arpa/inet.h>\n#include <dirent.h>\n#include <errno.h>\n#include <fcntl.h>\n#include <netdb.h>\n#include <netinet/in.h>\n#include <netinet/tcp.h>\n#include <poll.h>\n#include <sys/socket.h>\n#include <sys/time.h>\n#include <sys/wait.h>\n#include <unistd.h>\n#define NV_GETCWD getcwd\n#define NV_CHDIR chdir\n#define NV_RMDIR rmdir\n#define NV_MKDIR(p) mkdir(p, 0755)\n#define NV_POPEN popen\n#define NV_PCLOSE pclose\n#define NV_GETPID getpid\n#endif\n\n#ifdef __GNUC__\n#define NV_UNUSED __attribute__((unused))\n#else\n#define NV_UNUSED\n#endif\n\n/* Thread local storage. Everything a thread mutates while it runs - its\n * corner of the arena, the caches, the last error of a subsystem - lives\n * here, so threads never contend for it and never see each other's. */\n#if defined(_MSC_VER)\n#define NV_TLS __declspec(thread)\n#elif defined(__GNUC__)\n#define NV_TLS __thread\n#else\n#define NV_TLS _Thread_local\n#endif\n\n/* ------------------------------------------------------------------ */\n/* Values                                                              */\n/* ------------------------------------------------------------------ */\n\nenum { NV_NULL = 0, NV_INT, NV_FLOAT, NV_BOOL, NV_STR, NV_ARR, NV_MAP, NV_OBJ };\n\n/* NV_F_STABLE: the bytes of this string are NUL terminated, live as long as\n * the program and nothing will ever write at or past their end. A map can\n * point its key straight at them instead of copying - which is most of what\n * a program that builds maps out of literals used to spend on keys. */\n#define NV_F_STABLE 1u\n\ntypedef struct NvVal NvVal;\ntypedef NvVal *nv;\n\ntypedef struct NvArr {\n    nv *items;\n    int len;\n    int cap;\n    int heap;  /* items came from malloc: grow with realloc instead of copying */\n} NvArr;\n\ntypedef struct NvEntry {\n    const char *key;\n    nv val;\n} NvEntry;\n\n/* Entries live in insertion order with an open addressing index on top, so\n * lookup and insert are O(1). Iteration (keys, values, for..in, display,\n * json) always sorts first - the compiler depends on that order, and the\n * bootstrap fixpoint depends on the compiler. */\ntypedef struct NvMap {\n    NvEntry *items;\n    int len;\n    int cap;\n    int *index;   /* slot -> position + 1 in items, 0 is empty */\n    int mask;     /* index capacity - 1 (a power of two), 0 when absent */\n    int sorted;   /* whether items are currently in key order */\n    int heap;     /* items came from malloc: grow with realloc, see NV_MAP_HEAP_AT */\n    int indexHeap; /* likewise for index, which is rebuilt rather than grown */\n} NvMap;\n\ntypedef struct NvClass NvClass;\n\n/* Only an enum constant has a name, and enum constants are a handful per\n * program while class instances are millions - so the name is not a field\n * here. It sits in one extra slot behind the fields of enum objects, which\n * takes eight bytes off every object a program allocates. */\ntypedef struct NvObj {\n    NvClass *cls;\n    /* the field slots follow this header directly - see nv_fields() */\n} NvObj;\n\n/* One slot per field, in class order (see nv_field_index). */\nstatic inline nv *nv_fields(NvObj *o) { return (nv *)(o + 1); }\n\n/* A value is 16 bytes. Small integers (62 bit) are not allocated at all:\n * they are encoded in the pointer itself (lowest bit set) - always go\n * through nv_type_of() / nv_ival() instead of touching the fields. */\nstruct NvVal {\n    unsigned char type;\n    unsigned char owns;  /* NV_STR: s has a capacity header, see nv_buf_cap */\n    unsigned short flags; /* NV_F_* */\n    int slen; /* NV_STR: length of s in bytes */\n    union {\n        long long i;   /* NV_INT (heap fallback) and NV_BOOL */\n        double f;      /* NV_FLOAT */\n        const char *s; /* NV_STR: NUL terminated unless a later concatenation\n                          appended into the shared buffer (see nv_cstr) */\n        NvArr *a;\n        NvMap *m;\n        NvObj *o;\n    };\n};\n\n#define NV_TAG_LIMIT ((long long)1 << 61)\n\nstatic int nv_is_tagged(nv v) { return ((uintptr_t)v & 1) != 0; }\n\nstatic int nv_type_of(nv v) { return nv_is_tagged(v) \? NV_INT : v->type; }\n\nstatic long long nv_ival(nv v) { return nv_is_tagged(v) \? (long long)(((intptr_t)v) >> 1) : v->i; }\n\nstatic const char *nv_display(nv v);\nstatic const char *nv_bin(nv v, int *len);\nstatic void nv_conc_init(void); /* see \"Threads, virtual threads, tasks\" */\n\ntypedef nv (*NvMethodFn)(nv self, nv *args, int n);\n\ntypedef struct NvMethod {\n    const char *name;\n    int arity;\n    NvMethodFn fn;\n} NvMethod;\n\nstruct NvClass {\n    const char *name;\n    const char *base;\n    int isAbstract;\n    int isEnum;\n    const char **fieldNames;\n    const char **fieldTypes;\n    int nfields;\n    int fieldCap;\n    NvMethod *methods;\n    int nmethods;\n    int methodCap;\n    NvMethodFn ctor;\n    NvMethodFn resolvedCtor; /* ctor of this class or the nearest base, cached */\n    int ctorResolved;\n    int ctorArity;\n    NvMap *constants; /* enum constants */\n    NvArr *constantOrder;\n    int *order;       /* field indices sorted by name, built on demand */\n    const char **flatTypes;  /* field types in slot order, built on demand */\n    signed char *flatKinds;  /* 1 integer, 2 float, 3 string, 0 anything else */\n    int totalFields;  /* fields of this class and its bases, -1 until counted */\n    nv *defaults;     /* default value per field, built with totalFields */\n};\n\nstatic int nv_class_field_count(NvClass *c);\nstatic const char *nv_field_name_at(NvClass *c, int index, const char **type);\nstatic int nv_field_index(NvClass *c, const char *name);\nstatic nv *nv_class_defaults(NvClass *c);\n/* Field indices in name order - display and JSON keep the sorted output the\n * language always had (and the golden tests rely on). */\nstatic int *nv_field_order(NvClass *c, int count);\n\n/* The constant name of an enum object, NULL for anything else. */\nstatic const char *nv_obj_name(NvObj *o) {\n    if (!o->cls->isEnum) {\n        return 0;\n    }\n    return *(const char **)(nv_fields(o) + nv_class_field_count(o->cls));\n}\n\n/* ------------------------------------------------------------------ */\n/* Memory                                                              */\n/* ------------------------------------------------------------------ */\n\n/* Every thread bump allocates in a chunk of its own, so allocation stays a\n * pointer increment with no lock in sight. The chunks themselves come from\n * malloc and are never handed back, so a value one thread allocated stays\n * valid in every other. */\nstatic NV_TLS char *nv_arena_ptr = 0;\nstatic NV_TLS size_t nv_arena_left = 0;\n\nstatic void *nv_alloc(size_t n) {\n    void *p;\n    n = (n + 7) & ~(size_t)7;   /* every value in the runtime is 8-aligned */\n    if (n > 256 * 1024) {\n        p = malloc(n);\n        if (!p) {\n            fprintf(stderr, \"error: out of memory\\n\");\n            exit(1);\n        }\n        return p;\n    }\n    if (n > nv_arena_left) {\n        size_t chunk = 1024 * 1024;\n        nv_arena_ptr = (char *)malloc(chunk);\n        if (!nv_arena_ptr) {\n            fprintf(stderr, \"error: out of memory\\n\");\n            exit(1);\n        }\n        nv_arena_left = chunk;\n    }\n    p = nv_arena_ptr;\n    nv_arena_ptr += n;\n    nv_arena_left -= n;\n    return p;\n}\n\nstatic char *nv_strndup(const char *s, size_t n) {\n    char *r = (char *)nv_alloc(n + 1);\n    memcpy(r, s, n);\n    r[n] = 0;\n    return r;\n}\n\n/* Growable string buffers.\n *\n * Only nv_concat() and nv_add_chain() leave spare room at the end of a\n * buffer, and only they append into it. Those buffers - and no others -\n * keep their capacity in a word right in front of the bytes, which takes it\n * out of NvVal: a value is 16 bytes instead of 24, and the literals,\n * substrings and plain copies that are almost every string in a program\n * stop paying for a capacity they never had a use for. */\nstatic char *nv_buf_alloc(size_t cap) {\n    char *p = (char *)nv_alloc(sizeof(unsigned) + cap);\n    *(unsigned *)p = (unsigned)cap;\n    return p + sizeof(unsigned);\n}\n\nstatic size_t nv_buf_cap(const char *s) { return *(const unsigned *)(s - sizeof(unsigned)); }\n\n/* ------------------------------------------------------------------ */\n/* String builder                                                      */\n/* ------------------------------------------------------------------ */\n\ntypedef struct NvSb {\n    char *buf;\n    int len;\n    int cap;\n} NvSb;\n\nstatic void nv_sb_init(NvSb *sb) {\n    sb->cap = 64;\n    sb->len = 0;\n    sb->buf = (char *)malloc((size_t)sb->cap);\n    sb->buf[0] = 0;\n}\n\nstatic void nv_sb_addn(NvSb *sb, const char *s, int n) {\n    if (sb->len + n + 1 > sb->cap) {\n        while (sb->len + n + 1 > sb->cap) {\n            sb->cap *= 2;\n        }\n        sb->buf = (char *)realloc(sb->buf, (size_t)sb->cap);\n    }\n    memcpy(sb->buf + sb->len, s, (size_t)n);\n    sb->len += n;\n    sb->buf[sb->len] = 0;\n}\n\nstatic void nv_sb_add(NvSb *sb, const char *s) { nv_sb_addn(sb, s, (int)strlen(s)); }\n\nstatic void nv_sb_addc(NvSb *sb, char c) { nv_sb_addn(sb, &c, 1); }\n\nstatic const char *nv_sb_finish(NvSb *sb) {\n    const char *r = nv_strndup(sb->buf, (size_t)sb->len);\n    free(sb->buf);\n    sb->buf = 0;\n    return r;\n}\n\n/* ------------------------------------------------------------------ */\n/* Errors                                                              */\n/* ------------------------------------------------------------------ */\n\nstatic void nv_error(const char *fmt, ...) {\n    va_list ap;\n    fflush(stdout);\n    fprintf(stderr, \"error: \");\n    va_start(ap, fmt);\n    vfprintf(stderr, fmt, ap);\n    va_end(ap);\n    fprintf(stderr, \"\\n\");\n    exit(1);\n}\n\n/* ------------------------------------------------------------------ */\n/* Constructors                                                        */\n/* ------------------------------------------------------------------ */\n\nstatic NvVal nv_nil_val = {NV_NULL, 0, 0, 0, {0}};\nstatic NvVal nv_true_val = {NV_BOOL, 0, 0, 0, {1}};\nstatic NvVal nv_false_val = {NV_BOOL, 0, 0, 0, {0}};\nstatic NvVal nv_empty_str_val = {NV_STR, 0, NV_F_STABLE, 0, {0}};\nstatic nv nv_nil = &nv_nil_val;\nstatic nv nv_char_table[256];\n\nstatic nv nv_new(int type) {\n    nv v = (nv)nv_alloc(sizeof(NvVal));\n    memset(v, 0, sizeof(NvVal));\n    v->type = (unsigned char)type;\n    return v;\n}\n\nstatic nv nv_int(long long i) {\n    nv v;\n    if (i > -NV_TAG_LIMIT && i < NV_TAG_LIMIT) {\n        return (nv)(uintptr_t)(((uintptr_t)i << 1) | 1u);\n    }\n    v = nv_new(NV_INT);\n    v->i = i;\n    return v;\n}\n\nstatic int nv_exit_code(nv v) { return nv_type_of(v) == NV_INT \? (int)nv_ival(v) : 0; }\n\nstatic nv nv_float(double f) {\n    nv v = nv_new(NV_FLOAT);\n    v->f = f;\n    return v;\n}\n\nstatic nv nv_bool(int b) { return b \? &nv_true_val : &nv_false_val; }\n\n/* The value and its bytes come out of one block: one allocation instead of\n * two, and no padding wasted between them. */\nstatic nv nv_strn(const char *s, int n) {\n    nv v;\n    char *bytes;\n    if (n == 1 && nv_char_table[(unsigned char)s[0]]) {\n        return nv_char_table[(unsigned char)s[0]];\n    }\n    if (n <= 0) {\n        return &nv_empty_str_val;\n    }\n    v = (nv)nv_alloc(sizeof(NvVal) + (size_t)n + 1);\n    memset(v, 0, sizeof(NvVal));\n    bytes = (char *)(v + 1);\n    memcpy(bytes, s, (size_t)n);\n    bytes[n] = 0;\n    v->type = NV_STR;\n    v->flags = NV_F_STABLE;   /* private bytes, NUL terminated, never appended to */\n    v->s = bytes;\n    v->slen = n;\n    return v;\n}\n\nstatic nv nv_str(const char *s) { return nv_strn(s, (int)strlen(s)); }\n\n/* Every string literal in a program is one value, laid down by the compiler\n * as a static and filled in once at startup - no boxing, no hash lookup and\n * no allocation when the expression it sits in runs. */\nstatic void nv_init_literals(NvVal *vals, const char *const *texts, int n) {\n    int i;\n    for (i = 0; i < n; i++) {\n        vals[i].type = NV_STR;\n        vals[i].owns = 0;\n        vals[i].flags = NV_F_STABLE;\n        vals[i].slen = (int)strlen(texts[i]);\n        vals[i].s = texts[i];\n    }\n}\n\nstatic nv nv_str_own(const char *s, int n) {\n    nv v = nv_new(NV_STR);\n    v->s = s;\n    v->slen = n;\n    return v;\n}\n\n/* NUL terminated view of a string value. Strings may share a buffer with\n * a longer string that was appended to in place; the terminator is then\n * gone and a private copy is made. */\nstatic const char *nv_cstr(nv v) {\n    if (nv_type_of(v) != NV_STR) {\n        return nv_display(v);\n    }\n    if (v->s[v->slen] == 0) {\n        return v->s;\n    }\n    return nv_strndup(v->s, (size_t)v->slen);\n}\n\nstatic NvArr *nv_arr_new_cap(int cap) {\n    NvArr *a = (NvArr *)nv_alloc(sizeof(NvArr));\n    a->len = 0;\n    a->heap = 0;\n    a->cap = cap < 4 \? 4 : cap;\n    a->items = (nv *)nv_alloc(sizeof(nv) * (size_t)a->cap);\n    return a;\n}\n\nstatic NvArr *nv_arr_new(void) { return nv_arr_new_cap(4); }\n\n/* Growing inside the arena leaves every previous copy behind - the arena\n * never hands anything back - so a table that doubles its way to N entries\n * costs 2N. malloc does hand the old one back, and realloc often widens the\n * table where it stands, so everything past a small table grows there. The\n * threshold only keeps the many tiny arrays out of malloc's bookkeeping. */\n#define NV_ARR_HEAP_AT 64\n\nstatic void nv_arr_grow(NvArr *a) {\n    int cap = a->cap * 2;\n    if (cap >= NV_ARR_HEAP_AT) {\n        if (a->heap) {\n            a->items = (nv *)realloc(a->items, sizeof(nv) * (size_t)cap);\n        } else {\n            nv *items = (nv *)malloc(sizeof(nv) * (size_t)cap);\n            memcpy(items, a->items, sizeof(nv) * (size_t)a->len);\n            a->items = items;\n            a->heap = 1;\n        }\n        if (!a->items) {\n            nv_error(\"out of memory\");\n        }\n    } else {\n        nv *items = (nv *)nv_alloc(sizeof(nv) * (size_t)cap);\n        memcpy(items, a->items, sizeof(nv) * (size_t)a->len);\n        a->items = items;\n    }\n    a->cap = cap;\n}\n\nstatic void nv_arr_push(NvArr *a, nv v) {\n    if (a->len == a->cap) {\n        nv_arr_grow(a);\n    }\n    a->items[a->len++] = v;\n}\n\nstatic nv nv_arr(void) {\n    nv v = nv_new(NV_ARR);\n    v->a = nv_arr_new();\n    return v;\n}\n\n/* An array literal knows how many items it holds: sizing the block for them\n * up front skips the growth copies, which the arena would keep forever. */\nstatic nv nv_arr_of(int count, ...) {\n    nv v = nv_new(NV_ARR);\n    va_list ap;\n    int i;\n    v->a = nv_arr_new_cap(count);\n    va_start(ap, count);\n    for (i = 0; i < count; i++) {\n        nv_arr_push(v->a, va_arg(ap, nv));\n    }\n    va_end(ap);\n    return v;\n}\n\nstatic unsigned nv_key_hash(const char *key) {\n    unsigned h = 2166136261u;\n    for (; *key; key++) {\n        h = (h ^ (unsigned char)*key) * 16777619u;\n    }\n    return h;\n}\n\nstatic NvMap *nv_map_new_cap(int cap) {\n    NvMap *m = (NvMap *)nv_alloc(sizeof(NvMap));\n    m->len = 0;\n    m->cap = cap < 1 \? 1 : cap;\n    m->items = (NvEntry *)nv_alloc(sizeof(NvEntry) * (size_t)m->cap);\n    m->index = 0;\n    m->mask = 0;\n    m->sorted = 1;\n    m->heap = 0;\n    m->indexHeap = 0;\n    return m;\n}\n\nstatic NvMap *nv_map_new(void) { return nv_map_new_cap(4); }\n\n/* The same trap arrays avoid with NV_ARR_HEAP_AT: a map that doubles its way\n * to N entries leaves 2N behind in the arena. Maps are smaller and far more\n * numerous than arrays (every object literal, every set of options), so the\n * threshold is lower - past eight entries the entry table comes from malloc,\n * and the index does from twice that. */\n#define NV_MAP_HEAP_AT 8\n\n/* Slots for `len` entries: a power of two with half again as much room as\n * the entries need. Two slots per entry (what this used to ask for) rounds\n * up to the next power of two on top of that and spends twice the memory for\n * a probe count nothing could measure. */\n#define NV_MAP_SLOTS_FOR(len) ((len) + 1 + ((len) + 1) / 2)\n\n/* (Re)builds the hash index; called when it grows or entries move. */\nstatic void nv_map_reindex(NvMap *m, int slots) {\n    int i;\n    while (slots < NV_MAP_SLOTS_FOR(m->len)) {\n        slots *= 2;\n    }\n    m->mask = slots - 1;\n    if (slots >= NV_MAP_HEAP_AT * 2) {\n        /* the index is rebuilt from nothing, so the old one is dead the\n         * moment the new one exists: hand it back rather than leak it */\n        if (m->indexHeap) {\n            free(m->index);\n        }\n        m->index = (int *)malloc(sizeof(int) * (size_t)slots);\n        if (!m->index) {\n            nv_error(\"out of memory\");\n        }\n        m->indexHeap = 1;\n    } else {\n        m->index = (int *)nv_alloc(sizeof(int) * (size_t)slots);\n    }\n    memset(m->index, 0, sizeof(int) * (size_t)slots);\n    for (i = 0; i < m->len; i++) {\n        unsigned slot = nv_key_hash(m->items[i].key) & (unsigned)m->mask;\n        while (m->index[slot]) {\n            slot = (slot + 1) & (unsigned)m->mask;\n        }\n        m->index[slot] = i + 1;\n    }\n}\n\n/* Below this size a linear scan beats hashing - and object field maps,\n * which are the bulk of all maps, stay index free (and small). */\n#define NV_MAP_LINEAR 8\n\n/* Position of `key` in items, or -1. */\nstatic int nv_map_find(NvMap *m, const char *key) {\n    unsigned slot;\n    if (m->len == 0) {\n        return -1;\n    }\n    if (!m->index) {\n        int i;\n        if (m->len <= NV_MAP_LINEAR) {\n            for (i = 0; i < m->len; i++) {\n                if (strcmp(m->items[i].key, key) == 0) {\n                    return i;\n                }\n            }\n            return -1;\n        }\n        nv_map_reindex(m, 16);\n    }\n    slot = nv_key_hash(key) & (unsigned)m->mask;\n    while (m->index[slot]) {\n        int at = m->index[slot] - 1;\n        if (strcmp(m->items[at].key, key) == 0) {\n            return at;\n        }\n        slot = (slot + 1) & (unsigned)m->mask;\n    }\n    return -1;\n}\n\nstatic void nv_map_append(NvMap *m, const char *key, nv val) {\n    unsigned slot;\n    if (m->len == m->cap) {\n        int cap = m->cap * 2;\n        if (cap >= NV_MAP_HEAP_AT) {\n            if (m->heap) {\n                m->items = (NvEntry *)realloc(m->items, sizeof(NvEntry) * (size_t)cap);\n            } else {\n                NvEntry *items = (NvEntry *)malloc(sizeof(NvEntry) * (size_t)cap);\n                if (items) {\n                    memcpy(items, m->items, sizeof(NvEntry) * (size_t)m->len);\n                }\n                m->items = items;\n                m->heap = 1;\n            }\n            if (!m->items) {\n                nv_error(\"out of memory\");\n            }\n        } else {\n            NvEntry *items = (NvEntry *)nv_alloc(sizeof(NvEntry) * (size_t)cap);\n            memcpy(items, m->items, sizeof(NvEntry) * (size_t)m->len);\n            m->items = items;\n        }\n        m->cap = cap;\n    }\n    m->items[m->len].key = key;\n    m->items[m->len].val = val;\n    m->len++;\n    if (m->sorted && m->len > 1 && strcmp(m->items[m->len - 2].key, key) > 0) {\n        m->sorted = 0;\n    }\n    if (!m->index) {\n        if (m->len <= NV_MAP_LINEAR) {\n            return;                      /* stays index free */\n        }\n        nv_map_reindex(m, 16);\n        return;\n    }\n    if (NV_MAP_SLOTS_FOR(m->len) > m->mask + 1) {\n        nv_map_reindex(m, m->mask + 1);\n        return;\n    }\n    slot = nv_key_hash(key) & (unsigned)m->mask;\n    while (m->index[slot]) {\n        slot = (slot + 1) & (unsigned)m->mask;\n    }\n    m->index[slot] = m->len;\n}\n\n/* `key` must outlive the map (string literal, class table, arena string). */\nstatic void nv_map_set_static(NvMap *m, const char *key, nv val) {\n    int at = nv_map_find(m, key);\n    if (at >= 0) {\n        m->items[at].val = val;\n        return;\n    }\n    nv_map_append(m, key, val);\n}\n\nstatic void nv_map_set(NvMap *m, const char *key, nv val) {\n    int at = nv_map_find(m, key);\n    if (at >= 0) {\n        m->items[at].val = val;\n        return;\n    }\n    nv_map_append(m, nv_strndup(key, strlen(key)), val);\n}\n\n/* A map key is a NUL terminated string that outlives the map, so handing it\n * out means pointing at it - no copy of the bytes, and it goes straight back\n * into another map as a key without one either. */\nstatic nv nv_map_key_view(const char *key) {\n    nv v = nv_new(NV_STR);\n    v->flags = NV_F_STABLE;\n    v->s = key;\n    v->slen = (int)strlen(key);\n    return v;\n}\n\n/* The bytes a stable string points at outlive any map, so the entry can use\n * them as its key directly. */\nstatic void nv_map_set_key(NvMap *m, nv key, nv val) {\n    if (nv_type_of(key) == NV_STR && (key->flags & NV_F_STABLE)) {\n        nv_map_set_static(m, key->s, val);\n        return;\n    }\n    nv_map_set(m, nv_display(key), val);\n}\n\nstatic nv nv_map_get(NvMap *m, const char *key) {\n    int at = nv_map_find(m, key);\n    return at >= 0 \? m->items[at].val : 0;\n}\n\nstatic int nv_map_has(NvMap *m, const char *key) { return nv_map_find(m, key) >= 0; }\n\nstatic void nv_map_remove(NvMap *m, const char *key) {\n    int at = nv_map_find(m, key);\n    if (at < 0) {\n        return;\n    }\n    memmove(m->items + at, m->items + at + 1, sizeof(NvEntry) * (size_t)(m->len - at - 1));\n    m->len--;\n    if (m->index) {\n        nv_map_reindex(m, m->mask + 1);\n    }\n}\n\nstatic int nv_entry_cmp(const void *a, const void *b) {\n    return strcmp(((const NvEntry *)a)->key, ((const NvEntry *)b)->key);\n}\n\n/* Every read that exposes the order sorts first. */\nstatic void nv_map_order(NvMap *m) {\n    if (m->sorted) {\n        return;\n    }\n    qsort(m->items, (size_t)m->len, sizeof(NvEntry), nv_entry_cmp);\n    m->sorted = 1;\n    if (m->index) {\n        nv_map_reindex(m, m->mask + 1);\n    }\n}\n\nstatic nv nv_map(void) {\n    nv v = nv_new(NV_MAP);\n    v->m = nv_map_new();\n    return v;\n}\n\nstatic const char *nv_display(nv v);\n\n/* Like nv_arr_of: the literal's size is known, so the entry table is right\n * the first time. */\nstatic nv nv_map_of(int pairs, ...) {\n    nv v = nv_new(NV_MAP);\n    va_list ap;\n    int i;\n    v->m = nv_map_new_cap(pairs);\n    va_start(ap, pairs);\n    for (i = 0; i < pairs; i++) {\n        nv k = va_arg(ap, nv);\n        nv val = va_arg(ap, nv);\n        nv_map_set_key(v->m, k, val);\n    }\n    va_end(ap);\n    return v;\n}\n\n/* ------------------------------------------------------------------ */\n/* Type names, display                                                 */\n/* ------------------------------------------------------------------ */\n\nstatic const char *nv_type_name(nv v) {\n    switch (nv_type_of(v)) {\n    case NV_INT:\n        return \"integer\";\n    case NV_FLOAT:\n        return \"float\";\n    case NV_BOOL:\n        return \"bool\";\n    case NV_STR:\n        return \"string\";\n    case NV_ARR:\n        return \"array\";\n    case NV_MAP:\n        return \"map\";\n    case NV_OBJ:\n        return v->o->cls->name;\n    default:\n        return \"unknown\";\n    }\n}\n\n/* Digits back to front into a stack buffer, then one arena copy. sprintf()\n * showed up in every profile of code that puts numbers into strings. */\nstatic const char *nv_fmt_int(long long i) {\n    char buf[24];\n    char *end = buf + sizeof(buf);\n    char *p = end;\n    unsigned long long u = i < 0 \? 0ULL - (unsigned long long)i : (unsigned long long)i;\n    char *out;\n    size_t len;\n    *--p = 0;\n    do {\n        *--p = (char)('0' + (int)(u % 10ULL));\n        u /= 10ULL;\n    } while (u);\n    if (i < 0) {\n        *--p = '-';\n    }\n    len = (size_t)(end - p);\n    out = (char *)nv_alloc(len);\n    memcpy(out, p, len);\n    return out;\n}\n\nstatic const char *nv_fmt_float(double f) {\n    char buf[64];\n    sprintf(buf, \"%f\", f);\n    return nv_strndup(buf, strlen(buf));\n}\n\n/* Containers currently being printed/serialized, to cut reference cycles. */\nstatic NV_TLS const void *nv_visit_stack[256];\nstatic NV_TLS int nv_visit_depth = 0;\n\nstatic int nv_visit_enter(const void *container) {\n    int i;\n    for (i = 0; i < nv_visit_depth; i++) {\n        if (nv_visit_stack[i] == container) {\n            return 0;\n        }\n    }\n    if (nv_visit_depth < 256) {\n        nv_visit_stack[nv_visit_depth] = container;\n    }\n    nv_visit_depth++;\n    return 1;\n}\n\nstatic void nv_visit_leave(void) { nv_visit_depth--; }\n\nstatic const void *nv_container_id(nv v) {\n    if (nv_type_of(v) == NV_ARR) {\n        return v->a;\n    }\n    if (nv_type_of(v) == NV_MAP) {\n        return v->m;\n    }\n    if (nv_type_of(v) == NV_OBJ) {\n        return v->o;\n    }\n    return 0;\n}\n\nstatic void nv_display_into(NvSb *sb, nv v) {\n    int i;\n    const void *id = nv_container_id(v);\n    if (id && !nv_visit_enter(id)) {\n        nv_sb_add(sb, \"...\");\n        return;\n    }\n    switch (nv_type_of(v)) {\n    case NV_INT:\n        nv_sb_add(sb, nv_fmt_int(nv_ival(v)));\n        break;\n    case NV_FLOAT:\n        nv_sb_add(sb, nv_fmt_float(v->f));\n        break;\n    case NV_BOOL:\n        nv_sb_add(sb, nv_ival(v) \? \"true\" : \"false\");\n        break;\n    case NV_STR:\n        nv_sb_addn(sb, v->s, v->slen);\n        break;\n    case NV_ARR:\n        nv_sb_addc(sb, '[');\n        for (i = 0; i < v->a->len; i++) {\n            if (i > 0) {\n                nv_sb_add(sb, \", \");\n            }\n            nv_display_into(sb, v->a->items[i]);\n        }\n        nv_sb_addc(sb, ']');\n        break;\n    case NV_MAP:\n        nv_map_order(v->m);\n        nv_sb_addc(sb, '{');\n        for (i = 0; i < v->m->len; i++) {\n            if (i > 0) {\n                nv_sb_add(sb, \", \");\n            }\n            nv_sb_add(sb, v->m->items[i].key);\n            nv_sb_add(sb, \": \");\n            nv_display_into(sb, v->m->items[i].val);\n        }\n        nv_sb_addc(sb, '}');\n        break;\n    case NV_OBJ: {\n        const char *constName = nv_obj_name(v->o);\n        if (constName) {\n            nv_sb_add(sb, constName);\n            break;\n        }\n        nv_sb_add(sb, v->o->cls->name);\n        nv_sb_addc(sb, '{');\n        {\n            int count = nv_class_field_count(v->o->cls);\n            int *order = nv_field_order(v->o->cls, count);\n            for (i = 0; i < count; i++) {\n                if (i > 0) {\n                    nv_sb_add(sb, \", \");\n                }\n                nv_sb_add(sb, nv_field_name_at(v->o->cls, order[i], 0));\n                nv_sb_add(sb, \": \");\n                nv_display_into(sb, nv_fields(v->o)[order[i]]);\n            }\n        }\n        nv_sb_addc(sb, '}');\n        break;\n    }\n    default:\n        break;\n    }\n    if (id) {\n        nv_visit_leave();\n    }\n}\n\nstatic const char *nv_display(nv v) {\n    NvSb sb;\n    if (nv_type_of(v) == NV_STR) {\n        return nv_cstr(v);\n    }\n    if (nv_type_of(v) == NV_BOOL) {\n        return nv_ival(v) \? \"true\" : \"false\";\n    }\n    if (nv_type_of(v) == NV_INT) {\n        return nv_fmt_int(nv_ival(v));\n    }\n    if (nv_type_of(v) == NV_FLOAT) {\n        return nv_fmt_float(v->f);\n    }\n    nv_sb_init(&sb);\n    nv_display_into(&sb, v);\n    return nv_sb_finish(&sb);\n}\n\n/* The \"data\" of a value: what the interpreter compared strings against. */\nstatic const char *nv_data(nv v) {\n    switch (nv_type_of(v)) {\n    case NV_INT:\n    case NV_FLOAT:\n    case NV_BOOL:\n    case NV_STR:\n        return nv_display(v);\n    case NV_OBJ: {\n        const char *constName = nv_obj_name(v->o);\n        return constName \? constName : \"\";\n    }\n    default:\n        return \"\";\n    }\n}\n\nstatic nv nv_to_str(nv v) { return nv_type_of(v) == NV_STR \? v : nv_str(nv_display(v)); }\n\n/* ------------------------------------------------------------------ */\n/* Numbers, coercion, truthiness                                       */\n/* ------------------------------------------------------------------ */\n\nstatic int nv_is_num(nv v) { return nv_type_of(v) == NV_INT || nv_type_of(v) == NV_FLOAT; }\n\nstatic double nv_as_double(nv v) {\n    if (nv_type_of(v) == NV_FLOAT) {\n        return v->f;\n    }\n    if (nv_type_of(v) == NV_INT || nv_type_of(v) == NV_BOOL) {\n        return (double)nv_ival(v);\n    }\n    if (nv_type_of(v) == NV_STR) {\n        return atof(nv_cstr(v));\n    }\n    return 0.0;\n}\n\nstatic long long nv_as_int(nv v) {\n    if (nv_type_of(v) == NV_INT || nv_type_of(v) == NV_BOOL) {\n        return nv_ival(v);\n    }\n    if (nv_type_of(v) == NV_FLOAT) {\n        return (long long)v->f;\n    }\n    if (nv_type_of(v) == NV_STR) {\n        return atoll(nv_cstr(v));\n    }\n    return 0;\n}\n\nstatic int nv_truthy(nv v) { return v == &nv_true_val; }\n\nstatic const char *nv_normalize_type(const char *t) {\n    if (strcmp(t, \"str\") == 0) {\n        return \"string\";\n    }\n    if (strcmp(t, \"int\") == 0) {\n        return \"integer\";\n    }\n    if (strcmp(t, \"boolean\") == 0) {\n        return \"bool\";\n    }\n    if (strncmp(t, \"array\", 5) == 0) {\n        return \"array\";\n    }\n    if (strncmp(t, \"map\", 3) == 0) {\n        return \"map\";\n    }\n    return t;\n}\n\nstatic int nv_type_is(nv v, const char *t) {\n    t = nv_normalize_type(t);\n    return strcmp(nv_type_name(v), t) == 0;\n}\n\n/* Implicit conversions applied to parameters, fields and return values. */\nstatic nv nv_coerce(nv v, const char *t) {\n    t = nv_normalize_type(t);\n    if (strcmp(t, \"integer\") == 0) {\n        if (nv_type_of(v) == NV_FLOAT) {\n            return nv_int((long long)v->f);\n        }\n        return v;\n    }\n    if (strcmp(t, \"float\") == 0) {\n        if (nv_type_of(v) == NV_INT) {\n            return nv_float((double)nv_ival(v));\n        }\n        return v;\n    }\n    if (strcmp(t, \"string\") == 0) {\n        if (nv_type_of(v) != NV_STR && nv_type_of(v) != NV_NULL) {\n            return nv_str(nv_data(v));\n        }\n        return v;\n    }\n    return v;\n}\n\nstatic nv nv_coerce_int(nv v) { return nv_type_of(v) == NV_FLOAT \? nv_int((long long)v->f) : v; }\n\nstatic nv nv_coerce_float(nv v) { return nv_is_tagged(v) || nv_type_of(v) == NV_INT \? nv_float((double)nv_ival(v)) : v; }\n\nstatic nv nv_coerce_string(nv v) {\n    int t = nv_type_of(v);\n    return t == NV_STR || t == NV_NULL \? v : nv_str(nv_data(v));\n}\n\nstatic nv nv_default(const char *t) {\n    t = nv_normalize_type(t);\n    if (strcmp(t, \"integer\") == 0) {\n        return nv_int(0);\n    }\n    if (strcmp(t, \"float\") == 0) {\n        return nv_float(0.0);\n    }\n    if (strcmp(t, \"string\") == 0) {\n        return &nv_empty_str_val;\n    }\n    if (strcmp(t, \"bool\") == 0) {\n        return nv_bool(0);\n    }\n    return nv_nil;\n}\n\n/* ------------------------------------------------------------------ */\n/* Operators                                                           */\n/* ------------------------------------------------------------------ */\n\n/* Concatenation. The result gets spare capacity, and when the left\n * operand still owns the end of its buffer the right side is appended in\n * place, so `s = s + x` loops run in amortized linear time. Older values\n * sharing the buffer keep their length; nv_cstr() copies them on demand. */\n/* How much room a concatenation asks for.\n *\n * Most concatenations are one-shot - `\"a\" + b` in an argument, a key, a\n * message - and never grow again, so they get exactly what they need. A left\n * side that already owns a buffer is the second or later step of `s = s + x`,\n * and that one doubles: the copies stay amortized O(1) and the buffers the\n * arena can never hand back stay a bounded multiple of the string. Telling\n * the two apart is what `owns` is for. */\n#define NV_STR_EXACT(need) ((need) + 1)\n#define NV_STR_GROW(need) ((need) * 2 + 16)\n#define NV_STR_CAP(l, need) \\\n    (nv_type_of(l) == NV_STR && (l)->owns \? NV_STR_GROW(need) : NV_STR_EXACT(need))\n\nstatic nv nv_concat(nv l, nv r) {\n    const char *ls;\n    const char *rs;\n    size_t ll, rl, cap;\n    char *buf;\n    nv v;\n    if (nv_type_of(l) == NV_STR) {\n        ls = l->s;\n        ll = (size_t)l->slen;\n    } else {\n        ls = nv_display(l);\n        ll = strlen(ls);\n    }\n    if (nv_type_of(r) == NV_STR) {\n        rs = r->s;\n        rl = (size_t)r->slen;\n    } else {\n        rs = nv_display(r);\n        rl = strlen(rs);\n    }\n    if (rl == 0 && nv_type_of(l) == NV_STR) {\n        return l;\n    }\n    if (nv_type_of(l) == NV_STR && l->owns && l->s[l->slen] == 0 && rl > 0 && rs[0] != 0 &&\n        nv_buf_cap(l->s) > ll + rl) {\n        buf = (char *)l->s;\n        memmove(buf + ll, rs, rl);\n        buf[ll + rl] = 0;\n        v = nv_new(NV_STR);\n        v->s = buf;\n        v->slen = (int)(ll + rl);\n        v->owns = 1;\n        return v;\n    }\n    cap = NV_STR_CAP(l, ll + rl);\n    buf = nv_buf_alloc(cap);\n    memcpy(buf, ls, ll);\n    memcpy(buf + ll, rs, rl);\n    buf[ll + rl] = 0;\n    v = nv_new(NV_STR);\n    v->s = buf;\n    v->slen = (int)(ll + rl);\n    v->owns = 1;\n    return v;\n}\n\nstatic nv nv_add(nv l, nv r);\n\n/* `a + b + c + ...` as a single call. The chain is left associative, so the\n * operands before the first string are added arithmetically and everything\n * from there on goes into one buffer - instead of one string value, one\n * length walk and one copy per step. */\nstatic nv nv_add_chain(int n, ...) {\n    nv parts[16];\n    const char *strs[16];\n    size_t lens[16];\n    va_list ap;\n    int i, j, first = -1, m = 0;\n    nv acc;\n    size_t total = 0, at, cap;\n    char *buf;\n    nv v;\n    va_start(ap, n);\n    for (i = 0; i < n; i++) {\n        parts[i] = va_arg(ap, nv);\n    }\n    va_end(ap);\n    for (i = 0; i < n; i++) {\n        if (nv_type_of(parts[i]) == NV_STR) {\n            first = i;\n            break;\n        }\n    }\n    acc = parts[0];\n    if (first < 0) {\n        for (i = 1; i < n; i++) {\n            acc = nv_add(acc, parts[i]);\n        }\n        return acc;\n    }\n    for (i = 1; i <= first; i++) {\n        acc = nv_add(acc, parts[i]);\n    }\n    if (nv_type_of(acc) != NV_STR) {\n        for (i = first + 1; i < n; i++) {\n            acc = nv_add(acc, parts[i]);\n        }\n        return acc;\n    }\n    for (i = first + 1; i < n; i++) {\n        if (nv_type_of(parts[i]) == NV_STR) {\n            strs[m] = parts[i]->s;\n            lens[m] = (size_t)parts[i]->slen;\n        } else {\n            strs[m] = nv_display(parts[i]);\n            lens[m] = strlen(strs[m]);\n        }\n        total += lens[m];\n        m++;\n    }\n    if (total == 0) {\n        return acc;\n    }\n    at = (size_t)acc->slen;\n    if (acc->owns && acc->s[acc->slen] == 0 && nv_buf_cap(acc->s) > at + total) {\n        buf = (char *)acc->s;             /* still owns the end of its buffer */\n    } else {\n        cap = NV_STR_CAP(acc, at + total);\n        buf = nv_buf_alloc(cap);\n        memcpy(buf, acc->s, at);\n    }\n    (void)cap;\n    for (j = 0; j < m; j++) {\n        memmove(buf + at, strs[j], lens[j]);   /* a part may live in buf */\n        at += lens[j];\n    }\n    buf[at] = 0;\n    v = nv_new(NV_STR);\n    v->s = buf;\n    v->slen = (int)at;\n    v->owns = 1;\n    return v;\n}\n\nstatic void nv_arith_check(nv l, nv r, const char *op) {\n    if (!nv_is_num(l) || !nv_is_num(r)) {\n        nv_error(\"cannot apply '%s' to %s and %s\", op, nv_type_name(l), nv_type_name(r));\n    }\n}\n\nstatic nv nv_add(nv l, nv r) {\n    if (nv_is_tagged(l) && nv_is_tagged(r)) {\n        return nv_int(nv_ival(l) + nv_ival(r));\n    }\n    if (nv_type_of(l) == NV_STR || nv_type_of(r) == NV_STR) {\n        return nv_concat(l, r);\n    }\n    nv_arith_check(l, r, \"+\");\n    if (nv_type_of(l) == NV_FLOAT || nv_type_of(r) == NV_FLOAT) {\n        return nv_float(nv_as_double(l) + nv_as_double(r));\n    }\n    return nv_int(nv_ival(l) + nv_ival(r));\n}\n\nstatic nv nv_sub(nv l, nv r) {\n    if (nv_is_tagged(l) && nv_is_tagged(r)) {\n        return nv_int(nv_ival(l) - nv_ival(r));\n    }\n    nv_arith_check(l, r, \"-\");\n    if (nv_type_of(l) == NV_FLOAT || nv_type_of(r) == NV_FLOAT) {\n        return nv_float(nv_as_double(l) - nv_as_double(r));\n    }\n    return nv_int(nv_ival(l) - nv_ival(r));\n}\n\nstatic nv nv_mul(nv l, nv r) {\n    if (nv_is_tagged(l) && nv_is_tagged(r)) {\n        return nv_int(nv_ival(l) * nv_ival(r));\n    }\n    nv_arith_check(l, r, \"*\");\n    if (nv_type_of(l) == NV_FLOAT || nv_type_of(r) == NV_FLOAT) {\n        return nv_float(nv_as_double(l) * nv_as_double(r));\n    }\n    return nv_int(nv_ival(l) * nv_ival(r));\n}\n\nstatic nv nv_div(nv l, nv r) {\n    nv_arith_check(l, r, \"/\");\n    if (nv_type_of(l) == NV_FLOAT || nv_type_of(r) == NV_FLOAT) {\n        double d = nv_as_double(r);\n        return nv_float(d != 0.0 \? nv_as_double(l) / d : 0.0);\n    }\n    return nv_int(nv_ival(r) != 0 \? nv_ival(l) / nv_ival(r) : 0);\n}\n\nstatic nv nv_mod(nv l, nv r) {\n    nv_arith_check(l, r, \"%\");\n    if (nv_type_of(l) == NV_FLOAT || nv_type_of(r) == NV_FLOAT) {\n        return nv_float(fmod(nv_as_double(l), nv_as_double(r)));\n    }\n    return nv_int(nv_ival(r) != 0 \? nv_ival(l) % nv_ival(r) : 0);\n}\n\nstatic nv nv_neg(nv v) {\n    if (nv_type_of(v) == NV_FLOAT) {\n        return nv_float(-v->f);\n    }\n    if (nv_type_of(v) == NV_INT) {\n        return nv_int(-nv_ival(v));\n    }\n    nv_error(\"cannot negate %s\", nv_type_name(v));\n    return nv_nil;\n}\n\nstatic nv nv_not(nv v) { return nv_bool(!nv_truthy(v)); }\n\nstatic int nv_equals(nv l, nv r) {\n    if (nv_is_tagged(l) && nv_is_tagged(r)) {\n        return l == r;\n    }\n    if (nv_type_of(l) == NV_STR || nv_type_of(r) == NV_STR) {\n        return strcmp(nv_data(l), nv_data(r)) == 0;\n    }\n    if (nv_type_of(l) == NV_BOOL || nv_type_of(r) == NV_BOOL) {\n        return strcmp(nv_data(l), nv_data(r)) == 0;\n    }\n    if (nv_is_num(l) && nv_is_num(r)) {\n        return nv_as_double(l) == nv_as_double(r);\n    }\n    if (nv_type_of(l) == NV_OBJ && nv_type_of(r) == NV_OBJ) {\n        const char *ln = nv_obj_name(l->o);\n        const char *rn = nv_obj_name(r->o);\n        if (ln && rn) {\n            return strcmp(ln, rn) == 0 && l->o->cls == r->o->cls;\n        }\n        return l->o == r->o;\n    }\n    if (nv_type_of(l) != nv_type_of(r)) {\n        return 0;\n    }\n    if (nv_type_of(l) == NV_ARR) {\n        return l->a == r->a;\n    }\n    if (nv_type_of(l) == NV_MAP) {\n        return l->m == r->m;\n    }\n    return 1; /* nil == nil */\n}\n\nstatic int nv_compare(nv l, nv r, const char *op) {\n    if (nv_is_tagged(l) && nv_is_tagged(r)) {\n        long long a = nv_ival(l), b = nv_ival(r);\n        return a < b \? -1 : (a > b \? 1 : 0);\n    }\n    if (nv_type_of(l) == NV_STR || nv_type_of(r) == NV_STR) {\n        return strcmp(nv_data(l), nv_data(r));\n    }\n    if (nv_is_num(l) && nv_is_num(r)) {\n        double a = nv_as_double(l), b = nv_as_double(r);\n        return a < b \? -1 : (a > b \? 1 : 0);\n    }\n    nv_error(\"cannot compare %s and %s with '%s'\", nv_type_name(l), nv_type_name(r), op);\n    return 0;\n}\n\n/* ---------------------------------------------------------------- */\n/* Fast paths: small-integer arithmetic and comparisons without a call */\n/* ---------------------------------------------------------------- */\n\nstatic inline nv nv_tag(long long v) {\n    if (v > -NV_TAG_LIMIT && v < NV_TAG_LIMIT) {\n        return (nv)(uintptr_t)(((uintptr_t)v << 1) | 1u);\n    }\n    return nv_int(v);\n}\n\nstatic inline int nv_both_tagged(nv l, nv r) { return ((uintptr_t)l & (uintptr_t)r & 1u) != 0; }\n\n/* Unboxed float helpers: division by zero is 0.0 in Novus, not infinity. */\nstatic inline double nv_fdiv(double a, double b) { return b != 0.0 \? a / b : 0.0; }\nstatic inline double nv_fmod_(double a, double b) { return b != 0.0 \? fmod(a, b) : 0.0; }\n\n/* Unboxed integer helpers: division by zero is 0 in Novus, not a trap. */\nstatic inline long long nv_idiv(long long a, long long b) { return b \? a / b : 0; }\nstatic inline long long nv_imod(long long a, long long b) { return b \? a % b : 0; }\n\n/* Shifts on unboxed integers. A count of 64 or more, or a negative one, is\n * undefined in C but not here - see nv_shl/nv_shr, which these mirror. */\nstatic inline long long nv_ishl(long long v, long long n) {\n    if (n < 0) {\n        return n <= -64 \? (v < 0 \? -1 : 0) : (v >> -n);\n    }\n    return n >= 64 \? 0 : (long long)((unsigned long long)v << n);\n}\n\nstatic inline long long nv_ishr(long long v, long long n) {\n    if (n < 0) {\n        return n <= -64 \? 0 : (long long)((unsigned long long)v << -n);\n    }\n    return n >= 64 \? (v < 0 \? -1 : 0) : (v >> n);\n}\n\nstatic inline nv nv_add_fast(nv l, nv r) {\n    if (nv_both_tagged(l, r)) {\n        return nv_tag(nv_ival(l) + nv_ival(r));\n    }\n    return nv_add(l, r);\n}\n\nstatic inline nv nv_sub_fast(nv l, nv r) {\n    if (nv_both_tagged(l, r)) {\n        return nv_tag(nv_ival(l) - nv_ival(r));\n    }\n    return nv_sub(l, r);\n}\n\nstatic inline nv nv_mul_fast(nv l, nv r) {\n    if (nv_both_tagged(l, r)) {\n        long long a = nv_ival(l), b = nv_ival(r);\n        if (a > -0x40000000LL && a < 0x40000000LL && b > -0x40000000LL && b < 0x40000000LL) {\n            return nv_tag(a * b);\n        }\n    }\n    return nv_mul(l, r);\n}\n\n/* Conditions want a C int, not a boxed bool - these skip the boxing. */\nstatic inline int nv_lt_bool(nv l, nv r) {\n    if (nv_both_tagged(l, r)) return nv_ival(l) < nv_ival(r);\n    return nv_compare(l, r, \"<\") < 0;\n}\nstatic inline int nv_gt_bool(nv l, nv r) {\n    if (nv_both_tagged(l, r)) return nv_ival(l) > nv_ival(r);\n    return nv_compare(l, r, \">\") > 0;\n}\nstatic inline int nv_le_bool(nv l, nv r) {\n    if (nv_both_tagged(l, r)) return nv_ival(l) <= nv_ival(r);\n    return nv_compare(l, r, \"<=\") <= 0;\n}\nstatic inline int nv_ge_bool(nv l, nv r) {\n    if (nv_both_tagged(l, r)) return nv_ival(l) >= nv_ival(r);\n    return nv_compare(l, r, \">=\") >= 0;\n}\nstatic inline int nv_eq_bool(nv l, nv r) {\n    if (nv_both_tagged(l, r)) return l == r;\n    return nv_equals(l, r);\n}\nstatic inline int nv_ne_bool(nv l, nv r) { return !nv_eq_bool(l, r); }\n\nstatic nv nv_eq(nv l, nv r) { return nv_bool(nv_equals(l, r)); }\nstatic nv nv_ne(nv l, nv r) { return nv_bool(!nv_equals(l, r)); }\nstatic nv nv_lt(nv l, nv r) { return nv_bool(nv_compare(l, r, \"<\") < 0); }\nstatic nv nv_gt(nv l, nv r) { return nv_bool(nv_compare(l, r, \">\") > 0); }\nstatic nv nv_le(nv l, nv r) { return nv_bool(nv_compare(l, r, \"<=\") <= 0); }\nstatic nv nv_ge(nv l, nv r) { return nv_bool(nv_compare(l, r, \">=\") >= 0); }\n\n/* ------------------------------------------------------------------ */\n/* Indexing and members                                                */\n/* ------------------------------------------------------------------ */\n\nstatic nv nv_index(nv t, nv k) {\n    if (nv_type_of(t) == NV_MAP) {\n        const char *key = nv_display(k);\n        nv v = nv_map_get(t->m, key);\n        if (!v) {\n            nv_error(\"key '%s' not found in map\", key);\n        }\n        return v;\n    }\n    if (nv_type_of(t) == NV_ARR) {\n        long long i = nv_as_int(k);\n        if (i < 0 || i >= t->a->len) {\n            nv_error(\"array index %lld out of bounds (size %d)\", i, t->a->len);\n        }\n        return t->a->items[i];\n    }\n    if (nv_type_of(t) == NV_STR) {\n        long long i = nv_as_int(k);\n        if (i < 0 || i >= t->slen) {\n            nv_error(\"string index %lld out of bounds (length %d)\", i, t->slen);\n        }\n        return nv_strn(t->s + i, 1);\n    }\n    nv_error(\"cannot index into a value of type %s\", nv_type_name(t));\n    return nv_nil;\n}\n\nstatic void nv_index_set(nv t, nv k, nv v) {\n    if (nv_type_of(t) == NV_MAP) {\n        nv_map_set_key(t->m, k, v);\n        return;\n    }\n    if (nv_type_of(t) == NV_ARR) {\n        long long i = nv_as_int(k);\n        if (i < 0 || i >= t->a->len) {\n            nv_error(\"array index %lld out of bounds (size %d)\", i, t->a->len);\n        }\n        t->a->items[i] = v;\n        return;\n    }\n    nv_error(\"cannot assign by index into a value of type %s\", nv_type_name(t));\n}\n\nstatic nv nv_get_member(nv t, const char *name) {\n    nv v = 0;\n    if (nv_type_of(t) == NV_OBJ) {\n        int at = nv_field_index(t->o->cls, name);\n        if (at < 0) {\n            nv_error(\"no property '%s' on value of type %s\", name, t->o->cls->name);\n        }\n        return nv_fields(t->o)[at];\n    }\n    if (nv_type_of(t) == NV_MAP) {\n        v = nv_map_get(t->m, name);\n        if (!v) {\n            nv_error(\"no property '%s' in map\", name);\n        }\n        return v;\n    }\n    nv_error(\"no property '%s' on value of type %s\", name, nv_type_name(t));\n    return nv_nil;\n}\n\nstatic void nv_set_member(nv t, const char *name, nv v) {\n    if (nv_type_of(t) == NV_OBJ) {\n        int at = nv_field_index(t->o->cls, name);\n        if (at < 0) {\n            nv_error(\"no field '%s' on %s\", name, t->o->cls->name);\n        }\n        nv_fields(t->o)[at] = v;\n        return;\n    }\n    if (nv_type_of(t) == NV_MAP) {\n        nv_map_set(t->m, name, v);\n        return;\n    }\n    nv_error(\"cannot set property '%s' on value of type %s\", name, nv_type_name(t));\n}\n\n/* ------------------------------------------------------------------ */\n/* Classes, objects, enums                                             */\n/* ------------------------------------------------------------------ */\n\nstatic NvClass **nv_classes = 0;\nstatic int nv_nclasses = 0;\nstatic int nv_class_cap = 0;\n\nstatic NvClass *nv_find_class(const char *name) {\n    int i;\n    for (i = 0; i < nv_nclasses; i++) {\n        if (strcmp(nv_classes[i]->name, name) == 0) {\n            return nv_classes[i];\n        }\n    }\n    return 0;\n}\n\nstatic NvClass *nv_class_define(const char *name, const char *base, int isAbstract, int isEnum) {\n    NvClass *c = (NvClass *)nv_alloc(sizeof(NvClass));\n    memset(c, 0, sizeof(NvClass));\n    c->totalFields = -1;\n    c->name = name;\n    c->base = base && base[0] \? base : 0;\n    c->isAbstract = isAbstract;\n    c->isEnum = isEnum;\n    c->fieldCap = 8;\n    c->fieldNames = (const char **)nv_alloc(sizeof(char *) * 8);\n    c->fieldTypes = (const char **)nv_alloc(sizeof(char *) * 8);\n    c->methodCap = 8;\n    c->methods = (NvMethod *)nv_alloc(sizeof(NvMethod) * 8);\n    c->constants = nv_map_new();\n    c->constantOrder = nv_arr_new();\n    if (nv_nclasses == nv_class_cap) {\n        NvClass **grown;\n        nv_class_cap = nv_class_cap \? nv_class_cap * 2 : 16;\n        grown = (NvClass **)nv_alloc(sizeof(NvClass *) * (size_t)nv_class_cap);\n        if (nv_nclasses) {\n            memcpy(grown, nv_classes, sizeof(NvClass *) * (size_t)nv_nclasses);\n        }\n        nv_classes = grown;\n    }\n    nv_classes[nv_nclasses++] = c;\n    return c;\n}\n\nstatic void nv_class_field(NvClass *c, const char *name, const char *type) {\n    if (c->nfields == c->fieldCap) {\n        const char **names = (const char **)nv_alloc(sizeof(char *) * (size_t)c->fieldCap * 2);\n        const char **types = (const char **)nv_alloc(sizeof(char *) * (size_t)c->fieldCap * 2);\n        memcpy(names, c->fieldNames, sizeof(char *) * (size_t)c->nfields);\n        memcpy(types, c->fieldTypes, sizeof(char *) * (size_t)c->nfields);\n        c->fieldNames = names;\n        c->fieldTypes = types;\n        c->fieldCap *= 2;\n    }\n    c->fieldNames[c->nfields] = name;\n    c->fieldTypes[c->nfields] = type;\n    c->nfields++;\n}\n\nstatic void nv_class_method(NvClass *c, const char *name, int arity, NvMethodFn fn) {\n    if (c->nmethods == c->methodCap) {\n        NvMethod *grown = (NvMethod *)nv_alloc(sizeof(NvMethod) * (size_t)c->methodCap * 2);\n        memcpy(grown, c->methods, sizeof(NvMethod) * (size_t)c->nmethods);\n        c->methods = grown;\n        c->methodCap *= 2;\n    }\n    c->methods[c->nmethods].name = name;\n    c->methods[c->nmethods].arity = arity;\n    c->methods[c->nmethods].fn = fn;\n    c->nmethods++;\n}\n\nstatic void nv_class_ctor(NvClass *c, int arity, NvMethodFn fn) {\n    c->ctor = fn;\n    c->ctorArity = arity;\n}\n\nstatic NvClass *nv_class_base(NvClass *c) { return c->base \? nv_find_class(c->base) : 0; }\n\n/* field type if `name` is a field somewhere in the class chain */\nstatic const char *nv_class_field_type(NvClass *c, const char *name) {\n    int guard = 0;\n    while (c && guard++ < 64) {\n        int i;\n        for (i = 0; i < c->nfields; i++) {\n            if (strcmp(c->fieldNames[i], name) == 0) {\n                return c->fieldTypes[i];\n            }\n        }\n        c = nv_class_base(c);\n    }\n    return 0;\n}\n\nstatic NvMethod *nv_class_find_method(NvClass *c, const char *name, int arity) {\n    NvMethod *byName = 0;\n    int guard = 0;\n    while (c && guard++ < 64) {\n        int i;\n        for (i = 0; i < c->nmethods; i++) {\n            if (strcmp(c->methods[i].name, name) == 0) {\n                if (c->methods[i].arity == arity) {\n                    return &c->methods[i];\n                }\n                if (!byName) {\n                    byName = &c->methods[i];\n                }\n            }\n        }\n        if (byName) {\n            return byName; /* most derived definition wins */\n        }\n        c = nv_class_base(c);\n    }\n    return byName;\n}\n\n/* Fields are laid out base class first, then the class itself. */\nstatic int nv_class_field_count(NvClass *c);\n\nstatic int nv_field_index(NvClass *c, const char *name) {\n    NvClass *base = nv_class_base(c);\n    int offset = base \? nv_class_field_count(base) : 0;\n    int i;\n    for (i = 0; i < c->nfields; i++) {\n        if (strcmp(c->fieldNames[i], name) == 0) {\n            return offset + i;\n        }\n    }\n    return base \? nv_field_index(base, name) : -1;\n}\n\n/* Name and declared type of the field at `index`. */\nstatic const char *nv_field_name_at(NvClass *c, int index, const char **type) {\n    NvClass *base = nv_class_base(c);\n    int offset = base \? nv_class_field_count(base) : 0;\n    if (index >= offset) {\n        if (type) {\n            *type = c->fieldTypes[index - offset];\n        }\n        return c->fieldNames[index - offset];\n    }\n    return base \? nv_field_name_at(base, index, type) : 0;\n}\n\nstatic int *nv_field_order(NvClass *c, int count) {\n    int i, j;\n    if (c->order) {\n        return c->order;\n    }\n    c->order = (int *)nv_alloc(sizeof(int) * (size_t)(count < 1 \? 1 : count));\n    for (i = 0; i < count; i++) {\n        /* insertion sort: field counts are tiny */\n        const char *name = nv_field_name_at(c, i, 0);\n        for (j = i; j > 0 && strcmp(nv_field_name_at(c, c->order[j - 1], 0), name) > 0; j--) {\n            c->order[j] = c->order[j - 1];\n        }\n        c->order[j] = i;\n    }\n    return c->order;\n}\n\n\n\nstatic void nv_init_fields(NvClass *c, nv *fields) {\n    int count = nv_class_field_count(c);\n    if (count > 0) {\n        memcpy(fields, nv_class_defaults(c), sizeof(nv) * (size_t)count);\n    }\n}\n\nstatic int nv_class_field_count(NvClass *c) {\n    int n = 0, guard = 0;\n    NvClass *walk = c;\n    if (c->totalFields >= 0) {\n        return c->totalFields;\n    }\n    while (walk && guard++ < 64) {\n        n += walk->nfields;\n        walk = nv_class_base(walk);\n    }\n    c->totalFields = n;\n    return n;\n}\n\n/* Default value per field slot, computed once per class. */\nstatic nv *nv_class_defaults(NvClass *c) {\n    int count, i;\n    if (c->defaults) {\n        return c->defaults;\n    }\n    count = nv_class_field_count(c);\n    c->defaults = (nv *)nv_alloc(sizeof(nv) * (size_t)(count < 1 \? 1 : count));\n    for (i = 0; i < count; i++) {\n        const char *type = 0;\n        nv_field_name_at(c, i, &type);\n        c->defaults[i] = type \? nv_default(type) : nv_nil;\n    }\n    return c->defaults;\n}\n\n/* Coercion by type name costs a normalize plus up to three strcmp. The kind\n * is the same for every object of a class, so it is computed once. */\nstatic signed char nv_type_kind(const char *t) {\n    t = nv_normalize_type(t);\n    if (strcmp(t, \"integer\") == 0) {\n        return 1;\n    }\n    if (strcmp(t, \"float\") == 0) {\n        return 2;\n    }\n    if (strcmp(t, \"string\") == 0) {\n        return 3;\n    }\n    return 0;\n}\n\nstatic inline nv nv_coerce_kind(nv v, signed char kind, const char *type) {\n    if (kind == 0) {\n        return v;\n    }\n    if (kind == 1 && nv_type_of(v) != NV_FLOAT) {\n        return v;\n    }\n    if (kind == 3 && nv_type_of(v) == NV_STR) {\n        return v;\n    }\n    return nv_coerce(v, type);\n}\n\n/* Field types and kinds in slot order (base class first). */\nstatic void nv_class_layout(NvClass *c) {\n    int count, i;\n    if (c->flatKinds) {\n        return;\n    }\n    count = nv_class_field_count(c);\n    if (count < 1) {\n        count = 1;\n    }\n    c->flatTypes = (const char **)nv_alloc(sizeof(const char *) * (size_t)count);\n    c->flatKinds = (signed char *)nv_alloc(sizeof(signed char) * (size_t)count);\n    for (i = 0; i < nv_class_field_count(c); i++) {\n        const char *type = 0;\n        nv_field_name_at(c, i, &type);\n        c->flatTypes[i] = type;\n        c->flatKinds[i] = type \? nv_type_kind(type) : 0;\n    }\n}\n\n/* Value, object header and field slots live in one arena block. */\ntypedef struct NvObjBlock {\n    NvVal val;\n    NvObj obj;\n} NvObjBlock;\n\nstatic nv nv_new_object_of(NvClass *c);\n\n/* Class pointer cached per call site: the name lookup happens once. */\nstatic nv nv_new_object_cached(NvClass **cache, const char *className) {\n    if (!*cache) {\n        *cache = nv_find_class(className);\n        if (!*cache) {\n            nv_error(\"unknown class '%s'\", className);\n        }\n    }\n    return nv_new_object_of(*cache);\n}\n\nstatic nv nv_new_object(const char *className) {\n    NvClass *c = nv_find_class(className);\n    if (!c) {\n        nv_error(\"unknown class '%s'\", className);\n    }\n    return nv_new_object_of(c);\n}\n\nstatic nv nv_new_object_of(NvClass *c) {\n    NvObjBlock *b;\n    int nfields;\n    if (c->isAbstract) {\n        nv_error(\"cannot instantiate abstract class '%s'\", c->name);\n    }\n    nfields = nv_class_field_count(c);\n    /* enum objects carry their constant name in one slot behind the fields */\n    b = (NvObjBlock *)nv_alloc(sizeof(NvObjBlock) +\n                               sizeof(nv) * (size_t)(nfields < 1 \? 1 : nfields) +\n                               (c->isEnum \? sizeof(const char *) : 0));\n    b->val.type = NV_OBJ;\n    b->val.owns = 0;\n    b->val.flags = 0;\n    b->val.slen = 0;\n    b->val.o = &b->obj;\n    b->obj.cls = c;\n    nv_init_fields(c, nv_fields(&b->obj));\n    if (c->isEnum) {\n        *(const char **)(nv_fields(&b->obj) + nfields) = 0;\n    }\n    return &b->val;\n}\n\nstatic nv nv_construct_obj(nv obj, nv *args, int n) {\n    NvClass *c = obj->o->cls;\n    if (!c->ctorResolved) {\n        NvClass *walk = c;\n        int guard = 0;\n        while (walk && guard++ < 64) {\n            if (walk->ctor) {\n                c->resolvedCtor = walk->ctor;\n                break;\n            }\n            walk = nv_class_base(walk);\n        }\n        c->ctorResolved = 1;\n    }\n    if (c->resolvedCtor) {\n        c->resolvedCtor(obj, args, n);\n        return obj;\n    }\n    /* no constructor: positional field initialization (base fields first) */\n    {\n        int count = nv_class_field_count(c);\n        nv *slots = nv_fields(obj->o);\n        int k;\n        nv_class_layout(c);\n        for (k = 0; k < n && k < count; k++) {\n            slots[k] = nv_coerce_kind(args[k], c->flatKinds[k], c->flatTypes[k]);\n        }\n    }\n    return obj;\n}\n\nstatic nv nv_construct_args(const char *className, nv *args, int n) {\n    return nv_construct_obj(nv_new_object(className), args, n);\n}\n\nstatic nv nv_construct(const char *className, int n, ...) {\n    nv args[64];\n    va_list ap;\n    int i;\n    va_start(ap, n);\n    for (i = 0; i < n && i < 64; i++) {\n        args[i] = va_arg(ap, nv);\n    }\n    va_end(ap);\n    return nv_construct_args(className, args, n);\n}\n\n/* The common arities without va_list - object construction is hot. */\nstatic inline nv nv_construct0(NvClass **cache, const char *className) {\n    return nv_construct_obj(nv_new_object_cached(cache, className), 0, 0);\n}\n\nstatic inline nv nv_construct1(NvClass **cache, const char *className, nv a0) {\n    nv args[1];\n    args[0] = a0;\n    return nv_construct_obj(nv_new_object_cached(cache, className), args, 1);\n}\n\nstatic inline nv nv_construct2(NvClass **cache, const char *className, nv a0, nv a1) {\n    nv args[2];\n    args[0] = a0;\n    args[1] = a1;\n    return nv_construct_obj(nv_new_object_cached(cache, className), args, 2);\n}\n\nstatic inline nv nv_construct3(NvClass **cache, const char *className, nv a0, nv a1, nv a2) {\n    nv args[3];\n    args[0] = a0;\n    args[1] = a1;\n    args[2] = a2;\n    return nv_construct_obj(nv_new_object_cached(cache, className), args, 3);\n}\n\n/* Same, with the class pointer cached in a static at the call site. */\nstatic nv nv_construct_cached(NvClass **cache, const char *className, int n, ...) {\n    nv args[64];\n    va_list ap;\n    int i;\n    va_start(ap, n);\n    for (i = 0; i < n && i < 64; i++) {\n        args[i] = va_arg(ap, nv);\n    }\n    va_end(ap);\n    return nv_construct_obj(nv_new_object_cached(cache, className), args, n);\n}\n\n/* Object literal: Name{field=value, ...} - no constructor is run. */\nstatic nv nv_new_object_fields_cached(NvClass **cache, const char *className, int n, ...) {\n    nv obj = nv_new_object_cached(cache, className);\n    va_list ap;\n    int i;\n    va_start(ap, n);\n    for (i = 0; i < n; i++) {\n        const char *name = va_arg(ap, const char *);\n        nv val = va_arg(ap, nv);\n        int at = nv_field_index(obj->o->cls, name);\n        if (at < 0) {\n            nv_error(\"no field '%s' on %s\", name, obj->o->cls->name);\n        }\n        nv_fields(obj->o)[at] = val;\n    }\n    va_end(ap);\n    return obj;\n}\n\nstatic nv nv_new_object_fields(const char *className, int n, ...) {\n    nv obj = nv_new_object(className);\n    va_list ap;\n    int i;\n    va_start(ap, n);\n    for (i = 0; i < n; i++) {\n        const char *name = va_arg(ap, const char *);\n        nv val = va_arg(ap, nv);\n        int at = nv_field_index(obj->o->cls, name);\n        if (at < 0) {\n            nv_error(\"no field '%s' on %s\", name, obj->o->cls->name);\n        }\n        nv_fields(obj->o)[at] = val;\n    }\n    va_end(ap);\n    return obj;\n}\n\nstatic void nv_enum_add(const char *enumName, const char *constName, nv obj) {\n    NvClass *c = nv_find_class(enumName);\n    *(const char **)(nv_fields(obj->o) + nv_class_field_count(obj->o->cls)) = constName;\n    nv_map_set(c->constants, constName, obj);\n    nv_arr_push(c->constantOrder, obj);\n}\n\nstatic nv nv_enum_get(const char *enumName, const char *constName) {\n    NvClass *c = nv_find_class(enumName);\n    nv v = c \? nv_map_get(c->constants, constName) : 0;\n    if (!v) {\n        nv_error(\"no constant '%s' in enum %s\", constName, enumName);\n    }\n    return v;\n}\n\nstatic nv nv_enum_values(const char *enumName) {\n    NvClass *c = nv_find_class(enumName);\n    nv v = nv_arr();\n    int i;\n    if (c) {\n        for (i = 0; i < c->constantOrder->len; i++) {\n            nv_arr_push(v->a, c->constantOrder->items[i]);\n        }\n    }\n    return v;\n}\n\nstatic int nv_deprecated_warned_dummy NV_UNUSED = 0;\n\nstatic void nv_warn_deprecated(int *flag, const char *method, const char *since, const char *text) {\n    if (*flag) {\n        return;\n    }\n    *flag = 1;\n    printf(\"[warning] Method '%s' is deprecated\", method);\n    if (since[0]) {\n        printf(\" (since %s)\", since);\n    }\n    if (text[0]) {\n        printf(\": %s\", text);\n    }\n    printf(\"\\n\");\n}\n\n/* ------------------------------------------------------------------ */\n/* Strings helpers                                                     */\n/* ------------------------------------------------------------------ */\n\n/* A substring shares its parent's bytes instead of copying them: it owns\n * nothing of its own.\n *\n * Nothing can observe the difference. The in-place append of nv_concat only\n * runs when the left side owns its buffer, so a view always takes\n * the copying path; nv_cstr() makes a private copy when the terminator it\n * needs is not there; and everything else works from slen. What changes is\n * the cost: a program that slices a large string - which is what the compiler\n * does to every node of its own AST - stops allocating a copy per slice.\n * That is the difference between compiling a large program in a few hundred\n * megabytes and in tens of gigabytes, because the arena never frees. */\nstatic nv nv_substr(nv s, long long start, long long end) {\n    long long n = s->slen;\n    nv v;\n    if (start < 0) {\n        start = 0;\n    }\n    if (end > n) {\n        end = n;\n    }\n    if (start > end) {\n        start = end;\n    }\n    /* one character and the empty string are cached or trivial: copy them */\n    if (end - start <= 1) {\n        return nv_strn(s->s + start, (int)(end - start));\n    }\n    v = nv_new(NV_STR);\n    v->s = s->s + start;\n    v->slen = (int)(end - start);\n    return v;\n}\n\nstatic long long nv_str_index_of(nv s, nv needle, long long from) {\n    const char *ns = nv_display(needle);\n    const char *hs = nv_cstr(s);\n    const char *p;\n    if (from < 0) {\n        from = 0;\n    }\n    if (from > s->slen) {\n        return -1;\n    }\n    p = strstr(hs + from, ns);\n    return p \? (long long)(p - hs) : -1;\n}\n\nstatic nv nv_str_split(nv s, nv sep) {\n    nv out = nv_arr();\n    const char *sp = nv_display(sep);\n    size_t sl = strlen(sp);\n    const char *cur = nv_cstr(s);\n    const char *p;\n    if (sl == 0) {\n        int i;\n        for (i = 0; i < s->slen; i++) {\n            nv_arr_push(out->a, nv_strn(s->s + i, 1));\n        }\n        return out;\n    }\n    while ((p = strstr(cur, sp)) != 0) {\n        nv_arr_push(out->a, nv_strn(cur, (int)(p - cur)));\n        cur = p + sl;\n    }\n    nv_arr_push(out->a, nv_str(cur));\n    return out;\n}\n\n/* Splits on runs of whitespace - the hot path of most text processing. */\nstatic nv nv_str_words(nv s) {\n    nv out = nv_arr();\n    const char *text = nv_cstr(s);\n    int i = 0, start;\n    while (text[i]) {\n        while (text[i] && isspace((unsigned char)text[i])) {\n            i++;\n        }\n        if (!text[i]) {\n            break;\n        }\n        start = i;\n        while (text[i] && !isspace((unsigned char)text[i])) {\n            i++;\n        }\n        nv_arr_push(out->a, nv_strn(text + start, i - start));\n    }\n    return out;\n}\n\nstatic nv nv_str_replace(nv s, nv from, nv to) {\n    NvSb sb;\n    const char *f = nv_display(from);\n    const char *t = nv_display(to);\n    size_t fl = strlen(f);\n    const char *cur = nv_cstr(s);\n    const char *p;\n    if (fl == 0) {\n        return s;\n    }\n    nv_sb_init(&sb);\n    while ((p = strstr(cur, f)) != 0) {\n        nv_sb_addn(&sb, cur, (int)(p - cur));\n        nv_sb_add(&sb, t);\n        cur = p + fl;\n    }\n    nv_sb_add(&sb, cur);\n    {\n        int len = sb.len;\n        return nv_str_own(nv_sb_finish(&sb), len);\n    }\n}\n\nstatic nv nv_str_trim(nv s) {\n    int a = 0, b = s->slen;\n    while (a < b && isspace((unsigned char)s->s[a])) {\n        a++;\n    }\n    while (b > a && isspace((unsigned char)s->s[b - 1])) {\n        b--;\n    }\n    return nv_strn(s->s + a, b - a);\n}\n\nstatic nv nv_str_case(nv s, int upper) {\n    char *buf = nv_strndup(s->s, (size_t)s->slen);\n    int i;\n    for (i = 0; i < s->slen; i++) {\n        buf[i] = (char)(upper \? toupper((unsigned char)buf[i]) : tolower((unsigned char)buf[i]));\n    }\n    return nv_str_own(buf, s->slen);\n}\n\nstatic nv nv_arr_join(nv a, nv sep) {\n    NvSb sb;\n    const char *sp = nv_display(sep);\n    int i, len;\n    nv_sb_init(&sb);\n    for (i = 0; i < a->a->len; i++) {\n        if (i > 0) {\n            nv_sb_add(&sb, sp);\n        }\n        nv_display_into(&sb, a->a->items[i]);\n    }\n    len = sb.len;\n    return nv_str_own(nv_sb_finish(&sb), len);\n}\n\nstatic long long nv_arr_index_of(nv a, nv v) {\n    int i;\n    for (i = 0; i < a->a->len; i++) {\n        if (nv_equals(a->a->items[i], v)) {\n            return i;\n        }\n    }\n    return -1;\n}\n\n/* ------------------------------------------------------------------ */\n/* Method calls on any value                                           */\n/* ------------------------------------------------------------------ */\n\n/* Resolving a member means walking field names and method names with strcmp,\n * and the same (class, name) pair is asked for over and over. This cache is\n * keyed on the *pointers*: every name comes from a string literal in the\n * generated C, so a hit costs two compares and no string work. Classes are\n * fully registered before the first call runs, so entries never go stale. */\n#define NV_MCACHE 2048\ntypedef struct NvMember {\n    NvClass *cls;\n    const char *name;\n    int arity;\n    int slot;          /* >= 0: field slot, -1: method */\n    const char *ftype; /* declared field type, for setter coercion */\n    signed char kind;  /* nv_type_kind of ftype */\n    NvMethodFn fn;\n} NvMember;\nstatic NV_TLS NvMember nv_mcache[NV_MCACHE];\n\n/* The resolved member, or 0 when the class has neither field nor method. */\nstatic NvMember *nv_resolve_member(NvClass *c, const char *name, int arity) {\n    size_t h = (((size_t)(uintptr_t)c >> 4) ^ ((size_t)(uintptr_t)name >> 2)\n                ^ (size_t)(arity * 31)) & (size_t)(NV_MCACHE - 1);\n    NvMember *e = &nv_mcache[h];\n    NvMethod *m;\n    int at;\n    if (e->cls == c && e->name == name && e->arity == arity) {\n        return e;\n    }\n    at = nv_field_index(c, name);\n    if (at >= 0) {\n        const char *ftype = 0;\n        nv_field_name_at(c, at, &ftype);\n        e->cls = c;\n        e->name = name;\n        e->arity = arity;\n        e->slot = at;\n        e->ftype = ftype;\n        e->kind = ftype \? nv_type_kind(ftype) : 0;\n        e->fn = 0;\n        return e;\n    }\n    m = nv_class_find_method(c, name, arity);\n    if (!m) {\n        return 0;\n    }\n    e->cls = c;\n    e->name = name;\n    e->arity = arity;\n    e->slot = -1;\n    e->ftype = 0;\n    e->fn = m->fn;\n    return e;\n}\n\nstatic nv nv_invoke_args(nv t, const char *name, nv *args, int n) {\n    if (nv_type_of(t) == NV_OBJ) {\n        NvMember *e = nv_resolve_member(t->o->cls, name, n);\n        if (e) {\n            if (e->slot < 0) {\n                return e->fn(t, args, n);\n            }\n            if (n == 0) {\n                return nv_fields(t->o)[e->slot];   /* getter */\n            }\n            nv_fields(t->o)[e->slot] = nv_coerce_kind(args[0], e->kind, e->ftype);\n            return nv_nil;                         /* setter */\n        }\n        nv_error(\"unknown member '%s' on %s\", name, t->o->cls->name);\n    }\n    if (strcmp(name, \"length\") == 0) {\n        if (nv_type_of(t) == NV_ARR) {\n            return nv_int(t->a->len);\n        }\n        if (nv_type_of(t) == NV_MAP) {\n            return nv_int(t->m->len);\n        }\n        if (nv_type_of(t) == NV_STR) {\n            return nv_int(t->slen);\n        }\n        nv_error(\"'%s' has no length\", nv_type_name(t));\n    }\n    if (nv_type_of(t) == NV_ARR) {\n        if (strcmp(name, \"append\") == 0 || strcmp(name, \"push\") == 0) {\n            int i;\n            for (i = 0; i < n; i++) {\n                nv_arr_push(t->a, args[i]);\n            }\n            return nv_nil;\n        }\n        if (strcmp(name, \"pop\") == 0) {\n            if (t->a->len == 0) {\n                nv_error(\"pop() on empty array\");\n            }\n            return t->a->items[--t->a->len];\n        }\n        if (strcmp(name, \"contains\") == 0) {\n            return nv_bool(n > 0 && nv_arr_index_of(t, args[0]) >= 0);\n        }\n        if (strcmp(name, \"indexOf\") == 0) {\n            return nv_int(n > 0 \? nv_arr_index_of(t, args[0]) : -1);\n        }\n        if (strcmp(name, \"join\") == 0) {\n            return nv_arr_join(t, n > 0 \? args[0] : nv_str(\"\"));\n        }\n        if (strcmp(name, \"clear\") == 0) {\n            t->a->len = 0;\n            return nv_nil;\n        }\n        if (strcmp(name, \"insert\") == 0 && n == 2) {\n            long long at = nv_as_int(args[0]);\n            int i;\n            if (at < 0 || at > t->a->len) {\n                nv_error(\"insert index %lld out of bounds (size %d)\", at, t->a->len);\n            }\n            nv_arr_push(t->a, nv_nil);\n            for (i = t->a->len - 1; i > at; i--) {\n                t->a->items[i] = t->a->items[i - 1];\n            }\n            t->a->items[at] = args[1];\n            return nv_nil;\n        }\n        if (strcmp(name, \"remove\") == 0 && n == 1) {\n            long long at = nv_as_int(args[0]);\n            int i;\n            if (at < 0 || at >= t->a->len) {\n                nv_error(\"remove index %lld out of bounds (size %d)\", at, t->a->len);\n            }\n            for (i = (int)at; i < t->a->len - 1; i++) {\n                t->a->items[i] = t->a->items[i + 1];\n            }\n            t->a->len--;\n            return nv_nil;\n        }\n    }\n    if (nv_type_of(t) == NV_MAP) {\n        if (strcmp(name, \"has\") == 0) {\n            return nv_bool(n > 0 && nv_map_has(t->m, nv_display(args[0])));\n        }\n        if (strcmp(name, \"keys\") == 0) {\n            nv out = nv_new(NV_ARR);\n            int i;\n            nv_map_order(t->m);\n            out->a = nv_arr_new_cap(t->m->len);\n            for (i = 0; i < t->m->len; i++) {\n                nv_arr_push(out->a, nv_map_key_view(t->m->items[i].key));\n            }\n            return out;\n        }\n        if (strcmp(name, \"values\") == 0) {\n            nv out = nv_new(NV_ARR);\n            int i;\n            nv_map_order(t->m);\n            out->a = nv_arr_new_cap(t->m->len);\n            for (i = 0; i < t->m->len; i++) {\n                nv_arr_push(out->a, t->m->items[i].val);\n            }\n            return out;\n        }\n        if (strcmp(name, \"remove\") == 0) {\n            if (n > 0) {\n                nv_map_remove(t->m, nv_display(args[0]));\n            }\n            return nv_nil;\n        }\n        if (strcmp(name, \"get\") == 0 && n == 2) {\n            nv v = nv_map_get(t->m, nv_display(args[0]));\n            return v \? v : args[1];\n        }\n    }\n    if (nv_type_of(t) == NV_STR) {\n        if (strcmp(name, \"charAt\") == 0) {\n            long long i = n > 0 \? nv_as_int(args[0]) : 0;\n            if (i < 0 || i >= t->slen) {\n                nv_error(\"charAt index %lld out of bounds (length %d)\", i, t->slen);\n            }\n            return nv_strn(t->s + i, 1);\n        }\n        if (strcmp(name, \"substring\") == 0) {\n            long long start = n > 0 \? nv_as_int(args[0]) : 0;\n            long long end = n > 1 \? nv_as_int(args[1]) : t->slen;\n            return nv_substr(t, start, end);\n        }\n        if (strcmp(name, \"indexOf\") == 0) {\n            return nv_int(n > 0 \? nv_str_index_of(t, args[0], n > 1 \? nv_as_int(args[1]) : 0) : -1);\n        }\n        if (strcmp(name, \"contains\") == 0) {\n            return nv_bool(n > 0 && nv_str_index_of(t, args[0], 0) >= 0);\n        }\n        if (strcmp(name, \"startsWith\") == 0) {\n            const char *p = n > 0 \? nv_display(args[0]) : \"\";\n            size_t pl = strlen(p);\n            return nv_bool(pl <= (size_t)t->slen && memcmp(t->s, p, pl) == 0);\n        }\n        if (strcmp(name, \"endsWith\") == 0) {\n            const char *p = n > 0 \? nv_display(args[0]) : \"\";\n            size_t pl = strlen(p);\n            return nv_bool(pl <= (size_t)t->slen && memcmp(t->s + t->slen - pl, p, pl) == 0);\n        }\n        if (strcmp(name, \"split\") == 0) {\n            return nv_str_split(t, n > 0 \? args[0] : nv_str(\"\"));\n        }\n        if (strcmp(name, \"replace\") == 0 && n == 2) {\n            return nv_str_replace(t, args[0], args[1]);\n        }\n        if (strcmp(name, \"trim\") == 0) {\n            return nv_str_trim(t);\n        }\n        if (strcmp(name, \"toUpper\") == 0) {\n            return nv_str_case(t, 1);\n        }\n        if (strcmp(name, \"toLower\") == 0) {\n            return nv_str_case(t, 0);\n        }\n    }\n    nv_error(\"unknown method '%s()' on '%s'\", name, nv_type_name(t));\n    return nv_nil;\n}\n\n/* `obj.field()` and `obj.method()` without building an argument array. */\nstatic inline nv nv_invoke0(nv t, const char *name) {\n    if (nv_type_of(t) == NV_OBJ) {\n        NvMember *e = nv_resolve_member(t->o->cls, name, 0);\n        if (e) {\n            return e->slot >= 0 \? nv_fields(t->o)[e->slot] : e->fn(t, 0, 0);\n        }\n    }\n    return nv_invoke_args(t, name, 0, 0);\n}\n\n/* Calls with a known small arity skip the va_list: the arguments go into a\n * stack array directly. `nv_invoke` stays for the variadic cases. */\nstatic inline nv nv_invoke1(nv t, const char *name, nv a) {\n    nv args[1];\n    args[0] = a;\n    return nv_invoke_args(t, name, args, 1);\n}\n\nstatic inline nv nv_invoke2(nv t, const char *name, nv a, nv b) {\n    nv args[2];\n    args[0] = a;\n    args[1] = b;\n    return nv_invoke_args(t, name, args, 2);\n}\n\nstatic inline nv nv_invoke3(nv t, const char *name, nv a, nv b, nv c) {\n    nv args[3];\n    args[0] = a;\n    args[1] = b;\n    args[2] = c;\n    return nv_invoke_args(t, name, args, 3);\n}\n\n/* `x.length()` and `x.has(k)` are, after append, the most frequent dynamic\n * calls; going straight to the collection skips the dispatch chain. */\nstatic inline nv nv_length_of(nv t, const char *name) {\n    int type = nv_type_of(t);\n    if (type == NV_ARR) {\n        return nv_int(t->a->len);\n    }\n    if (type == NV_MAP) {\n        return nv_int(t->m->len);\n    }\n    if (type == NV_STR) {\n        return nv_int(t->slen);\n    }\n    return nv_invoke0(t, name);\n}\n\nstatic inline nv nv_has_key(nv t, const char *name, nv key) {\n    if (nv_type_of(t) == NV_MAP) {\n        return nv_bool(nv_map_has(t->m, nv_display(key)));\n    }\n    return nv_invoke1(t, name, key);\n}\n\n/* `x.append(v)` is the hottest dynamic call there is: on an array it is a\n * push, everything else takes the general path. */\nstatic inline nv nv_append(nv t, const char *name, nv v) {\n    if (nv_type_of(t) == NV_ARR) {\n        nv_arr_push(t->a, v);\n        return nv_nil;\n    }\n    return nv_invoke1(t, name, v);\n}\n\nstatic nv nv_invoke(nv t, const char *name, int n, ...) {\n    nv args[64];\n    va_list ap;\n    int i;\n    va_start(ap, n);\n    for (i = 0; i < n && i < 64; i++) {\n        args[i] = va_arg(ap, nv);\n    }\n    va_end(ap);\n    return nv_invoke_args(t, name, args, n);\n}\n\n/* ------------------------------------------------------------------ */\n/* Iteration                                                           */\n/* ------------------------------------------------------------------ */\n\n/* Iteration walks a snapshot, so the body may change the collection while\n * looping. The snapshot is allocated at its final size instead of growing. */\nstatic NvArr *nv_arr_with_capacity(int cap) {\n    NvArr *a = (NvArr *)nv_alloc(sizeof(NvArr));\n    a->len = 0;\n    a->heap = 0;\n    a->cap = cap < 1 \? 1 : cap;\n    if (a->cap >= NV_ARR_HEAP_AT) {\n        a->items = (nv *)malloc(sizeof(nv) * (size_t)a->cap);\n        if (!a->items) {\n            nv_error(\"out of memory\");\n        }\n        a->heap = 1;\n    } else {\n        a->items = (nv *)nv_alloc(sizeof(nv) * (size_t)a->cap);\n    }\n    return a;\n}\n\nstatic NvArr *nv_iter(nv v);\n\n/* `for (x in xs)` walks a snapshot so the collection can be modified inside\n * the loop. When the body cannot call anything, nothing can modify it and\n * the array itself is walked - no copy of up to millions of slots. */\nstatic NvArr *nv_iter_live(nv v) {\n    if (nv_type_of(v) == NV_ARR) {\n        return v->a;\n    }\n    return nv_iter(v);\n}\n\nstatic NvArr *nv_iter(nv v) {\n    NvArr *out;\n    int i;\n    if (nv_type_of(v) == NV_ARR) {\n        out = nv_arr_with_capacity(v->a->len);\n        memcpy(out->items, v->a->items, sizeof(nv) * (size_t)v->a->len);\n        out->len = v->a->len;\n        return out;\n    }\n    if (nv_type_of(v) == NV_MAP) {\n        /* A key already is a NUL terminated string that outlives the loop, so\n         * the loop variable points at it instead of copying it - and stays\n         * usable as a key of another map without a copy either. */\n        nv_map_order(v->m);\n        out = nv_arr_with_capacity(v->m->len);\n        for (i = 0; i < v->m->len; i++) {\n            nv_arr_push(out, nv_map_key_view(v->m->items[i].key));\n        }\n        return out;\n    }\n    if (nv_type_of(v) == NV_STR) {\n        out = nv_arr_with_capacity(v->slen);\n        for (i = 0; i < v->slen; i++) {\n            nv_arr_push(out, nv_strn(v->s + i, 1));\n        }\n        return out;\n    }\n    nv_error(\"cannot iterate over a value of type %s\", nv_type_name(v));\n    return nv_arr_new();\n}\n\n/* ------------------------------------------------------------------ */\n/* I/O and builtins                                                    */\n/* ------------------------------------------------------------------ */\n\nstatic void nv_print(nv v) { fputs(nv_display(v), stdout); }\n\nstatic void nv_println(nv v) {\n    fputs(nv_display(v), stdout);\n    fputc('\\n', stdout);\n}\n\nstatic void nv_eprintln(nv v) {\n    fflush(stdout);\n    fputs(nv_display(v), stderr);\n    fputc('\\n', stderr);\n}\n\nstatic nv nv_args_global = 0;\n\nstatic void nv_init_args(int argc, char **argv) {\n    int i;\n#ifdef _WIN32\n    /* LF line endings on every platform (no CRLF translation) */\n    _setmode(_fileno(stdout), _O_BINARY);\n    _setmode(_fileno(stderr), _O_BINARY);\n#endif\n    for (i = 0; i < 256; i++) {\n        char c = (char)i;\n        nv v = nv_new(NV_STR);\n        v->flags = NV_F_STABLE;\n        v->s = nv_strndup(&c, 1);\n        v->slen = 1;\n        nv_char_table[i] = v;\n    }\n    nv_empty_str_val.s = \"\";\n    nv_conc_init();\n    nv_args_global = nv_arr();\n    for (i = 1; i < argc; i++) {\n        nv_arr_push(nv_args_global->a, nv_str(argv[i]));\n    }\n}\n\nstatic nv nv_args(void) { return nv_args_global \? nv_args_global : nv_arr(); }\n\nstatic nv nv_read_file(nv path) {\n    FILE *f = fopen(nv_display(path), \"rb\");\n    long n;\n    char *buf;\n    size_t rd;\n    if (!f) {\n        return nv_str(\"\");\n    }\n    fseek(f, 0, SEEK_END);\n    n = ftell(f);\n    fseek(f, 0, SEEK_SET);\n    buf = (char *)nv_alloc((size_t)n + 1);\n    rd = fread(buf, 1, (size_t)n, f);\n    buf[rd] = 0;\n    fclose(f);\n    return nv_str_own(buf, (int)rd);\n}\n\nstatic nv nv_write_file(nv path, nv content) {\n    FILE *f = fopen(nv_display(path), \"wb\");\n    const char *s;\n    int len;\n    if (!f) {\n        nv_error(\"cannot write file '%s'\", nv_display(path));\n    }\n    /* by byte length, not to the first NUL: readFile() already returns\n     * binary content faithfully, and writing it back has to match */\n    s = nv_bin(content, &len);\n    fwrite(s, 1, (size_t)len, f);\n    fclose(f);\n    return nv_nil;\n}\n\nstatic nv nv_remove_file(nv path) {\n    return nv_bool(remove(nv_display(path)) == 0);\n}\n\nstatic int nv_path_exists_c(const char *p) {\n    struct stat st;\n    return stat(p, &st) == 0;\n}\n\nstatic nv nv_file_exists(nv path) { return nv_bool(nv_path_exists_c(nv_display(path))); }\n\nstatic nv nv_read_line(void) {\n    NvSb sb;\n    int c;\n    int len;\n    nv_sb_init(&sb);\n    while ((c = fgetc(stdin)) != EOF && c != '\\n') {\n        if (c != '\\r') {\n            nv_sb_addc(&sb, (char)c);\n        }\n    }\n    len = sb.len;\n    return nv_str_own(nv_sb_finish(&sb), len);\n}\n\nstatic nv nv_parse_int(nv v) {\n    if (nv_type_of(v) == NV_INT) {\n        return v;\n    }\n    if (nv_type_of(v) == NV_FLOAT) {\n        return nv_int((long long)v->f);\n    }\n    return nv_int(atoll(nv_display(v)));\n}\n\nstatic nv nv_parse_float(nv v) {\n    if (nv_type_of(v) == NV_FLOAT) {\n        return v;\n    }\n    return nv_float(nv_as_double(v));\n}\n\nstatic nv nv_chr(nv code) {\n    char c = (char)nv_as_int(code);\n    return nv_strn(&c, 1);\n}\n\nstatic nv nv_ord(nv s) {\n    const char *p = nv_display(s);\n    return nv_int(p[0] \? (unsigned char)p[0] : 0);\n}\n\nstatic nv nv_typeof_builtin(nv v) { return nv_str(nv_type_name(v)); }\n\n/* cmd.exe strips the outer quotes of `\"prog\" \"arg\"`; one more pair of\n * quotes around the whole line keeps them intact. */\nstatic const char *nv_shell_line(const char *cmd) {\n#ifdef _WIN32\n    size_t n = strlen(cmd);\n    char *buf = (char *)nv_alloc(n + 3);\n    buf[0] = '\"';\n    memcpy(buf + 1, cmd, n);\n    buf[n + 1] = '\"';\n    buf[n + 2] = 0;\n    return buf;\n#else\n    return cmd;\n#endif\n}\n\nstatic int nv_exit_status(int rc) {\n#ifdef _WIN32\n    return rc;\n#else\n    if (rc == -1) {\n        return -1;\n    }\n    if (WIFEXITED(rc)) {\n        return WEXITSTATUS(rc);\n    }\n    return -1;\n#endif\n}\n\nstatic nv nv_exec(nv cmd) {\n    int rc;\n    fflush(stdout);\n    fflush(stderr);\n    rc = system(nv_shell_line(nv_display(cmd)));\n    return nv_int(nv_exit_status(rc));\n}\n\nstatic nv nv_env(nv name) {\n    const char *v = getenv(nv_display(name));\n    return nv_str(v \? v : \"\");\n}\n\nstatic nv nv_exit(nv code) {\n    fflush(stdout);\n    exit((int)nv_as_int(code));\n    return nv_nil;\n}\n\nstatic nv nv_platform(void) {\n#if defined(_WIN32)\n    return nv_str(\"windows\");\n#elif defined(__APPLE__)\n    return nv_str(\"macos\");\n#elif defined(__linux__)\n    return nv_str(\"linux\");\n#else\n    return nv_str(\"unix\");\n#endif\n}\n\n/* ------------------------------------------------------------------ */\n/* path module                                                         */\n/* ------------------------------------------------------------------ */\n\nstatic nv nv_path_join_args(nv *args, int n) {\n    NvSb sb;\n    int i, len;\n    nv_sb_init(&sb);\n    for (i = 0; i < n; i++) {\n        const char *p = nv_display(args[i]);\n        if (p[0] == 0) {\n            continue;\n        }\n        if (sb.len > 0 && sb.buf[sb.len - 1] != '/' && sb.buf[sb.len - 1] != '\\\\') {\n            nv_sb_addc(&sb, '/');\n        }\n        nv_sb_add(&sb, p);\n    }\n    len = sb.len;\n    return nv_str_own(nv_sb_finish(&sb), len);\n}\n\nstatic nv nv_path_join(int n, ...) {\n    nv args[64];\n    va_list ap;\n    int i;\n    va_start(ap, n);\n    for (i = 0; i < n && i < 64; i++) {\n        args[i] = va_arg(ap, nv);\n    }\n    va_end(ap);\n    return nv_path_join_args(args, n);\n}\n\n/* Paths reported by the runtime use forward slashes on every platform. */\nstatic nv nv_path_slashes(const char *s) {\n#ifdef _WIN32\n    char *buf = nv_strndup(s, strlen(s));\n    char *p;\n    for (p = buf; *p; p++) {\n        if (*p == '\\\\') {\n            *p = '/';\n        }\n    }\n    return nv_str_own(buf, (int)strlen(buf));\n#else\n    return nv_str(s);\n#endif\n}\n\nstatic nv nv_path_absolute(void) {\n    char buf[4096];\n    if (!NV_GETCWD(buf, sizeof(buf))) {\n        return nv_str(\".\");\n    }\n    return nv_path_slashes(buf);\n}\n\nstatic nv nv_path_exists(nv p) { return nv_bool(nv_path_exists_c(nv_display(p))); }\n\nstatic nv nv_path_dirname(nv p) {\n    const char *s = nv_display(p);\n    int n = (int)strlen(s);\n    while (n > 0 && s[n - 1] != '/' && s[n - 1] != '\\\\') {\n        n--;\n    }\n    if (n == 0) {\n        return nv_str(\".\");\n    }\n    if (n > 1) {\n        n--; /* drop the separator itself */\n    }\n    return nv_strn(s, n);\n}\n\nstatic nv nv_path_basename(nv p) {\n    const char *s = nv_display(p);\n    int n = (int)strlen(s);\n    int i = n;\n    while (i > 0 && s[i - 1] != '/' && s[i - 1] != '\\\\') {\n        i--;\n    }\n    return nv_str(s + i);\n}\n\nstatic nv nv_path_stem(nv p) {\n    nv base = nv_path_basename(p);\n    int i = base->slen;\n    while (i > 0 && base->s[i - 1] != '.') {\n        i--;\n    }\n    if (i <= 1) {\n        return base;\n    }\n    return nv_strn(base->s, i - 1);\n}\n\nstatic nv nv_path_temp(void) {\n    const char *t = getenv(\"TMPDIR\");\n    if (!t || !t[0]) {\n        t = getenv(\"TEMP\");\n    }\n    if (!t || !t[0]) {\n        t = getenv(\"TMP\");\n    }\n    if (!t || !t[0]) {\n        t = \"/tmp\";\n    }\n    return nv_path_slashes(t);\n}\n\nstatic nv nv_path_extension(nv p) {\n    nv base = nv_path_basename(p);\n    int i = base->slen;\n    while (i > 0 && base->s[i - 1] != '.') {\n        i--;\n    }\n    if (i <= 1) {\n        return nv_str(\"\");\n    }\n    return nv_strn(base->s + i - 1, base->slen - i + 1);\n}\n\nstatic nv nv_path_is_absolute(nv p) {\n    const char *s = nv_display(p);\n    if (s[0] == '/' || s[0] == '\\\\') {\n        return nv_bool(1);\n    }\n    return nv_bool(isalpha((unsigned char)s[0]) && s[1] == ':');\n}\n\nstatic nv nv_path_separator(void) {\n#ifdef _WIN32\n    return nv_str(\"\\\\\");\n#else\n    return nv_str(\"/\");\n#endif\n}\n\n/* Collapses \".\" and \"..\" segments and duplicate separators. */\nstatic nv nv_path_normalize(nv p) {\n    const char *s = nv_display(p);\n    const char *segs[1024];\n    int lens[1024];\n    int n = 0, i = 0, len = (int)strlen(s), k;\n    NvSb sb;\n    int rooted = 0, out;\n    char drive[3] = {0, 0, 0};\n    if (isalpha((unsigned char)s[0]) && s[1] == ':') {\n        drive[0] = s[0];\n        drive[1] = ':';\n        i = 2;\n    }\n    if (s[i] == '/' || s[i] == '\\\\') {\n        rooted = 1;\n    }\n    while (i < len) {\n        int start;\n        while (i < len && (s[i] == '/' || s[i] == '\\\\')) {\n            i++;\n        }\n        start = i;\n        while (i < len && s[i] != '/' && s[i] != '\\\\') {\n            i++;\n        }\n        if (i == start) {\n            continue;\n        }\n        if (i - start == 1 && s[start] == '.') {\n            continue;\n        }\n        if (i - start == 2 && s[start] == '.' && s[start + 1] == '.') {\n            if (n > 0 && !(lens[n - 1] == 2 && segs[n - 1][0] == '.' && segs[n - 1][1] == '.')) {\n                n--;\n                continue;\n            }\n            if (rooted) {\n                continue;\n            }\n        }\n        if (n < 1024) {\n            segs[n] = s + start;\n            lens[n] = i - start;\n            n++;\n        }\n    }\n    nv_sb_init(&sb);\n    if (drive[0]) {\n        nv_sb_add(&sb, drive);\n    }\n    if (rooted) {\n        nv_sb_addc(&sb, '/');\n    }\n    for (k = 0; k < n; k++) {\n        if (k > 0) {\n            nv_sb_addc(&sb, '/');\n        }\n        nv_sb_addn(&sb, segs[k], lens[k]);\n    }\n    if (sb.len == 0) {\n        nv_sb_addc(&sb, '.');\n    }\n    out = sb.len;\n    return nv_str_own(nv_sb_finish(&sb), out);\n}\n\nstatic nv nv_path_absolute_of(nv p) {\n    if (nv_truthy(nv_path_is_absolute(p))) {\n        return nv_path_normalize(p);\n    }\n    return nv_path_normalize(nv_path_join(2, nv_path_absolute(), p));\n}\n\n/* Path of `target` relative to directory `base` (both made absolute). */\nstatic nv nv_path_relative(nv base, nv target) {\n    nv b = nv_path_absolute_of(base);\n    nv t = nv_path_absolute_of(target);\n    nv bparts = nv_str_split(b, nv_str(\"/\"));\n    nv tparts = nv_str_split(t, nv_str(\"/\"));\n    int common = 0, i;\n    nv out = nv_arr();\n    while (common < bparts->a->len && common < tparts->a->len &&\n           strcmp(nv_cstr(bparts->a->items[common]), nv_cstr(tparts->a->items[common])) == 0) {\n        common++;\n    }\n    for (i = common; i < bparts->a->len; i++) {\n        if (bparts->a->items[i]->slen > 0) {\n            nv_arr_push(out->a, nv_str(\"..\"));\n        }\n    }\n    for (i = common; i < tparts->a->len; i++) {\n        if (tparts->a->items[i]->slen > 0) {\n            nv_arr_push(out->a, tparts->a->items[i]);\n        }\n    }\n    if (out->a->len == 0) {\n        return nv_str(\".\");\n    }\n    return nv_arr_join(out, nv_str(\"/\"));\n}\n\n/* ------------------------------------------------------------------ */\n/* os module                                                           */\n/* ------------------------------------------------------------------ */\n\nstatic int nv_stat_mode(const char *p, int *isdir) {\n    struct stat st;\n    if (stat(p, &st) != 0) {\n        return 0;\n    }\n#ifdef S_ISDIR\n    *isdir = S_ISDIR(st.st_mode);\n#else\n    *isdir = (st.st_mode & S_IFMT) == S_IFDIR;\n#endif\n    return 1;\n}\n\nstatic nv nv_os_is_dir(nv p) {\n    int isdir = 0;\n    return nv_bool(nv_stat_mode(nv_display(p), &isdir) && isdir);\n}\n\nstatic nv nv_os_is_file(nv p) {\n    int isdir = 0;\n    return nv_bool(nv_stat_mode(nv_display(p), &isdir) && !isdir);\n}\n\n/* mkdir -p */\nstatic nv nv_os_mkdir(nv p) {\n    const char *s = nv_display(p);\n    size_t n = strlen(s), i;\n    char *buf = nv_strndup(s, n);\n    int isdir = 0;\n    for (i = 1; i < n; i++) {\n        if (buf[i] == '/' || buf[i] == '\\\\') {\n            char saved = buf[i];\n            buf[i] = 0;\n            if (!(buf[i - 1] == ':' && i == 2)) {\n                NV_MKDIR(buf);\n            }\n            buf[i] = saved;\n        }\n    }\n    NV_MKDIR(buf);\n    return nv_bool(nv_stat_mode(buf, &isdir) && isdir);\n}\n\nstatic nv nv_os_rmdir(nv p) { return nv_bool(NV_RMDIR(nv_display(p)) == 0); }\n\nstatic int nv_name_cmp(const void *a, const void *b) {\n    return strcmp(nv_cstr(*(const nv *)a), nv_cstr(*(const nv *)b));\n}\n\n/* Entries of a directory (without . and ..), sorted. */\nstatic nv nv_os_list_dir(nv p) {\n    nv out = nv_arr();\n    const char *dir = nv_display(p);\n#ifdef _WIN32\n    WIN32_FIND_DATAA data;\n    HANDLE h;\n    char *pattern = (char *)nv_alloc(strlen(dir) + 3);\n    strcpy(pattern, dir);\n    strcat(pattern, \"/*\");\n    h = FindFirstFileA(pattern, &data);\n    if (h == INVALID_HANDLE_VALUE) {\n        nv_error(\"cannot list directory '%s'\", dir);\n    }\n    do {\n        if (strcmp(data.cFileName, \".\") != 0 && strcmp(data.cFileName, \"..\") != 0) {\n            nv_arr_push(out->a, nv_str(data.cFileName));\n        }\n    } while (FindNextFileA(h, &data));\n    FindClose(h);\n#else\n    DIR *d = opendir(dir);\n    struct dirent *e;\n    if (!d) {\n        nv_error(\"cannot list directory '%s'\", dir);\n    }\n    while ((e = readdir(d)) != 0) {\n        if (strcmp(e->d_name, \".\") != 0 && strcmp(e->d_name, \"..\") != 0) {\n            nv_arr_push(out->a, nv_str(e->d_name));\n        }\n    }\n    closedir(d);\n#endif\n    if (out->a->len > 1) {\n        qsort(out->a->items, (size_t)out->a->len, sizeof(nv), nv_name_cmp);\n    }\n    return out;\n}\n\n/* rm -rf */\nstatic nv nv_os_remove_all(nv p) {\n    int isdir = 0;\n    const char *s = nv_display(p);\n    if (!nv_stat_mode(s, &isdir)) {\n        return nv_bool(0);\n    }\n    if (isdir) {\n        nv entries = nv_os_list_dir(p);\n        int i;\n        for (i = 0; i < entries->a->len; i++) {\n            nv_os_remove_all(nv_path_join(2, p, entries->a->items[i]));\n        }\n        return nv_bool(NV_RMDIR(s) == 0);\n    }\n    return nv_bool(remove(s) == 0);\n}\n\nstatic nv nv_os_rename(nv from, nv to) { return nv_bool(rename(nv_display(from), nv_display(to)) == 0); }\n\nstatic nv nv_os_copy(nv from, nv to) {\n    FILE *in = fopen(nv_display(from), \"rb\");\n    FILE *out;\n    char buf[65536];\n    size_t n;\n    if (!in) {\n        return nv_bool(0);\n    }\n    out = fopen(nv_display(to), \"wb\");\n    if (!out) {\n        fclose(in);\n        return nv_bool(0);\n    }\n    while ((n = fread(buf, 1, sizeof(buf), in)) > 0) {\n        fwrite(buf, 1, n, out);\n    }\n    fclose(in);\n    fclose(out);\n    return nv_bool(1);\n}\n\nstatic nv nv_os_chdir(nv p) { return nv_bool(NV_CHDIR(nv_display(p)) == 0); }\n\nstatic nv nv_os_file_size(nv p) {\n    struct stat st;\n    if (stat(nv_display(p), &st) != 0) {\n        return nv_int(-1);\n    }\n    return nv_int((long long)st.st_size);\n}\n\nstatic nv nv_os_modified(nv p) {\n    struct stat st;\n    if (stat(nv_display(p), &st) != 0) {\n        return nv_int(-1);\n    }\n    return nv_int((long long)st.st_mtime);\n}\n\nstatic nv nv_append_file(nv path, nv content) {\n    FILE *f = fopen(nv_display(path), \"ab\");\n    const char *s;\n    int len;\n    if (!f) {\n        nv_error(\"cannot write file '%s'\", nv_display(path));\n    }\n    s = nv_bin(content, &len);\n    fwrite(s, 1, (size_t)len, f);\n    fclose(f);\n    return nv_nil;\n}\n\n/* Runs a command and returns what it printed to stdout. */\nstatic nv nv_os_output(nv cmd) {\n    FILE *p;\n    NvSb sb;\n    char buf[4096];\n    size_t n;\n    int len;\n    fflush(stdout);\n    fflush(stderr);\n    p = NV_POPEN(nv_shell_line(nv_display(cmd)), \"r\");\n    if (!p) {\n        nv_error(\"cannot run '%s'\", nv_display(cmd));\n    }\n    nv_sb_init(&sb);\n    while ((n = fread(buf, 1, sizeof(buf), p)) > 0) {\n        nv_sb_addn(&sb, buf, (int)n);\n    }\n    NV_PCLOSE(p);\n    len = sb.len;\n    return nv_str_own(nv_sb_finish(&sb), len);\n}\n\nstatic nv nv_os_set_env(nv name, nv value) {\n#ifdef _WIN32\n    return nv_bool(_putenv_s(nv_display(name), nv_display(value)) == 0);\n#else\n    return nv_bool(setenv(nv_display(name), nv_display(value), 1) == 0);\n#endif\n}\n\nstatic nv nv_os_time(void) { return nv_int((long long)time(0)); }\n\nstatic nv nv_os_clock(void) {\n#ifdef _WIN32\n    FILETIME ft;\n    unsigned long long t;\n    GetSystemTimeAsFileTime(&ft);\n    t = ((unsigned long long)ft.dwHighDateTime << 32) | ft.dwLowDateTime;\n    return nv_float((double)(t - 116444736000000000ULL) / 10000000.0);\n#else\n    struct timeval tv;\n    gettimeofday(&tv, 0);\n    return nv_float((double)tv.tv_sec + (double)tv.tv_usec / 1000000.0);\n#endif\n}\n\nstatic nv nv_os_sleep(nv ms) {\n    long long m = nv_as_int(ms);\n#ifdef _WIN32\n    Sleep((DWORD)m);\n#else\n    struct timespec ts;\n    ts.tv_sec = (time_t)(m / 1000);\n    ts.tv_nsec = (long)(m % 1000) * 1000000L;\n    nanosleep(&ts, 0);\n#endif\n    return nv_nil;\n}\n\nstatic nv nv_os_home(void) {\n    const char *h = getenv(\"HOME\");\n    if (!h || !h[0]) {\n        h = getenv(\"USERPROFILE\");\n    }\n    return nv_path_slashes(h \? h : \"\");\n}\n\n/* Interrupts.\n *\n * A program that owns something worth writing out - a world, a database, an\n * open file - has to be told that it is being asked to stop, rather than\n * simply being killed. The handler only raises a flag; interrupted() reads it\n * and clears it, so the program decides when and where to act on it. */\nstatic volatile sig_atomic_t nv_interrupt_flag = 0;\n\nstatic void nv_interrupt_handler(int signal_number) {\n    (void)signal_number;\n    nv_interrupt_flag = 1;\n}\n\nstatic nv nv_os_catch_interrupt(void) {\n    signal(SIGINT, nv_interrupt_handler);\n#ifdef SIGTERM\n    signal(SIGTERM, nv_interrupt_handler);\n#endif\n    return nv_nil;\n}\n\nstatic nv nv_os_interrupted(void) {\n    int raised = nv_interrupt_flag != 0;\n    nv_interrupt_flag = 0;\n    return nv_bool(raised);\n}\n\nstatic nv nv_os_pid(void) { return nv_int((long long)NV_GETPID()); }\n\n/* ------------------------------------------------------------------ */\n/* std natives: math, time, random, fmt, hash, io, arrays              */\n/* ------------------------------------------------------------------ */\n\nstatic nv nv_math_sqrt(nv x) { return nv_float(sqrt(nv_as_double(x))); }\nstatic nv nv_math_pow(nv b, nv e) { return nv_float(pow(nv_as_double(b), nv_as_double(e))); }\nstatic nv nv_math_floor(nv x) { return nv_int((long long)floor(nv_as_double(x))); }\nstatic nv nv_math_ceil(nv x) { return nv_int((long long)ceil(nv_as_double(x))); }\nstatic nv nv_math_round(nv x) { return nv_int((long long)floor(nv_as_double(x) + 0.5)); }\nstatic nv nv_math_sin(nv x) { return nv_float(sin(nv_as_double(x))); }\nstatic nv nv_math_cos(nv x) { return nv_float(cos(nv_as_double(x))); }\nstatic nv nv_math_tan(nv x) { return nv_float(tan(nv_as_double(x))); }\nstatic nv nv_math_atan2(nv y, nv x) { return nv_float(atan2(nv_as_double(y), nv_as_double(x))); }\nstatic nv nv_math_log(nv x) { return nv_float(log(nv_as_double(x))); }\nstatic nv nv_math_exp(nv x) { return nv_float(exp(nv_as_double(x))); }\n\nstatic struct tm *nv_gmtime(nv unixSeconds, struct tm *out) {\n    time_t t = (time_t)nv_as_int(unixSeconds);\n    struct tm *g = gmtime(&t);\n    if (g) {\n        *out = *g;\n    } else {\n        memset(out, 0, sizeof(*out));\n    }\n    return out;\n}\n\nstatic nv nv_time_format(nv unixSeconds, nv layout) {\n    char buf[256];\n    struct tm tm;\n    nv_gmtime(unixSeconds, &tm);\n    if (strftime(buf, sizeof(buf), nv_display(layout), &tm) == 0) {\n        buf[0] = 0;\n    }\n    return nv_str(buf);\n}\n\nstatic nv nv_time_iso(nv unixSeconds) { return nv_time_format(unixSeconds, nv_str(\"%Y-%m-%dT%H:%M:%SZ\")); }\n\nstatic nv nv_time_parts(nv unixSeconds) {\n    struct tm tm;\n    nv m = nv_map();\n    nv_gmtime(unixSeconds, &tm);\n    nv_map_set_static(m->m, \"year\", nv_int(tm.tm_year + 1900));\n    nv_map_set_static(m->m, \"month\", nv_int(tm.tm_mon + 1));\n    nv_map_set_static(m->m, \"day\", nv_int(tm.tm_mday));\n    nv_map_set_static(m->m, \"hour\", nv_int(tm.tm_hour));\n    nv_map_set_static(m->m, \"minute\", nv_int(tm.tm_min));\n    nv_map_set_static(m->m, \"second\", nv_int(tm.tm_sec));\n    nv_map_set_static(m->m, \"weekday\", nv_int(tm.tm_wday));\n    nv_map_set_static(m->m, \"yearday\", nv_int(tm.tm_yday + 1));\n    return m;\n}\n\n/* Per thread, so two threads drawing numbers never step on one another -\n * and so seed() makes the thread that calls it reproducible. */\nstatic NV_TLS unsigned long long nv_rng_state = 0;\n\nstatic nv nv_random_seed(nv value) {\n    nv_rng_state = (unsigned long long)nv_as_int(value) * 2654435761ULL + 88172645463325252ULL;\n    return nv_nil;\n}\n\nstatic nv nv_random_next(void) {\n    unsigned long long x;\n    if (nv_rng_state == 0) {\n        nv_random_seed(nv_int((long long)time(0) ^ (long long)NV_GETPID()));\n    }\n    x = nv_rng_state;\n    x ^= x << 13;\n    x ^= x >> 7;\n    x ^= x << 17;\n    nv_rng_state = x;\n    return nv_int((long long)(x >> 2));\n}\n\nstatic nv nv_fmt_fixed(nv x, nv decimals) {\n    char buf[64];\n    int d = (int)nv_as_int(decimals);\n    if (d < 0) {\n        d = 0;\n    }\n    if (d > 20) {\n        d = 20;\n    }\n    sprintf(buf, \"%.*f\", d, nv_as_double(x));\n    return nv_str(buf);\n}\n\nstatic nv nv_hash_fnv1a(nv text) {\n    const unsigned char *p = (const unsigned char *)nv_display(text);\n    unsigned long long h = 14695981039346656037ULL;\n    for (; *p; p++) {\n        h ^= *p;\n        h *= 1099511628211ULL;\n    }\n    return nv_int((long long)(h >> 2));\n}\n\nstatic nv nv_hash_crc32(nv text) {\n    const unsigned char *p = (const unsigned char *)nv_display(text);\n    unsigned int crc = 0xFFFFFFFFu;\n    for (; *p; p++) {\n        int k;\n        crc ^= *p;\n        for (k = 0; k < 8; k++) {\n            crc = (crc >> 1) ^ (0xEDB88320u & (0u - (crc & 1u)));\n        }\n    }\n    return nv_int((long long)(crc ^ 0xFFFFFFFFu));\n}\n\nstatic nv nv_read_all(void) {\n    NvSb sb;\n    char buf[4096];\n    size_t n;\n    int len;\n    nv_sb_init(&sb);\n    while ((n = fread(buf, 1, sizeof(buf), stdin)) > 0) {\n        nv_sb_addn(&sb, buf, (int)n);\n    }\n    len = sb.len;\n    return nv_str_own(nv_sb_finish(&sb), len);\n}\n\nstatic nv nv_io_write(nv text) {\n    fputs(nv_display(text), stdout);\n    return nv_nil;\n}\n\nstatic nv nv_io_write_err(nv text) {\n    fputs(nv_display(text), stderr);\n    return nv_nil;\n}\n\nstatic nv nv_io_flush(void) {\n    fflush(stdout);\n    fflush(stderr);\n    return nv_nil;\n}\n\nstatic int nv_sort_cmp(const void *a, const void *b) {\n    nv l = *(const nv *)a;\n    nv r = *(const nv *)b;\n    if (nv_is_num(l) && nv_is_num(r)) {\n        double x = nv_as_double(l), y = nv_as_double(r);\n        return x < y \? -1 : (x > y \? 1 : 0);\n    }\n    return strcmp(nv_data(l), nv_data(r));\n}\n\n/* Specialised comparators: no type dispatch and no string materialisation\n * per comparison, which is most of the work when sorting a large array. */\nstatic int nv_sort_cmp_tagged(const void *a, const void *b) {\n    long long x = nv_ival(*(const nv *)a);\n    long long y = nv_ival(*(const nv *)b);\n    return x < y \? -1 : (x > y \? 1 : 0);\n}\n\nstatic int nv_sort_cmp_text(const void *a, const void *b) {\n    return strcmp(nv_cstr(*(const nv *)a), nv_cstr(*(const nv *)b));\n}\n\n/* Introsort over raw 64-bit values: no indirect call per comparison, which\n * is what makes the generic qsort path slow for large integer arrays. */\nstatic void nv_sort_ll(long long *values, int left, int right) {\n    while (right - left > 12) {\n        long long pivot, tmp;\n        int i = left, j = right, middle = left + (right - left) / 2;\n        if (values[middle] < values[left]) {\n            tmp = values[middle]; values[middle] = values[left]; values[left] = tmp;\n        }\n        if (values[right] < values[left]) {\n            tmp = values[right]; values[right] = values[left]; values[left] = tmp;\n        }\n        if (values[right] < values[middle]) {\n            tmp = values[right]; values[right] = values[middle]; values[middle] = tmp;\n        }\n        pivot = values[middle];\n        while (i <= j) {\n            while (values[i] < pivot) {\n                i++;\n            }\n            while (values[j] > pivot) {\n                j--;\n            }\n            if (i <= j) {\n                tmp = values[i]; values[i] = values[j]; values[j] = tmp;\n                i++; j--;\n            }\n        }\n        /* recurse into the smaller side, loop on the larger one */\n        if (j - left < right - i) {\n            nv_sort_ll(values, left, j);\n            left = i;\n        } else {\n            nv_sort_ll(values, i, right);\n            right = j;\n        }\n    }\n    {\n        int i;\n        for (i = left + 1; i <= right; i++) {\n            long long value = values[i];\n            int j = i - 1;\n            while (j >= left && values[j] > value) {\n                values[j + 1] = values[j];\n                j--;\n            }\n            values[j + 1] = value;\n        }\n    }\n}\n\n/* A sorted copy (numbers numerically, everything else by text). */\nstatic nv nv_arr_sorted(nv a) {\n    nv out;\n    int i, tagged = 1, text = 1;\n    if (nv_type_of(a) != NV_ARR) {\n        nv_error(\"sort() needs an array\");\n    }\n    out = nv_new(NV_ARR);\n    out->a = nv_arr_with_capacity(a->a->len);\n    memcpy(out->a->items, a->a->items, sizeof(nv) * (size_t)a->a->len);\n    out->a->len = a->a->len;\n    for (i = 0; i < out->a->len; i++) {\n        nv value = out->a->items[i];\n        if (!nv_is_tagged(value)) {\n            tagged = 0;\n            if (nv_type_of(value) != NV_STR) {\n                text = 0;\n            }\n        } else {\n            text = 0;\n        }\n        if (!tagged && !text) {\n            break;\n        }\n    }\n    if (out->a->len > 1) {\n        if (tagged) {\n            /* unbox, sort as plain integers, tag again */\n            long long *values = (long long *)malloc(sizeof(long long) * (size_t)out->a->len);\n            if (!values) {\n                nv_error(\"out of memory\");\n            }\n            for (i = 0; i < out->a->len; i++) {\n                values[i] = nv_ival(out->a->items[i]);\n            }\n            nv_sort_ll(values, 0, out->a->len - 1);\n            for (i = 0; i < out->a->len; i++) {\n                out->a->items[i] = nv_int(values[i]);\n            }\n            free(values);\n            return out;\n        }\n        qsort(out->a->items, (size_t)out->a->len, sizeof(nv), text \? nv_sort_cmp_text : nv_sort_cmp);\n    }\n    return out;\n}\n\n/* ------------------------------------------------------------------ */\n/* http module - driven by the curl command line tool                  */\n/* ------------------------------------------------------------------ */\n\nstatic nv nv_json_stringify(nv v);\n\nstatic const char *nv_shell_quote(const char *s) {\n    NvSb sb;\n    nv_sb_init(&sb);\n#ifdef _WIN32\n    nv_sb_addc(&sb, '\"');\n    for (; *s; s++) {\n        if (*s == '\"') {\n            nv_sb_add(&sb, \"\\\\\\\"\");\n        } else {\n            nv_sb_addc(&sb, *s);\n        }\n    }\n    nv_sb_addc(&sb, '\"');\n#else\n    nv_sb_addc(&sb, '\\'');\n    for (; *s; s++) {\n        if (*s == '\\'') {\n            nv_sb_add(&sb, \"'\\\\''\");\n        } else {\n            nv_sb_addc(&sb, *s);\n        }\n    }\n    nv_sb_addc(&sb, '\\'');\n#endif\n    return nv_sb_finish(&sb);\n}\n\nstatic int nv_http_counter = 0;\n\nstatic nv nv_http_temp_name(const char *what) {\n    char buf[64];\n    sprintf(buf, \"novus-http-%lld-%d-%s\", (long long)NV_GETPID(), nv_http_counter++, what);\n    return nv_path_join(2, nv_path_temp(), nv_str(buf));\n}\n\n/* Parses \"Key: value\" lines of a dumped header block into a map. */\nstatic nv nv_http_parse_headers(nv text) {\n    nv lines = nv_str_split(text, nv_str(\"\\n\"));\n    nv out = nv_map();\n    int i;\n    for (i = 0; i < lines->a->len; i++) {\n        nv line = nv_str_trim(lines->a->items[i]);\n        const char *s = nv_cstr(line);\n        const char *colon = strchr(s, ':');\n        if (!colon || strncmp(s, \"HTTP/\", 5) == 0) {\n            continue;\n        }\n        {\n            nv key = nv_str_trim(nv_strn(s, (int)(colon - s)));\n            nv val = nv_str_trim(nv_str(colon + 1));\n            nv_map_set(out->m, nv_cstr(nv_str_case(key, 0)), val);\n        }\n    }\n    return out;\n}\n\n/* {status, ok, body, headers, error} - never aborts on transport errors. */\nstatic nv nv_http_request(nv method, nv url, nv body, nv headers) {\n    nv outFile = nv_http_temp_name(\"body\");\n    nv hdrFile = nv_http_temp_name(\"headers\");\n    nv errFile = nv_http_temp_name(\"stderr\");\n    nv bodyFile = 0;\n    nv result = nv_map();\n    nv statusText;\n    NvSb cmd;\n    int hasContentType = 0, i;\n    nv_sb_init(&cmd);\n    nv_sb_add(&cmd, \"curl -s -S -L --max-redirs 10 -X \");\n    nv_sb_add(&cmd, nv_shell_quote(nv_cstr(nv_str_case(nv_to_str(method), 1))));\n    nv_sb_add(&cmd, \" --output \");\n    nv_sb_add(&cmd, nv_shell_quote(nv_cstr(outFile)));\n    nv_sb_add(&cmd, \" --dump-header \");\n    nv_sb_add(&cmd, nv_shell_quote(nv_cstr(hdrFile)));\n    nv_sb_add(&cmd, \" --stderr \");\n    nv_sb_add(&cmd, nv_shell_quote(nv_cstr(errFile)));\n    nv_sb_add(&cmd, \" --write-out \");\n    nv_sb_add(&cmd, nv_shell_quote(\"%{http_code}\"));\n    if (headers && nv_type_of(headers) == NV_MAP) {\n        nv_map_order(headers->m);\n        for (i = 0; i < headers->m->len; i++) {\n            nv line = nv_concat(nv_concat(nv_str(headers->m->items[i].key), nv_str(\": \")), headers->m->items[i].val);\n            if (strcmp(nv_cstr(nv_str_case(nv_str(headers->m->items[i].key), 0)), \"content-type\") == 0) {\n                hasContentType = 1;\n            }\n            nv_sb_add(&cmd, \" -H \");\n            nv_sb_add(&cmd, nv_shell_quote(nv_cstr(line)));\n        }\n    }\n    if (body && nv_type_of(body) != NV_NULL && !(nv_type_of(body) == NV_STR && body->slen == 0)) {\n        nv text = body;\n        if (nv_type_of(body) == NV_MAP || nv_type_of(body) == NV_ARR || nv_type_of(body) == NV_OBJ) {\n            text = nv_json_stringify(body);\n            if (!hasContentType) {\n                nv_sb_add(&cmd, \" -H \");\n                nv_sb_add(&cmd, nv_shell_quote(\"Content-Type: application/json\"));\n            }\n        }\n        bodyFile = nv_http_temp_name(\"request\");\n        nv_write_file(bodyFile, text);\n        nv_sb_add(&cmd, \" --data-binary @\");\n        nv_sb_add(&cmd, nv_shell_quote(nv_cstr(bodyFile)));\n    }\n    nv_sb_add(&cmd, \" \");\n    nv_sb_add(&cmd, nv_shell_quote(nv_display(url)));\n    {\n        int len = cmd.len;\n        nv command = nv_str_own(nv_sb_finish(&cmd), len);\n        statusText = nv_str_trim(nv_os_output(command));\n    }\n    {\n        long long status = atoll(nv_cstr(statusText));\n        nv error = nv_str_trim(nv_read_file(errFile));\n        if (statusText->slen == 0) {\n            error = nv_str(\"http: could not run curl (is it installed and in PATH\?)\");\n        }\n        nv_map_set(result->m, \"status\", nv_int(status));\n        nv_map_set(result->m, \"ok\", nv_bool(status >= 200 && status < 300));\n        nv_map_set(result->m, \"body\", nv_read_file(outFile));\n        nv_map_set(result->m, \"headers\", nv_http_parse_headers(nv_read_file(hdrFile)));\n        nv_map_set(result->m, \"error\", status == 0 \? (error->slen \? error : nv_str(\"http: request failed\")) : nv_str(\"\"));\n    }\n    remove(nv_cstr(outFile));\n    remove(nv_cstr(hdrFile));\n    remove(nv_cstr(errFile));\n    if (bodyFile) {\n        remove(nv_cstr(bodyFile));\n    }\n    return result;\n}\n\nstatic nv nv_http_simple(const char *method, nv url, nv body) {\n    nv r = nv_http_request(nv_str(method), url, body, nv_map());\n    nv error = nv_map_get(r->m, \"error\");\n    if (error->slen) {\n        nv_error(\"%s (%s %s)\", nv_cstr(error), method, nv_display(url));\n    }\n    return nv_map_get(r->m, \"body\");\n}\n\nstatic nv nv_http_get(nv url) { return nv_http_simple(\"GET\", url, nv_nil); }\nstatic nv nv_http_post(nv url, nv body) { return nv_http_simple(\"POST\", url, body); }\nstatic nv nv_http_put(nv url, nv body) { return nv_http_simple(\"PUT\", url, body); }\nstatic nv nv_http_delete(nv url) { return nv_http_simple(\"DELETE\", url, nv_nil); }\n\nstatic nv nv_http_download(nv url, nv file) {\n    nv r = nv_http_request(nv_str(\"GET\"), url, nv_nil, nv_map());\n    if (!nv_truthy(nv_map_get(r->m, \"ok\"))) {\n        return nv_bool(0);\n    }\n    nv_write_file(file, nv_map_get(r->m, \"body\"));\n    return nv_bool(1);\n}\n\n/* ------------------------------------------------------------------ */\n/* json module                                                         */\n/* ------------------------------------------------------------------ */\n\nstatic void nv_json_string(NvSb *sb, const char *s) {\n    nv_sb_addc(sb, '\"');\n    for (; *s; s++) {\n        unsigned char c = (unsigned char)*s;\n        switch (c) {\n        case '\"':\n            nv_sb_add(sb, \"\\\\\\\"\");\n            break;\n        case '\\\\':\n            nv_sb_add(sb, \"\\\\\\\\\");\n            break;\n        case '\\n':\n            nv_sb_add(sb, \"\\\\n\");\n            break;\n        case '\\r':\n            nv_sb_add(sb, \"\\\\r\");\n            break;\n        case '\\t':\n            nv_sb_add(sb, \"\\\\t\");\n            break;\n        case '\\b':\n            nv_sb_add(sb, \"\\\\b\");\n            break;\n        case '\\f':\n            nv_sb_add(sb, \"\\\\f\");\n            break;\n        default:\n            if (c < 0x20) {\n                char buf[8];\n                sprintf(buf, \"\\\\u%04x\", c);\n                nv_sb_add(sb, buf);\n            } else {\n                nv_sb_addc(sb, (char)c);\n            }\n        }\n    }\n    nv_sb_addc(sb, '\"');\n}\n\nstatic void nv_json_float(NvSb *sb, double f) {\n    char buf[64];\n    int prec;\n    for (prec = 15; prec <= 17; prec++) {\n        sprintf(buf, \"%.*g\", prec, f);\n        if (atof(buf) == f) {\n            break;\n        }\n    }\n    if (!strchr(buf, '.') && !strchr(buf, 'e') && !strchr(buf, 'n') && !strchr(buf, 'i')) {\n        strcat(buf, \".0\");\n    }\n    nv_sb_add(sb, buf);\n}\n\nstatic void nv_json_indent(NvSb *sb, int indent, int depth) {\n    int i;\n    if (indent <= 0) {\n        return;\n    }\n    nv_sb_addc(sb, '\\n');\n    for (i = 0; i < indent * depth; i++) {\n        nv_sb_addc(sb, ' ');\n    }\n}\n\nstatic void nv_json_write(NvSb *sb, nv v, int indent, int depth) {\n    int i;\n    const void *id = nv_container_id(v);\n    if (id && !nv_visit_enter(id)) {\n        nv_sb_add(sb, \"null\"); /* reference cycle */\n        return;\n    }\n    switch (nv_type_of(v)) {\n    case NV_INT:\n        nv_sb_add(sb, nv_fmt_int(nv_ival(v)));\n        break;\n    case NV_FLOAT:\n        nv_json_float(sb, v->f);\n        break;\n    case NV_BOOL:\n        nv_sb_add(sb, nv_ival(v) \? \"true\" : \"false\");\n        break;\n    case NV_STR:\n        nv_json_string(sb, nv_cstr(v));\n        break;\n    case NV_ARR:\n        if (v->a->len == 0) {\n            nv_sb_add(sb, \"[]\");\n            break;\n        }\n        nv_sb_addc(sb, '[');\n        for (i = 0; i < v->a->len; i++) {\n            if (i > 0) {\n                nv_sb_addc(sb, ',');\n            }\n            nv_json_indent(sb, indent, depth + 1);\n            nv_json_write(sb, v->a->items[i], indent, depth + 1);\n        }\n        nv_json_indent(sb, indent, depth);\n        nv_sb_addc(sb, ']');\n        break;\n    case NV_OBJ: {\n        int count = nv_class_field_count(v->o->cls);\n        int *order = nv_field_order(v->o->cls, count);\n        const char *constName = nv_obj_name(v->o);\n        if (constName && count == 0) {\n            nv_json_string(sb, constName);\n            break;\n        }\n        if (count == 0) {\n            nv_sb_add(sb, \"{}\");\n            break;\n        }\n        nv_sb_addc(sb, '{');\n        for (i = 0; i < count; i++) {\n            if (i > 0) {\n                nv_sb_addc(sb, ',');\n            }\n            nv_json_indent(sb, indent, depth + 1);\n            nv_json_string(sb, nv_field_name_at(v->o->cls, order[i], 0));\n            nv_sb_add(sb, indent > 0 \? \": \" : \":\");\n            nv_json_write(sb, nv_fields(v->o)[order[i]], indent, depth + 1);\n        }\n        nv_json_indent(sb, indent, depth);\n        nv_sb_addc(sb, '}');\n        break;\n    }\n    case NV_MAP: {\n        NvMap *m = v->m;\n        nv_map_order(m);\n        if (m->len == 0) {\n            nv_sb_add(sb, \"{}\");\n            break;\n        }\n        nv_sb_addc(sb, '{');\n        for (i = 0; i < m->len; i++) {\n            if (i > 0) {\n                nv_sb_addc(sb, ',');\n            }\n            nv_json_indent(sb, indent, depth + 1);\n            nv_json_string(sb, m->items[i].key);\n            nv_sb_add(sb, indent > 0 \? \": \" : \":\");\n            nv_json_write(sb, m->items[i].val, indent, depth + 1);\n        }\n        nv_json_indent(sb, indent, depth);\n        nv_sb_addc(sb, '}');\n        break;\n    }\n    default:\n        nv_sb_add(sb, \"null\");\n    }\n    if (id) {\n        nv_visit_leave();\n    }\n}\n\nstatic nv nv_json_dump(nv v, int indent) {\n    NvSb sb;\n    int len;\n    nv_sb_init(&sb);\n    nv_json_write(&sb, v, indent, 0);\n    len = sb.len;\n    return nv_str_own(nv_sb_finish(&sb), len);\n}\n\nstatic nv nv_json_stringify(nv v) { return nv_json_dump(v, 0); }\n\nstatic nv nv_json_pretty(nv v) { return nv_json_dump(v, 2); }\n\ntypedef struct NvJsonP {\n    const char *s;\n    int pos;\n} NvJsonP;\n\nstatic void nv_json_ws(NvJsonP *p) {\n    while (p->s[p->pos] && isspace((unsigned char)p->s[p->pos])) {\n        p->pos++;\n    }\n}\n\nstatic void nv_json_fail(NvJsonP *p, const char *what) {\n    nv_error(\"json parse error at position %d: %s\", p->pos, what);\n}\n\nstatic void nv_json_utf8(NvSb *sb, unsigned int cp) {\n    if (cp < 0x80) {\n        nv_sb_addc(sb, (char)cp);\n    } else if (cp < 0x800) {\n        nv_sb_addc(sb, (char)(0xC0 | (cp >> 6)));\n        nv_sb_addc(sb, (char)(0x80 | (cp & 0x3F)));\n    } else if (cp < 0x10000) {\n        nv_sb_addc(sb, (char)(0xE0 | (cp >> 12)));\n        nv_sb_addc(sb, (char)(0x80 | ((cp >> 6) & 0x3F)));\n        nv_sb_addc(sb, (char)(0x80 | (cp & 0x3F)));\n    } else {\n        nv_sb_addc(sb, (char)(0xF0 | (cp >> 18)));\n        nv_sb_addc(sb, (char)(0x80 | ((cp >> 12) & 0x3F)));\n        nv_sb_addc(sb, (char)(0x80 | ((cp >> 6) & 0x3F)));\n        nv_sb_addc(sb, (char)(0x80 | (cp & 0x3F)));\n    }\n}\n\nstatic nv nv_json_parse_string(NvJsonP *p) {\n    NvSb sb;\n    int len;\n    nv_sb_init(&sb);\n    p->pos++; /* opening quote */\n    while (p->s[p->pos] && p->s[p->pos] != '\"') {\n        char c = p->s[p->pos];\n        if (c == '\\\\') {\n            char e = p->s[++p->pos];\n            switch (e) {\n            case 'n':\n                nv_sb_addc(&sb, '\\n');\n                break;\n            case 't':\n                nv_sb_addc(&sb, '\\t');\n                break;\n            case 'r':\n                nv_sb_addc(&sb, '\\r');\n                break;\n            case 'b':\n                nv_sb_addc(&sb, '\\b');\n                break;\n            case 'f':\n                nv_sb_addc(&sb, '\\f');\n                break;\n            case 'u': {\n                unsigned int cp = 0;\n                int k;\n                for (k = 0; k < 4; k++) {\n                    char h = p->s[++p->pos];\n                    cp <<= 4;\n                    if (h >= '0' && h <= '9') {\n                        cp |= (unsigned int)(h - '0');\n                    } else if (h >= 'a' && h <= 'f') {\n                        cp |= (unsigned int)(h - 'a' + 10);\n                    } else if (h >= 'A' && h <= 'F') {\n                        cp |= (unsigned int)(h - 'A' + 10);\n                    } else {\n                        nv_json_fail(p, \"bad unicode escape\");\n                    }\n                }\n                nv_json_utf8(&sb, cp);\n                break;\n            }\n            default:\n                nv_sb_addc(&sb, e);\n            }\n            p->pos++;\n        } else {\n            nv_sb_addc(&sb, c);\n            p->pos++;\n        }\n    }\n    if (p->s[p->pos] != '\"') {\n        nv_json_fail(p, \"unterminated string\");\n    }\n    p->pos++;\n    len = sb.len;\n    return nv_str_own(nv_sb_finish(&sb), len);\n}\n\nstatic nv nv_json_parse_value(NvJsonP *p) {\n    char c;\n    nv_json_ws(p);\n    c = p->s[p->pos];\n    if (c == '{') {\n        nv m = nv_map();\n        p->pos++;\n        nv_json_ws(p);\n        if (p->s[p->pos] == '}') {\n            p->pos++;\n            return m;\n        }\n        for (;;) {\n            nv key, val;\n            nv_json_ws(p);\n            if (p->s[p->pos] != '\"') {\n                nv_json_fail(p, \"expected object key\");\n            }\n            key = nv_json_parse_string(p);\n            nv_json_ws(p);\n            if (p->s[p->pos] != ':') {\n                nv_json_fail(p, \"expected ':'\");\n            }\n            p->pos++;\n            val = nv_json_parse_value(p);\n            nv_map_set_static(m->m, nv_cstr(key), val); /* arena string, never extended */\n            nv_json_ws(p);\n            if (p->s[p->pos] == ',') {\n                p->pos++;\n                continue;\n            }\n            if (p->s[p->pos] == '}') {\n                p->pos++;\n                return m;\n            }\n            nv_json_fail(p, \"expected ',' or '}'\");\n        }\n    }\n    if (c == '[') {\n        nv a = nv_arr();\n        p->pos++;\n        nv_json_ws(p);\n        if (p->s[p->pos] == ']') {\n            p->pos++;\n            return a;\n        }\n        for (;;) {\n            nv_arr_push(a->a, nv_json_parse_value(p));\n            nv_json_ws(p);\n            if (p->s[p->pos] == ',') {\n                p->pos++;\n                continue;\n            }\n            if (p->s[p->pos] == ']') {\n                p->pos++;\n                return a;\n            }\n            nv_json_fail(p, \"expected ',' or ']'\");\n        }\n    }\n    if (c == '\"') {\n        return nv_json_parse_string(p);\n    }\n    if (strncmp(p->s + p->pos, \"true\", 4) == 0) {\n        p->pos += 4;\n        return nv_bool(1);\n    }\n    if (strncmp(p->s + p->pos, \"false\", 5) == 0) {\n        p->pos += 5;\n        return nv_bool(0);\n    }\n    if (strncmp(p->s + p->pos, \"null\", 4) == 0) {\n        p->pos += 4;\n        return nv_nil;\n    }\n    if (c == '-' || (c >= '0' && c <= '9')) {\n        int start = p->pos;\n        int isFloat = 0;\n        char *tmp;\n        nv out;\n        if (c == '-') {\n            p->pos++;\n        }\n        while (isdigit((unsigned char)p->s[p->pos])) {\n            p->pos++;\n        }\n        if (p->s[p->pos] == '.') {\n            isFloat = 1;\n            p->pos++;\n            while (isdigit((unsigned char)p->s[p->pos])) {\n                p->pos++;\n            }\n        }\n        if (p->s[p->pos] == 'e' || p->s[p->pos] == 'E') {\n            isFloat = 1;\n            p->pos++;\n            if (p->s[p->pos] == '+' || p->s[p->pos] == '-') {\n                p->pos++;\n            }\n            while (isdigit((unsigned char)p->s[p->pos])) {\n                p->pos++;\n            }\n        }\n        tmp = nv_strndup(p->s + start, (size_t)(p->pos - start));\n        out = isFloat \? nv_float(atof(tmp)) : nv_int(atoll(tmp));\n        return out;\n    }\n    if (c == 0) {\n        nv_json_fail(p, \"unexpected end of input\");\n    }\n    nv_json_fail(p, \"unexpected character\");\n    return nv_nil;\n}\n\nstatic nv nv_json_parse(nv text) {\n    NvJsonP p;\n    nv v;\n    if (nv_type_of(text) != NV_STR) {\n        /* already structured data: convert (objects become maps) */\n        text = nv_json_stringify(text);\n    }\n    p.s = nv_display(text);\n    p.pos = 0;\n    nv_json_ws(&p);\n    if (p.s[p.pos] == 0) {\n        nv_json_fail(&p, \"attempting to parse an empty input\");\n    }\n    v = nv_json_parse_value(&p);\n    nv_json_ws(&p);\n    if (p.s[p.pos] != 0) {\n        nv_json_fail(&p, \"trailing characters\");\n    }\n    return v;\n}\n\nstatic nv nv_json_save(nv v, nv dir, nv file) {\n    nv target = nv_path_join(2, dir, file);\n    nv_os_mkdir(nv_path_dirname(target));\n    return nv_write_file(target, nv_json_pretty(v));\n}\n\nstatic nv nv_json_load(nv file) {\n    if (!nv_path_exists_c(nv_display(file))) {\n        nv_error(\"json.load: cannot open '%s'\", nv_display(file));\n    }\n    return nv_json_parse(nv_read_file(file));\n}\n\nstatic int nv_json_scan(NvJsonP *p);\n\nstatic int nv_json_scan_string(NvJsonP *p) {\n    p->pos++;\n    while (p->s[p->pos] && p->s[p->pos] != '\"') {\n        if (p->s[p->pos] == '\\\\') {\n            p->pos++;\n            if (!p->s[p->pos]) {\n                return 0;\n            }\n        }\n        p->pos++;\n    }\n    if (p->s[p->pos] != '\"') {\n        return 0;\n    }\n    p->pos++;\n    return 1;\n}\n\n/* Validates without aborting. */\nstatic int nv_json_scan(NvJsonP *p) {\n    char c;\n    nv_json_ws(p);\n    c = p->s[p->pos];\n    if (c == '{' || c == '[') {\n        char close = c == '{' \? '}' : ']';\n        p->pos++;\n        nv_json_ws(p);\n        if (p->s[p->pos] == close) {\n            p->pos++;\n            return 1;\n        }\n        for (;;) {\n            nv_json_ws(p);\n            if (close == '}') {\n                if (p->s[p->pos] != '\"' || !nv_json_scan_string(p)) {\n                    return 0;\n                }\n                nv_json_ws(p);\n                if (p->s[p->pos] != ':') {\n                    return 0;\n                }\n                p->pos++;\n            }\n            if (!nv_json_scan(p)) {\n                return 0;\n            }\n            nv_json_ws(p);\n            if (p->s[p->pos] == ',') {\n                p->pos++;\n                continue;\n            }\n            if (p->s[p->pos] == close) {\n                p->pos++;\n                return 1;\n            }\n            return 0;\n        }\n    }\n    if (c == '\"') {\n        return nv_json_scan_string(p);\n    }\n    if (strncmp(p->s + p->pos, \"true\", 4) == 0) {\n        p->pos += 4;\n        return 1;\n    }\n    if (strncmp(p->s + p->pos, \"false\", 5) == 0) {\n        p->pos += 5;\n        return 1;\n    }\n    if (strncmp(p->s + p->pos, \"null\", 4) == 0) {\n        p->pos += 4;\n        return 1;\n    }\n    if (c == '-' || isdigit((unsigned char)c)) {\n        int start = p->pos;\n        if (c == '-') {\n            p->pos++;\n        }\n        while (isdigit((unsigned char)p->s[p->pos]) || p->s[p->pos] == '.' || p->s[p->pos] == 'e' ||\n               p->s[p->pos] == 'E' || p->s[p->pos] == '+' || p->s[p->pos] == '-') {\n            p->pos++;\n        }\n        return p->pos > start + (c == '-' \? 1 : 0);\n    }\n    return 0;\n}\n\nstatic nv nv_json_is_valid(nv text) {\n    NvJsonP p;\n    p.s = nv_display(text);\n    p.pos = 0;\n    if (!nv_json_scan(&p)) {\n        return nv_bool(0);\n    }\n    nv_json_ws(&p);\n    return nv_bool(p.s[p.pos] == 0);\n}\n\n\n/* ------------------------------------------------------------------ */\n/* Bitwise operations                                                  */\n/* ------------------------------------------------------------------ */\n\n/* The operators &, |, ^, << and >> on 64 bit integers. A float operand is\n * truncated first, the way an integer declaration truncates one. */\nstatic long long nv_bit_operand(nv v, const char *op) {\n    int type = nv_type_of(v);\n    if (type != NV_INT && type != NV_FLOAT) {\n        nv_error(\"cannot apply '%s' to %s\", op, nv_type_name(v));\n    }\n    return nv_as_int(v);\n}\n\nstatic nv nv_band(nv l, nv r) {\n    return nv_int(nv_bit_operand(l, \"&\") & nv_bit_operand(r, \"&\"));\n}\n\nstatic nv nv_bor(nv l, nv r) {\n    return nv_int(nv_bit_operand(l, \"|\") | nv_bit_operand(r, \"|\"));\n}\n\nstatic nv nv_bxor(nv l, nv r) {\n    return nv_int(nv_bit_operand(l, \"^\") ^ nv_bit_operand(r, \"^\"));\n}\n\n/* A shift of 64 or more is undefined in C; it yields 0 here, and a negative\n * count shifts the other way, so that neither can be a source of surprise. */\nstatic nv nv_shl(nv l, nv r) {\n    long long value = nv_bit_operand(l, \"<<\");\n    long long count = nv_bit_operand(r, \"<<\");\n    if (count < 0) {\n        count = -count;\n        if (count >= 64) {\n            return nv_int(value < 0 \? -1 : 0);\n        }\n        return nv_int(value >> count);\n    }\n    if (count >= 64) {\n        return nv_int(0);\n    }\n    return nv_int((long long)((unsigned long long)value << count));\n}\n\n/* Arithmetic shift: the sign bit is kept, as it is in Rust and Java's >>. */\nstatic nv nv_shr(nv l, nv r) {\n    long long value = nv_bit_operand(l, \">>\");\n    long long count = nv_bit_operand(r, \">>\");\n    if (count < 0) {\n        count = -count;\n        if (count >= 64) {\n            return nv_int(0);\n        }\n        return nv_int((long long)((unsigned long long)value << count));\n    }\n    if (count >= 64) {\n        return nv_int(value < 0 \? -1 : 0);\n    }\n    return nv_int(value >> count);\n}\n\n/* The operations that have no operator. */\nstatic nv nv_bits_not(nv v) { return nv_int(~nv_bit_operand(v, \"not\")); }\n\n/* Logical right shift: zeros are shifted in, Java's >>>. */\nstatic nv nv_bits_ushr(nv l, nv r) {\n    unsigned long long value = (unsigned long long)nv_bit_operand(l, \"ushr\");\n    long long count = nv_bit_operand(r, \"ushr\");\n    if (count <= 0 || count >= 64) {\n        return nv_int(count == 0 \? (long long)value : 0);\n    }\n    return nv_int((long long)(value >> count));\n}\n\nstatic nv nv_bits_rotl(nv l, nv r) {\n    unsigned long long value = (unsigned long long)nv_bit_operand(l, \"rotl\");\n    long long count = nv_bit_operand(r, \"rotl\") & 63;\n    if (count == 0) {\n        return nv_int((long long)value);\n    }\n    return nv_int((long long)((value << count) | (value >> (64 - count))));\n}\n\nstatic nv nv_bits_rotr(nv l, nv r) {\n    unsigned long long value = (unsigned long long)nv_bit_operand(l, \"rotr\");\n    long long count = nv_bit_operand(r, \"rotr\") & 63;\n    if (count == 0) {\n        return nv_int((long long)value);\n    }\n    return nv_int((long long)((value >> count) | (value << (64 - count))));\n}\n\n/* Addition and multiplication that wrap at 64 bits instead of overflowing.\n *\n * Signed overflow is undefined in C, so a compiler is free to assume it never\n * happens - which is exactly what an algorithm built on wrapping arithmetic\n * relies on. Doing it unsigned makes the wrap the defined behaviour it has to\n * be. Anything reproducing another language's random numbers needs these. */\nstatic nv nv_bits_wrapping_add(nv a, nv b) {\n    unsigned long long x = (unsigned long long)nv_bit_operand(a, \"wrappingAdd\");\n    unsigned long long y = (unsigned long long)nv_bit_operand(b, \"wrappingAdd\");\n    return nv_int((long long)(x + y));\n}\n\nstatic nv nv_bits_wrapping_sub(nv a, nv b) {\n    unsigned long long x = (unsigned long long)nv_bit_operand(a, \"wrappingSub\");\n    unsigned long long y = (unsigned long long)nv_bit_operand(b, \"wrappingSub\");\n    return nv_int((long long)(x - y));\n}\n\nstatic nv nv_bits_wrapping_mul(nv a, nv b) {\n    unsigned long long x = (unsigned long long)nv_bit_operand(a, \"wrappingMul\");\n    unsigned long long y = (unsigned long long)nv_bit_operand(b, \"wrappingMul\");\n    return nv_int((long long)(x * y));\n}\n\n/* The low 32 bits, read as a signed 32 bit number. */\nstatic nv nv_bits_to_i32(nv v) {\n    return nv_int((int)(unsigned int)nv_bit_operand(v, \"toI32\"));\n}\n\n/* An unsigned 64 bit value as a double, which a signed cast would get wrong\n * for anything with the top bit set. */\nstatic nv nv_bits_to_unsigned_float(nv v) {\n    unsigned long long x = (unsigned long long)nv_bit_operand(v, \"toUnsignedFloat\");\n    return nv_float((double)x);\n}\n\n/* The low `count` bits of `value`. */\nstatic nv nv_bits_mask(nv value, nv count) {\n    long long bits = nv_bit_operand(count, \"mask\");\n    if (bits <= 0) {\n        return nv_int(0);\n    }\n    if (bits >= 64) {\n        return nv_int(nv_bit_operand(value, \"mask\"));\n    }\n    return nv_int(nv_bit_operand(value, \"mask\") & (((long long)1 << bits) - 1));\n}\n\n/* How many bits are set. */\nstatic nv nv_bits_count_ones(nv v) {\n    unsigned long long value = (unsigned long long)nv_bit_operand(v, \"countOnes\");\n    int n = 0;\n    while (value) {\n        n += (int)(value & 1);\n        value >>= 1;\n    }\n    return nv_int(n);\n}\n\n/* The position of the highest set bit, -1 for zero. */\nstatic nv nv_bits_highest(nv v) {\n    unsigned long long value = (unsigned long long)nv_bit_operand(v, \"highestBit\");\n    int n = -1;\n    while (value) {\n        value >>= 1;\n        n++;\n    }\n    return nv_int(n);\n}\n\n/* ------------------------------------------------------------------ */\n/* Binary buffers                                                      */\n/* ------------------------------------------------------------------ */\n\n/* Novus strings carry an explicit length (slen) and charAt/substring work on\n * bytes, so a string is also the natural byte buffer: it survives NUL bytes\n * and every value in 0..255. Only the NUL terminated views (nv_cstr,\n * nv_display) would truncate, so everything below goes through nv_bin(). */\nstatic const char *nv_bin(nv v, int *len) {\n    if (nv_type_of(v) == NV_STR) {\n        *len = v->slen;\n        return v->s;\n    }\n    {\n        const char *s = nv_display(v);\n        *len = (int)strlen(s);\n        return s;\n    }\n}\n\n/* Reads past the end of a buffer set this flag instead of aborting: a server\n * has to survive a truncated or hostile packet. bytes.failed() reads it. */\nstatic NV_TLS int nv_bytes_err = 0;\n\nstatic nv nv_bytes_failed(void) { return nv_bool(nv_bytes_err != 0); }\nstatic nv nv_bytes_clear_error(void) {\n    nv_bytes_err = 0;\n    return nv_nil;\n}\n\n/* Unsigned big endian read of `n` bytes at `off`; 0 and the error flag when\n * the buffer is too short. */\nstatic unsigned long long nv_bytes_raw(nv b, long long off, int n) {\n    int len;\n    const char *s = nv_bin(b, &len);\n    unsigned long long v = 0;\n    int i;\n    if (off < 0 || off + n > len) {\n        nv_bytes_err = 1;\n        return 0;\n    }\n    for (i = 0; i < n; i++) {\n        v = (v << 8) | (unsigned char)s[off + i];\n    }\n    return v;\n}\n\nstatic nv nv_bytes_u8(nv b, nv off) { return nv_int((long long)nv_bytes_raw(b, nv_as_int(off), 1)); }\nstatic nv nv_bytes_u16(nv b, nv off) { return nv_int((long long)nv_bytes_raw(b, nv_as_int(off), 2)); }\nstatic nv nv_bytes_u32(nv b, nv off) { return nv_int((long long)nv_bytes_raw(b, nv_as_int(off), 4)); }\n\nstatic nv nv_bytes_i8(nv b, nv off) {\n    return nv_int((signed char)(unsigned char)nv_bytes_raw(b, nv_as_int(off), 1));\n}\nstatic nv nv_bytes_i16(nv b, nv off) {\n    return nv_int((short)(unsigned short)nv_bytes_raw(b, nv_as_int(off), 2));\n}\nstatic nv nv_bytes_i32(nv b, nv off) {\n    return nv_int((int)(unsigned int)nv_bytes_raw(b, nv_as_int(off), 4));\n}\nstatic nv nv_bytes_i64(nv b, nv off) {\n    return nv_int((long long)nv_bytes_raw(b, nv_as_int(off), 8));\n}\n\nstatic nv nv_bytes_f32(nv b, nv off) {\n    unsigned int bits = (unsigned int)nv_bytes_raw(b, nv_as_int(off), 4);\n    float f;\n    memcpy(&f, &bits, 4);\n    return nv_float((double)f);\n}\n\nstatic nv nv_bytes_f64(nv b, nv off) {\n    unsigned long long bits = nv_bytes_raw(b, nv_as_int(off), 8);\n    double d;\n    memcpy(&d, &bits, 8);\n    return nv_float(d);\n}\n\n/* VarInt/VarLong: seven bits per byte, high bit continues. varIntSize()\n * returns how many bytes the value at `off` occupies, or 0 when the buffer\n * ends inside it (an incomplete read, not an error) and -1 when it is longer\n * than the protocol allows. */\nstatic int nv_varint_len(const char *s, int len, long long off, int maxBytes) {\n    int i;\n    for (i = 0; i < maxBytes; i++) {\n        if (off + i >= len) {\n            return 0;\n        }\n        if (((unsigned char)s[off + i] & 0x80) == 0) {\n            return i + 1;\n        }\n    }\n    return -1;\n}\n\nstatic nv nv_bytes_varint_size(nv b, nv off) {\n    int len;\n    const char *s = nv_bin(b, &len);\n    return nv_int(nv_varint_len(s, len, nv_as_int(off), 5));\n}\n\nstatic nv nv_bytes_varlong_size(nv b, nv off) {\n    int len;\n    const char *s = nv_bin(b, &len);\n    return nv_int(nv_varint_len(s, len, nv_as_int(off), 10));\n}\n\nstatic unsigned long long nv_varint_value(nv b, long long off, int maxBytes) {\n    int len;\n    const char *s = nv_bin(b, &len);\n    unsigned long long v = 0;\n    int i;\n    for (i = 0; i < maxBytes; i++) {\n        unsigned char byte;\n        if (off + i >= len) {\n            nv_bytes_err = 1;\n            return 0;\n        }\n        byte = (unsigned char)s[off + i];\n        v |= (unsigned long long)(byte & 0x7f) << (i * 7);\n        if ((byte & 0x80) == 0) {\n            return v;\n        }\n    }\n    nv_bytes_err = 1;\n    return 0;\n}\n\nstatic nv nv_bytes_varint(nv b, nv off) {\n    return nv_int((int)(unsigned int)nv_varint_value(b, nv_as_int(off), 5));\n}\n\nstatic nv nv_bytes_varlong(nv b, nv off) {\n    return nv_int((long long)nv_varint_value(b, nv_as_int(off), 10));\n}\n\n/* Writers: every one returns the encoded bytes as a fresh string. */\nstatic nv nv_bytes_put_raw(unsigned long long v, int n) {\n    char buf[8];\n    int i;\n    for (i = 0; i < n; i++) {\n        buf[i] = (char)((v >> ((n - 1 - i) * 8)) & 0xff);\n    }\n    return nv_strn(buf, n);\n}\n\nstatic nv nv_bytes_put_u8(nv v) { return nv_bytes_put_raw((unsigned long long)nv_as_int(v), 1); }\nstatic nv nv_bytes_put_i16(nv v) { return nv_bytes_put_raw((unsigned long long)nv_as_int(v), 2); }\nstatic nv nv_bytes_put_i32(nv v) { return nv_bytes_put_raw((unsigned long long)nv_as_int(v), 4); }\nstatic nv nv_bytes_put_i64(nv v) { return nv_bytes_put_raw((unsigned long long)nv_as_int(v), 8); }\n\nstatic nv nv_bytes_put_f32(nv v) {\n    float f = (float)nv_as_double(v);\n    unsigned int bits;\n    memcpy(&bits, &f, 4);\n    return nv_bytes_put_raw(bits, 4);\n}\n\nstatic nv nv_bytes_put_f64(nv v) {\n    double d = nv_as_double(v);\n    unsigned long long bits;\n    memcpy(&bits, &d, 8);\n    return nv_bytes_put_raw(bits, 8);\n}\n\nstatic nv nv_bytes_put_varnum(unsigned long long v, int maxBytes) {\n    char buf[10];\n    int n = 0;\n    while (n < maxBytes) {\n        unsigned char byte = (unsigned char)(v & 0x7f);\n        v >>= 7;\n        if (v == 0) {\n            buf[n++] = (char)byte;\n            break;\n        }\n        buf[n++] = (char)(byte | 0x80);\n    }\n    return nv_strn(buf, n);\n}\n\nstatic nv nv_bytes_put_varint(nv v) {\n    return nv_bytes_put_varnum((unsigned long long)(unsigned int)(int)nv_as_int(v), 5);\n}\n\nstatic nv nv_bytes_put_varlong(nv v) {\n    return nv_bytes_put_varnum((unsigned long long)nv_as_int(v), 10);\n}\n\n/* The number of bytes writeVarInt() would produce - the protocol needs it to\n * reserve the length prefix before the body is known. */\nstatic nv nv_bytes_varint_written(nv v) {\n    unsigned int val = (unsigned int)(int)nv_as_int(v);\n    int n = 1;\n    while (val >= 0x80) {\n        val >>= 7;\n        n++;\n    }\n    return nv_int(n);\n}\n\nstatic nv nv_bytes_slice(nv b, nv from, nv to) {\n    int len;\n    const char *s = nv_bin(b, &len);\n    long long a = nv_as_int(from);\n    long long z = nv_as_int(to);\n    if (a < 0) {\n        a = 0;\n    }\n    if (z > len) {\n        z = len;\n    }\n    if (z <= a) {\n        return nv_str(\"\");\n    }\n    return nv_strn(s + a, (int)(z - a));\n}\n\nstatic nv nv_bytes_size(nv b) {\n    int len;\n    nv_bin(b, &len);\n    return nv_int(len);\n}\n\n/* Joins an array of byte strings in one pass - the packet writer builds its\n * payload as a list of pieces and flattens it once. */\nstatic nv nv_bytes_join(nv parts) {\n    NvArr *a;\n    int total = 0;\n    int i;\n    char *buf;\n    int at = 0;\n    if (nv_type_of(parts) != NV_ARR) {\n        return nv_str(\"\");\n    }\n    a = parts->a;\n    for (i = 0; i < a->len; i++) {\n        int len;\n        nv_bin(a->items[i], &len);\n        total += len;\n    }\n    buf = (char *)nv_alloc((size_t)total + 1);\n    for (i = 0; i < a->len; i++) {\n        int len;\n        const char *s = nv_bin(a->items[i], &len);\n        memcpy(buf + at, s, (size_t)len);\n        at += len;\n    }\n    buf[total] = 0;\n    return nv_str_own(buf, total);\n}\n\n/* n zero bytes. */\nstatic nv nv_bytes_zeros(nv count) {\n    long long n = nv_as_int(count);\n    char *buf;\n    if (n <= 0) {\n        return nv_str(\"\");\n    }\n    buf = (char *)nv_alloc((size_t)n + 1);\n    memset(buf, 0, (size_t)n + 1);\n    return nv_str_own(buf, (int)n);\n}\n\nstatic nv nv_bytes_hex(nv b) {\n    static const char *digits = \"0123456789abcdef\";\n    int len;\n    const char *s = nv_bin(b, &len);\n    char *buf = (char *)nv_alloc((size_t)len * 2 + 1);\n    int i;\n    for (i = 0; i < len; i++) {\n        buf[i * 2] = digits[((unsigned char)s[i]) >> 4];\n        buf[i * 2 + 1] = digits[((unsigned char)s[i]) & 0xf];\n    }\n    buf[len * 2] = 0;\n    return nv_str_own(buf, len * 2);\n}\n\nstatic int nv_hex_digit(char c) {\n    if (c >= '0' && c <= '9') {\n        return c - '0';\n    }\n    if (c >= 'a' && c <= 'f') {\n        return c - 'a' + 10;\n    }\n    if (c >= 'A' && c <= 'F') {\n        return c - 'A' + 10;\n    }\n    return -1;\n}\n\nstatic nv nv_bytes_from_hex(nv text) {\n    int len;\n    const char *s = nv_bin(text, &len);\n    char *buf = (char *)nv_alloc((size_t)len / 2 + 1);\n    int n = 0;\n    int i = 0;\n    while (i + 1 < len) {\n        int hi = nv_hex_digit(s[i]);\n        int lo = nv_hex_digit(s[i + 1]);\n        if (hi < 0 || lo < 0) {\n            break;\n        }\n        buf[n++] = (char)((hi << 4) | lo);\n        i += 2;\n    }\n    buf[n] = 0;\n    return nv_str_own(buf, n);\n}\n\n/* array<integer> of the byte values, and back. */\nstatic nv nv_bytes_to_array(nv b) {\n    int len;\n    const char *s = nv_bin(b, &len);\n    nv out = nv_arr();\n    int i;\n    for (i = 0; i < len; i++) {\n        nv_arr_push(out->a, nv_int((unsigned char)s[i]));\n    }\n    return out;\n}\n\nstatic nv nv_bytes_of_array(nv values) {\n    NvArr *a;\n    char *buf;\n    int i;\n    if (nv_type_of(values) != NV_ARR) {\n        return nv_str(\"\");\n    }\n    a = values->a;\n    buf = (char *)nv_alloc((size_t)a->len + 1);\n    for (i = 0; i < a->len; i++) {\n        buf[i] = (char)(nv_as_int(a->items[i]) & 0xff);\n    }\n    buf[a->len] = 0;\n    return nv_str_own(buf, a->len);\n}\n\n/* Index of `needle` in `haystack` at or after `from`, byte exact (-1 when\n * absent). The string builtin stops at a NUL byte; this one does not. */\nstatic nv nv_bytes_index_of(nv haystack, nv needle, nv from) {\n    int hlen;\n    int nlen;\n    const char *h = nv_bin(haystack, &hlen);\n    const char *n = nv_bin(needle, &nlen);\n    long long start = nv_as_int(from);\n    long long i;\n    if (start < 0) {\n        start = 0;\n    }\n    if (nlen == 0) {\n        return nv_int(start <= hlen \? start : -1);\n    }\n    for (i = start; i + nlen <= hlen; i++) {\n        if (memcmp(h + i, n, (size_t)nlen) == 0) {\n            return nv_int(i);\n        }\n    }\n    return nv_int(-1);\n}\n\n/* Byte exact equality (the == operator compares NUL terminated views). */\nstatic nv nv_bytes_equal(nv a, nv b) {\n    int alen;\n    int blen;\n    const char *x = nv_bin(a, &alen);\n    const char *y = nv_bin(b, &blen);\n    return nv_bool(alen == blen && memcmp(x, y, (size_t)alen) == 0);\n}\n\n/* ------------------------------------------------------------------ */\n/* TCP sockets                                                         */\n/* ------------------------------------------------------------------ */\n\n/* Non-blocking sockets plus poll(): one thread drives every connection, which\n * is what a tick loop wants anyway. A socket is an integer handle in Novus;\n * net.status() reports what the last call did, because a Novus method cannot\n * return a value and an error at once. */\n#ifdef _WIN32\ntypedef SOCKET nv_sock;\n#define NV_BADSOCK INVALID_SOCKET\n#define NV_SOCKERR(e) (WSAGetLastError() == (e))\n#define NV_EWOULDBLOCK WSAEWOULDBLOCK\n#else\ntypedef int nv_sock;\n#define NV_BADSOCK (-1)\n#define NV_SOCKERR(e) (errno == (e))\n#define NV_EWOULDBLOCK EWOULDBLOCK\n#endif\n\nenum { NV_NET_OK = 0, NV_NET_AGAIN = 1, NV_NET_CLOSED = 2, NV_NET_ERROR = 3 };\n\nstatic NV_TLS int nv_net_last = NV_NET_OK;\nstatic NV_TLS char nv_net_message[256];\n\nstatic void nv_net_fail(const char *what) {\n    nv_net_last = NV_NET_ERROR;\n#ifdef _WIN32\n    snprintf(nv_net_message, sizeof(nv_net_message), \"%s: winsock error %d\", what, WSAGetLastError());\n#else\n    snprintf(nv_net_message, sizeof(nv_net_message), \"%s: %s\", what, strerror(errno));\n#endif\n}\n\nstatic void nv_net_start(void) {\n#ifdef _WIN32\n    static int started = 0;\n    if (!started) {\n        WSADATA data;\n        WSAStartup(MAKEWORD(2, 2), &data);\n        started = 1;\n    }\n#endif\n}\n\nstatic int nv_net_would_block(void) {\n#ifdef _WIN32\n    int e = WSAGetLastError();\n    return e == WSAEWOULDBLOCK || e == WSAEINPROGRESS;\n#else\n    return errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR;\n#endif\n}\n\nstatic void nv_net_nonblocking(nv_sock s) {\n#ifdef _WIN32\n    u_long on = 1;\n    ioctlsocket(s, FIONBIO, &on);\n#else\n    int flags = fcntl(s, F_GETFL, 0);\n    fcntl(s, F_SETFL, flags | O_NONBLOCK);\n#endif\n}\n\nstatic void nv_net_shutclose(nv_sock s) {\n#ifdef _WIN32\n    closesocket(s);\n#else\n    close(s);\n#endif\n}\n\n/* Resolves host:port. An empty or \"0.0.0.0\" host binds every interface. */\nstatic struct addrinfo *nv_net_resolve(const char *host, int port, int passive) {\n    struct addrinfo hints;\n    struct addrinfo *result = 0;\n    char service[16];\n    memset(&hints, 0, sizeof(hints));\n    hints.ai_family = AF_INET;\n    hints.ai_socktype = SOCK_STREAM;\n    hints.ai_protocol = IPPROTO_TCP;\n    if (passive) {\n        hints.ai_flags = AI_PASSIVE;\n    }\n    snprintf(service, sizeof(service), \"%d\", port);\n    if (getaddrinfo((host && host[0]) \? host : 0, service, &hints, &result) != 0) {\n        return 0;\n    }\n    return result;\n}\n\nstatic nv nv_net_listen(nv host, nv port) {\n    struct addrinfo *info;\n    nv_sock s;\n    int on = 1;\n    nv_net_start();\n    nv_net_last = NV_NET_OK;\n    info = nv_net_resolve(nv_cstr(host), (int)nv_as_int(port), 1);\n    if (!info) {\n        nv_net_last = NV_NET_ERROR;\n        snprintf(nv_net_message, sizeof(nv_net_message), \"listen: cannot resolve host\");\n        return nv_int(-1);\n    }\n    s = socket(info->ai_family, info->ai_socktype, info->ai_protocol);\n    if (s == NV_BADSOCK) {\n        nv_net_fail(\"socket\");\n        freeaddrinfo(info);\n        return nv_int(-1);\n    }\n    setsockopt(s, SOL_SOCKET, SO_REUSEADDR, (const char *)&on, sizeof(on));\n    if (bind(s, info->ai_addr, (int)info->ai_addrlen) != 0) {\n        nv_net_fail(\"bind\");\n        nv_net_shutclose(s);\n        freeaddrinfo(info);\n        return nv_int(-1);\n    }\n    freeaddrinfo(info);\n    if (listen(s, 128) != 0) {\n        nv_net_fail(\"listen\");\n        nv_net_shutclose(s);\n        return nv_int(-1);\n    }\n    nv_net_nonblocking(s);\n    return nv_int((long long)s);\n}\n\n/* -1 and status AGAIN when no connection is waiting. */\nstatic nv nv_net_accept(nv server) {\n    nv_sock s = (nv_sock)nv_as_int(server);\n    nv_sock c;\n    int on = 1;\n    nv_net_last = NV_NET_OK;\n    c = accept(s, 0, 0);\n    if (c == NV_BADSOCK) {\n        nv_net_last = nv_net_would_block() \? NV_NET_AGAIN : NV_NET_ERROR;\n        if (nv_net_last == NV_NET_ERROR) {\n            nv_net_fail(\"accept\");\n        }\n        return nv_int(-1);\n    }\n    nv_net_nonblocking(c);\n    setsockopt(c, IPPROTO_TCP, TCP_NODELAY, (const char *)&on, sizeof(on));\n    return nv_int((long long)c);\n}\n\nstatic nv nv_net_connect(nv host, nv port) {\n    struct addrinfo *info;\n    nv_sock s;\n    int on = 1;\n    nv_net_start();\n    nv_net_last = NV_NET_OK;\n    info = nv_net_resolve(nv_cstr(host), (int)nv_as_int(port), 0);\n    if (!info) {\n        nv_net_last = NV_NET_ERROR;\n        snprintf(nv_net_message, sizeof(nv_net_message), \"connect: cannot resolve host\");\n        return nv_int(-1);\n    }\n    s = socket(info->ai_family, info->ai_socktype, info->ai_protocol);\n    if (s == NV_BADSOCK) {\n        nv_net_fail(\"socket\");\n        freeaddrinfo(info);\n        return nv_int(-1);\n    }\n    if (connect(s, info->ai_addr, (int)info->ai_addrlen) != 0) {\n        nv_net_fail(\"connect\");\n        nv_net_shutclose(s);\n        freeaddrinfo(info);\n        return nv_int(-1);\n    }\n    freeaddrinfo(info);\n    nv_net_nonblocking(s);\n    setsockopt(s, IPPROTO_TCP, TCP_NODELAY, (const char *)&on, sizeof(on));\n    return nv_int((long long)s);\n}\n\n/* Up to `max` bytes. \"\" with status AGAIN means nothing was ready, \"\" with\n * status CLOSED means the peer hung up. */\nstatic nv nv_net_recv(nv sock, nv max) {\n    nv_sock s = (nv_sock)nv_as_int(sock);\n    long long want = nv_as_int(max);\n    char *buf;\n    long long got;\n    nv_net_last = NV_NET_OK;\n    if (want <= 0) {\n        return nv_str(\"\");\n    }\n    if (want > 1024 * 1024) {\n        want = 1024 * 1024;\n    }\n    buf = (char *)nv_alloc((size_t)want + 1);\n    got = (long long)recv(s, buf, (int)want, 0);\n    if (got == 0) {\n        nv_net_last = NV_NET_CLOSED;\n        return nv_str(\"\");\n    }\n    if (got < 0) {\n        nv_net_last = nv_net_would_block() \? NV_NET_AGAIN : NV_NET_ERROR;\n        if (nv_net_last == NV_NET_ERROR) {\n            nv_net_fail(\"recv\");\n        }\n        return nv_str(\"\");\n    }\n    buf[got] = 0;\n    return nv_str_own(buf, (int)got);\n}\n\n/* Bytes actually handed to the kernel; the caller keeps the remainder in its\n * own out-buffer and retries (status AGAIN when the socket is full). */\nstatic nv nv_net_send(nv sock, nv data) {\n    nv_sock s = (nv_sock)nv_as_int(sock);\n    int len;\n    const char *bytes = nv_bin(data, &len);\n    long long sent;\n    nv_net_last = NV_NET_OK;\n    if (len == 0) {\n        return nv_int(0);\n    }\n#ifdef MSG_NOSIGNAL\n    sent = (long long)send(s, bytes, len, MSG_NOSIGNAL);\n#else\n    sent = (long long)send(s, bytes, len, 0);\n#endif\n    if (sent < 0) {\n        nv_net_last = nv_net_would_block() \? NV_NET_AGAIN : NV_NET_ERROR;\n        if (nv_net_last == NV_NET_ERROR) {\n            nv_net_fail(\"send\");\n        }\n        return nv_int(0);\n    }\n    return nv_int(sent);\n}\n\nstatic nv nv_net_close(nv sock) {\n    nv_sock s = (nv_sock)nv_as_int(sock);\n    if ((long long)s >= 0) {\n        nv_net_shutclose(s);\n    }\n    return nv_nil;\n}\n\n/* Waits until one of `sockets` is readable (or `timeoutMs` passes) and\n * returns those that are. A timeout of 0 polls, -1 blocks. */\nstatic nv nv_net_poll(nv sockets, nv timeoutMs) {\n    NvArr *a;\n    nv out = nv_arr();\n    int i;\n    int count;\n#ifdef _WIN32\n    WSAPOLLFD *fds;\n#else\n    struct pollfd *fds;\n#endif\n    nv_net_last = NV_NET_OK;\n    if (nv_type_of(sockets) != NV_ARR) {\n        return out;\n    }\n    a = sockets->a;\n    if (a->len == 0) {\n        return out;\n    }\n#ifdef _WIN32\n    fds = (WSAPOLLFD *)nv_alloc(sizeof(WSAPOLLFD) * (size_t)a->len);\n#else\n    fds = (struct pollfd *)nv_alloc(sizeof(struct pollfd) * (size_t)a->len);\n#endif\n    for (i = 0; i < a->len; i++) {\n        fds[i].fd = (nv_sock)nv_as_int(a->items[i]);\n        fds[i].events = POLLIN;\n        fds[i].revents = 0;\n    }\n#ifdef _WIN32\n    count = WSAPoll(fds, (ULONG)a->len, (INT)nv_as_int(timeoutMs));\n#else\n    count = poll(fds, (nfds_t)a->len, (int)nv_as_int(timeoutMs));\n#endif\n    if (count < 0) {\n        if (!nv_net_would_block()) {\n            nv_net_fail(\"poll\");\n        }\n        return out;\n    }\n    for (i = 0; i < a->len; i++) {\n        if (fds[i].revents != 0) {\n            nv_arr_push(out->a, a->items[i]);\n        }\n    }\n    return out;\n}\n\n/* Like poll(), but reports writability - used to drain a backed up send\n * buffer without spinning. */\nstatic nv nv_net_poll_write(nv sockets, nv timeoutMs) {\n    NvArr *a;\n    nv out = nv_arr();\n    int i;\n    int count;\n#ifdef _WIN32\n    WSAPOLLFD *fds;\n#else\n    struct pollfd *fds;\n#endif\n    nv_net_last = NV_NET_OK;\n    if (nv_type_of(sockets) != NV_ARR) {\n        return out;\n    }\n    a = sockets->a;\n    if (a->len == 0) {\n        return out;\n    }\n#ifdef _WIN32\n    fds = (WSAPOLLFD *)nv_alloc(sizeof(WSAPOLLFD) * (size_t)a->len);\n#else\n    fds = (struct pollfd *)nv_alloc(sizeof(struct pollfd) * (size_t)a->len);\n#endif\n    for (i = 0; i < a->len; i++) {\n        fds[i].fd = (nv_sock)nv_as_int(a->items[i]);\n        fds[i].events = POLLOUT;\n        fds[i].revents = 0;\n    }\n#ifdef _WIN32\n    count = WSAPoll(fds, (ULONG)a->len, (INT)nv_as_int(timeoutMs));\n#else\n    count = poll(fds, (nfds_t)a->len, (int)nv_as_int(timeoutMs));\n#endif\n    if (count < 0) {\n        return out;\n    }\n    for (i = 0; i < a->len; i++) {\n        if (fds[i].revents != 0) {\n            nv_arr_push(out->a, a->items[i]);\n        }\n    }\n    return out;\n}\n\nstatic nv nv_net_status(void) { return nv_int(nv_net_last); }\nstatic nv nv_net_error(void) { return nv_str(nv_net_message); }\n\n/* \"1.2.3.4:56789\" of the connected peer. */\nstatic nv nv_net_peer(nv sock) {\n    nv_sock s = (nv_sock)nv_as_int(sock);\n    struct sockaddr_storage addr;\n    char host[64];\n    char out[96];\n#ifdef _WIN32\n    int len = (int)sizeof(addr);\n#else\n    socklen_t len = (socklen_t)sizeof(addr);\n#endif\n    if (getpeername(s, (struct sockaddr *)&addr, &len) != 0) {\n        return nv_str(\"\");\n    }\n    if (addr.ss_family == AF_INET) {\n        struct sockaddr_in *v4 = (struct sockaddr_in *)&addr;\n        if (!inet_ntop(AF_INET, &v4->sin_addr, host, sizeof(host))) {\n            return nv_str(\"\");\n        }\n        snprintf(out, sizeof(out), \"%s:%d\", host, (int)ntohs(v4->sin_port));\n        return nv_str(out);\n    }\n    return nv_str(\"\");\n}\n\n/* ------------------------------------------------------------------ */\n/* zlib (RFC 1950) and deflate (RFC 1951)                              */\n/* ------------------------------------------------------------------ */\n\n/* Self contained on purpose: a Novus program only ever needs a C compiler,\n * so linking against the system zlib is not an option. Inflate handles all\n * three block types; deflate emits fixed Huffman blocks with an LZ77 hash\n * chain, which is what a game protocol wants (fast, good enough ratio). */\n\nstatic unsigned long nv_adler32(const unsigned char *data, size_t len) {\n    unsigned long a = 1;\n    unsigned long b = 0;\n    size_t i;\n    for (i = 0; i < len; i++) {\n        a = (a + data[i]) % 65521;\n        b = (b + a) % 65521;\n    }\n    return (b << 16) | a;\n}\n\n/* ---- bit reader ---- */\n\ntypedef struct {\n    const unsigned char *in;\n    size_t inlen;\n    size_t inpos;\n    int bitbuf;\n    int bitcnt;\n    unsigned char *out;\n    size_t outlen;\n    size_t outcap;\n    int error;\n} NvInfl;\n\nstatic void nv_infl_put(NvInfl *s, unsigned char c) {\n    if (s->outlen == s->outcap) {\n        size_t cap = s->outcap \? s->outcap * 2 : 1024;\n        unsigned char *grown = (unsigned char *)realloc(s->out, cap);\n        if (!grown) {\n            s->error = 1;\n            return;\n        }\n        s->out = grown;\n        s->outcap = cap;\n    }\n    s->out[s->outlen++] = c;\n}\n\nstatic int nv_infl_bits(NvInfl *s, int need) {\n    long value = s->bitbuf;\n    while (s->bitcnt < need) {\n        if (s->inpos >= s->inlen) {\n            s->error = 1;\n            return 0;\n        }\n        value |= (long)s->in[s->inpos++] << s->bitcnt;\n        s->bitcnt += 8;\n    }\n    s->bitbuf = (int)(value >> need);\n    s->bitcnt -= need;\n    return (int)(value & ((1L << need) - 1));\n}\n\n/* ---- canonical Huffman ---- */\n\ntypedef struct {\n    short *count;  /* number of codes of each length 0..15 */\n    short *symbol; /* symbols in canonical order */\n} NvHuff;\n\nstatic int nv_huff_decode(NvInfl *s, const NvHuff *h) {\n    int len;\n    int code = 0;\n    int first = 0;\n    int index = 0;\n    for (len = 1; len <= 15; len++) {\n        int count;\n        code |= nv_infl_bits(s, 1);\n        if (s->error) {\n            return -1;\n        }\n        count = h->count[len];\n        if (code - count < first) {\n            return h->symbol[index + (code - first)];\n        }\n        index += count;\n        first += count;\n        first <<= 1;\n        code <<= 1;\n    }\n    return -1;\n}\n\nstatic int nv_huff_build(NvHuff *h, const short *lengths, int n) {\n    int symbol;\n    int len;\n    int left;\n    short offs[16];\n    for (len = 0; len <= 15; len++) {\n        h->count[len] = 0;\n    }\n    for (symbol = 0; symbol < n; symbol++) {\n        h->count[lengths[symbol]]++;\n    }\n    if (h->count[0] == n) {\n        return 0; /* no codes at all - an empty (but legal) table */\n    }\n    left = 1;\n    for (len = 1; len <= 15; len++) {\n        left <<= 1;\n        left -= h->count[len];\n        if (left < 0) {\n            return -1; /* over-subscribed */\n        }\n    }\n    offs[1] = 0;\n    for (len = 1; len < 15; len++) {\n        offs[len + 1] = (short)(offs[len] + h->count[len]);\n    }\n    for (symbol = 0; symbol < n; symbol++) {\n        if (lengths[symbol] != 0) {\n            h->symbol[offs[lengths[symbol]]++] = (short)symbol;\n        }\n    }\n    return 0;\n}\n\nstatic const short nv_len_base[29] = {3,  4,  5,  6,  7,  8,  9,  10,  11,  13,\n                                      15, 17, 19, 23, 27, 31, 35, 43,  51,  59,\n                                      67, 83, 99, 115, 131, 163, 195, 227, 258};\nstatic const short nv_len_extra[29] = {0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2,\n                                       2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0};\nstatic const short nv_dist_base[30] = {1,    2,    3,    4,    5,    7,     9,    13,\n                                       17,   25,   33,   49,   65,   97,    129,  193,\n                                       257,  385,  513,  769,  1025, 1537,  2049, 3073,\n                                       4097, 6145, 8193, 12289, 16385, 24577};\nstatic const short nv_dist_extra[30] = {0, 0, 0,  0,  1,  1,  2,  2,  3,  3,\n                                        4, 4, 5,  5,  6,  6,  7,  7,  8,  8,\n                                        9, 9, 10, 10, 11, 11, 12, 12, 13, 13};\n\nstatic int nv_infl_codes(NvInfl *s, const NvHuff *lencode, const NvHuff *distcode) {\n    for (;;) {\n        int symbol = nv_huff_decode(s, lencode);\n        if (symbol < 0) {\n            return -1;\n        }\n        if (symbol < 256) {\n            nv_infl_put(s, (unsigned char)symbol);\n            if (s->error) {\n                return -1;\n            }\n            continue;\n        }\n        if (symbol == 256) {\n            return 0;\n        }\n        symbol -= 257;\n        if (symbol >= 29) {\n            return -1;\n        }\n        {\n            int length = nv_len_base[symbol] + nv_infl_bits(s, nv_len_extra[symbol]);\n            int dsym = nv_huff_decode(s, distcode);\n            size_t dist;\n            int i;\n            if (dsym < 0 || dsym >= 30) {\n                return -1;\n            }\n            dist = (size_t)(nv_dist_base[dsym] + nv_infl_bits(s, nv_dist_extra[dsym]));\n            if (s->error || dist > s->outlen) {\n                return -1;\n            }\n            for (i = 0; i < length; i++) {\n                nv_infl_put(s, s->out[s->outlen - dist]);\n                if (s->error) {\n                    return -1;\n                }\n            }\n        }\n    }\n}\n\nstatic int nv_infl_stored(NvInfl *s) {\n    unsigned len;\n    s->bitbuf = 0;\n    s->bitcnt = 0;\n    if (s->inpos + 4 > s->inlen) {\n        return -1;\n    }\n    len = (unsigned)s->in[s->inpos] | ((unsigned)s->in[s->inpos + 1] << 8);\n    s->inpos += 4; /* LEN and its complement NLEN */\n    if (s->inpos + len > s->inlen) {\n        return -1;\n    }\n    while (len--) {\n        nv_infl_put(s, s->in[s->inpos++]);\n        if (s->error) {\n            return -1;\n        }\n    }\n    return 0;\n}\n\nstatic int nv_infl_fixed(NvInfl *s) {\n    static short lencnt[16];\n    static short lensym[288];\n    static short distcnt[16];\n    static short distsym[30];\n    static NvHuff lencode;\n    static NvHuff distcode;\n    static int built = 0;\n    if (!built) {\n        short lengths[288];\n        int symbol;\n        for (symbol = 0; symbol < 144; symbol++) {\n            lengths[symbol] = 8;\n        }\n        for (; symbol < 256; symbol++) {\n            lengths[symbol] = 9;\n        }\n        for (; symbol < 280; symbol++) {\n            lengths[symbol] = 7;\n        }\n        for (; symbol < 288; symbol++) {\n            lengths[symbol] = 8;\n        }\n        lencode.count = lencnt;\n        lencode.symbol = lensym;\n        nv_huff_build(&lencode, lengths, 288);\n        for (symbol = 0; symbol < 30; symbol++) {\n            lengths[symbol] = 5;\n        }\n        distcode.count = distcnt;\n        distcode.symbol = distsym;\n        nv_huff_build(&distcode, lengths, 30);\n        built = 1;\n    }\n    return nv_infl_codes(s, &lencode, &distcode);\n}\n\nstatic int nv_infl_dynamic(NvInfl *s) {\n    static const short order[19] = {16, 17, 18, 0, 8,  7, 9,  6, 10, 5,\n                                    11, 4,  12, 3, 13, 2, 14, 1, 15};\n    short lencnt[16];\n    short lensym[288];\n    short distcnt[16];\n    short distsym[30];\n    NvHuff lencode;\n    NvHuff distcode;\n    short lengths[320];\n    int nlen;\n    int ndist;\n    int ncode;\n    int index;\n    nlen = nv_infl_bits(s, 5) + 257;\n    ndist = nv_infl_bits(s, 5) + 1;\n    ncode = nv_infl_bits(s, 4) + 4;\n    if (s->error || nlen > 286 || ndist > 30) {\n        return -1;\n    }\n    for (index = 0; index < ncode; index++) {\n        lengths[order[index]] = (short)nv_infl_bits(s, 3);\n    }\n    for (; index < 19; index++) {\n        lengths[order[index]] = 0;\n    }\n    lencode.count = lencnt;\n    lencode.symbol = lensym;\n    if (nv_huff_build(&lencode, lengths, 19) != 0) {\n        return -1;\n    }\n    index = 0;\n    while (index < nlen + ndist) {\n        int symbol = nv_huff_decode(s, &lencode);\n        if (symbol < 0) {\n            return -1;\n        }\n        if (symbol < 16) {\n            lengths[index++] = (short)symbol;\n            continue;\n        }\n        {\n            short len = 0;\n            int repeat;\n            if (symbol == 16) {\n                if (index == 0) {\n                    return -1;\n                }\n                len = lengths[index - 1];\n                repeat = 3 + nv_infl_bits(s, 2);\n            } else if (symbol == 17) {\n                repeat = 3 + nv_infl_bits(s, 3);\n            } else {\n                repeat = 11 + nv_infl_bits(s, 7);\n            }\n            if (index + repeat > nlen + ndist) {\n                return -1;\n            }\n            while (repeat--) {\n                lengths[index++] = len;\n            }\n        }\n    }\n    if (lengths[256] == 0) {\n        return -1; /* no end-of-block code */\n    }\n    lencode.count = lencnt;\n    lencode.symbol = lensym;\n    if (nv_huff_build(&lencode, lengths, nlen) != 0) {\n        return -1;\n    }\n    distcode.count = distcnt;\n    distcode.symbol = distsym;\n    if (nv_huff_build(&distcode, lengths + nlen, ndist) != 0) {\n        return -1;\n    }\n    return nv_infl_codes(s, &lencode, &distcode);\n}\n\n/* Raw deflate stream -> bytes. `limit` (when > 0) caps the output so a tiny\n * hostile packet cannot expand into gigabytes. */\nstatic int nv_inflate_raw(const unsigned char *in, size_t inlen, size_t limit, unsigned char **out,\n                          size_t *outlen) {\n    NvInfl s;\n    int last;\n    memset(&s, 0, sizeof(s));\n    s.in = in;\n    s.inlen = inlen;\n    do {\n        int type;\n        int rc;\n        last = nv_infl_bits(&s, 1);\n        type = nv_infl_bits(&s, 2);\n        if (s.error) {\n            free(s.out);\n            return -1;\n        }\n        if (type == 0) {\n            rc = nv_infl_stored(&s);\n        } else if (type == 1) {\n            rc = nv_infl_fixed(&s);\n        } else if (type == 2) {\n            rc = nv_infl_dynamic(&s);\n        } else {\n            rc = -1;\n        }\n        if (rc != 0 || s.error) {\n            free(s.out);\n            return -1;\n        }\n        if (limit > 0 && s.outlen > limit) {\n            free(s.out);\n            return -1;\n        }\n    } while (!last);\n    *out = s.out;\n    *outlen = s.outlen;\n    return 0;\n}\n\n/* ---- deflate ---- */\n\ntypedef struct {\n    unsigned char *out;\n    size_t len;\n    size_t cap;\n    int bitbuf;\n    int bitcnt;\n    int error;\n} NvDefl;\n\nstatic void nv_defl_byte(NvDefl *s, unsigned char c) {\n    if (s->len == s->cap) {\n        size_t cap = s->cap \? s->cap * 2 : 1024;\n        unsigned char *grown = (unsigned char *)realloc(s->out, cap);\n        if (!grown) {\n            s->error = 1;\n            return;\n        }\n        s->out = grown;\n        s->cap = cap;\n    }\n    s->out[s->len++] = c;\n}\n\n/* Deflate is a little endian bit stream: values go in LSB first. */\nstatic void nv_defl_bits(NvDefl *s, int value, int count) {\n    s->bitbuf |= value << s->bitcnt;\n    s->bitcnt += count;\n    while (s->bitcnt >= 8) {\n        nv_defl_byte(s, (unsigned char)(s->bitbuf & 0xff));\n        s->bitbuf >>= 8;\n        s->bitcnt -= 8;\n    }\n}\n\n/* Huffman codes travel MSB first, so they are reversed into the stream. */\nstatic void nv_defl_huff(NvDefl *s, int code, int count) {\n    int i;\n    for (i = count - 1; i >= 0; i--) {\n        nv_defl_bits(s, (code >> i) & 1, 1);\n    }\n}\n\nstatic void nv_defl_literal(NvDefl *s, int symbol) {\n    if (symbol < 144) {\n        nv_defl_huff(s, 0x30 + symbol, 8);\n    } else if (symbol < 256) {\n        nv_defl_huff(s, 0x190 + symbol - 144, 9);\n    } else if (symbol < 280) {\n        nv_defl_huff(s, symbol - 256, 7);\n    } else {\n        nv_defl_huff(s, 0xc0 + symbol - 280, 8);\n    }\n}\n\n#define NV_DEFL_WBITS 15\n#define NV_DEFL_WSIZE (1 << NV_DEFL_WBITS)\n#define NV_DEFL_HBITS 15\n#define NV_DEFL_HSIZE (1 << NV_DEFL_HBITS)\n#define NV_DEFL_MAXMATCH 258\n#define NV_DEFL_MINMATCH 3\n#define NV_DEFL_CHAIN 32\n\nstatic int nv_defl_length_code(int length) {\n    int i;\n    for (i = 28; i >= 0; i--) {\n        if (length >= nv_len_base[i]) {\n            return i;\n        }\n    }\n    return 0;\n}\n\nstatic int nv_defl_dist_code(int dist) {\n    int i;\n    for (i = 29; i >= 0; i--) {\n        if (dist >= nv_dist_base[i]) {\n            return i;\n        }\n    }\n    return 0;\n}\n\n/* Raw deflate: one fixed Huffman block with LZ77 matches found through a\n * hash of three bytes and a chain of previous positions. */\nstatic int nv_deflate_raw(const unsigned char *in, size_t inlen, unsigned char **out,\n                          size_t *outlen) {\n    NvDefl s;\n    int *head = 0;\n    int *prev = 0;\n    size_t pos = 0;\n    size_t i;\n    memset(&s, 0, sizeof(s));\n    head = (int *)malloc(sizeof(int) * NV_DEFL_HSIZE);\n    prev = (int *)malloc(sizeof(int) * (inlen > 0 \? inlen : 1));\n    if (!head || !prev) {\n        free(head);\n        free(prev);\n        return -1;\n    }\n    for (i = 0; i < NV_DEFL_HSIZE; i++) {\n        head[i] = -1;\n    }\n    nv_defl_bits(&s, 1, 1); /* BFINAL */\n    nv_defl_bits(&s, 1, 2); /* fixed Huffman */\n    while (pos < inlen) {\n        int bestLen = 0;\n        size_t bestDist = 0;\n        unsigned hash = 0;\n        if (pos + NV_DEFL_MINMATCH <= inlen) {\n            hash = ((unsigned)in[pos] << 10) ^ ((unsigned)in[pos + 1] << 5) ^ (unsigned)in[pos + 2];\n            hash &= NV_DEFL_HSIZE - 1;\n            {\n                int candidate = head[hash];\n                int tries = NV_DEFL_CHAIN;\n                while (candidate >= 0 && tries-- > 0) {\n                    size_t dist = pos - (size_t)candidate;\n                    int len = 0;\n                    if (dist == 0 || dist > NV_DEFL_WSIZE) {\n                        break;\n                    }\n                    while (len < NV_DEFL_MAXMATCH && pos + len < inlen &&\n                           in[(size_t)candidate + len] == in[pos + len]) {\n                        len++;\n                    }\n                    if (len > bestLen) {\n                        bestLen = len;\n                        bestDist = dist;\n                        if (len >= NV_DEFL_MAXMATCH) {\n                            break;\n                        }\n                    }\n                    candidate = prev[candidate];\n                }\n            }\n            prev[pos] = head[hash];\n            head[hash] = (int)pos;\n        }\n        if (bestLen >= NV_DEFL_MINMATCH) {\n            int lc = nv_defl_length_code(bestLen);\n            int dc = nv_defl_dist_code((int)bestDist);\n            nv_defl_literal(&s, 257 + lc);\n            nv_defl_bits(&s, bestLen - nv_len_base[lc], nv_len_extra[lc]);\n            nv_defl_huff(&s, dc, 5);\n            nv_defl_bits(&s, (int)bestDist - nv_dist_base[dc], nv_dist_extra[dc]);\n            /* every skipped position still has to enter the hash chain */\n            for (i = 1; i < (size_t)bestLen; i++) {\n                size_t at = pos + i;\n                if (at + NV_DEFL_MINMATCH <= inlen) {\n                    unsigned h = ((unsigned)in[at] << 10) ^ ((unsigned)in[at + 1] << 5) ^\n                                 (unsigned)in[at + 2];\n                    h &= NV_DEFL_HSIZE - 1;\n                    prev[at] = head[h];\n                    head[h] = (int)at;\n                }\n            }\n            pos += (size_t)bestLen;\n            continue;\n        }\n        nv_defl_literal(&s, in[pos]);\n        pos++;\n    }\n    nv_defl_literal(&s, 256); /* end of block */\n    if (s.bitcnt > 0) {\n        nv_defl_byte(&s, (unsigned char)(s.bitbuf & 0xff));\n    }\n    free(head);\n    free(prev);\n    if (s.error) {\n        free(s.out);\n        return -1;\n    }\n    *out = s.out;\n    *outlen = s.len;\n    return 0;\n}\n\n/* ---- the Novus facing calls ---- */\n\n/* zlib container: 0x78 0x9C, deflate data, big endian Adler-32. */\nstatic nv nv_zlib_compress(nv data) {\n    int len;\n    const char *bytes = nv_bin(data, &len);\n    unsigned char *raw = 0;\n    size_t rawlen = 0;\n    unsigned long adler;\n    char *result;\n    size_t total;\n    if (nv_deflate_raw((const unsigned char *)bytes, (size_t)len, &raw, &rawlen) != 0) {\n        free(raw);\n        return nv_str(\"\");\n    }\n    adler = nv_adler32((const unsigned char *)bytes, (size_t)len);\n    total = rawlen + 6;\n    result = (char *)nv_alloc(total + 1);\n    result[0] = (char)0x78;\n    result[1] = (char)0x9c;\n    memcpy(result + 2, raw, rawlen);\n    result[rawlen + 2] = (char)((adler >> 24) & 0xff);\n    result[rawlen + 3] = (char)((adler >> 16) & 0xff);\n    result[rawlen + 4] = (char)((adler >> 8) & 0xff);\n    result[rawlen + 5] = (char)(adler & 0xff);\n    result[total] = 0;\n    free(raw);\n    return nv_str_own(result, (int)total);\n}\n\n/* `limit` > 0 rejects a stream that expands beyond it. \"\" on any failure -\n * zlib.failed() tells the two apart from an empty input. */\nstatic NV_TLS int nv_zlib_err = 0;\n\nstatic nv nv_zlib_decompress(nv data, nv limit) {\n    int len;\n    const char *bytes = nv_bin(data, &len);\n    unsigned char *raw = 0;\n    size_t rawlen = 0;\n    size_t cap = (size_t)nv_as_int(limit);\n    char *result;\n    nv_zlib_err = 0;\n    if (len < 2) {\n        nv_zlib_err = 1;\n        return nv_str(\"\");\n    }\n    /* skip the 2 byte zlib header; FDICT (bit 5 of FLG) is not supported */\n    if (((unsigned char)bytes[1] & 0x20) != 0) {\n        nv_zlib_err = 1;\n        return nv_str(\"\");\n    }\n    if (nv_inflate_raw((const unsigned char *)bytes + 2, (size_t)len - 2, cap, &raw, &rawlen) != 0) {\n        free(raw);\n        nv_zlib_err = 1;\n        return nv_str(\"\");\n    }\n    result = (char *)nv_alloc(rawlen + 1);\n    memcpy(result, raw, rawlen);\n    result[rawlen] = 0;\n    free(raw);\n    return nv_str_own(result, (int)rawlen);\n}\n\nstatic nv nv_zlib_failed(void) { return nv_bool(nv_zlib_err != 0); }\n\n/* ------------------------------------------------------------------ */\n/* Crypto: SHA-1, MD5, AES-128-CFB8, random bytes                      */\n/* ------------------------------------------------------------------ */\n\n/* Only what a Minecraft style handshake needs: SHA-1 for the session server\n * digest, MD5 for offline UUIDs (version 3 of \"OfflinePlayer:<name>\") and\n * AES-128 in CFB-8 for the encrypted stream. All produce raw bytes. */\n\n/* ---- SHA-1 ---- */\n\ntypedef struct {\n    unsigned int h[5];\n    unsigned char block[64];\n    size_t len;\n    int fill;\n} NvSha1;\n\nstatic unsigned int nv_rotl32(unsigned int v, int n) { return (v << n) | (v >> (32 - n)); }\n\nstatic void nv_sha1_block(NvSha1 *s, const unsigned char *p) {\n    unsigned int w[80];\n    unsigned int a, b, c, d, e;\n    int i;\n    for (i = 0; i < 16; i++) {\n        w[i] = ((unsigned int)p[i * 4] << 24) | ((unsigned int)p[i * 4 + 1] << 16) |\n               ((unsigned int)p[i * 4 + 2] << 8) | (unsigned int)p[i * 4 + 3];\n    }\n    for (i = 16; i < 80; i++) {\n        w[i] = nv_rotl32(w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16], 1);\n    }\n    a = s->h[0];\n    b = s->h[1];\n    c = s->h[2];\n    d = s->h[3];\n    e = s->h[4];\n    for (i = 0; i < 80; i++) {\n        unsigned int f;\n        unsigned int k;\n        if (i < 20) {\n            f = (b & c) | (~b & d);\n            k = 0x5a827999u;\n        } else if (i < 40) {\n            f = b ^ c ^ d;\n            k = 0x6ed9eba1u;\n        } else if (i < 60) {\n            f = (b & c) | (b & d) | (c & d);\n            k = 0x8f1bbcdcu;\n        } else {\n            f = b ^ c ^ d;\n            k = 0xca62c1d6u;\n        }\n        {\n            unsigned int t = nv_rotl32(a, 5) + f + e + k + w[i];\n            e = d;\n            d = c;\n            c = nv_rotl32(b, 30);\n            b = a;\n            a = t;\n        }\n    }\n    s->h[0] += a;\n    s->h[1] += b;\n    s->h[2] += c;\n    s->h[3] += d;\n    s->h[4] += e;\n}\n\nstatic void nv_sha1(const unsigned char *data, size_t len, unsigned char out[20]) {\n    NvSha1 s;\n    size_t i;\n    unsigned long long bits = (unsigned long long)len * 8;\n    s.h[0] = 0x67452301u;\n    s.h[1] = 0xefcdab89u;\n    s.h[2] = 0x98badcfeu;\n    s.h[3] = 0x10325476u;\n    s.h[4] = 0xc3d2e1f0u;\n    s.fill = 0;\n    for (i = 0; i < len; i++) {\n        s.block[s.fill++] = data[i];\n        if (s.fill == 64) {\n            nv_sha1_block(&s, s.block);\n            s.fill = 0;\n        }\n    }\n    s.block[s.fill++] = 0x80;\n    if (s.fill > 56) {\n        while (s.fill < 64) {\n            s.block[s.fill++] = 0;\n        }\n        nv_sha1_block(&s, s.block);\n        s.fill = 0;\n    }\n    while (s.fill < 56) {\n        s.block[s.fill++] = 0;\n    }\n    for (i = 0; i < 8; i++) {\n        s.block[56 + i] = (unsigned char)((bits >> ((7 - i) * 8)) & 0xff);\n    }\n    nv_sha1_block(&s, s.block);\n    for (i = 0; i < 5; i++) {\n        out[i * 4] = (unsigned char)((s.h[i] >> 24) & 0xff);\n        out[i * 4 + 1] = (unsigned char)((s.h[i] >> 16) & 0xff);\n        out[i * 4 + 2] = (unsigned char)((s.h[i] >> 8) & 0xff);\n        out[i * 4 + 3] = (unsigned char)(s.h[i] & 0xff);\n    }\n}\n\n/* ---- MD5 ---- */\n\nstatic const unsigned int nv_md5_k[64] = {\n    0xd76aa478u, 0xe8c7b756u, 0x242070dbu, 0xc1bdceeeu, 0xf57c0fafu, 0x4787c62au, 0xa8304613u,\n    0xfd469501u, 0x698098d8u, 0x8b44f7afu, 0xffff5bb1u, 0x895cd7beu, 0x6b901122u, 0xfd987193u,\n    0xa679438eu, 0x49b40821u, 0xf61e2562u, 0xc040b340u, 0x265e5a51u, 0xe9b6c7aau, 0xd62f105du,\n    0x02441453u, 0xd8a1e681u, 0xe7d3fbc8u, 0x21e1cde6u, 0xc33707d6u, 0xf4d50d87u, 0x455a14edu,\n    0xa9e3e905u, 0xfcefa3f8u, 0x676f02d9u, 0x8d2a4c8au, 0xfffa3942u, 0x8771f681u, 0x6d9d6122u,\n    0xfde5380cu, 0xa4beea44u, 0x4bdecfa9u, 0xf6bb4b60u, 0xbebfbc70u, 0x289b7ec6u, 0xeaa127fau,\n    0xd4ef3085u, 0x04881d05u, 0xd9d4d039u, 0xe6db99e5u, 0x1fa27cf8u, 0xc4ac5665u, 0xf4292244u,\n    0x432aff97u, 0xab9423a7u, 0xfc93a039u, 0x655b59c3u, 0x8f0ccc92u, 0xffeff47du, 0x85845dd1u,\n    0x6fa87e4fu, 0xfe2ce6e0u, 0xa3014314u, 0x4e0811a1u, 0xf7537e82u, 0xbd3af235u, 0x2ad7d2bbu,\n    0xeb86d391u};\n\nstatic const int nv_md5_r[64] = {7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22,\n                                 5, 9,  14, 20, 5, 9,  14, 20, 5, 9,  14, 20, 5, 9,  14, 20,\n                                 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23,\n                                 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21};\n\nstatic void nv_md5_block(unsigned int h[4], const unsigned char *p) {\n    unsigned int w[16];\n    unsigned int a = h[0];\n    unsigned int b = h[1];\n    unsigned int c = h[2];\n    unsigned int d = h[3];\n    int i;\n    for (i = 0; i < 16; i++) {\n        w[i] = (unsigned int)p[i * 4] | ((unsigned int)p[i * 4 + 1] << 8) |\n               ((unsigned int)p[i * 4 + 2] << 16) | ((unsigned int)p[i * 4 + 3] << 24);\n    }\n    for (i = 0; i < 64; i++) {\n        unsigned int f;\n        int g;\n        if (i < 16) {\n            f = (b & c) | (~b & d);\n            g = i;\n        } else if (i < 32) {\n            f = (d & b) | (~d & c);\n            g = (5 * i + 1) % 16;\n        } else if (i < 48) {\n            f = b ^ c ^ d;\n            g = (3 * i + 5) % 16;\n        } else {\n            f = c ^ (b | ~d);\n            g = (7 * i) % 16;\n        }\n        {\n            unsigned int t = d;\n            unsigned int sum = a + f + nv_md5_k[i] + w[g];\n            d = c;\n            c = b;\n            b = b + nv_rotl32(sum, nv_md5_r[i]);\n            a = t;\n        }\n    }\n    h[0] += a;\n    h[1] += b;\n    h[2] += c;\n    h[3] += d;\n}\n\nstatic void nv_md5(const unsigned char *data, size_t len, unsigned char out[16]) {\n    unsigned int h[4];\n    unsigned char block[64];\n    size_t i;\n    int fill = 0;\n    unsigned long long bits = (unsigned long long)len * 8;\n    h[0] = 0x67452301u;\n    h[1] = 0xefcdab89u;\n    h[2] = 0x98badcfeu;\n    h[3] = 0x10325476u;\n    for (i = 0; i < len; i++) {\n        block[fill++] = data[i];\n        if (fill == 64) {\n            nv_md5_block(h, block);\n            fill = 0;\n        }\n    }\n    block[fill++] = 0x80;\n    if (fill > 56) {\n        while (fill < 64) {\n            block[fill++] = 0;\n        }\n        nv_md5_block(h, block);\n        fill = 0;\n    }\n    while (fill < 56) {\n        block[fill++] = 0;\n    }\n    for (i = 0; i < 8; i++) {\n        block[56 + i] = (unsigned char)((bits >> (i * 8)) & 0xff);\n    }\n    nv_md5_block(h, block);\n    for (i = 0; i < 4; i++) {\n        out[i * 4] = (unsigned char)(h[i] & 0xff);\n        out[i * 4 + 1] = (unsigned char)((h[i] >> 8) & 0xff);\n        out[i * 4 + 2] = (unsigned char)((h[i] >> 16) & 0xff);\n        out[i * 4 + 3] = (unsigned char)((h[i] >> 24) & 0xff);\n    }\n}\n\n/* ---- AES-128 ---- */\n\nstatic const unsigned char nv_aes_sbox[256] = {\n    0x63, 0x7c, 0x77, 0x7b, 0xf2, 0x6b, 0x6f, 0xc5, 0x30, 0x01, 0x67, 0x2b, 0xfe, 0xd7, 0xab, 0x76,\n    0xca, 0x82, 0xc9, 0x7d, 0xfa, 0x59, 0x47, 0xf0, 0xad, 0xd4, 0xa2, 0xaf, 0x9c, 0xa4, 0x72, 0xc0,\n    0xb7, 0xfd, 0x93, 0x26, 0x36, 0x3f, 0xf7, 0xcc, 0x34, 0xa5, 0xe5, 0xf1, 0x71, 0xd8, 0x31, 0x15,\n    0x04, 0xc7, 0x23, 0xc3, 0x18, 0x96, 0x05, 0x9a, 0x07, 0x12, 0x80, 0xe2, 0xeb, 0x27, 0xb2, 0x75,\n    0x09, 0x83, 0x2c, 0x1a, 0x1b, 0x6e, 0x5a, 0xa0, 0x52, 0x3b, 0xd6, 0xb3, 0x29, 0xe3, 0x2f, 0x84,\n    0x53, 0xd1, 0x00, 0xed, 0x20, 0xfc, 0xb1, 0x5b, 0x6a, 0xcb, 0xbe, 0x39, 0x4a, 0x4c, 0x58, 0xcf,\n    0xd0, 0xef, 0xaa, 0xfb, 0x43, 0x4d, 0x33, 0x85, 0x45, 0xf9, 0x02, 0x7f, 0x50, 0x3c, 0x9f, 0xa8,\n    0x51, 0xa3, 0x40, 0x8f, 0x92, 0x9d, 0x38, 0xf5, 0xbc, 0xb6, 0xda, 0x21, 0x10, 0xff, 0xf3, 0xd2,\n    0xcd, 0x0c, 0x13, 0xec, 0x5f, 0x97, 0x44, 0x17, 0xc4, 0xa7, 0x7e, 0x3d, 0x64, 0x5d, 0x19, 0x73,\n    0x60, 0x81, 0x4f, 0xdc, 0x22, 0x2a, 0x90, 0x88, 0x46, 0xee, 0xb8, 0x14, 0xde, 0x5e, 0x0b, 0xdb,\n    0xe0, 0x32, 0x3a, 0x0a, 0x49, 0x06, 0x24, 0x5c, 0xc2, 0xd3, 0xac, 0x62, 0x91, 0x95, 0xe4, 0x79,\n    0xe7, 0xc8, 0x37, 0x6d, 0x8d, 0xd5, 0x4e, 0xa9, 0x6c, 0x56, 0xf4, 0xea, 0x65, 0x7a, 0xae, 0x08,\n    0xba, 0x78, 0x25, 0x2e, 0x1c, 0xa6, 0xb4, 0xc6, 0xe8, 0xdd, 0x74, 0x1f, 0x4b, 0xbd, 0x8b, 0x8a,\n    0x70, 0x3e, 0xb5, 0x66, 0x48, 0x03, 0xf6, 0x0e, 0x61, 0x35, 0x57, 0xb9, 0x86, 0xc1, 0x1d, 0x9e,\n    0xe1, 0xf8, 0x98, 0x11, 0x69, 0xd9, 0x8e, 0x94, 0x9b, 0x1e, 0x87, 0xe9, 0xce, 0x55, 0x28, 0xdf,\n    0x8c, 0xa1, 0x89, 0x0d, 0xbf, 0xe6, 0x42, 0x68, 0x41, 0x99, 0x2d, 0x0f, 0xb0, 0x54, 0xbb, 0x16};\n\nstatic unsigned char nv_aes_xtime(unsigned char x) {\n    return (unsigned char)((x << 1) ^ ((x & 0x80) \? 0x1b : 0x00));\n}\n\n/* AES-128: 11 round keys of 16 bytes. */\nstatic void nv_aes_expand(const unsigned char key[16], unsigned char rk[176]) {\n    static const unsigned char rcon[10] = {0x01, 0x02, 0x04, 0x08, 0x10,\n                                           0x20, 0x40, 0x80, 0x1b, 0x36};\n    int i;\n    memcpy(rk, key, 16);\n    for (i = 4; i < 44; i++) {\n        unsigned char t[4];\n        memcpy(t, rk + (i - 1) * 4, 4);\n        if (i % 4 == 0) {\n            unsigned char tmp = t[0];\n            t[0] = (unsigned char)(nv_aes_sbox[t[1]] ^ rcon[i / 4 - 1]);\n            t[1] = nv_aes_sbox[t[2]];\n            t[2] = nv_aes_sbox[t[3]];\n            t[3] = nv_aes_sbox[tmp];\n        }\n        rk[i * 4] = (unsigned char)(rk[(i - 4) * 4] ^ t[0]);\n        rk[i * 4 + 1] = (unsigned char)(rk[(i - 4) * 4 + 1] ^ t[1]);\n        rk[i * 4 + 2] = (unsigned char)(rk[(i - 4) * 4 + 2] ^ t[2]);\n        rk[i * 4 + 3] = (unsigned char)(rk[(i - 4) * 4 + 3] ^ t[3]);\n    }\n}\n\n/* CFB-8 only ever encrypts blocks, in both directions - no inverse cipher. */\nstatic void nv_aes_encrypt_block(const unsigned char rk[176], const unsigned char in[16],\n                                 unsigned char out[16]) {\n    unsigned char s[16];\n    int round;\n    int i;\n    for (i = 0; i < 16; i++) {\n        s[i] = (unsigned char)(in[i] ^ rk[i]);\n    }\n    for (round = 1; round <= 10; round++) {\n        unsigned char t[16];\n        for (i = 0; i < 16; i++) {\n            s[i] = nv_aes_sbox[s[i]];\n        }\n        /* ShiftRows on the column major state */\n        t[0] = s[0];   t[4] = s[4];   t[8] = s[8];    t[12] = s[12];\n        t[1] = s[5];   t[5] = s[9];   t[9] = s[13];   t[13] = s[1];\n        t[2] = s[10];  t[6] = s[14];  t[10] = s[2];   t[14] = s[6];\n        t[3] = s[15];  t[7] = s[3];   t[11] = s[7];   t[15] = s[11];\n        memcpy(s, t, 16);\n        if (round != 10) {\n            for (i = 0; i < 16; i += 4) {\n                unsigned char a0 = s[i];\n                unsigned char a1 = s[i + 1];\n                unsigned char a2 = s[i + 2];\n                unsigned char a3 = s[i + 3];\n                unsigned char all = (unsigned char)(a0 ^ a1 ^ a2 ^ a3);\n                s[i] = (unsigned char)(a0 ^ all ^ nv_aes_xtime((unsigned char)(a0 ^ a1)));\n                s[i + 1] = (unsigned char)(a1 ^ all ^ nv_aes_xtime((unsigned char)(a1 ^ a2)));\n                s[i + 2] = (unsigned char)(a2 ^ all ^ nv_aes_xtime((unsigned char)(a2 ^ a3)));\n                s[i + 3] = (unsigned char)(a3 ^ all ^ nv_aes_xtime((unsigned char)(a3 ^ a0)));\n            }\n        }\n        for (i = 0; i < 16; i++) {\n            s[i] = (unsigned char)(s[i] ^ rk[round * 16 + i]);\n        }\n    }\n    memcpy(out, s, 16);\n}\n\n/* A CFB-8 stream keeps its shift register between calls, so one handle per\n * direction per connection. */\ntypedef struct {\n    unsigned char rk[176];\n    unsigned char iv[16];\n    int encrypt;\n    int used;\n} NvCipher;\n\n#define NV_CIPHER_MAX 4096\nstatic NvCipher nv_ciphers[NV_CIPHER_MAX];\nstatic int nv_cipher_count = 0;\n\nstatic nv nv_crypto_cipher_new(nv key, nv iv, nv encrypt) {\n    int klen;\n    int ivlen;\n    const char *k = nv_bin(key, &klen);\n    const char *v = nv_bin(iv, &ivlen);\n    int slot;\n    if (klen != 16 || ivlen != 16) {\n        return nv_int(-1);\n    }\n    for (slot = 0; slot < nv_cipher_count; slot++) {\n        if (!nv_ciphers[slot].used) {\n            break;\n        }\n    }\n    if (slot == nv_cipher_count) {\n        if (nv_cipher_count >= NV_CIPHER_MAX) {\n            return nv_int(-1);\n        }\n        nv_cipher_count++;\n    }\n    nv_aes_expand((const unsigned char *)k, nv_ciphers[slot].rk);\n    memcpy(nv_ciphers[slot].iv, v, 16);\n    nv_ciphers[slot].encrypt = nv_truthy(encrypt);\n    nv_ciphers[slot].used = 1;\n    return nv_int(slot);\n}\n\nstatic nv nv_crypto_cipher_free(nv handle) {\n    long long h = nv_as_int(handle);\n    if (h >= 0 && h < nv_cipher_count) {\n        nv_ciphers[h].used = 0;\n    }\n    return nv_nil;\n}\n\n/* CFB-8: encrypt the register, XOR one byte, shift the ciphertext byte in. */\nstatic nv nv_crypto_cipher_update(nv handle, nv data) {\n    long long h = nv_as_int(handle);\n    int len;\n    const char *in = nv_bin(data, &len);\n    NvCipher *c;\n    char *out;\n    int i;\n    if (h < 0 || h >= nv_cipher_count || !nv_ciphers[h].used) {\n        return nv_str(\"\");\n    }\n    c = &nv_ciphers[h];\n    out = (char *)nv_alloc((size_t)len + 1);\n    for (i = 0; i < len; i++) {\n        unsigned char keystream[16];\n        unsigned char plain = (unsigned char)in[i];\n        unsigned char cipher;\n        nv_aes_encrypt_block(c->rk, c->iv, keystream);\n        cipher = (unsigned char)(plain ^ keystream[0]);\n        memmove(c->iv, c->iv + 1, 15);\n        c->iv[15] = c->encrypt \? cipher : plain;\n        out[i] = (char)cipher;\n    }\n    out[len] = 0;\n    return nv_str_own(out, len);\n}\n\n/* ---- hashes and randomness for Novus ---- */\n\nstatic nv nv_crypto_sha1(nv data) {\n    int len;\n    const char *bytes = nv_bin(data, &len);\n    unsigned char digest[20];\n    nv_sha1((const unsigned char *)bytes, (size_t)len, digest);\n    return nv_strn((const char *)digest, 20);\n}\n\nstatic nv nv_crypto_md5(nv data) {\n    int len;\n    const char *bytes = nv_bin(data, &len);\n    unsigned char digest[16];\n    nv_md5((const unsigned char *)bytes, (size_t)len, digest);\n    return nv_strn((const char *)digest, 16);\n}\n\n/* Minecraft's session digest: SHA-1 read as a signed big endian number and\n * printed in hex, negative values as the two's complement with a leading \"-\". */\nstatic nv nv_crypto_mc_digest(nv data) {\n    int len;\n    const char *bytes = nv_bin(data, &len);\n    unsigned char digest[20];\n    int negative;\n    int i;\n    char hex[48];\n    int at = 0;\n    int leading = 1;\n    nv_sha1((const unsigned char *)bytes, (size_t)len, digest);\n    negative = (digest[0] & 0x80) != 0;\n    if (negative) {\n        int carry = 1;\n        for (i = 19; i >= 0; i--) {\n            int value = (~digest[i] & 0xff) + carry;\n            digest[i] = (unsigned char)(value & 0xff);\n            carry = value >> 8;\n        }\n        hex[at++] = '-';\n    }\n    for (i = 0; i < 20; i++) {\n        static const char *digits = \"0123456789abcdef\";\n        int hi = digest[i] >> 4;\n        int lo = digest[i] & 0xf;\n        if (leading && hi == 0) {\n            /* skip */\n        } else {\n            hex[at++] = digits[hi];\n            leading = 0;\n        }\n        if (leading && lo == 0) {\n            continue;\n        }\n        hex[at++] = digits[lo];\n        leading = 0;\n    }\n    if (at == 0 || (at == 1 && hex[0] == '-')) {\n        hex[at++] = '0';\n    }\n    return nv_strn(hex, at);\n}\n\n/* Fills `out` with `count` strong random bytes, falling back to rand() only\n * where /dev/urandom is not there. */\nstatic void nv_random_bytes_into(unsigned char *out, int count) {\n    if (count <= 0) {\n        return;\n    }\n#ifndef _WIN32\n    {\n        FILE *f = fopen(\"/dev/urandom\", \"rb\");\n        if (f) {\n            size_t got = fread(out, 1, (size_t)count, f);\n            fclose(f);\n            if (got == (size_t)count) {\n                return;\n            }\n        }\n    }\n#endif\n    {\n        static int seeded = 0;\n        int i;\n        if (!seeded) {\n            srand((unsigned)time(0) ^ (unsigned)NV_GETPID());\n            seeded = 1;\n        }\n        for (i = 0; i < count; i++) {\n            out[i] = (unsigned char)(rand() & 0xff);\n        }\n    }\n}\n\nstatic nv nv_crypto_random(nv count) {\n    long long n = nv_as_int(count);\n    char *buf;\n    if (n <= 0) {\n        return nv_str(\"\");\n    }\n    buf = (char *)nv_alloc((size_t)n + 1);\n    nv_random_bytes_into((unsigned char *)buf, (int)n);\n    buf[n] = 0;\n    return nv_str_own(buf, (int)n);\n}\n\n/* Canonical UUID text (\"xxxxxxxx-xxxx-...\") of 16 raw bytes. */\nstatic nv nv_crypto_uuid_text(nv data) {\n    static const char *digits = \"0123456789abcdef\";\n    int len;\n    const char *bytes = nv_bin(data, &len);\n    char out[36];\n    int at = 0;\n    int i;\n    if (len < 16) {\n        return nv_str(\"\");\n    }\n    for (i = 0; i < 16; i++) {\n        if (i == 4 || i == 6 || i == 8 || i == 10) {\n            out[at++] = '-';\n        }\n        out[at++] = digits[((unsigned char)bytes[i]) >> 4];\n        out[at++] = digits[((unsigned char)bytes[i]) & 0xf];\n    }\n    return nv_strn(out, at);\n}\n\n/* ------------------------------------------------------------------ */\n/* RSA                                                                 */\n/* ------------------------------------------------------------------ */\n\n/* Enough RSA for a key exchange: generate a key pair, hand out the public\n * key as DER, and decrypt what was sent to it with PKCS#1 v1.5 padding.\n *\n * Big integers are fixed length arrays of 32 bit limbs, least significant\n * first. Modular arithmetic goes through Montgomery multiplication, which\n * needs an odd modulus - an RSA modulus always is - and replaces the\n * division a modexp would otherwise do per step. */\n\n#define NV_BN_LIMBS 64 /* 2048 bits, twice what a 1024 bit key needs */\n\ntypedef struct {\n    unsigned int limb[NV_BN_LIMBS];\n    int len; /* limbs in use */\n} NvBn;\n\nstatic void nv_bn_zero(NvBn *a) {\n    memset(a->limb, 0, sizeof(a->limb));\n    a->len = 0;\n}\n\nstatic void nv_bn_trim(NvBn *a) {\n    while (a->len > 0 && a->limb[a->len - 1] == 0) {\n        a->len--;\n    }\n}\n\nstatic void nv_bn_from_u32(NvBn *a, unsigned int v) {\n    nv_bn_zero(a);\n    a->limb[0] = v;\n    a->len = v \? 1 : 0;\n}\n\n/* Big endian bytes in, which is how every RSA value travels. */\nstatic void nv_bn_from_bytes(NvBn *a, const unsigned char *bytes, int len) {\n    int i;\n    nv_bn_zero(a);\n    for (i = 0; i < len; i++) {\n        int index = (len - 1 - i) / 4;\n        int shift = ((len - 1 - i) % 4) * 8;\n        if (index >= NV_BN_LIMBS) {\n            break;\n        }\n        a->limb[index] |= (unsigned int)bytes[i] << shift;\n        if (index + 1 > a->len) {\n            a->len = index + 1;\n        }\n    }\n    nv_bn_trim(a);\n}\n\n/* Big endian bytes out, left padded to `len`. */\nstatic void nv_bn_to_bytes(const NvBn *a, unsigned char *out, int len) {\n    int i;\n    for (i = 0; i < len; i++) {\n        int index = (len - 1 - i) / 4;\n        int shift = ((len - 1 - i) % 4) * 8;\n        out[i] = (unsigned char)(index < NV_BN_LIMBS \? (a->limb[index] >> shift) & 0xff : 0);\n    }\n}\n\nstatic int nv_bn_cmp(const NvBn *a, const NvBn *b) {\n    int i = a->len > b->len \? a->len : b->len;\n    while (i-- > 0) {\n        unsigned int x = i < a->len \? a->limb[i] : 0;\n        unsigned int y = i < b->len \? b->limb[i] : 0;\n        if (x != y) {\n            return x < y \? -1 : 1;\n        }\n    }\n    return 0;\n}\n\nstatic int nv_bn_is_zero(const NvBn *a) { return a->len == 0; }\n\nstatic int nv_bn_bit(const NvBn *a, int index) {\n    int limb = index / 32;\n    if (limb >= a->len) {\n        return 0;\n    }\n    return (int)((a->limb[limb] >> (index % 32)) & 1);\n}\n\nstatic int nv_bn_bits(const NvBn *a) {\n    int top;\n    unsigned int word;\n    int n = 0;\n    if (a->len == 0) {\n        return 0;\n    }\n    top = a->len - 1;\n    word = a->limb[top];\n    while (word) {\n        word >>= 1;\n        n++;\n    }\n    return top * 32 + n;\n}\n\n/* out = a + b */\nstatic void nv_bn_add(NvBn *out, const NvBn *a, const NvBn *b) {\n    unsigned long long carry = 0;\n    int n = a->len > b->len \? a->len : b->len;\n    int i;\n    for (i = 0; i < n || carry; i++) {\n        unsigned long long sum = carry;\n        if (i < a->len) {\n            sum += a->limb[i];\n        }\n        if (i < b->len) {\n            sum += b->limb[i];\n        }\n        if (i >= NV_BN_LIMBS) {\n            break;\n        }\n        out->limb[i] = (unsigned int)(sum & 0xffffffffu);\n        carry = sum >> 32;\n    }\n    {\n        int j;\n        for (j = i; j < NV_BN_LIMBS; j++) {\n            out->limb[j] = 0;\n        }\n    }\n    out->len = i;\n    nv_bn_trim(out);\n}\n\n/* out = a - b, assuming a >= b */\nstatic void nv_bn_sub(NvBn *out, const NvBn *a, const NvBn *b) {\n    long long borrow = 0;\n    int i;\n    for (i = 0; i < NV_BN_LIMBS; i++) {\n        long long diff = (long long)(i < a->len \? a->limb[i] : 0) - borrow -\n                         (long long)(i < b->len \? b->limb[i] : 0);\n        if (diff < 0) {\n            diff += 0x100000000LL;\n            borrow = 1;\n        } else {\n            borrow = 0;\n        }\n        out->limb[i] = (unsigned int)diff;\n    }\n    out->len = a->len;\n    nv_bn_trim(out);\n}\n\n/* out = a * b, schoolbook. */\nstatic void nv_bn_mul(NvBn *out, const NvBn *a, const NvBn *b) {\n    NvBn result;\n    int i;\n    nv_bn_zero(&result);\n    for (i = 0; i < a->len; i++) {\n        unsigned long long carry = 0;\n        int j;\n        for (j = 0; j < b->len || carry; j++) {\n            unsigned long long cur;\n            if (i + j >= NV_BN_LIMBS) {\n                break;\n            }\n            cur = result.limb[i + j] + carry;\n            if (j < b->len) {\n                cur += (unsigned long long)a->limb[i] * b->limb[j];\n            }\n            result.limb[i + j] = (unsigned int)(cur & 0xffffffffu);\n            carry = cur >> 32;\n        }\n    }\n    result.len = a->len + b->len;\n    if (result.len > NV_BN_LIMBS) {\n        result.len = NV_BN_LIMBS;\n    }\n    nv_bn_trim(&result);\n    *out = result;\n}\n\n/* out = a >> 1 */\nstatic void nv_bn_shr1(NvBn *out, const NvBn *a) {\n    int i;\n    for (i = 0; i < NV_BN_LIMBS - 1; i++) {\n        out->limb[i] = (a->limb[i] >> 1) | (a->limb[i + 1] << 31);\n    }\n    out->limb[NV_BN_LIMBS - 1] = a->limb[NV_BN_LIMBS - 1] >> 1;\n    out->len = a->len;\n    nv_bn_trim(out);\n}\n\n/* out = a << 1 */\nstatic void nv_bn_shl1(NvBn *out, const NvBn *a) {\n    int i;\n    unsigned int carry = 0;\n    for (i = 0; i < NV_BN_LIMBS; i++) {\n        unsigned int next = a->limb[i] >> 31;\n        out->limb[i] = (a->limb[i] << 1) | carry;\n        carry = next;\n    }\n    out->len = a->len + 1 > NV_BN_LIMBS \? NV_BN_LIMBS : a->len + 1;\n    nv_bn_trim(out);\n}\n\n/* Bit by bit long division. Used only where speed does not matter: reducing\n * a value once, and the extended gcd. */\nstatic void nv_bn_divmod(NvBn *quotient, NvBn *remainder, const NvBn *a, const NvBn *m) {\n    NvBn q;\n    NvBn r;\n    int i;\n    nv_bn_zero(&q);\n    nv_bn_zero(&r);\n    if (nv_bn_is_zero(m)) {\n        *quotient = q;\n        *remainder = r;\n        return;\n    }\n    for (i = nv_bn_bits(a) - 1; i >= 0; i--) {\n        NvBn shifted;\n        nv_bn_shl1(&shifted, &r);\n        r = shifted;\n        if (nv_bn_bit(a, i)) {\n            r.limb[0] |= 1;\n            if (r.len == 0) {\n                r.len = 1;\n            }\n        }\n        if (nv_bn_cmp(&r, m) >= 0) {\n            NvBn reduced;\n            nv_bn_sub(&reduced, &r, m);\n            r = reduced;\n            q.limb[i / 32] |= 1u << (i % 32);\n            if (i / 32 + 1 > q.len) {\n                q.len = i / 32 + 1;\n            }\n        }\n    }\n    nv_bn_trim(&q);\n    nv_bn_trim(&r);\n    if (quotient) {\n        *quotient = q;\n    }\n    if (remainder) {\n        *remainder = r;\n    }\n}\n\nstatic void nv_bn_mod(NvBn *out, const NvBn *a, const NvBn *m) {\n    nv_bn_divmod(0, out, a, m);\n}\n\n/* ---- Montgomery arithmetic ---- */\n\ntypedef struct {\n    NvBn n;         /* the modulus, odd */\n    NvBn rr;        /* R^2 mod n, for entering the domain */\n    unsigned int n0inv; /* -n^-1 mod 2^32 */\n    int len;        /* limbs of n */\n} NvMont;\n\n/* -n^-1 mod 2^32 by Newton iteration; exact after five steps for 32 bits. */\nstatic unsigned int nv_mont_n0inv(unsigned int n0) {\n    unsigned int x = 1;\n    int i;\n    for (i = 0; i < 5; i++) {\n        x = x * (2u - n0 * x);\n    }\n    return (unsigned int)(0u - x);\n}\n\nstatic int nv_mont_init(NvMont *mont, const NvBn *n) {\n    NvBn r;\n    int i;\n    if (n->len == 0 || (n->limb[0] & 1) == 0) {\n        return -1; /* Montgomery needs an odd modulus */\n    }\n    mont->n = *n;\n    mont->len = n->len;\n    mont->n0inv = nv_mont_n0inv(n->limb[0]);\n    /* R^2 mod n: start at 1 and double 2 * len * 32 times */\n    nv_bn_from_u32(&r, 1);\n    for (i = 0; i < 2 * mont->len * 32; i++) {\n        NvBn doubled;\n        nv_bn_shl1(&doubled, &r);\n        if (nv_bn_cmp(&doubled, n) >= 0) {\n            NvBn reduced;\n            nv_bn_sub(&reduced, &doubled, n);\n            r = reduced;\n        } else {\n            r = doubled;\n        }\n    }\n    mont->rr = r;\n    return 0;\n}\n\n/* out = a * b * R^-1 mod n (CIOS). */\nstatic void nv_mont_mul(NvBn *out, const NvBn *a, const NvBn *b, const NvMont *mont) {\n    unsigned int t[NV_BN_LIMBS + 2];\n    int len = mont->len;\n    int i;\n    memset(t, 0, sizeof(unsigned int) * (size_t)(len + 2));\n    for (i = 0; i < len; i++) {\n        unsigned long long carry = 0;\n        unsigned int m;\n        int j;\n        unsigned int ai = i < a->len \? a->limb[i] : 0;\n        for (j = 0; j < len; j++) {\n            unsigned long long cur = (unsigned long long)t[j] + carry +\n                                     (unsigned long long)ai * (j < b->len \? b->limb[j] : 0);\n            t[j] = (unsigned int)(cur & 0xffffffffu);\n            carry = cur >> 32;\n        }\n        {\n            unsigned long long cur = (unsigned long long)t[len] + carry;\n            t[len] = (unsigned int)(cur & 0xffffffffu);\n            t[len + 1] = (unsigned int)(cur >> 32);\n        }\n        m = (unsigned int)((unsigned long long)t[0] * mont->n0inv);\n        carry = 0;\n        for (j = 0; j < len; j++) {\n            unsigned long long cur =\n                (unsigned long long)t[j] + carry + (unsigned long long)m * mont->n.limb[j];\n            t[j] = (unsigned int)(cur & 0xffffffffu);\n            carry = cur >> 32;\n        }\n        {\n            unsigned long long cur = (unsigned long long)t[len] + carry;\n            t[len] = (unsigned int)(cur & 0xffffffffu);\n            t[len + 1] += (unsigned int)(cur >> 32);\n        }\n        /* shift down by one limb */\n        for (j = 0; j <= len; j++) {\n            t[j] = t[j + 1];\n        }\n        t[len + 1] = 0;\n    }\n    nv_bn_zero(out);\n    for (i = 0; i < len + 1 && i < NV_BN_LIMBS; i++) {\n        out->limb[i] = t[i];\n    }\n    out->len = len + 1 > NV_BN_LIMBS \? NV_BN_LIMBS : len + 1;\n    nv_bn_trim(out);\n    if (nv_bn_cmp(out, &mont->n) >= 0) {\n        NvBn reduced;\n        nv_bn_sub(&reduced, out, &mont->n);\n        *out = reduced;\n    }\n}\n\n/* out = base^exponent mod n, square and multiply in the Montgomery domain. */\nstatic void nv_bn_modexp(NvBn *out, const NvBn *base, const NvBn *exponent, const NvBn *n) {\n    NvMont mont;\n    NvBn reduced;\n    NvBn one;\n    NvBn acc;\n    NvBn factor;\n    int i;\n    if (nv_mont_init(&mont, n) != 0) {\n        nv_bn_from_u32(out, 0);\n        return;\n    }\n    nv_bn_mod(&reduced, base, n);\n    nv_bn_from_u32(&one, 1);\n    nv_mont_mul(&acc, &one, &mont.rr, &mont);     /* 1 in the domain */\n    nv_mont_mul(&factor, &reduced, &mont.rr, &mont); /* base in the domain */\n    for (i = 0; i < nv_bn_bits(exponent); i++) {\n        if (nv_bn_bit(exponent, i)) {\n            NvBn product;\n            nv_mont_mul(&product, &acc, &factor, &mont);\n            acc = product;\n        }\n        {\n            NvBn squared;\n            nv_mont_mul(&squared, &factor, &factor, &mont);\n            factor = squared;\n        }\n    }\n    nv_mont_mul(out, &acc, &one, &mont); /* back out of the domain */\n}\n\n/* ---- primes ---- */\n\nstatic const unsigned int nv_small_primes[] = {\n    3,   5,   7,   11,  13,  17,  19,  23,  29,  31,  37,  41,  43,  47,  53,  59,  61,  67,\n    71,  73,  79,  83,  89,  97,  101, 103, 107, 109, 113, 127, 131, 137, 139, 149, 151, 157,\n    163, 167, 173, 179, 181, 191, 193, 197, 199, 211, 223, 227, 229, 233, 239, 241, 251};\n\n/* a mod m for a small m, by folding the limbs. */\nstatic unsigned int nv_bn_mod_u32(const NvBn *a, unsigned int m) {\n    unsigned long long rest = 0;\n    int i;\n    for (i = a->len - 1; i >= 0; i--) {\n        rest = ((rest << 32) | a->limb[i]) % m;\n    }\n    return (unsigned int)rest;\n}\n\n/* Miller-Rabin with `rounds` random bases. */\nstatic int nv_bn_is_probable_prime(const NvBn *n, int rounds) {\n    NvBn nMinusOne;\n    NvBn d;\n    NvBn one;\n    NvBn two;\n    int s = 0;\n    int i;\n    size_t p;\n    if (n->len == 0 || (n->limb[0] & 1) == 0) {\n        return 0;\n    }\n    for (p = 0; p < sizeof(nv_small_primes) / sizeof(nv_small_primes[0]); p++) {\n        if (nv_bn_mod_u32(n, nv_small_primes[p]) == 0) {\n            return 0;\n        }\n    }\n    nv_bn_from_u32(&one, 1);\n    nv_bn_from_u32(&two, 2);\n    nv_bn_sub(&nMinusOne, n, &one);\n    d = nMinusOne;\n    while (nv_bn_bit(&d, 0) == 0 && !nv_bn_is_zero(&d)) {\n        NvBn half;\n        nv_bn_shr1(&half, &d);\n        d = half;\n        s++;\n    }\n    for (i = 0; i < rounds; i++) {\n        NvBn a;\n        NvBn x;\n        int j;\n        int witness;\n        nv_bn_from_u32(&a, nv_small_primes[i % (int)(sizeof(nv_small_primes) / sizeof(nv_small_primes[0]))]);\n        nv_bn_modexp(&x, &a, &d, n);\n        if (nv_bn_cmp(&x, &one) == 0 || nv_bn_cmp(&x, &nMinusOne) == 0) {\n            continue;\n        }\n        witness = 1;\n        for (j = 0; j < s - 1; j++) {\n            NvBn squared;\n            nv_bn_modexp(&squared, &x, &two, n);\n            x = squared;\n            if (nv_bn_cmp(&x, &nMinusOne) == 0) {\n                witness = 0;\n                break;\n            }\n        }\n        if (witness) {\n            return 0;\n        }\n    }\n    return 1;\n}\n\n/* A random prime of `bits` bits, with the top two bits set so that the\n * product of two of them has exactly twice the length. */\nstatic void nv_bn_random_prime(NvBn *out, int bits) {\n    unsigned char buffer[256];\n    int bytes = bits / 8;\n    for (;;) {\n        nv_random_bytes_into(buffer, bytes);\n        buffer[0] |= 0xc0;        /* the top two bits */\n        buffer[bytes - 1] |= 1;   /* odd */\n        nv_bn_from_bytes(out, buffer, bytes);\n        if (nv_bn_is_probable_prime(out, 8)) {\n            return;\n        }\n    }\n}\n\n/* d with d * e = 1 mod m, by the extended Euclidean algorithm on\n * non-negative values (the classic formulation with a sign flag). */\nstatic int nv_bn_modinv(NvBn *out, const NvBn *e, const NvBn *m) {\n    NvBn r0 = *m;\n    NvBn r1 = *e;\n    NvBn t0;\n    NvBn t1;\n    int t0neg = 0;\n    int t1neg = 0;\n    nv_bn_from_u32(&t0, 0);\n    nv_bn_from_u32(&t1, 1);\n    while (!nv_bn_is_zero(&r1)) {\n        NvBn q;\n        NvBn rest;\n        NvBn product;\n        NvBn next;\n        int nextNeg;\n        nv_bn_divmod(&q, &rest, &r0, &r1);\n        r0 = r1;\n        r1 = rest;\n        nv_bn_mul(&product, &q, &t1);\n        /* next = t0 - q * t1, tracking the sign by hand */\n        if (t0neg == t1neg) {\n            if (nv_bn_cmp(&t0, &product) >= 0) {\n                nv_bn_sub(&next, &t0, &product);\n                nextNeg = t0neg;\n            } else {\n                nv_bn_sub(&next, &product, &t0);\n                nextNeg = !t0neg;\n            }\n        } else {\n            nv_bn_add(&next, &t0, &product);\n            nextNeg = t0neg;\n        }\n        t0 = t1;\n        t0neg = t1neg;\n        t1 = next;\n        t1neg = nextNeg;\n    }\n    {\n        NvBn one;\n        nv_bn_from_u32(&one, 1);\n        if (nv_bn_cmp(&r0, &one) != 0) {\n            return -1; /* not invertible */\n        }\n    }\n    if (t0neg) {\n        NvBn positive;\n        NvBn reduced;\n        nv_bn_mod(&reduced, &t0, m);\n        nv_bn_sub(&positive, m, &reduced);\n        nv_bn_mod(out, &positive, m);\n        return 0;\n    }\n    nv_bn_mod(out, &t0, m);\n    return 0;\n}\n\n/* ---- key pairs ---- */\n\ntypedef struct {\n    NvBn n;\n    NvBn e;\n    NvBn d;\n    int bits;\n    int used;\n} NvRsaKey;\n\n#define NV_RSA_MAX 8\nstatic NvRsaKey nv_rsa_keys[NV_RSA_MAX];\nstatic int nv_rsa_count = 0;\n\nstatic nv nv_crypto_rsa_generate(nv bitsValue) {\n    int bits = (int)nv_as_int(bitsValue);\n    int slot;\n    NvBn p;\n    NvBn q;\n    NvBn one;\n    NvBn pMinus;\n    NvBn qMinus;\n    NvBn phi;\n    NvRsaKey *key;\n    if (bits != 1024 && bits != 512 && bits != 2048) {\n        return nv_int(-1);\n    }\n    for (slot = 0; slot < nv_rsa_count; slot++) {\n        if (!nv_rsa_keys[slot].used) {\n            break;\n        }\n    }\n    if (slot == nv_rsa_count) {\n        if (nv_rsa_count >= NV_RSA_MAX) {\n            return nv_int(-1);\n        }\n        nv_rsa_count++;\n    }\n    key = &nv_rsa_keys[slot];\n    nv_bn_from_u32(&one, 1);\n    nv_bn_from_u32(&key->e, 65537);\n    for (;;) {\n        nv_bn_random_prime(&p, bits / 2);\n        nv_bn_random_prime(&q, bits / 2);\n        if (nv_bn_cmp(&p, &q) == 0) {\n            continue;\n        }\n        nv_bn_mul(&key->n, &p, &q);\n        nv_bn_sub(&pMinus, &p, &one);\n        nv_bn_sub(&qMinus, &q, &one);\n        nv_bn_mul(&phi, &pMinus, &qMinus);\n        if (nv_bn_modinv(&key->d, &key->e, &phi) == 0) {\n            break;\n        }\n    }\n    key->bits = bits;\n    key->used = 1;\n    return nv_int(slot);\n}\n\nstatic nv nv_crypto_rsa_free(nv handle) {\n    long long h = nv_as_int(handle);\n    if (h >= 0 && h < nv_rsa_count) {\n        nv_rsa_keys[h].used = 0;\n    }\n    return nv_nil;\n}\n\n/* ---- DER ---- */\n\n/* A DER length: short form below 128, else the byte count then the bytes. */\nstatic int nv_der_len(unsigned char *out, int length) {\n    if (length < 128) {\n        out[0] = (unsigned char)length;\n        return 1;\n    }\n    if (length < 256) {\n        out[0] = 0x81;\n        out[1] = (unsigned char)length;\n        return 2;\n    }\n    out[0] = 0x82;\n    out[1] = (unsigned char)((length >> 8) & 0xff);\n    out[2] = (unsigned char)(length & 0xff);\n    return 3;\n}\n\n/* An INTEGER, with the leading zero DER wants when the top bit is set. */\nstatic int nv_der_integer(unsigned char *out, const NvBn *value) {\n    unsigned char raw[NV_BN_LIMBS * 4];\n    int bytes = (nv_bn_bits(value) + 7) / 8;\n    int at = 0;\n    int pad;\n    if (bytes == 0) {\n        bytes = 1;\n    }\n    nv_bn_to_bytes(value, raw, bytes);\n    pad = (raw[0] & 0x80) \? 1 : 0;\n    out[at++] = 0x02;\n    at += nv_der_len(out + at, bytes + pad);\n    if (pad) {\n        out[at++] = 0x00;\n    }\n    memcpy(out + at, raw, (size_t)bytes);\n    return at + bytes;\n}\n\n/* The public key as a SubjectPublicKeyInfo, which is what the handshake\n * expects: an AlgorithmIdentifier of rsaEncryption plus a BIT STRING holding\n * the RSAPublicKey SEQUENCE of modulus and exponent. */\nstatic nv nv_crypto_rsa_public_der(nv handle) {\n    long long h = nv_as_int(handle);\n    unsigned char inner[NV_BN_LIMBS * 4 + 64];\n    unsigned char rsaKey[NV_BN_LIMBS * 4 + 96];\n    unsigned char out[NV_BN_LIMBS * 4 + 160];\n    static const unsigned char algorithm[] = {0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48,\n                                              0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01, 0x05, 0x00};\n    NvRsaKey *key;\n    int innerLen = 0;\n    int rsaLen = 0;\n    int at = 0;\n    int bodyLen;\n    unsigned char lengthBytes[3];\n    int lengthSize;\n    if (h < 0 || h >= nv_rsa_count || !nv_rsa_keys[h].used) {\n        return nv_str(\"\");\n    }\n    key = &nv_rsa_keys[h];\n    innerLen += nv_der_integer(inner + innerLen, &key->n);\n    innerLen += nv_der_integer(inner + innerLen, &key->e);\n\n    /* SEQUENCE { modulus, exponent } */\n    rsaKey[rsaLen++] = 0x30;\n    rsaLen += nv_der_len(rsaKey + rsaLen, innerLen);\n    memcpy(rsaKey + rsaLen, inner, (size_t)innerLen);\n    rsaLen += innerLen;\n\n    /* the outer SEQUENCE { algorithm, BIT STRING { rsaKey } } */\n    /* algorithm, then the BIT STRING: its tag, its length, the unused-bits\n     * byte and the key itself. */\n    bodyLen = (int)sizeof(algorithm) + 1 + nv_der_len(lengthBytes, rsaLen + 1) + 1 + rsaLen;\n    out[at++] = 0x30;\n    at += nv_der_len(out + at, bodyLen);\n    memcpy(out + at, algorithm, sizeof(algorithm));\n    at += (int)sizeof(algorithm);\n    out[at++] = 0x03; /* BIT STRING */\n    lengthSize = nv_der_len(lengthBytes, rsaLen + 1);\n    memcpy(out + at, lengthBytes, (size_t)lengthSize);\n    at += lengthSize;\n    out[at++] = 0x00; /* no unused bits */\n    memcpy(out + at, rsaKey, (size_t)rsaLen);\n    at += rsaLen;\n    return nv_strn((const char *)out, at);\n}\n\n/* Decrypts a PKCS#1 v1.5 block and returns the payload, \"\" when the padding\n * is not what it must be. */\nstatic nv nv_crypto_rsa_decrypt(nv handle, nv data) {\n    long long h = nv_as_int(handle);\n    int len;\n    const char *bytes = nv_bin(data, &len);\n    NvBn cipher;\n    NvBn plain;\n    unsigned char block[NV_BN_LIMBS * 4];\n    int size;\n    int at;\n    NvRsaKey *key;\n    if (h < 0 || h >= nv_rsa_count || !nv_rsa_keys[h].used) {\n        return nv_str(\"\");\n    }\n    key = &nv_rsa_keys[h];\n    size = key->bits / 8;\n    if (len > size) {\n        return nv_str(\"\");\n    }\n    nv_bn_from_bytes(&cipher, (const unsigned char *)bytes, len);\n    if (nv_bn_cmp(&cipher, &key->n) >= 0) {\n        return nv_str(\"\");\n    }\n    nv_bn_modexp(&plain, &cipher, &key->d, &key->n);\n    nv_bn_to_bytes(&plain, block, size);\n    /* 00 02 <at least eight non-zero bytes> 00 <payload> */\n    if (block[0] != 0x00 || block[1] != 0x02) {\n        return nv_str(\"\");\n    }\n    at = 2;\n    while (at < size && block[at] != 0x00) {\n        at++;\n    }\n    if (at >= size || at < 10) {\n        return nv_str(\"\");\n    }\n    at++;\n    return nv_strn((const char *)block + at, size - at);\n}\n\n/* Encrypting is only needed to test the pair; the client does the real one. */\nstatic nv nv_crypto_rsa_encrypt(nv handle, nv data) {\n    long long h = nv_as_int(handle);\n    int len;\n    const char *bytes = nv_bin(data, &len);\n    NvBn plain;\n    NvBn cipher;\n    unsigned char block[NV_BN_LIMBS * 4];\n    unsigned char out[NV_BN_LIMBS * 4];\n    int size;\n    int at;\n    NvRsaKey *key;\n    if (h < 0 || h >= nv_rsa_count || !nv_rsa_keys[h].used) {\n        return nv_str(\"\");\n    }\n    key = &nv_rsa_keys[h];\n    size = key->bits / 8;\n    if (len > size - 11) {\n        return nv_str(\"\");\n    }\n    block[0] = 0x00;\n    block[1] = 0x02;\n    for (at = 2; at < size - len - 1; at++) {\n        unsigned char filler;\n        do {\n            nv_random_bytes_into(&filler, 1);\n        } while (filler == 0);\n        block[at] = filler;\n    }\n    block[at++] = 0x00;\n    memcpy(block + at, bytes, (size_t)len);\n    nv_bn_from_bytes(&plain, block, size);\n    nv_bn_modexp(&cipher, &plain, &key->e, &key->n);\n    nv_bn_to_bytes(&cipher, out, size);\n    return nv_strn((const char *)out, size);\n}\n\n/* ------------------------------------------------------------------ */\n/* Threads, virtual threads, tasks                                     */\n/* ------------------------------------------------------------------ */\n\n/* Two kinds of thread, one set of primitives.\n *\n * A `thread` is an operating system thread. It costs what the system charges\n * for one - a stack measured in megabytes - and the kernel schedules it, so\n * a program has tens or hundreds of them, not millions.\n *\n * A `virtual` thread is a stack of its own (a hundred kilobytes reserved, of\n * which only the pages it touches are ever backed by memory) that a small\n * pool of carrier threads runs. Blocking one - awaiting a task, a channel, a\n * lock, thread.sleep - parks its stack and hands the carrier to the next\n * runnable virtual thread instead of handing it back to the kernel, so a\n * program can have as many of them as it has work. The stacks are switched\n * with ucontext on unix and with fibers on Windows.\n *\n * Everything that blocks goes through one parking lot: a queue of waiters on\n * an object, each of them either a virtual thread to make runnable again or\n * an operating system thread to signal. That is why a lock, a channel or an\n * await reads the same whichever kind of thread runs into it, and why a\n * virtual thread that blocks costs no operating system thread.\n *\n * A virtual thread never moves to another carrier. It could - the run queue\n * would only have to be shared - but a stack that is switched under the feet\n * of the compiler must not be allowed to wake up on a different thread: the\n * address of a thread local is a value like any other, and a compiler is\n * free to keep one in a register across the switch. Staying put keeps every\n * thread local (the thread's arena above all) the one the code that reads it\n * was compiled to reach. */\n\n#ifdef _WIN32\n\ntypedef CRITICAL_SECTION NvMutexRaw;\ntypedef CONDITION_VARIABLE NvCondRaw;\n#define NV_MUTEX_INIT(m) InitializeCriticalSection(m)\n#define NV_MUTEX_LOCK(m) EnterCriticalSection(m)\n#define NV_MUTEX_UNLOCK(m) LeaveCriticalSection(m)\n#define NV_COND_INIT(c) InitializeConditionVariable(c)\n#define NV_COND_WAIT(c, m) SleepConditionVariableCS(c, m, INFINITE)\n#define NV_COND_WAIT_MS(c, m, ms) SleepConditionVariableCS(c, m, (DWORD)(ms))\n#define NV_COND_SIGNAL(c) WakeConditionVariable(c)\n#define NV_COND_BROADCAST(c) WakeAllConditionVariable(c)\n#define NV_HAVE_FIBERS 1\n\n#else\n\n#include <pthread.h>\n#include <sched.h>\n#if defined(__unix__) || defined(__APPLE__)\n#include <sys/mman.h>\n#include <ucontext.h>\n#define NV_HAVE_FIBERS 1\n#else\n#define NV_HAVE_FIBERS 0\n#endif\n\ntypedef pthread_mutex_t NvMutexRaw;\ntypedef pthread_cond_t NvCondRaw;\n#define NV_MUTEX_INIT(m) pthread_mutex_init(m, 0)\n#define NV_MUTEX_LOCK(m) pthread_mutex_lock(m)\n#define NV_MUTEX_UNLOCK(m) pthread_mutex_unlock(m)\n#define NV_COND_INIT(c) pthread_cond_init(c, 0)\n#define NV_COND_WAIT(c, m) pthread_cond_wait(c, m)\n#define NV_COND_SIGNAL(c) pthread_cond_signal(c)\n#define NV_COND_BROADCAST(c) pthread_cond_broadcast(c)\n\nstatic void nv_cond_wait_ms(NvCondRaw *c, NvMutexRaw *m, long long ms) {\n    struct timespec ts;\n#if defined(CLOCK_REALTIME)\n    clock_gettime(CLOCK_REALTIME, &ts);\n#else\n    ts.tv_sec = time(0);\n    ts.tv_nsec = 0;\n#endif\n    ts.tv_sec += (time_t)(ms / 1000);\n    ts.tv_nsec += (long)((ms % 1000) * 1000000L);\n    if (ts.tv_nsec >= 1000000000L) {\n        ts.tv_sec += 1;\n        ts.tv_nsec -= 1000000000L;\n    }\n    pthread_cond_timedwait(c, m, &ts);\n}\n#define NV_COND_WAIT_MS(c, m, ms) nv_cond_wait_ms(c, m, ms)\n\n#endif\n\nstatic long long nv_now_ms(void) {\n#ifdef _WIN32\n    return (long long)GetTickCount64();\n#elif defined(CLOCK_MONOTONIC)\n    struct timespec ts;\n    clock_gettime(CLOCK_MONOTONIC, &ts);\n    return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;\n#else\n    return (long long)time(0) * 1000;\n#endif\n}\n\nstatic int nv_cpu_count(void) {\n#ifdef _WIN32\n    SYSTEM_INFO si;\n    GetSystemInfo(&si);\n    return si.dwNumberOfProcessors < 1 \? 1 : (int)si.dwNumberOfProcessors;\n#elif defined(_SC_NPROCESSORS_ONLN)\n    long n = sysconf(_SC_NPROCESSORS_ONLN);\n    return n < 1 \? 1 : (int)n;\n#else\n    return 1;\n#endif\n}\n\nenum { NV_VT_NEW = 0, NV_VT_READY, NV_VT_RUNNING, NV_VT_PARKED, NV_VT_DONE };\n\ntypedef nv (*NvSpawnFn)(nv *args, int n);\n\ntypedef struct NvVThread NvVThread;\ntypedef struct NvCarrier NvCarrier;\n\n#if NV_HAVE_FIBERS\n#ifdef _WIN32\ntypedef LPVOID NvCtx;\n#else\ntypedef ucontext_t NvCtx;\n#endif\n#else\ntypedef int NvCtx;\n#endif\n\nstruct NvVThread {\n    NvCtx ctx;\n    void *stackBase;      /* what has to be handed back, guard page included */\n    size_t stackSize;     /* usable bytes */\n    NvCarrier *carrier;   /* the one carrier that ever runs this stack */\n    NvSpawnFn fn;\n    nv *args;\n    int nargs;\n    int task;             /* the task this virtual thread completes */\n    int state;\n    NvMutexRaw *parkLock; /* the carrier releases it once the stack is off */\n    long long wakeAt;     /* deadline while on the timer queue */\n    NvVThread *next;      /* run queue, timer queue or free list */\n};\n\nstruct NvCarrier {\n    NvCtx sched;\n    NvMutexRaw lock;\n    NvCondRaw cond;\n    NvVThread *runHead, *runTail;\n    NvVThread *timers; /* sorted by wakeAt */\n    NvVThread *pool;   /* finished stacks, ready to run something else */\n};\n\nstatic NV_TLS NvVThread *nv_cur_vt = 0;\nstatic NV_TLS NvCarrier *nv_cur_carrier = 0;\nstatic NV_TLS int nv_tls_anchor = 0; /* its address identifies an os thread */\n\n/* Who is running: the virtual thread when there is one, the operating system\n * thread otherwise. A lock compares owners with it. */\nstatic void *nv_runner(void) {\n    return nv_cur_vt \? (void *)nv_cur_vt : (void *)&nv_tls_anchor;\n}\n\n/* --- parking lot --------------------------------------------------- */\n\ntypedef struct NvWaiter {\n    struct NvWaiter *next;\n    NvVThread *vt;   /* the waiter is a virtual thread ... */\n    NvCondRaw *cond; /* ... or an operating system thread with this condition */\n    int ready;\n} NvWaiter;\n\ntypedef struct NvPark {\n    NvWaiter *head;\n    NvWaiter *tail;\n} NvPark;\n\nstatic NV_TLS NvCondRaw nv_self_cond_storage;\nstatic NV_TLS int nv_self_cond_made = 0;\n\nstatic NvCondRaw *nv_self_cond(void) {\n    if (!nv_self_cond_made) {\n        NV_COND_INIT(&nv_self_cond_storage);\n        nv_self_cond_made = 1;\n    }\n    return &nv_self_cond_storage;\n}\n\nstatic void nv_carrier_wake(NvVThread *vt);\nstatic void nv_vt_park(NvMutexRaw *m);\n\n/* Blocks the current runner on `p`. `m` must be held on the way in and is\n * held again on the way out, so the condition `p` stands for gets re-checked\n * in a loop, exactly the way a condition variable wants it. */\nstatic void nv_park_self(NvPark *p, NvMutexRaw *m) {\n    NvWaiter w;\n    w.next = 0;\n    w.ready = 0;\n    w.vt = nv_cur_vt;\n    w.cond = w.vt \? 0 : nv_self_cond();\n    if (p->tail) {\n        p->tail->next = &w;\n    } else {\n        p->head = &w;\n    }\n    p->tail = &w;\n    if (w.vt) {\n        nv_vt_park(m);\n    } else {\n        while (!w.ready) {\n            NV_COND_WAIT(w.cond, m);\n        }\n    }\n}\n\n/* Both are called with the mutex that guards `p` held. */\nstatic void nv_unpark_one(NvPark *p) {\n    NvWaiter *w = p->head;\n    if (!w) {\n        return;\n    }\n    p->head = w->next;\n    if (!p->head) {\n        p->tail = 0;\n    }\n    w->ready = 1;\n    if (w->vt) {\n        nv_carrier_wake(w->vt);\n    } else {\n        NV_COND_SIGNAL(w->cond);\n    }\n}\n\nstatic void nv_unpark_all(NvPark *p) {\n    while (p->head) {\n        nv_unpark_one(p);\n    }\n}\n\n/* --- the carrier pool ---------------------------------------------- */\n\n#define NV_MAX_CARRIERS 256\n\nstatic NvMutexRaw nv_sched_lock; /* the carrier table and the live count */\nstatic NvMutexRaw nv_rt_lock;    /* handles and task state */\nstatic NvCarrier *nv_carrier_table[NV_MAX_CARRIERS];\nstatic int nv_carriers_running = 0;\nstatic int nv_carriers_wanted = 0;\nstatic int nv_spawn_turn = 0;\nstatic int nv_vt_live = 0;\nstatic size_t nv_vstack_size = 0;\nstatic int nv_conc_ready = 0;\n\n/* Set up before any second thread exists: nv_init_args() calls this, and so\n * does every entry point that can be the first one a program reaches. */\nstatic void nv_conc_init(void) {\n    const char *env;\n    if (nv_conc_ready) {\n        return;\n    }\n    nv_conc_ready = 1;\n    NV_MUTEX_INIT(&nv_sched_lock);\n    NV_MUTEX_INIT(&nv_rt_lock);\n    nv_carriers_wanted = nv_cpu_count();\n    if (nv_carriers_wanted > NV_MAX_CARRIERS) {\n        nv_carriers_wanted = NV_MAX_CARRIERS;\n    }\n    env = getenv(\"NOVUS_THREADS\");\n    if (env && atoi(env) > 0) {\n        nv_carriers_wanted = atoi(env) > NV_MAX_CARRIERS \? NV_MAX_CARRIERS : atoi(env);\n    }\n    nv_vstack_size = 128 * 1024;\n    env = getenv(\"NOVUS_VSTACK\");\n    if (env && atoi(env) > 0) {\n        nv_vstack_size = (size_t)atoi(env) * 1024;\n    }\n}\n\n/* Called with c->lock held. */\nstatic void nv_runq_push(NvCarrier *c, NvVThread *vt) {\n    vt->state = NV_VT_READY;\n    vt->next = 0;\n    if (c->runTail) {\n        c->runTail->next = vt;\n    } else {\n        c->runHead = vt;\n    }\n    c->runTail = vt;\n    NV_COND_SIGNAL(&c->cond);\n}\n\nstatic void nv_carrier_wake(NvVThread *vt) {\n    NvCarrier *c = vt->carrier;\n    NV_MUTEX_LOCK(&c->lock);\n    nv_runq_push(c, vt);\n    NV_MUTEX_UNLOCK(&c->lock);\n}\n\n/* Called with c->lock held: everything whose deadline has passed. */\nstatic void nv_timers_fire(NvCarrier *c, long long now) {\n    while (c->timers && c->timers->wakeAt <= now) {\n        NvVThread *vt = c->timers;\n        c->timers = vt->next;\n        nv_runq_push(c, vt);\n    }\n}\n\nstatic NvVThread *nv_runq_take(NvCarrier *c) {\n    NvVThread *vt;\n    NV_MUTEX_LOCK(&c->lock);\n    for (;;) {\n        long long now = nv_now_ms();\n        nv_timers_fire(c, now);\n        if (c->runHead) {\n            vt = c->runHead;\n            c->runHead = vt->next;\n            if (!c->runHead) {\n                c->runTail = 0;\n            }\n            vt->next = 0;\n            NV_MUTEX_UNLOCK(&c->lock);\n            return vt;\n        }\n        if (c->timers) {\n            long long wait = c->timers->wakeAt - now;\n            NV_COND_WAIT_MS(&c->cond, &c->lock, wait < 1 \? 1 : wait);\n        } else {\n            NV_COND_WAIT(&c->cond, &c->lock);\n        }\n    }\n}\n\n/* --- stacks and contexts ------------------------------------------- */\n\n#if NV_HAVE_FIBERS && !defined(_WIN32)\nstatic size_t nv_page_size(void) {\n    long n = sysconf(_SC_PAGESIZE);\n    return n < 1 \? 4096 : (size_t)n;\n}\n#endif\n\nstatic void nv_vt_body(NvVThread *vt);\n\n#if NV_HAVE_FIBERS\n#ifdef _WIN32\nstatic VOID CALLBACK nv_fiber_entry(PVOID arg) {\n    (void)arg;\n    for (;;) {\n        nv_vt_body(nv_cur_vt);\n    }\n}\nstatic void nv_ctx_switch(NvCtx *from, NvCtx *to) {\n    (void)from;\n    SwitchToFiber(*to);\n}\nstatic int nv_ctx_start(NvVThread *vt) {\n    vt->ctx = CreateFiber(vt->stackSize, nv_fiber_entry, vt);\n    return vt->ctx != 0;\n}\nstatic void nv_carrier_enter(NvCarrier *c) { c->sched = ConvertThreadToFiber(0); }\n#else\n#ifdef __APPLE__\n/* ucontext is marked deprecated there and has no replacement; every use of\n * it is in the three functions below */\n#pragma clang diagnostic push\n#pragma clang diagnostic ignored \"-Wdeprecated-declarations\"\n#endif\nstatic void nv_ucontext_entry(void) {\n    for (;;) {\n        nv_vt_body(nv_cur_vt);\n    }\n}\nstatic void nv_ctx_switch(NvCtx *from, NvCtx *to) { swapcontext(from, to); }\nstatic int nv_ctx_start(NvVThread *vt) {\n    size_t page = nv_page_size();\n    char *base = (char *)mmap(0, vt->stackSize + page, PROT_READ | PROT_WRITE,\n                              MAP_PRIVATE | MAP_ANONYMOUS\n#ifdef MAP_NORESERVE\n                                  | MAP_NORESERVE\n#endif\n                              ,\n                              -1, 0);\n    if (base == MAP_FAILED) {\n        return 0;\n    }\n    /* a page the stack must not grow into, so an overflow faults instead of\n     * quietly becoming somebody else's memory */\n    mprotect(base, page, PROT_NONE);\n    vt->stackBase = base;\n    if (getcontext(&vt->ctx) != 0) {\n        munmap(base, vt->stackSize + page);\n        vt->stackBase = 0;\n        return 0;\n    }\n    vt->ctx.uc_stack.ss_sp = base + page;\n    vt->ctx.uc_stack.ss_size = vt->stackSize;\n    vt->ctx.uc_link = 0;\n    makecontext(&vt->ctx, nv_ucontext_entry, 0);\n    return 1;\n}\n#ifdef __APPLE__\n#pragma clang diagnostic pop\n#endif\nstatic void nv_carrier_enter(NvCarrier *c) { (void)c; }\n#endif\n#else /* no contexts here: `virtual` falls back to an operating system thread */\nstatic void nv_ctx_switch(NvCtx *from, NvCtx *to) {\n    (void)from;\n    (void)to;\n}\nstatic int nv_ctx_start(NvVThread *vt) {\n    (void)vt;\n    return 0;\n}\nstatic void nv_carrier_enter(NvCarrier *c) { (void)c; }\n#endif\n\n/* Parks the running virtual thread. `m` is held on the way in; the carrier\n * releases it once this stack is off the processor, because releasing it\n * here would let the unparker resume a stack that is still running. It is\n * held again when the virtual thread comes back. */\nstatic void nv_vt_park(NvMutexRaw *m) {\n    NvVThread *vt = nv_cur_vt;\n    vt->state = NV_VT_PARKED;\n    vt->parkLock = m;\n    nv_ctx_switch(&vt->ctx, &vt->carrier->sched);\n    NV_MUTEX_LOCK(m);\n}\n\nstatic void nv_task_complete(int handle, nv result);\n\nstatic void nv_vt_body(NvVThread *vt) {\n    nv result = vt->fn \? vt->fn(vt->args, vt->nargs) : nv_nil;\n    vt->fn = 0;\n    vt->args = 0;\n    vt->state = NV_VT_DONE;\n    nv_task_complete(vt->task, result);\n    /* Back to the carrier. If this virtual thread comes out of the pool for\n     * another task the carrier resumes it right here, and the loop in the\n     * entry function runs the next body on the same stack. */\n    nv_ctx_switch(&vt->ctx, &vt->carrier->sched);\n}\n\nstatic void nv_carrier_loop(NvCarrier *c) {\n    nv_carrier_enter(c);\n    nv_cur_carrier = c;\n    for (;;) {\n        NvVThread *vt = nv_runq_take(c);\n        int state;\n        NvMutexRaw *held;\n        nv_cur_vt = vt;\n        vt->state = NV_VT_RUNNING;\n        nv_ctx_switch(&c->sched, &vt->ctx);\n        nv_cur_vt = 0;\n        /* Read the state before releasing the lock the virtual thread parked\n         * under - after that release the unparker owns it. */\n        state = vt->state;\n        held = vt->parkLock;\n        vt->parkLock = 0;\n        if (held) {\n            NV_MUTEX_UNLOCK(held);\n        }\n        if (state == NV_VT_DONE) {\n            NV_MUTEX_LOCK(&c->lock);\n            vt->next = c->pool;\n            c->pool = vt;\n            NV_MUTEX_UNLOCK(&c->lock);\n            NV_MUTEX_LOCK(&nv_sched_lock);\n            nv_vt_live--;\n            NV_MUTEX_UNLOCK(&nv_sched_lock);\n        } else if (state == NV_VT_READY) {\n            nv_carrier_wake(vt); /* yielded */\n        }\n    }\n}\n\n/* --- operating system threads -------------------------------------- */\n\n#ifdef _WIN32\nstatic DWORD WINAPI nv_carrier_main(LPVOID arg) {\n    nv_carrier_loop((NvCarrier *)arg);\n    return 0;\n}\nstatic int nv_thread_start(LPTHREAD_START_ROUTINE fn, void *arg) {\n    HANDLE h = CreateThread(0, 0, fn, arg, 0, 0);\n    if (!h) {\n        return 0;\n    }\n    CloseHandle(h);\n    return 1;\n}\n#else\nstatic void *nv_carrier_main(void *arg) {\n    nv_carrier_loop((NvCarrier *)arg);\n    return 0;\n}\nstatic int nv_thread_start(void *(*fn)(void *), void *arg) {\n    pthread_t t;\n    pthread_attr_t attr;\n    int rc;\n    pthread_attr_init(&attr);\n    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);\n    rc = pthread_create(&t, &attr, fn, arg);\n    pthread_attr_destroy(&attr);\n    return rc == 0;\n}\n#endif\n\n/* Called with nv_sched_lock held. */\nstatic NvCarrier *nv_carrier_add(void) {\n    NvCarrier *c;\n    if (nv_carriers_running >= nv_carriers_wanted) {\n        return 0;\n    }\n    c = (NvCarrier *)calloc(1, sizeof(NvCarrier));\n    if (!c) {\n        return 0;\n    }\n    NV_MUTEX_INIT(&c->lock);\n    NV_COND_INIT(&c->cond);\n    nv_carrier_table[nv_carriers_running] = c;\n    if (!nv_thread_start(nv_carrier_main, c)) {\n        free(c);\n        return 0;\n    }\n    nv_carriers_running++;\n    return c;\n}\n\n/* --- handles ------------------------------------------------------- */\n\nenum { NV_H_TASK = 1, NV_H_LOCK, NV_H_CHAN, NV_H_ATOMIC, NV_H_WG };\n\ntypedef struct NvHandleSlot {\n    unsigned char kind;\n    void *ptr;\n} NvHandleSlot;\n\nstatic NvHandleSlot *nv_handles = 0;\nstatic int nv_handle_len = 0;\nstatic int nv_handle_cap = 0;\n\n/* Called with nv_rt_lock held. Handles are one based; 0 is \"none\". */\nstatic int nv_handle_new(unsigned char kind, void *ptr) {\n    if (nv_handle_len == nv_handle_cap) {\n        int cap = nv_handle_cap < 16 \? 16 : nv_handle_cap * 2;\n        NvHandleSlot *grown = (NvHandleSlot *)realloc(nv_handles, sizeof(NvHandleSlot) * (size_t)cap);\n        if (!grown) {\n            nv_error(\"out of memory\");\n        }\n        nv_handles = grown;\n        nv_handle_cap = cap;\n    }\n    nv_handles[nv_handle_len].kind = kind;\n    nv_handles[nv_handle_len].ptr = ptr;\n    return ++nv_handle_len;\n}\n\nstatic void *nv_handle_of(nv v, unsigned char kind, const char *what) {\n    long long i = nv_type_of(v) == NV_INT \? nv_ival(v) : -1;\n    void *p = 0;\n    nv_conc_init();\n    NV_MUTEX_LOCK(&nv_rt_lock);\n    if (i >= 1 && i <= nv_handle_len && nv_handles[i - 1].kind == kind) {\n        p = nv_handles[i - 1].ptr;\n    }\n    NV_MUTEX_UNLOCK(&nv_rt_lock);\n    if (!p) {\n        nv_error(\"not a %s handle: %s\", what, nv_display(v));\n    }\n    return p;\n}\n\n/* --- tasks --------------------------------------------------------- */\n\ntypedef struct NvTask {\n    int done;\n    nv result;\n    NvPark park;\n} NvTask;\n\nstatic void nv_task_complete(int handle, nv result) {\n    NvTask *t;\n    NV_MUTEX_LOCK(&nv_rt_lock);\n    t = (NvTask *)nv_handles[handle - 1].ptr;\n    t->result = result;\n    t->done = 1;\n    nv_unpark_all(&t->park);\n    NV_MUTEX_UNLOCK(&nv_rt_lock);\n}\n\ntypedef struct NvOsTask {\n    NvSpawnFn fn;\n    nv *args;\n    int nargs;\n    int task;\n} NvOsTask;\n\n#ifdef _WIN32\nstatic DWORD WINAPI nv_os_task_main(LPVOID arg) {\n#else\nstatic void *nv_os_task_main(void *arg) {\n#endif\n    NvOsTask *a = (NvOsTask *)arg;\n    int task = a->task;\n    nv result = a->fn(a->args, a->nargs);\n    free(a);\n    nv_task_complete(task, result);\n    return 0;\n}\n\n/* Everything the runtime builds on first use - the field layout of a class,\n * its fields in name order, its defaults, which constructor a subclass\n * inherits. Built here, on one thread, so that no two threads race to build\n * the same cache once a program has more than one. */\nstatic void nv_class_warm_all(void) {\n    int i;\n    for (i = 0; i < nv_nclasses; i++) {\n        NvClass *c = nv_classes[i];\n        nv_class_layout(c);\n        nv_field_order(c, nv_class_field_count(c));\n        nv_class_defaults(c);\n        if (!c->ctorResolved) {\n            NvClass *walk = c;\n            int guard = 0;\n            while (walk && guard++ < 64) {\n                if (walk->ctor) {\n                    c->resolvedCtor = walk->ctor;\n                    break;\n                }\n                walk = nv_class_base(walk);\n            }\n            c->ctorResolved = 1;\n        }\n    }\n}\n\n/* The first spawn of a program happens while it is still single threaded,\n * which is the moment to build everything the runtime would otherwise build\n * on first use - class layouts, field orders, defaults - so that no two\n * threads ever race to build the same cache. */\nstatic void nv_conc_boot(void) {\n    static int booted = 0;\n    nv_conc_init();\n    if (booted) {\n        return;\n    }\n    booted = 1;\n    nv_class_warm_all();\n}\n\n/* Called with c->lock held. */\nstatic NvVThread *nv_vt_take(NvCarrier *c) {\n    NvVThread *vt = c->pool;\n    if (vt) {\n        c->pool = vt->next;\n        vt->next = 0;\n        return vt;\n    }\n    vt = (NvVThread *)calloc(1, sizeof(NvVThread));\n    if (!vt) {\n        return 0;\n    }\n    vt->stackSize = nv_vstack_size;\n    vt->carrier = c;\n    if (!nv_ctx_start(vt)) {\n        free(vt);\n        return 0;\n    }\n    return vt;\n}\n\n/* `thread f(...)` and `virtual f(...)`. The arguments were evaluated by the\n * thread that spawns and are handed to the new one; the result is a task\n * handle to await. */\nstatic nv nv_spawn(int wantVirtual, NvSpawnFn fn, int nargs, ...) {\n    va_list ap;\n    NvTask *task;\n    nv *args = 0;\n    int handle, i;\n    nv_conc_boot();\n    if (nargs > 0) {\n        args = (nv *)nv_alloc(sizeof(nv) * (size_t)nargs);\n        va_start(ap, nargs);\n        for (i = 0; i < nargs; i++) {\n            args[i] = va_arg(ap, nv);\n        }\n        va_end(ap);\n    }\n    task = (NvTask *)calloc(1, sizeof(NvTask));\n    if (!task) {\n        nv_error(\"out of memory\");\n    }\n    task->result = nv_nil;\n    NV_MUTEX_LOCK(&nv_rt_lock);\n    handle = nv_handle_new(NV_H_TASK, task);\n    NV_MUTEX_UNLOCK(&nv_rt_lock);\n#if NV_HAVE_FIBERS\n    if (wantVirtual) {\n        NvCarrier *c = 0;\n        NvVThread *vt;\n        NV_MUTEX_LOCK(&nv_sched_lock);\n        /* one carrier to begin with, another whenever the virtual threads\n         * outnumber the carriers, up to the parallelism of the machine */\n        if (nv_carriers_running == 0 || nv_vt_live >= nv_carriers_running) {\n            nv_carrier_add();\n        }\n        if (nv_carriers_running > 0) {\n            c = nv_carrier_table[nv_spawn_turn++ % nv_carriers_running];\n            nv_vt_live++;\n        }\n        NV_MUTEX_UNLOCK(&nv_sched_lock);\n        if (c) {\n            NV_MUTEX_LOCK(&c->lock);\n            vt = nv_vt_take(c);\n            if (vt) {\n                vt->fn = fn;\n                vt->args = args;\n                vt->nargs = nargs;\n                vt->task = handle;\n                nv_runq_push(c, vt);\n                NV_MUTEX_UNLOCK(&c->lock);\n                return nv_int(handle);\n            }\n            NV_MUTEX_UNLOCK(&c->lock);\n            NV_MUTEX_LOCK(&nv_sched_lock);\n            nv_vt_live--;\n            NV_MUTEX_UNLOCK(&nv_sched_lock);\n            /* no stack to be had: an operating system thread will do */\n        }\n    }\n#else\n    (void)wantVirtual;\n#endif\n    {\n        NvOsTask *a = (NvOsTask *)malloc(sizeof(NvOsTask));\n        if (!a) {\n            nv_error(\"out of memory\");\n        }\n        a->fn = fn;\n        a->args = args;\n        a->nargs = nargs;\n        a->task = handle;\n        if (!nv_thread_start(nv_os_task_main, a)) {\n            /* the system refused a thread: run the work here rather than\n             * leave a task that is never going to complete */\n            free(a);\n            nv_task_complete(handle, fn(args, nargs));\n        }\n    }\n    return nv_int(handle);\n}\n\n/* await: the value of a task, once it has one. Awaiting anything that is not\n * a task is that value, so `await` may be written wherever a result is\n * expected without knowing whether the call it came from was async. */\nstatic nv nv_await(nv v) {\n    NvTask *t;\n    nv result;\n    long long i = nv_type_of(v) == NV_INT \? nv_ival(v) : -1;\n    if (i < 1 || !nv_conc_ready) {\n        return v;\n    }\n    NV_MUTEX_LOCK(&nv_rt_lock);\n    if (i > nv_handle_len || nv_handles[i - 1].kind != NV_H_TASK) {\n        NV_MUTEX_UNLOCK(&nv_rt_lock);\n        return v;\n    }\n    t = (NvTask *)nv_handles[i - 1].ptr;\n    while (!t->done) {\n        nv_park_self(&t->park, &nv_rt_lock);\n    }\n    result = t->result;\n    NV_MUTEX_UNLOCK(&nv_rt_lock);\n    return result;\n}\n\nstatic nv nv_task_is_done(nv v) {\n    NvTask *t = (NvTask *)nv_handle_of(v, NV_H_TASK, \"task\");\n    int done;\n    NV_MUTEX_LOCK(&nv_rt_lock);\n    done = t->done;\n    NV_MUTEX_UNLOCK(&nv_rt_lock);\n    return nv_bool(done);\n}\n\nstatic nv nv_await_all(nv tasks) {\n    nv out;\n    int i;\n    if (nv_type_of(tasks) != NV_ARR) {\n        nv_error(\"awaitAll expects an array of tasks\");\n    }\n    out = nv_new(NV_ARR);\n    out->a = nv_arr_new_cap(tasks->a->len);\n    for (i = 0; i < tasks->a->len; i++) {\n        nv_arr_push(out->a, nv_await(tasks->a->items[i]));\n    }\n    return out;\n}\n\n/* --- giving up the processor --------------------------------------- */\n\nstatic nv nv_thread_yield(void) {\n    NvVThread *vt = nv_cur_vt;\n    if (!vt) {\n#ifdef _WIN32\n        SwitchToThread();\n#else\n        sched_yield();\n#endif\n        return nv_nil;\n    }\n    vt->state = NV_VT_READY;\n    nv_ctx_switch(&vt->ctx, &vt->carrier->sched);\n    return nv_nil;\n}\n\n/* Sleeping a virtual thread parks it on its carrier's timer queue; the\n * carrier goes on running other virtual threads and wakes it when due. */\nstatic nv nv_thread_sleep(nv msValue) {\n    long long ms = nv_as_int(msValue);\n    NvVThread *vt = nv_cur_vt;\n    NvCarrier *c;\n    NvVThread **at;\n    if (ms <= 0) {\n        return nv_thread_yield();\n    }\n    if (!vt) {\n        return nv_os_sleep(msValue);\n    }\n    c = vt->carrier;\n    NV_MUTEX_LOCK(&c->lock);\n    vt->wakeAt = nv_now_ms() + ms;\n    at = &c->timers;\n    while (*at && (*at)->wakeAt <= vt->wakeAt) {\n        at = &(*at)->next;\n    }\n    vt->next = *at;\n    *at = vt;\n    nv_vt_park(&c->lock);\n    NV_MUTEX_UNLOCK(&c->lock);\n    return nv_nil;\n}\n\nstatic nv nv_thread_cpus(void) { return nv_int(nv_cpu_count()); }\n\nstatic nv nv_thread_parallelism(void) {\n    nv_conc_init();\n    return nv_int(nv_carriers_wanted);\n}\n\nstatic nv nv_thread_set_parallelism(nv n) {\n    long long want = nv_as_int(n);\n    nv_conc_init();\n    if (want < 1) {\n        want = 1;\n    }\n    if (want > NV_MAX_CARRIERS) {\n        want = NV_MAX_CARRIERS;\n    }\n    NV_MUTEX_LOCK(&nv_sched_lock);\n    nv_carriers_wanted = (int)want;\n    NV_MUTEX_UNLOCK(&nv_sched_lock);\n    return nv_nil;\n}\n\nstatic nv nv_thread_is_virtual(void) { return nv_bool(nv_cur_vt != 0); }\n\nstatic nv nv_thread_virtual_supported(void) { return nv_bool(NV_HAVE_FIBERS != 0); }\n\n/* A number that is the same for every call from one runner and different for\n * every other runner. */\nstatic nv nv_thread_self_id(void) {\n    return nv_int((long long)(((uintptr_t)nv_runner() >> 4) & 0x7fffffff));\n}\n\nstatic nv nv_thread_running(void) {\n    int n;\n    nv_conc_init();\n    NV_MUTEX_LOCK(&nv_sched_lock);\n    n = nv_vt_live;\n    NV_MUTEX_UNLOCK(&nv_sched_lock);\n    return nv_int(n);\n}\n\n/* --- locks --------------------------------------------------------- */\n\ntypedef struct NvLock {\n    NvMutexRaw m;\n    void *owner;\n    int count;\n    NvPark park;\n} NvLock;\n\nstatic NvLock *nv_lock_make(void) {\n    NvLock *l = (NvLock *)calloc(1, sizeof(NvLock));\n    if (!l) {\n        nv_error(\"out of memory\");\n    }\n    NV_MUTEX_INIT(&l->m);\n    return l;\n}\n\nstatic nv nv_lock_new(void) {\n    NvLock *l;\n    int handle;\n    nv_conc_init();\n    l = nv_lock_make();\n    NV_MUTEX_LOCK(&nv_rt_lock);\n    handle = nv_handle_new(NV_H_LOCK, l);\n    NV_MUTEX_UNLOCK(&nv_rt_lock);\n    return nv_int(handle);\n}\n\n/* Re-entrant: the runner that holds a lock walks back into it, which is what\n * a `sync` block inside a method a `sync` block called needs. */\nstatic void nv_lock_enter(NvLock *l) {\n    void *me = nv_runner();\n    NV_MUTEX_LOCK(&l->m);\n    if (l->owner == me) {\n        l->count++;\n        NV_MUTEX_UNLOCK(&l->m);\n        return;\n    }\n    while (l->owner) {\n        nv_park_self(&l->park, &l->m);\n    }\n    l->owner = me;\n    l->count = 1;\n    NV_MUTEX_UNLOCK(&l->m);\n}\n\nstatic void nv_lock_leave(NvLock *l) {\n    NV_MUTEX_LOCK(&l->m);\n    if (l->count > 0 && --l->count == 0) {\n        l->owner = 0;\n        nv_unpark_one(&l->park);\n    }\n    NV_MUTEX_UNLOCK(&l->m);\n}\n\nstatic nv nv_lock_acquire(nv h) {\n    nv_lock_enter((NvLock *)nv_handle_of(h, NV_H_LOCK, \"lock\"));\n    return nv_nil;\n}\n\nstatic nv nv_lock_release(nv h) {\n    nv_lock_leave((NvLock *)nv_handle_of(h, NV_H_LOCK, \"lock\"));\n    return nv_nil;\n}\n\nstatic nv nv_lock_try_acquire(nv h) {\n    NvLock *l = (NvLock *)nv_handle_of(h, NV_H_LOCK, \"lock\");\n    void *me = nv_runner();\n    int got = 0;\n    NV_MUTEX_LOCK(&l->m);\n    if (l->owner == me) {\n        l->count++;\n        got = 1;\n    } else if (!l->owner) {\n        l->owner = me;\n        l->count = 1;\n        got = 1;\n    }\n    NV_MUTEX_UNLOCK(&l->m);\n    return nv_bool(got);\n}\n\n/* The lock behind a bare `sync { ... }`: one per program, made on first use.\n * `sync (lock) { ... }` names one instead. */\nstatic NvLock *nv_sync_default = 0;\n\nstatic NvLock *nv_sync_enter(nv lock) {\n    NvLock *l;\n    nv_conc_init();\n    if (nv_type_of(lock) == NV_INT) {\n        l = (NvLock *)nv_handle_of(lock, NV_H_LOCK, \"lock\");\n    } else {\n        NV_MUTEX_LOCK(&nv_rt_lock);\n        if (!nv_sync_default) {\n            nv_sync_default = nv_lock_make();\n        }\n        l = nv_sync_default;\n        NV_MUTEX_UNLOCK(&nv_rt_lock);\n    }\n    nv_lock_enter(l);\n    return l;\n}\n\nstatic void nv_sync_leave(NvLock *l) { nv_lock_leave(l); }\n\n/* --- channels ------------------------------------------------------ */\n\ntypedef struct NvChan {\n    NvMutexRaw m;\n    nv *items;\n    int cap;      /* slots in items */\n    int declared; /* what the program asked for; 0 is unbuffered */\n    int len;\n    int head;\n    int closed;\n    NvPark senders;\n    NvPark receivers;\n} NvChan;\n\nstatic nv nv_chan_new(nv capValue) {\n    long long want = nv_as_int(capValue);\n    NvChan *c;\n    int handle;\n    nv_conc_init();\n    c = (NvChan *)calloc(1, sizeof(NvChan));\n    if (!c) {\n        nv_error(\"out of memory\");\n    }\n    NV_MUTEX_INIT(&c->m);\n    c->declared = want < 0 \? 0 : (int)want;\n    c->cap = c->declared < 1 \? 1 : c->declared;\n    c->items = (nv *)malloc(sizeof(nv) * (size_t)c->cap);\n    if (!c->items) {\n        nv_error(\"out of memory\");\n    }\n    NV_MUTEX_LOCK(&nv_rt_lock);\n    handle = nv_handle_new(NV_H_CHAN, c);\n    NV_MUTEX_UNLOCK(&nv_rt_lock);\n    return nv_int(handle);\n}\n\n/* false when the channel was closed and the value could not be delivered. */\nstatic nv nv_chan_send(nv h, nv value) {\n    NvChan *c = (NvChan *)nv_handle_of(h, NV_H_CHAN, \"channel\");\n    NV_MUTEX_LOCK(&c->m);\n    while (!c->closed && c->len == c->cap) {\n        nv_park_self(&c->senders, &c->m);\n    }\n    if (c->closed) {\n        NV_MUTEX_UNLOCK(&c->m);\n        return nv_bool(0);\n    }\n    c->items[(c->head + c->len) % c->cap] = value;\n    c->len++;\n    nv_unpark_one(&c->receivers);\n    if (c->declared == 0) {\n        /* unbuffered: the send is over when the value has been taken */\n        while (!c->closed && c->len > 0) {\n            nv_park_self(&c->senders, &c->m);\n        }\n    }\n    NV_MUTEX_UNLOCK(&c->m);\n    return nv_bool(1);\n}\n\n/* A received value can be anything, the absence of one included, so the\n * receiving thread is told which of the two it got - the same way `net`\n * reports what its last call did. */\nstatic NV_TLS int nv_chan_got = 0;\n\nstatic nv nv_chan_received(void) { return nv_bool(nv_chan_got); }\n\nstatic nv nv_chan_recv(nv h) {\n    NvChan *c = (NvChan *)nv_handle_of(h, NV_H_CHAN, \"channel\");\n    nv v;\n    nv_chan_got = 0;\n    NV_MUTEX_LOCK(&c->m);\n    while (c->len == 0 && !c->closed) {\n        nv_park_self(&c->receivers, &c->m);\n    }\n    if (c->len == 0) {\n        NV_MUTEX_UNLOCK(&c->m); /* closed and drained */\n        return nv_nil;\n    }\n    nv_chan_got = 1;\n    v = c->items[c->head];\n    c->head = (c->head + 1) % c->cap;\n    c->len--;\n    nv_unpark_all(&c->senders);\n    NV_MUTEX_UNLOCK(&c->m);\n    return v;\n}\n\nstatic nv nv_chan_try_recv(nv h) {\n    NvChan *c = (NvChan *)nv_handle_of(h, NV_H_CHAN, \"channel\");\n    nv v = nv_nil;\n    nv_chan_got = 0;\n    NV_MUTEX_LOCK(&c->m);\n    if (c->len > 0) {\n        nv_chan_got = 1;\n        v = c->items[c->head];\n        c->head = (c->head + 1) % c->cap;\n        c->len--;\n        nv_unpark_all(&c->senders);\n    }\n    NV_MUTEX_UNLOCK(&c->m);\n    return v;\n}\n\nstatic nv nv_chan_close(nv h) {\n    NvChan *c = (NvChan *)nv_handle_of(h, NV_H_CHAN, \"channel\");\n    NV_MUTEX_LOCK(&c->m);\n    c->closed = 1;\n    nv_unpark_all(&c->senders);\n    nv_unpark_all(&c->receivers);\n    NV_MUTEX_UNLOCK(&c->m);\n    return nv_nil;\n}\n\nstatic nv nv_chan_is_closed(nv h) {\n    NvChan *c = (NvChan *)nv_handle_of(h, NV_H_CHAN, \"channel\");\n    int closed;\n    NV_MUTEX_LOCK(&c->m);\n    closed = c->closed;\n    NV_MUTEX_UNLOCK(&c->m);\n    return nv_bool(closed);\n}\n\nstatic nv nv_chan_length(nv h) {\n    NvChan *c = (NvChan *)nv_handle_of(h, NV_H_CHAN, \"channel\");\n    int len;\n    NV_MUTEX_LOCK(&c->m);\n    len = c->len;\n    NV_MUTEX_UNLOCK(&c->m);\n    return nv_int(len);\n}\n\n/* --- counters ------------------------------------------------------ */\n\ntypedef struct NvCounter {\n    NvMutexRaw m;\n    long long value;\n} NvCounter;\n\nstatic nv nv_counter_new(nv initial) {\n    NvCounter *a;\n    int handle;\n    nv_conc_init();\n    a = (NvCounter *)calloc(1, sizeof(NvCounter));\n    if (!a) {\n        nv_error(\"out of memory\");\n    }\n    NV_MUTEX_INIT(&a->m);\n    a->value = nv_as_int(initial);\n    NV_MUTEX_LOCK(&nv_rt_lock);\n    handle = nv_handle_new(NV_H_ATOMIC, a);\n    NV_MUTEX_UNLOCK(&nv_rt_lock);\n    return nv_int(handle);\n}\n\nstatic nv nv_counter_add(nv h, nv delta) {\n    NvCounter *a = (NvCounter *)nv_handle_of(h, NV_H_ATOMIC, \"counter\");\n    long long v;\n    NV_MUTEX_LOCK(&a->m);\n    a->value += nv_as_int(delta);\n    v = a->value;\n    NV_MUTEX_UNLOCK(&a->m);\n    return nv_int(v);\n}\n\nstatic nv nv_counter_get(nv h) {\n    NvCounter *a = (NvCounter *)nv_handle_of(h, NV_H_ATOMIC, \"counter\");\n    long long v;\n    NV_MUTEX_LOCK(&a->m);\n    v = a->value;\n    NV_MUTEX_UNLOCK(&a->m);\n    return nv_int(v);\n}\n\nstatic nv nv_counter_set(nv h, nv value) {\n    NvCounter *a = (NvCounter *)nv_handle_of(h, NV_H_ATOMIC, \"counter\");\n    NV_MUTEX_LOCK(&a->m);\n    a->value = nv_as_int(value);\n    NV_MUTEX_UNLOCK(&a->m);\n    return nv_nil;\n}\n\nstatic nv nv_counter_swap(nv h, nv expect, nv value) {\n    NvCounter *a = (NvCounter *)nv_handle_of(h, NV_H_ATOMIC, \"counter\");\n    int swapped = 0;\n    NV_MUTEX_LOCK(&a->m);\n    if (a->value == nv_as_int(expect)) {\n        a->value = nv_as_int(value);\n        swapped = 1;\n    }\n    NV_MUTEX_UNLOCK(&a->m);\n    return nv_bool(swapped);\n}\n\n/* --- groups -------------------------------------------------------- */\n\ntypedef struct NvGroup {\n    NvMutexRaw m;\n    int count;\n    NvPark park;\n} NvGroup;\n\nstatic nv nv_group_new(void) {\n    NvGroup *g;\n    int handle;\n    nv_conc_init();\n    g = (NvGroup *)calloc(1, sizeof(NvGroup));\n    if (!g) {\n        nv_error(\"out of memory\");\n    }\n    NV_MUTEX_INIT(&g->m);\n    NV_MUTEX_LOCK(&nv_rt_lock);\n    handle = nv_handle_new(NV_H_WG, g);\n    NV_MUTEX_UNLOCK(&nv_rt_lock);\n    return nv_int(handle);\n}\n\nstatic nv nv_group_add(nv h, nv n) {\n    NvGroup *g = (NvGroup *)nv_handle_of(h, NV_H_WG, \"group\");\n    NV_MUTEX_LOCK(&g->m);\n    g->count += (int)nv_as_int(n);\n    if (g->count <= 0) {\n        nv_unpark_all(&g->park);\n    }\n    NV_MUTEX_UNLOCK(&g->m);\n    return nv_nil;\n}\n\nstatic nv nv_group_done(nv h) {\n    NvGroup *g = (NvGroup *)nv_handle_of(h, NV_H_WG, \"group\");\n    NV_MUTEX_LOCK(&g->m);\n    g->count--;\n    if (g->count <= 0) {\n        nv_unpark_all(&g->park);\n    }\n    NV_MUTEX_UNLOCK(&g->m);\n    return nv_nil;\n}\n\nstatic nv nv_group_wait(nv h) {\n    NvGroup *g = (NvGroup *)nv_handle_of(h, NV_H_WG, \"group\");\n    NV_MUTEX_LOCK(&g->m);\n    while (g->count > 0) {\n        nv_park_self(&g->park, &g->m);\n    }\n    NV_MUTEX_UNLOCK(&g->m);\n    return nv_nil;\n}\n\n#endif /* NOVUS_RT_H */\n",
+    "novusc: cannot open '",
+    "include",
+    "novusc: no project.nv found here - pass a source file or run 'novusc init'",
+    "novusc: project.nv already exists",
+    "project \"",
+    "\"\nversion \"0.1.0\"\nmain \"main.nv\"\n\n// require \"github.com/user/library\" \"v1.0.0\"\n",
+    "package main\n\nmethod main {\n    println \"Hello from ",
+    "!\"\n}\n",
+    "created project.nv (project \"",
+    "\") - next: novusc run",
+    "add",
+    "usage: novusc deps add <module> [version]",
+    "require \"",
+    "\" \"",
+    "\"\n",
+    "added require \"",
+    "\" to ",
+    "update",
+    "no dependencies (add one with: novusc deps add <module> [version])",
+    " -> ",
+    "embed",
+    "--no-runtime",
+    "-o",
+    "wrote ",
+    "--target",
+    "NOVUS_ZIG",
+    "zig",
+    "--cc",
+    " cc -target ",
+    "NOVUS_CC",
+    "gcc",
+    "cc",
+    "-O2",
+    "NOVUS_CFLAGS",
+    "--cflags",
+    ".exe",
+    ".c",
+    " -lm",
+    " -lws2_32",
+    " -lpthread",
+    " -o ",
+    "novusc: C compilation failed (generated file kept at ",
+    "  command: ",
+    "--keep-c",
+    "novusc-",
+    "0.1.0-pre.alpha.4",
+    "novusc ",
+    " - the Novus compiler",
+    "usage:",
+    "  novusc run [file.nv] [args...]     compile and run",
+    "  novusc build [file.nv] [options]   compile to a native executable",
+    "  novusc emit [file.nv] [-o out.c]   write the generated C",
+    "  novusc check [file.nv]             parse and analyze only",
+    "  novusc init [module-path]          create project.nv + main.nv here",
+    "  novusc deps                        fetch the dependencies of project.nv",
+    "  novusc deps add <module> [version] add a dependency (git tag/branch/commit)",
+    "  novusc deps update                 re-fetch all dependencies",
+    "  novusc version",
+    "Without a file the commands use the project.nv of the current directory.",
+    "Dependencies are cached in $NOVUS_DEPS (default ~/.novus/deps).",
+    "build options:",
+    "  -o <path>         output path (default: source file stem)",
+    "  --cc <compiler>   C compiler (default: $NOVUS_CC, then cc / gcc)",
+    "  --cflags <flags>  extra C compiler flags (also $NOVUS_CFLAGS)",
+    "  --target <triple> cross compile via 'zig cc -target <triple>'",
+    "  --keep-c          keep the generated .c file",
+    "  --no-runtime      #include \"novus_rt.h\" instead of embedding it",
+    "novusc: option ",
+    " needs a value",
+    "novusc: unknown option '",
+    "-v",
+    "--version",
+    "-h",
+    "--help",
+    "help",
+    "init",
+    "emit",
+    "check",
+    "ok: ",
+    "build",
+    "built ",
+    "run",
+    "novusc: unknown command '",
+};
+
 static void nv_register_classes(void) {
     NvClass *c = 0;
     (void)c;
@@ -4112,7 +9159,7 @@ static void nv_register_classes(void) {
 }
 
 static void nv_init_globals(void) {
-    g_VERSION = nv_lit("0.1.0-pre.alpha.3");
+    g_VERSION = (&nv_lits[729]);
 }
 
 static void nv_init_enums(void) {
@@ -4120,10 +9167,10 @@ static void nv_init_enums(void) {
 
 static nv f_os__hasCommand_1(nv a0) {
     nv l_name = nv_coerce_string(a0);
-    if (nv_eq_bool(nv_platform(), nv_lit("windows"))) {
-        return nv_eq(nv_exec(nv_add_chain(3, nv_lit("where "), l_name, nv_lit(" > nul 2>&1"))), nv_int(0LL));
+    if (nv_eq_bool(nv_platform(), (&nv_lits[0]))) {
+        return nv_eq(nv_exec(nv_add_chain(3, (&nv_lits[1]), l_name, (&nv_lits[2]))), nv_int(0LL));
     }
-    return nv_eq(nv_exec(nv_add_chain(3, nv_lit("command -v "), l_name, nv_lit(" > /dev/null 2>&1"))), nv_int(0LL));
+    return nv_eq(nv_exec(nv_add_chain(3, (&nv_lits[3]), l_name, (&nv_lits[4]))), nv_int(0LL));
     return nv_bool(0);
 }
 
@@ -4131,11 +9178,11 @@ static nv f_os__envOr_2(nv a0, nv a1) {
     nv l_name = nv_coerce_string(a0);
     nv l_fallback = nv_coerce_string(a1);
     nv l_value = nv_env(l_name);
-    if (nv_eq_bool(l_value, nv_lit(""))) {
+    if (nv_eq_bool(l_value, (&nv_lits[5]))) {
         return nv_coerce_string(l_fallback);
     }
     return nv_coerce_string(l_value);
-    return nv_lit("");
+    return (&nv_empty_str_val);
 }
 
 static nv f_path__withExtension_2(nv a0, nv a1) {
@@ -4143,18 +9190,18 @@ static nv f_path__withExtension_2(nv a0, nv a1) {
     nv l_ext = nv_coerce_string(a1);
     nv l_current = nv_path_extension(l_p);
     return nv_coerce_string(nv_add_fast(nv_invoke2(l_p, "substring", nv_int(0LL), nv_sub_fast(nv_length_of(l_p, "length"), nv_length_of(l_current, "length"))), l_ext));
-    return nv_lit("");
+    return (&nv_empty_str_val);
 }
 
 static nv f_path__segments_1(nv a0) {
     nv l_p = nv_coerce_string(a0);
     nv l_out = nv_arr();
     {
-        NvArr *it_s = nv_iter(nv_invoke1(nv_path_normalize(l_p), "split", nv_lit("/")));
+        NvArr *it_s = nv_iter(nv_invoke1(nv_path_normalize(l_p), "split", (&nv_lits[6])));
         int n_s = it_s->len;
         for (int i_s = 0; i_s < n_s; i_s++) {
             nv l_s = it_s->items[i_s];
-            if (nv_ne_bool(l_s, nv_lit(""))) {
+            if (nv_ne_bool(l_s, (&nv_lits[5]))) {
                 (void)nv_append(l_out, "append", l_s);
             }
         }
@@ -4166,7 +9213,7 @@ static nv f_path__segments_1(nv a0) {
 static nv f_isList_1(nv a0) {
     nv l_s = nv_coerce_string(a0);
     if (nv_gt_bool(nv_length_of(l_s, "length"), nv_int(0LL))) {
-        return nv_eq(nv_invoke1(l_s, "charAt", nv_int(0LL)), nv_lit("("));
+        return nv_eq(nv_invoke1(l_s, "charAt", nv_int(0LL)), (&nv_lits[7]));
     }
     return nv_bool(0);
     return nv_bool(0);
@@ -4178,7 +9225,7 @@ static nv f_atomEnd_2(nv a0, nv a1) {
     nv l_quote = nv_chr(nv_int(34LL));
     nv l_backslash = nv_chr(nv_int(92LL));
     nv l_n = nv_length_of(l_s, "length");
-    if (nv_eq_bool(nv_invoke1(l_s, "charAt", nv_int(l_i)), nv_lit("("))) {
+    if (nv_eq_bool(nv_invoke1(l_s, "charAt", nv_int(l_i)), (&nv_lits[7]))) {
         long long l_depth = 0LL;
         nv l_inQuote = nv_bool(0);
         while (nv_lt_bool(nv_int(l_i), l_n)) {
@@ -4197,10 +9244,10 @@ static nv f_atomEnd_2(nv a0, nv a1) {
             if (nv_eq_bool(l_c, l_quote)) {
                 l_inQuote = nv_bool(1);
             }
-            if (nv_eq_bool(l_c, nv_lit("("))) {
+            if (nv_eq_bool(l_c, (&nv_lits[7]))) {
                 l_depth = (l_depth + 1LL);
             }
-            if (nv_eq_bool(l_c, nv_lit(")"))) {
+            if (nv_eq_bool(l_c, (&nv_lits[8]))) {
                 l_depth = (l_depth - 1LL);
                 if (l_depth == 0LL) {
                     return nv_coerce_int(nv_int((l_i + 1LL)));
@@ -4220,7 +9267,7 @@ static nv f_atomEnd_2(nv a0, nv a1) {
         }
         return nv_coerce_int(nv_int((l_i + 1LL)));
     }
-    while (((nv_lt_bool(nv_int(l_i), l_n) && nv_ne_bool(nv_invoke1(l_s, "charAt", nv_int(l_i)), nv_lit(" "))) && nv_ne_bool(nv_invoke1(l_s, "charAt", nv_int(l_i)), nv_lit(")")))) {
+    while (((nv_lt_bool(nv_int(l_i), l_n) && nv_ne_bool(nv_invoke1(l_s, "charAt", nv_int(l_i)), (&nv_lits[9]))) && nv_ne_bool(nv_invoke1(l_s, "charAt", nv_int(l_i)), (&nv_lits[8])))) {
         l_i = (l_i + 1LL);
     }
     return nv_coerce_int(nv_int(l_i));
@@ -4234,11 +9281,11 @@ static nv f_nodeChild_2(nv a0, nv a1) {
     nv l_i = nv_int(1LL);
     long long l_count = 0LL;
     while (nv_lt_bool(l_i, l_n)) {
-        while ((nv_lt_bool(l_i, l_n) && nv_eq_bool(nv_invoke1(l_s, "charAt", l_i), nv_lit(" ")))) {
+        while ((nv_lt_bool(l_i, l_n) && nv_eq_bool(nv_invoke1(l_s, "charAt", l_i), (&nv_lits[9])))) {
             l_i = nv_add_fast(l_i, nv_int(1LL));
         }
-        if ((nv_ge_bool(l_i, l_n) || nv_eq_bool(nv_invoke1(l_s, "charAt", l_i), nv_lit(")")))) {
-            return nv_coerce_string(nv_lit(""));
+        if ((nv_ge_bool(l_i, l_n) || nv_eq_bool(nv_invoke1(l_s, "charAt", l_i), (&nv_lits[8])))) {
+            return nv_coerce_string((&nv_lits[5]));
         }
         nv l_start = l_i;
         l_i = f_atomEnd_2(l_s, l_i);
@@ -4247,8 +9294,8 @@ static nv f_nodeChild_2(nv a0, nv a1) {
         }
         l_count = (l_count + 1LL);
     }
-    return nv_coerce_string(nv_lit(""));
-    return nv_lit("");
+    return nv_coerce_string((&nv_lits[5]));
+    return (&nv_empty_str_val);
 }
 
 static nv f_nodeCount_1(nv a0) {
@@ -4257,10 +9304,10 @@ static nv f_nodeCount_1(nv a0) {
     nv l_i = nv_int(1LL);
     long long l_count = 0LL;
     while (nv_lt_bool(l_i, l_n)) {
-        while ((nv_lt_bool(l_i, l_n) && nv_eq_bool(nv_invoke1(l_s, "charAt", l_i), nv_lit(" ")))) {
+        while ((nv_lt_bool(l_i, l_n) && nv_eq_bool(nv_invoke1(l_s, "charAt", l_i), (&nv_lits[9])))) {
             l_i = nv_add_fast(l_i, nv_int(1LL));
         }
-        if ((nv_ge_bool(l_i, l_n) || nv_eq_bool(nv_invoke1(l_s, "charAt", l_i), nv_lit(")")))) {
+        if ((nv_ge_bool(l_i, l_n) || nv_eq_bool(nv_invoke1(l_s, "charAt", l_i), (&nv_lits[8])))) {
             return nv_coerce_int(nv_int(l_count));
         }
         l_i = f_atomEnd_2(l_s, l_i);
@@ -4275,8 +9322,8 @@ static nv f_nodeHead_1(nv a0) {
     if (nv_truthy(f_isList_1(l_s))) {
         return nv_coerce_string(f_nodeChild_2(l_s, nv_int(0LL)));
     }
-    return nv_coerce_string(nv_lit(""));
-    return nv_lit("");
+    return nv_coerce_string((&nv_lits[5]));
+    return (&nv_empty_str_val);
 }
 
 static nv f_strPayload_1(nv a0) {
@@ -4284,30 +9331,30 @@ static nv f_strPayload_1(nv a0) {
     if (nv_ge_bool(nv_length_of(l_s, "length"), nv_int(2LL))) {
         return nv_coerce_string(nv_invoke2(l_s, "substring", nv_int(1LL), nv_sub_fast(nv_length_of(l_s, "length"), nv_int(1LL))));
     }
-    return nv_coerce_string(nv_lit(""));
-    return nv_lit("");
+    return nv_coerce_string((&nv_lits[5]));
+    return (&nv_empty_str_val);
 }
 
 static nv f_sexpUnescapeChar_1(nv a0) {
     nv l_e = nv_coerce_string(a0);
-    if (nv_eq_bool(l_e, nv_lit("n"))) {
+    if (nv_eq_bool(l_e, (&nv_lits[10]))) {
         return nv_coerce_string(nv_chr(nv_int(10LL)));
     }
-    if (nv_eq_bool(l_e, nv_lit("r"))) {
+    if (nv_eq_bool(l_e, (&nv_lits[11]))) {
         return nv_coerce_string(nv_chr(nv_int(13LL)));
     }
-    if (nv_eq_bool(l_e, nv_lit("t"))) {
+    if (nv_eq_bool(l_e, (&nv_lits[12]))) {
         return nv_coerce_string(nv_chr(nv_int(9LL)));
     }
     return nv_coerce_string(l_e);
-    return nv_lit("");
+    return (&nv_empty_str_val);
 }
 
 static nv f_sexpUnescape_1(nv a0) {
     nv l_s = nv_coerce_string(a0);
     nv l_backslash = nv_chr(nv_int(92LL));
     nv l_text = f_strPayload_1(l_s);
-    nv l_out = nv_lit("");
+    nv l_out = (&nv_lits[5]);
     long long l_i = 0LL;
     nv l_n = nv_length_of(l_text, "length");
     while (nv_lt_bool(nv_int(l_i), l_n)) {
@@ -4321,7 +9368,7 @@ static nv f_sexpUnescape_1(nv a0) {
         l_i = (l_i + 1LL);
     }
     return nv_coerce_string(l_out);
-    return nv_lit("");
+    return (&nv_empty_str_val);
 }
 
 static nv f_sexpEscapeChar_1(nv a0) {
@@ -4334,19 +9381,19 @@ static nv f_sexpEscapeChar_1(nv a0) {
         return nv_coerce_string(nv_add_fast(l_backslash, nv_chr(nv_int(34LL))));
     }
     if (nv_eq_bool(l_c, nv_chr(nv_int(10LL)))) {
-        return nv_coerce_string(nv_add_fast(l_backslash, nv_lit("n")));
+        return nv_coerce_string(nv_add_fast(l_backslash, (&nv_lits[10])));
     }
     if (nv_eq_bool(l_c, nv_chr(nv_int(13LL)))) {
-        return nv_coerce_string(nv_add_fast(l_backslash, nv_lit("r")));
+        return nv_coerce_string(nv_add_fast(l_backslash, (&nv_lits[11])));
     }
     if (nv_eq_bool(l_c, nv_chr(nv_int(9LL)))) {
-        return nv_coerce_string(nv_add_fast(l_backslash, nv_lit("t")));
+        return nv_coerce_string(nv_add_fast(l_backslash, (&nv_lits[12])));
     }
-    if (nv_eq_bool(l_c, nv_lit("\?"))) {
-        return nv_coerce_string(nv_add_fast(l_backslash, nv_lit("\?")));
+    if (nv_eq_bool(l_c, (&nv_lits[13]))) {
+        return nv_coerce_string(nv_add_fast(l_backslash, (&nv_lits[13])));
     }
     return nv_coerce_string(l_c);
-    return nv_lit("");
+    return (&nv_empty_str_val);
 }
 
 static nv f_sexpStr_1(nv a0) {
@@ -4360,7 +9407,7 @@ static nv f_sexpStr_1(nv a0) {
         l_i = (l_i + 1LL);
     }
     return nv_coerce_string(nv_add_fast(l_out, l_quote));
-    return nv_lit("");
+    return (&nv_empty_str_val);
 }
 
 static nv f_joinParts_1(nv a0) {
@@ -4380,16 +9427,16 @@ static nv f_joinParts_1(nv a0) {
         l_current = l_next;
     }
     if (nv_eq_bool(nv_length_of(l_current, "length"), nv_int(0LL))) {
-        return nv_coerce_string(nv_lit(""));
+        return nv_coerce_string((&nv_lits[5]));
     }
     return nv_coerce_string(nv_index(l_current, nv_int(0LL)));
-    return nv_lit("");
+    return (&nv_empty_str_val);
 }
 
 static nv f_fail_2(nv a0, nv a1) {
     nv l_message = nv_coerce_string(a0);
     nv l_pos = nv_coerce_string(a1);
-    nv_eprintln(nv_add_chain(4, nv_lit("error: "), l_pos, nv_lit(": "), l_message));
+    nv_eprintln(nv_add_chain(4, (&nv_lits[14]), l_pos, (&nv_lits[15]), l_message));
     (void)nv_exit(nv_int(1LL));
     return nv_coerce_int(nv_int(0LL));
     return nv_int(0);
@@ -4397,46 +9444,46 @@ static nv f_fail_2(nv a0, nv a1) {
 
 static nv f_q_0(void) {
     return nv_coerce_string(nv_chr(nv_int(34LL)));
-    return nv_lit("");
+    return (&nv_empty_str_val);
 }
 
 static nv f_tokKind_1(nv a0) {
     nv l_token = nv_coerce_string(a0);
     long long l_i = 0LL;
-    while (nv_ne_bool(nv_invoke1(l_token, "charAt", nv_int(l_i)), nv_lit(" "))) {
+    while (nv_ne_bool(nv_invoke1(l_token, "charAt", nv_int(l_i)), (&nv_lits[9]))) {
         l_i = (l_i + 1LL);
     }
     return nv_coerce_string(nv_invoke2(l_token, "substring", nv_int(0LL), nv_int(l_i)));
-    return nv_lit("");
+    return (&nv_empty_str_val);
 }
 
 static nv f_tokPos_1(nv a0) {
     nv l_token = nv_coerce_string(a0);
     long long l_i = 0LL;
-    while (nv_ne_bool(nv_invoke1(l_token, "charAt", nv_int(l_i)), nv_lit(" "))) {
+    while (nv_ne_bool(nv_invoke1(l_token, "charAt", nv_int(l_i)), (&nv_lits[9]))) {
         l_i = (l_i + 1LL);
     }
     long long l_start = (l_i + 1LL);
     l_i = l_start;
-    while (nv_ne_bool(nv_invoke1(l_token, "charAt", nv_int(l_i)), nv_lit(" "))) {
+    while (nv_ne_bool(nv_invoke1(l_token, "charAt", nv_int(l_i)), (&nv_lits[9]))) {
         l_i = (l_i + 1LL);
     }
     return nv_coerce_string(nv_invoke2(l_token, "substring", nv_int(l_start), nv_int(l_i)));
-    return nv_lit("");
+    return (&nv_empty_str_val);
 }
 
 static nv f_tokVal_1(nv a0) {
     nv l_token = nv_coerce_string(a0);
     long long l_i = 0LL;
-    while (nv_ne_bool(nv_invoke1(l_token, "charAt", nv_int(l_i)), nv_lit(" "))) {
+    while (nv_ne_bool(nv_invoke1(l_token, "charAt", nv_int(l_i)), (&nv_lits[9]))) {
         l_i = (l_i + 1LL);
     }
     l_i = (l_i + 1LL);
-    while (nv_ne_bool(nv_invoke1(l_token, "charAt", nv_int(l_i)), nv_lit(" "))) {
+    while (nv_ne_bool(nv_invoke1(l_token, "charAt", nv_int(l_i)), (&nv_lits[9]))) {
         l_i = (l_i + 1LL);
     }
     return nv_coerce_string(nv_invoke2(l_token, "substring", nv_int((l_i + 1LL)), nv_length_of(l_token, "length")));
-    return nv_lit("");
+    return (&nv_empty_str_val);
 }
 
 static nv f_isSym_3(nv a0, nv a1, nv a2) {
@@ -4447,7 +9494,7 @@ static nv f_isSym_3(nv a0, nv a1, nv a2) {
         return nv_bool(0);
     }
     nv l_t = nv_index(l_tokens, nv_int(l_p));
-    return nv_bool(nv_truthy(nv_eq(f_tokKind_1(l_t), nv_lit("SYM"))) && nv_truthy(nv_eq(f_tokVal_1(l_t), l_s)));
+    return nv_bool(nv_truthy(nv_eq(f_tokKind_1(l_t), (&nv_lits[16]))) && nv_truthy(nv_eq(f_tokVal_1(l_t), l_s)));
     return nv_bool(0);
 }
 
@@ -4459,7 +9506,7 @@ static nv f_isKw_3(nv a0, nv a1, nv a2) {
         return nv_bool(0);
     }
     nv l_t = nv_index(l_tokens, nv_int(l_p));
-    return nv_bool(nv_truthy(nv_eq(f_tokKind_1(l_t), nv_lit("KEYWORD"))) && nv_truthy(nv_eq(f_tokVal_1(l_t), l_w)));
+    return nv_bool(nv_truthy(nv_eq(f_tokKind_1(l_t), (&nv_lits[17]))) && nv_truthy(nv_eq(f_tokVal_1(l_t), l_w)));
     return nv_bool(0);
 }
 
@@ -4469,7 +9516,7 @@ static nv f_isIdent_2(nv a0, nv a1) {
     if (nv_ge_bool(nv_int(l_p), nv_length_of(l_tokens, "length"))) {
         return nv_bool(0);
     }
-    return nv_eq(f_tokKind_1(nv_index(l_tokens, nv_int(l_p))), nv_lit("IDENT"));
+    return nv_eq(f_tokKind_1(nv_index(l_tokens, nv_int(l_p))), (&nv_lits[18]));
     return nv_bool(0);
 }
 
@@ -4487,7 +9534,7 @@ static nv f_atEnd_2(nv a0, nv a1) {
     if (nv_ge_bool(nv_int(l_p), nv_length_of(l_tokens, "length"))) {
         return nv_bool(1);
     }
-    return nv_eq(f_tokKind_1(nv_index(l_tokens, nv_int(l_p))), nv_lit("EOF"));
+    return nv_eq(f_tokKind_1(nv_index(l_tokens, nv_int(l_p))), (&nv_lits[19]));
     return nv_bool(0);
 }
 
@@ -4498,17 +9545,17 @@ static nv f_posOf_2(nv a0, nv a1) {
         return nv_coerce_string(f_tokPos_1(nv_index(l_tokens, nv_sub_fast(nv_length_of(l_tokens, "length"), nv_int(1LL)))));
     }
     return nv_coerce_string(f_tokPos_1(nv_index(l_tokens, nv_int(l_p))));
-    return nv_lit("");
+    return (&nv_empty_str_val);
 }
 
 static nv f_describe_2(nv a0, nv a1) {
     nv l_tokens = a0;
     long long l_p = nv_as_int(a1);
     if (nv_truthy(f_atEnd_2(l_tokens, nv_int(l_p)))) {
-        return nv_coerce_string(nv_lit("end of file"));
+        return nv_coerce_string((&nv_lits[20]));
     }
-    return nv_coerce_string(nv_add_chain(3, nv_lit("'"), f_tokVal_1(nv_index(l_tokens, nv_int(l_p))), nv_lit("'")));
-    return nv_lit("");
+    return nv_coerce_string(nv_add_chain(3, (&nv_lits[21]), f_tokVal_1(nv_index(l_tokens, nv_int(l_p))), (&nv_lits[21])));
+    return (&nv_empty_str_val);
 }
 
 static nv f_expectSym_3(nv a0, nv a1, nv a2) {
@@ -4516,7 +9563,7 @@ static nv f_expectSym_3(nv a0, nv a1, nv a2) {
     long long l_p = nv_as_int(a1);
     nv l_s = nv_coerce_string(a2);
     if (nv_eq_bool(f_isSym_3(l_tokens, nv_int(l_p), l_s), nv_bool(0))) {
-        (void)f_fail_2(nv_add_chain(4, nv_lit("expected '"), l_s, nv_lit("' but found "), f_describe_2(l_tokens, nv_int(l_p))), f_posOf_2(l_tokens, nv_int(l_p)));
+        (void)f_fail_2(nv_add_chain(4, (&nv_lits[22]), l_s, (&nv_lits[23]), f_describe_2(l_tokens, nv_int(l_p))), f_posOf_2(l_tokens, nv_int(l_p)));
     }
     return nv_coerce_int(nv_int((l_p + 1LL)));
     return nv_int(0);
@@ -4527,7 +9574,7 @@ static nv f_expectIdent_3(nv a0, nv a1, nv a2) {
     long long l_p = nv_as_int(a1);
     nv l_what = nv_coerce_string(a2);
     if (nv_eq_bool(f_isIdent_2(l_tokens, nv_int(l_p)), nv_bool(0))) {
-        (void)f_fail_2(nv_add_chain(4, nv_lit("expected "), l_what, nv_lit(" but found "), f_describe_2(l_tokens, nv_int(l_p))), f_posOf_2(l_tokens, nv_int(l_p)));
+        (void)f_fail_2(nv_add_chain(4, (&nv_lits[24]), l_what, (&nv_lits[25]), f_describe_2(l_tokens, nv_int(l_p))), f_posOf_2(l_tokens, nv_int(l_p)));
     }
     return nv_coerce_int(nv_int((l_p + 1LL)));
     return nv_int(0);
@@ -4537,28 +9584,28 @@ static nv f_normType_1(nv a0) {
     nv l_t = nv_coerce_string(a0);
     nv l_head = l_t;
     long long l_i = 0LL;
-    while ((nv_lt_bool(nv_int(l_i), nv_length_of(l_t, "length")) && nv_ne_bool(nv_invoke1(l_t, "charAt", nv_int(l_i)), nv_lit("<")))) {
+    while ((nv_lt_bool(nv_int(l_i), nv_length_of(l_t, "length")) && nv_ne_bool(nv_invoke1(l_t, "charAt", nv_int(l_i)), (&nv_lits[26])))) {
         l_i = (l_i + 1LL);
     }
-    nv l_rest = nv_lit("");
+    nv l_rest = (&nv_lits[5]);
     if (nv_lt_bool(nv_int(l_i), nv_length_of(l_t, "length"))) {
         l_head = nv_invoke2(l_t, "substring", nv_int(0LL), nv_int(l_i));
         l_rest = nv_invoke2(l_t, "substring", nv_int(l_i), nv_length_of(l_t, "length"));
     }
-    if (nv_eq_bool(l_head, nv_lit("str"))) {
-        l_head = nv_lit("string");
+    if (nv_eq_bool(l_head, (&nv_lits[27]))) {
+        l_head = (&nv_lits[28]);
     }
-    if (nv_eq_bool(l_head, nv_lit("int"))) {
-        l_head = nv_lit("integer");
+    if (nv_eq_bool(l_head, (&nv_lits[29]))) {
+        l_head = (&nv_lits[30]);
     }
-    if (nv_eq_bool(l_head, nv_lit("boolean"))) {
-        l_head = nv_lit("bool");
+    if (nv_eq_bool(l_head, (&nv_lits[31]))) {
+        l_head = (&nv_lits[32]);
     }
-    if ((nv_eq_bool(l_head, nv_lit("double")) || nv_eq_bool(l_head, nv_lit("doub")))) {
-        l_head = nv_lit("float");
+    if ((nv_eq_bool(l_head, (&nv_lits[34])) || nv_eq_bool(l_head, (&nv_lits[33])))) {
+        l_head = (&nv_lits[35]);
     }
     return nv_coerce_string(nv_add_fast(l_head, l_rest));
-    return nv_lit("");
+    return (&nv_empty_str_val);
 }
 
 static nv f_parseType_2(nv a0, nv a1) {
@@ -4566,19 +9613,22 @@ static nv f_parseType_2(nv a0, nv a1) {
     long long l_pos = nv_as_int(a1);
     long long l_p = l_pos;
     if (nv_eq_bool(f_isIdent_2(l_tokens, nv_int(l_p)), nv_bool(0))) {
-        (void)f_fail_2(nv_add_fast(nv_lit("expected a type but found "), f_describe_2(l_tokens, nv_int(l_p))), f_posOf_2(l_tokens, nv_int(l_p)));
+        (void)f_fail_2(nv_add_fast((&nv_lits[36]), f_describe_2(l_tokens, nv_int(l_p))), f_posOf_2(l_tokens, nv_int(l_p)));
     }
     nv l_name = f_tokVal_1(nv_index(l_tokens, nv_int(l_p)));
     l_p = (l_p + 1LL);
-    if (nv_truthy(f_isSym_3(l_tokens, nv_int(l_p), nv_lit("<")))) {
+    if (nv_truthy(f_isSym_3(l_tokens, nv_int(l_p), (&nv_lits[26])))) {
         long long l_depth = 0LL;
         while (nv_eq_bool(f_atEnd_2(l_tokens, nv_int(l_p)), nv_bool(0))) {
             nv l_v = f_tokVal_1(nv_index(l_tokens, nv_int(l_p)));
-            if (nv_truthy(f_isSym_3(l_tokens, nv_int(l_p), nv_lit("<")))) {
+            if (nv_truthy(f_isSym_3(l_tokens, nv_int(l_p), (&nv_lits[26])))) {
                 l_depth = (l_depth + 1LL);
             }
-            if (nv_truthy(f_isSym_3(l_tokens, nv_int(l_p), nv_lit(">")))) {
+            if (nv_truthy(f_isSym_3(l_tokens, nv_int(l_p), (&nv_lits[37])))) {
                 l_depth = (l_depth - 1LL);
+            }
+            if (nv_truthy(f_isSym_3(l_tokens, nv_int(l_p), (&nv_lits[38])))) {
+                l_depth = (l_depth - 2LL);
             }
             l_name = nv_add_fast(l_name, l_v);
             l_p = (l_p + 1LL);
@@ -4587,94 +9637,112 @@ static nv f_parseType_2(nv a0, nv a1) {
             }
         }
     }
-    return nv_map_of(2, nv_lit("node"), f_normType_1(l_name), nv_lit("pos"), nv_int(l_p));
+    return nv_map_of(2, (&nv_lits[39]), f_normType_1(l_name), (&nv_lits[40]), nv_int(l_p));
     return nv_nil;
 }
 
 static nv f_parseParams_2(nv a0, nv a1) {
     nv l_tokens = a0;
     long long l_pos = nv_as_int(a1);
-    nv l_p = f_expectSym_3(l_tokens, nv_int(l_pos), nv_lit("("));
-    nv l_node = nv_lit("(params");
-    while (nv_eq_bool(f_isSym_3(l_tokens, l_p, nv_lit(")")), nv_bool(0))) {
+    nv l_p = f_expectSym_3(l_tokens, nv_int(l_pos), (&nv_lits[7]));
+    nv l_node = (&nv_lits[41]);
+    while (nv_eq_bool(f_isSym_3(l_tokens, l_p, (&nv_lits[8])), nv_bool(0))) {
         if (nv_truthy(f_atEnd_2(l_tokens, l_p))) {
-            (void)f_fail_2(nv_lit("unterminated parameter list"), f_posOf_2(l_tokens, l_p));
+            (void)f_fail_2((&nv_lits[42]), f_posOf_2(l_tokens, l_p));
         }
         nv l_t = f_parseType_2(l_tokens, l_p);
-        l_p = nv_parse_int(nv_index(l_t, nv_lit("pos")));
-        l_p = f_expectIdent_3(l_tokens, l_p, nv_lit("parameter name"));
-        l_node = nv_add_chain(6, l_node, nv_lit(" (p "), nv_index(l_t, nv_lit("node")), nv_lit(" "), f_tokVal_1(nv_index(l_tokens, nv_sub_fast(l_p, nv_int(1LL)))), nv_lit(")"));
-        if (nv_truthy(f_isSym_3(l_tokens, l_p, nv_lit(",")))) {
+        l_p = nv_parse_int(nv_index(l_t, (&nv_lits[40])));
+        l_p = f_expectIdent_3(l_tokens, l_p, (&nv_lits[43]));
+        l_node = nv_add_chain(6, l_node, (&nv_lits[44]), nv_index(l_t, (&nv_lits[39])), (&nv_lits[9]), f_tokVal_1(nv_index(l_tokens, nv_sub_fast(l_p, nv_int(1LL)))), (&nv_lits[8]));
+        if (nv_truthy(f_isSym_3(l_tokens, l_p, (&nv_lits[45])))) {
             l_p = nv_add_fast(l_p, nv_int(1LL));
         }
     }
-    return nv_map_of(2, nv_lit("node"), nv_add_fast(l_node, nv_lit(")")), nv_lit("pos"), nv_add_fast(l_p, nv_int(1LL)));
+    return nv_map_of(2, (&nv_lits[39]), nv_add_fast(l_node, (&nv_lits[8])), (&nv_lits[40]), nv_add_fast(l_p, nv_int(1LL)));
     return nv_nil;
 }
 
 static nv f_stdModules_0(void) {
-    return nv_arr_of(18, nv_lit("arrays"), nv_lit("base64"), nv_lit("cli"), nv_lit("csv"), nv_lit("fmt"), nv_lit("hash"), nv_lit("http"), nv_lit("io"), nv_lit("json"), nv_lit("log"), nv_lit("maps"), nv_lit("math"), nv_lit("os"), nv_lit("path"), nv_lit("random"), nv_lit("strings"), nv_lit("test"), nv_lit("time"));
+    return nv_arr_of(24, (&nv_lits[46]), (&nv_lits[47]), (&nv_lits[48]), (&nv_lits[49]), (&nv_lits[50]), (&nv_lits[51]), (&nv_lits[52]), (&nv_lits[53]), (&nv_lits[54]), (&nv_lits[55]), (&nv_lits[56]), (&nv_lits[57]), (&nv_lits[58]), (&nv_lits[59]), (&nv_lits[60]), (&nv_lits[61]), (&nv_lits[62]), (&nv_lits[63]), (&nv_lits[64]), (&nv_lits[65]), (&nv_lits[66]), (&nv_lits[67]), (&nv_lits[68]), (&nv_lits[69]));
     return nv_nil;
 }
 
 static nv f_stdSource_1(nv a0) {
     nv l_name = nv_coerce_string(a0);
-    if (nv_eq_bool(l_name, nv_lit("arrays"))) {
-        return nv_coerce_string(nv_lit("package arrays\n\n// Array helpers beyond the builtin methods (length, append, pop, insert,\n// remove, contains, indexOf, join, clear).\n\nmethod sort(array<object> items): array<object> native \"nv_arr_sorted\"   // ascending, numbers or strings\nmethod sortDesc(array<object> items): array<object> {\n    return reverse(sort(items))\n}\n\nmethod reverse(array<object> items): array<object> {\n    var out = []\n    var i = items.length()\n    while (i > 0) {\n        out.append(items[i - 1])\n        i = i - 1\n    }\n    return out\n}\n\nmethod unique(array<object> items): array<object> {\n    var out = []\n    for (x in items) {\n        if (out.contains(x) == false) {\n            out.append(x)\n        }\n    }\n    return out\n}\n\n// [from, to) as integers\nmethod range(integer from, integer to): array<integer> {\n    var out = []\n    var i = from\n    while (i < to) {\n        out.append(i)\n        i = i + 1\n    }\n    return out\n}\n\nmethod slice(array<object> items, integer from, integer to): array<object> {\n    var out = []\n    var i = from\n    if (i < 0) {\n        i = 0\n    }\n    while (i < to && i < items.length()) {\n        out.append(items[i])\n        i = i + 1\n    }\n    return out\n}\n\nmethod concat(array<object> a, array<object> b): array<object> {\n    var out = []\n    for (x in a) {\n        out.append(x)\n    }\n    for (x in b) {\n        out.append(x)\n    }\n    return out\n}\n\nmethod sum(array<object> numbers): object {\n    var total = 0\n    for (x in numbers) {\n        total = total + x\n    }\n    return total\n}\n\nmethod min(array<object> items): object {\n    var best = items[0]\n    for (x in items) {\n        if (x < best) {\n            best = x\n        }\n    }\n    return best\n}\n\nmethod max(array<object> items): object {\n    var best = items[0]\n    for (x in items) {\n        if (x > best) {\n            best = x\n        }\n    }\n    return best\n}\n\nmethod first(array<object> items): object {\n    return items[0]\n}\n\nmethod last(array<object> items): object {\n    return items[items.length() - 1]\n}\n\nmethod isEmpty(array<object> items): bool {\n    return items.length() == 0\n}\n\n// Number of elements equal to `value`.\nmethod countOf(array<object> items, object value): integer {\n    var n = 0\n    for (x in items) {\n        if (x == value) {\n            n = n + 1\n        }\n    }\n    return n\n}\n\n// Copies the array (shallow).\nmethod copy(array<object> items): array<object> {\n    return slice(items, 0, items.length())\n}\n\n// Splits into chunks of `size` elements.\nmethod chunk(array<object> items, integer size): array<object> {\n    var out = []\n    var i = 0\n    while (i < items.length()) {\n        out.append(slice(items, i, i + size))\n        i = i + size\n    }\n    return out\n}\n"));
+    if (nv_eq_bool(l_name, (&nv_lits[46]))) {
+        return nv_coerce_string((&nv_lits[70]));
     }
-    if (nv_eq_bool(l_name, nv_lit("base64"))) {
-        return nv_coerce_string(nv_lit("package base64\n\nimport math\n\n// Base64 encoding (RFC 4648, with padding).\n\nmethod alphabet(): string {\n    return \"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/\"\n}\n\nmethod encode(string text): string {\n    var table = alphabet()\n    var out = \"\"\n    var i = 0\n    var n = text.length()\n    while (i < n) {\n        var b0 = ord(text.charAt(i))\n        var b1 = 0\n        var b2 = 0\n        if (i + 1 < n) {\n            b1 = ord(text.charAt(i + 1))\n        }\n        if (i + 2 < n) {\n            b2 = ord(text.charAt(i + 2))\n        }\n        var triple = b0 * 65536 + b1 * 256 + b2\n        out = out + table.charAt(triple / 262144)\n        out = out + table.charAt((triple / 4096) % 64)\n        if (i + 1 < n) {\n            out = out + table.charAt((triple / 64) % 64)\n        }\n        if (i + 1 >= n) {\n            out = out + \"=\"\n        }\n        if (i + 2 < n) {\n            out = out + table.charAt(triple % 64)\n        }\n        if (i + 2 >= n) {\n            out = out + \"=\"\n        }\n        i = i + 3\n    }\n    return out\n}\n\nmethod decode(string encoded): string {\n    var table = alphabet()\n    var out = \"\"\n    var bits = 0\n    var value = 0\n    for (c in encoded) {\n        if (c == \"=\" || c == \"\\n\" || c == \"\\r\" || c == \" \") {\n            continue\n        }\n        var index = table.indexOf(c)\n        if (index < 0) {\n            continue\n        }\n        value = value * 64 + index\n        bits = bits + 6\n        if (bits >= 8) {\n            bits = bits - 8\n            var byte = value / math.powInt(2, bits)\n            out = out + chr(byte % 256)\n            value = value % math.powInt(2, bits)\n        }\n    }\n    return out\n}\n"));
+    if (nv_eq_bool(l_name, (&nv_lits[47]))) {
+        return nv_coerce_string((&nv_lits[71]));
     }
-    if (nv_eq_bool(l_name, nv_lit("cli"))) {
-        return nv_coerce_string(nv_lit("package cli\n\n// Command line parsing: `cli.parse(args)` splits positional arguments from\n// options: --name value, --name=value, --flag, -x.\n//   { \"args\": [...], \"opts\": { \"name\": \"value\", \"flag\": \"true\" } }\n\nmethod parse(array<string> arguments): map<string, object> {\n    var positional = []\n    var options = {}\n    var i = 0\n    while (i < arguments.length()) {\n        var a = arguments[i]\n        if (a == \"--\") {\n            i = i + 1\n            while (i < arguments.length()) {\n                positional.append(arguments[i])\n                i = i + 1\n            }\n            break\n        }\n        if (a.startsWith(\"--\")) {\n            var body = a.substring(2, a.length())\n            var eq = body.indexOf(\"=\")\n            if (eq >= 0) {\n                options[body.substring(0, eq)] = body.substring(eq + 1, body.length())\n                i = i + 1\n                continue\n            }\n            if (i + 1 < arguments.length() && arguments[i + 1].startsWith(\"-\") == false) {\n                options[body] = arguments[i + 1]\n                i = i + 2\n                continue\n            }\n            options[body] = \"true\"\n            i = i + 1\n            continue\n        }\n        if (a.startsWith(\"-\") && a.length() > 1) {\n            options[a.substring(1, a.length())] = \"true\"\n            i = i + 1\n            continue\n        }\n        positional.append(a)\n        i = i + 1\n    }\n    return { \"args\": positional, \"opts\": options }\n}\n\n// Option value or a fallback.\nmethod option(map<string, object> parsed, string name, string fallback): string {\n    var opts = parsed[\"opts\"]\n    if (opts.has(name)) {\n        return opts[name]\n    }\n    return fallback\n}\n\nmethod flag(map<string, object> parsed, string name): bool {\n    var opts = parsed[\"opts\"]\n    return opts.has(name)\n}\n\n// Positional argument at `index` or a fallback.\nmethod argument(map<string, object> parsed, integer index, string fallback): string {\n    var args = parsed[\"args\"]\n    if (index < args.length()) {\n        return args[index]\n    }\n    return fallback\n}\n"));
+    if (nv_eq_bool(l_name, (&nv_lits[48]))) {
+        return nv_coerce_string((&nv_lits[72]));
     }
-    if (nv_eq_bool(l_name, nv_lit("csv"))) {
-        return nv_coerce_string(nv_lit("package csv\n\n// Comma separated values with quoting (\"\" inside quoted fields).\n\nmethod parse(string text): array<object> {\n    return parseWith(text, \",\")\n}\n\nmethod parseWith(string text, string separator): array<object> {\n    var rows = []\n    var row = []\n    var field = \"\"\n    var quoted = false\n    var i = 0\n    var n = text.length()\n    while (i < n) {\n        var c = text.charAt(i)\n        if (quoted) {\n            if (c == \"\\\"\" && i + 1 < n && text.charAt(i + 1) == \"\\\"\") {\n                field = field + \"\\\"\"\n                i = i + 2\n                continue\n            }\n            if (c == \"\\\"\") {\n                quoted = false\n                i = i + 1\n                continue\n            }\n            field = field + c\n            i = i + 1\n            continue\n        }\n        if (c == \"\\\"\") {\n            quoted = true\n            i = i + 1\n            continue\n        }\n        if (c == separator) {\n            row.append(field)\n            field = \"\"\n            i = i + 1\n            continue\n        }\n        if (c == \"\\n\" || c == \"\\r\") {\n            if (c == \"\\r\" && i + 1 < n && text.charAt(i + 1) == \"\\n\") {\n                i = i + 1\n            }\n            row.append(field)\n            rows.append(row)\n            row = []\n            field = \"\"\n            i = i + 1\n            continue\n        }\n        field = field + c\n        i = i + 1\n    }\n    if (field != \"\" || row.length() > 0) {\n        row.append(field)\n        rows.append(row)\n    }\n    return rows\n}\n\nmethod stringify(array<object> rows): string {\n    return stringifyWith(rows, \",\")\n}\n\nmethod stringifyWith(array<object> rows, string separator): string {\n    var lines = []\n    for (row in rows) {\n        var fields = []\n        for (value in row) {\n            fields.append(quote(\"\" + value, separator))\n        }\n        lines.append(fields.join(separator))\n    }\n    return lines.join(\"\\n\")\n}\n\nmethod quote(string value, string separator): string {\n    if (value.contains(separator) || value.contains(\"\\\"\") || value.contains(\"\\n\")) {\n        return \"\\\"\" + value.replace(\"\\\"\", \"\\\"\\\"\") + \"\\\"\"\n    }\n    return value\n}\n"));
+    if (nv_eq_bool(l_name, (&nv_lits[49]))) {
+        return nv_coerce_string((&nv_lits[73]));
     }
-    if (nv_eq_bool(l_name, nv_lit("fmt"))) {
-        return nv_coerce_string(nv_add_chain(3, nv_lit("package fmt\n\nimport math\nimport strings\n\n// Human friendly formatting of numbers and sizes.\n\nmethod fixed(float x, integer decimals): string native \"nv_fmt_fixed\"   // \"3.14\"\n\n// 1234567 -> \"1,234,567\"\nmethod thousands(integer n): string {\n    var digits = \"\" + math.abs(n)\n    var out = \"\"\n    var i = digits.length()\n    while (i > 0) {\n        var start = i - 3\n        if (start < 0) {\n            start = 0\n        }\n        var group = digits.substring(start, i)\n        if (out == \"\") {\n            out = group\n        }\n        if (out != group) {\n            out = group + \",\" + out\n        }\n        i = start\n    }\n    if (n < 0) {\n        return \"-\" + out\n    }\n    return out\n}\n\n// 1536 -> \"1.5 KB\"\nmethod bytes(integer n): string {\n    if (n < 1024) {\n        return \""), nv_chr(nv_int(36LL)), nv_lit("{n} B\"\n    }\n    var units = [\"KB\", \"MB\", \"GB\", \"TB\"]\n    var value = math.toFloat(n)\n    var unit = \"\"\n    for (u in units) {\n        value = value / 1024.0\n        unit = u\n        if (value < 1024.0) {\n            break\n        }\n    }\n    return fixed(value, 1) + \" \" + unit\n}\n\n// 0.256 -> \"25.6%\"\nmethod percent(float ratio, integer decimals): string {\n    return fixed(ratio * 100.0, decimals) + \"%\"\n}\n\n// Two-column table: rows of [label, value].\nmethod table(array<object> rows): string {\n    var width = 0\n    for (row in rows) {\n        var label = \"\" + row[0]\n        if (label.length() > width) {\n            width = label.length()\n        }\n    }\n    var lines = []\n    for (row in rows) {\n        lines.append(strings.padRight(\"\" + row[0], width) + \"  \" + row[1])\n    }\n    return lines.join(\"\\n\")\n}\n")));
+    if (nv_eq_bool(l_name, (&nv_lits[50]))) {
+        return nv_coerce_string((&nv_lits[74]));
     }
-    if (nv_eq_bool(l_name, nv_lit("hash"))) {
-        return nv_coerce_string(nv_lit("package hash\n\n// Non-cryptographic hashes.\n\nmethod fnv1a(string text): integer native \"nv_hash_fnv1a\"   // 64-bit FNV-1a, always >= 0\nmethod crc32(string text): integer native \"nv_hash_crc32\"\n\n// Stable small hash for bucketing: 0 .. buckets-1\nmethod bucket(string text, integer buckets): integer {\n    return fnv1a(text) % buckets\n}\n\n// Hex string of a hash value.\nmethod hex(integer value): string {\n    var digits = \"0123456789abcdef\"\n    var out = \"\"\n    var v = value\n    if (v == 0) {\n        return \"0\"\n    }\n    while (v > 0) {\n        out = digits.charAt(v % 16) + out\n        v = v / 16\n    }\n    return out\n}\n"));
+    if (nv_eq_bool(l_name, (&nv_lits[51]))) {
+        return nv_coerce_string((&nv_lits[75]));
     }
-    if (nv_eq_bool(l_name, nv_lit("http"))) {
-        return nv_coerce_string(nv_lit("package http\n\nimport json\n\n// HTTP client driven by the curl command line tool (https included).\n// get/post/put/delete return the body and abort on transport errors;\n// request never aborts and returns {status, ok, body, headers, error}.\n\nmethod get(string url): string native \"nv_http_get\"\nmethod post(string url, object body): string native \"nv_http_post\"     // maps/arrays are sent as JSON\nmethod put(string url, object body): string native \"nv_http_put\"\nmethod delete(string url): string native \"nv_http_delete\"\nmethod request(string verb, string url, object body, map<string, string> headers): map<string, object> native \"nv_http_request\"\nmethod download(string url, string file): bool native \"nv_http_download\"\n\n// GET that parses the response as JSON.\nmethod getJson(string url): object {\n    return json.parse(get(url))\n}\n\n// POST with a JSON body, parsing the JSON response.\nmethod postJson(string url, object body): object {\n    return json.parse(post(url, body))\n}\n"));
+    if (nv_eq_bool(l_name, (&nv_lits[52]))) {
+        return nv_coerce_string((&nv_lits[76]));
     }
-    if (nv_eq_bool(l_name, nv_lit("io"))) {
-        return nv_coerce_string(nv_lit("package io\n\n// Standard input and output.\n\nmethod readLine(): string native \"nv_read_line\"\nmethod readAll(): string native \"nv_read_all\"          // everything from stdin\nmethod write(string text) native \"nv_io_write\"          // stdout without newline\nmethod writeErr(string text) native \"nv_io_write_err\"   // stderr without newline\nmethod flush() native \"nv_io_flush\"\n\nmethod readLines(): array<string> {\n    var out = []\n    for (line in readAll().replace(\"\\r\\n\", \"\\n\").split(\"\\n\")) {\n        out.append(line)\n    }\n    if (out.length() > 0 && out[out.length() - 1] == \"\") {\n        out.pop()\n    }\n    return out\n}\n\n// Asks a question on stdout and reads the answer.\nmethod prompt(string question): string {\n    write(question)\n    flush()\n    return readLine()\n}\n"));
+    if (nv_eq_bool(l_name, (&nv_lits[53]))) {
+        return nv_coerce_string(nv_add_chain(3, (&nv_lits[77]), nv_chr(nv_int(36LL)), (&nv_lits[78])));
     }
-    if (nv_eq_bool(l_name, nv_lit("json"))) {
-        return nv_coerce_string(nv_lit("package json\n\n// JSON: text <-> maps, arrays, primitives (objects serialize their fields).\n\nmethod stringify(object value): string native \"nv_json_stringify\"\nmethod pretty(object value): string native \"nv_json_pretty\"          // 2-space indented\nmethod parse(string text): object native \"nv_json_parse\"             // aborts on invalid input\nmethod isValid(string text): bool native \"nv_json_is_valid\"\nmethod load(string file): object native \"nv_json_load\"\nmethod save(object value, string dir, string file) native \"nv_json_save\"  // creates dir, pretty printed\n\n// Parses text, or returns `fallback` when it is not valid JSON.\nmethod parseOr(string text, object fallback): object {\n    if (isValid(text)) {\n        return parse(text)\n    }\n    return fallback\n}\n"));
+    if (nv_eq_bool(l_name, (&nv_lits[54]))) {
+        return nv_coerce_string((&nv_lits[79]));
     }
-    if (nv_eq_bool(l_name, nv_lit("log"))) {
-        return nv_coerce_string(nv_lit("package log\n\nimport strings\nimport time\n\n// Leveled logging to stderr: debug < info < warn < error.\n\nvar minimumLevel = 1\nvar showTime = true\n\nmethod setLevel(string level) {\n    minimumLevel = levelValue(level)\n}\n\nmethod setTimestamps(bool enabled) {\n    showTime = enabled\n}\n\nmethod debug(string message) {\n    write(0, \"DEBUG\", message)\n}\n\nmethod info(string message) {\n    write(1, \"INFO\", message)\n}\n\nmethod warn(string message) {\n    write(2, \"WARN\", message)\n}\n\nmethod error(string message) {\n    write(3, \"ERROR\", message)\n}\n\nmethod levelValue(string level): integer {\n    var levels = { \"debug\": 0, \"info\": 1, \"warn\": 2, \"error\": 3 }\n    if (levels.has(level.toLower())) {\n        return levels[level.toLower()]\n    }\n    return 1\n}\n\nmethod write(integer level, string name, string message) {\n    if (level < minimumLevel) {\n        return\n    }\n    var prefix = \"\"\n    if (showTime) {\n        prefix = time.nowIso() + \" \"\n    }\n    eprintln prefix + strings.padRight(name, 5) + \" \" + message\n}\n"));
+    if (nv_eq_bool(l_name, (&nv_lits[55]))) {
+        return nv_coerce_string((&nv_lits[80]));
     }
-    if (nv_eq_bool(l_name, nv_lit("maps"))) {
-        return nv_coerce_string(nv_lit("package maps\n\n// Map helpers beyond the builtin methods (length, has, keys, values, remove, get).\n\n// Copies `b` over `a` into a new map.\nmethod merge(map<string, object> a, map<string, object> b): map<string, object> {\n    var out = {}\n    for (k in a) {\n        out[k] = a[k]\n    }\n    for (k in b) {\n        out[k] = b[k]\n    }\n    return out\n}\n\nmethod fromPairs(array<string> keys, array<object> values): map<string, object> {\n    var out = {}\n    var i = 0\n    while (i < keys.length() && i < values.length()) {\n        out[keys[i]] = values[i]\n        i = i + 1\n    }\n    return out\n}\n\n// Swaps keys and values (values become string keys).\nmethod invert(map<string, object> m): map<string, string> {\n    var out = {}\n    for (k in m) {\n        out[\"\" + m[k]] = k\n    }\n    return out\n}\n\nmethod copy(map<string, object> m): map<string, object> {\n    return merge({}, m)\n}\n\nmethod isEmpty(map<string, object> m): bool {\n    return m.length() == 0\n}\n\n// Entries as [key, value] pairs in key order.\nmethod entries(map<string, object> m): array<object> {\n    var out = []\n    for (k in m) {\n        out.append([k, m[k]])\n    }\n    return out\n}\n\n// Counts how often each element occurs.\nmethod countValues(array<object> items): map<string, integer> {\n    var out = {}\n    for (x in items) {\n        var key = \"\" + x\n        if (out.has(key)) {\n            out[key] = out[key] + 1\n            continue\n        }\n        out[key] = 1\n    }\n    return out\n}\n"));
+    if (nv_eq_bool(l_name, (&nv_lits[56]))) {
+        return nv_coerce_string((&nv_lits[81]));
     }
-    if (nv_eq_bool(l_name, nv_lit("math"))) {
-        return nv_coerce_string(nv_lit("package math\n\n// Numbers: integer and float helpers plus the usual functions.\n\nmethod sqrt(float x): float native \"nv_math_sqrt\"\nmethod pow(float base, float exponent): float native \"nv_math_pow\"\nmethod floor(float x): integer native \"nv_math_floor\"\nmethod ceil(float x): integer native \"nv_math_ceil\"\nmethod round(float x): integer native \"nv_math_round\"\nmethod sin(float x): float native \"nv_math_sin\"\nmethod cos(float x): float native \"nv_math_cos\"\nmethod tan(float x): float native \"nv_math_tan\"\nmethod atan2(float y, float x): float native \"nv_math_atan2\"\nmethod log(float x): float native \"nv_math_log\"\nmethod exp(float x): float native \"nv_math_exp\"\nmethod toFloat(object x): float native \"nv_parse_float\"\nmethod toInt(object x): integer native \"nv_parse_int\"\n\nmethod pi(): float {\n    return 3.141592653589793\n}\n\nmethod abs(object x): object {\n    if (x < 0) {\n        return 0 - x\n    }\n    return x\n}\n\nmethod min(object a, object b): object {\n    if (a < b) {\n        return a\n    }\n    return b\n}\n\nmethod max(object a, object b): object {\n    if (a > b) {\n        return a\n    }\n    return b\n}\n\nmethod clamp(object x, object low, object high): object {\n    return max(low, min(x, high))\n}\n\nmethod sign(object x): integer {\n    if (x < 0) {\n        return -1\n    }\n    if (x > 0) {\n        return 1\n    }\n    return 0\n}\n\nmethod isEven(integer n): bool {\n    return n % 2 == 0\n}\n\nmethod isOdd(integer n): bool {\n    return n % 2 != 0\n}\n\nmethod gcd(integer a, integer b): integer {\n    var x = abs(a)\n    var y = abs(b)\n    while (y != 0) {\n        var t = y\n        y = x % y\n        x = t\n    }\n    return x\n}\n\nmethod lcm(integer a, integer b): integer {\n    if (a == 0 || b == 0) {\n        return 0\n    }\n    return abs(a * b) / gcd(a, b)\n}\n\n// Integer power (exponent >= 0).\nmethod powInt(integer base, integer exponent): integer {\n    var result = 1\n    var i = 0\n    while (i < exponent) {\n        result = result * base\n        i = i + 1\n    }\n    return result\n}\n\nmethod isPrime(integer n): bool {\n    if (n < 2) {\n        return false\n    }\n    var i = 2\n    while (i * i <= n) {\n        if (n % i == 0) {\n            return false\n        }\n        i = i + 1\n    }\n    return true\n}\n\n// Rounds a float to `decimals` places.\nmethod roundTo(float x, integer decimals): float {\n    var factor = pow(10.0, toFloat(decimals))\n    return toFloat(round(x * factor)) / factor\n}\n"));
+    if (nv_eq_bool(l_name, (&nv_lits[57]))) {
+        return nv_coerce_string((&nv_lits[82]));
     }
-    if (nv_eq_bool(l_name, nv_lit("os"))) {
-        return nv_coerce_string(nv_lit("package os\n\n// Operating system: files, directories, processes, environment, time.\n// Functions marked `native` are implemented by the C runtime.\n\nmethod mkdir(string path): bool native \"nv_os_mkdir\"           // creates missing parents\nmethod rmdir(string path): bool native \"nv_os_rmdir\"           // removes an empty directory\nmethod remove(string path): bool native \"nv_remove_file\"       // deletes a file\nmethod removeAll(string path): bool native \"nv_os_remove_all\"  // deletes a file or directory tree\nmethod listDir(string path): array<string> native \"nv_os_list_dir\"\nmethod exists(string path): bool native \"nv_path_exists\"\nmethod isDir(string path): bool native \"nv_os_is_dir\"\nmethod isFile(string path): bool native \"nv_os_is_file\"\nmethod rename(string from, string to): bool native \"nv_os_rename\"\nmethod copy(string from, string to): bool native \"nv_os_copy\"\nmethod fileSize(string path): integer native \"nv_os_file_size\"   // -1 when missing\nmethod modified(string path): integer native \"nv_os_modified\"    // unix seconds, -1 when missing\nmethod readFile(string path): string native \"nv_read_file\"\nmethod writeFile(string path, string content) native \"nv_write_file\"\nmethod appendFile(string path, string content) native \"nv_append_file\"\nmethod cwd(): string native \"nv_path_absolute\"\nmethod chdir(string path): bool native \"nv_os_chdir\"\nmethod temp(): string native \"nv_path_temp\"\nmethod home(): string native \"nv_os_home\"\nmethod exec(string command): integer native \"nv_exec\"           // exit code\nmethod output(string command): string native \"nv_os_output\"     // captured stdout\nmethod env(string name): string native \"nv_env\"\nmethod setEnv(string name, string value): bool native \"nv_os_set_env\"\nmethod exit(integer code) native \"nv_exit\"\nmethod platform(): string native \"nv_platform\"                  // linux | macos | windows | unix\nmethod args(): array<string> native \"nv_args\"\nmethod pid(): integer native \"nv_os_pid\"\nmethod time(): integer native \"nv_os_time\"                      // unix seconds\nmethod clock(): float native \"nv_os_clock\"                      // seconds, sub-second precision\nmethod sleep(integer milliseconds) native \"nv_os_sleep\"\nmethod readLine(): string native \"nv_read_line\"\n\n// Whether a command is available on this system.\nmethod hasCommand(string name): bool {\n    if (platform() == \"windows\") {\n        return exec(\"where \" + name + \" > nul 2>&1\") == 0\n    }\n    return exec(\"command -v \" + name + \" > /dev/null 2>&1\") == 0\n}\n\n// Environment variable or a fallback when unset.\nmethod envOr(string name, string fallback): string {\n    var value = env(name)\n    if (value == \"\") {\n        return fallback\n    }\n    return value\n}\n"));
+    if (nv_eq_bool(l_name, (&nv_lits[58]))) {
+        return nv_coerce_string((&nv_lits[83]));
     }
-    if (nv_eq_bool(l_name, nv_lit("path"))) {
-        return nv_coerce_string(nv_lit("package path\n\n// File system paths (pure string handling, forward slashes everywhere).\n\nmethod join(string parts): string native \"nv_path_join\" variadic\nmethod absolute(): string native \"nv_path_absolute\"             // the working directory\nmethod absolute(string path): string native \"nv_path_absolute_of\"\nmethod normalize(string path): string native \"nv_path_normalize\"\nmethod relative(string base, string target): string native \"nv_path_relative\"\nmethod dirname(string path): string native \"nv_path_dirname\"\nmethod basename(string path): string native \"nv_path_basename\"\nmethod stem(string path): string native \"nv_path_stem\"            // basename without extension\nmethod extension(string path): string native \"nv_path_extension\"  // \".txt\", \"\" when none\nmethod isAbsolute(string path): bool native \"nv_path_is_absolute\"\nmethod exists(string path): bool native \"nv_path_exists\"\nmethod isDir(string path): bool native \"nv_os_is_dir\"\nmethod isFile(string path): bool native \"nv_os_is_file\"\nmethod temp(): string native \"nv_path_temp\"\nmethod separator(): string native \"nv_path_separator\"\n\n// \"a/b/c.txt\" with a new extension: withExtension(\"a/b/c.txt\", \".md\")\nmethod withExtension(string p, string ext): string {\n    var current = extension(p)\n    return p.substring(0, p.length() - current.length()) + ext\n}\n\n// The path segments: \"a/b/c\" -> [a, b, c]\nmethod segments(string p): array<string> {\n    var out = []\n    for (s in normalize(p).split(\"/\")) {\n        if (s != \"\") {\n            out.append(s)\n        }\n    }\n    return out\n}\n"));
+    if (nv_eq_bool(l_name, (&nv_lits[59]))) {
+        return nv_coerce_string((&nv_lits[84]));
     }
-    if (nv_eq_bool(l_name, nv_lit("random"))) {
-        return nv_coerce_string(nv_lit("package random\n\nimport arrays\nimport math\n\n// Pseudo random numbers (xorshift, seeded from the clock unless seed() is called).\n\nmethod seed(integer value) native \"nv_random_seed\"\nmethod next(): integer native \"nv_random_next\"     // 0 .. 2^62-1\n\n// Integer in [low, high].\nmethod int(integer low, integer high): integer {\n    if (high <= low) {\n        return low\n    }\n    return low + next() % (high - low + 1)\n}\n\n// Float in [0, 1).\nmethod float(): float {\n    return math.toFloat(next() % 1000000000) / 1000000000.0\n}\n\nmethod bool(): bool {\n    return next() % 2 == 0\n}\n\nmethod pick(array<object> items): object {\n    return items[int(0, items.length() - 1)]\n}\n\n// A shuffled copy (Fisher-Yates).\nmethod shuffle(array<object> items): array<object> {\n    var out = arrays.copy(items)\n    var i = out.length() - 1\n    while (i > 0) {\n        var j = int(0, i)\n        var t = out[i]\n        out[i] = out[j]\n        out[j] = t\n        i = i - 1\n    }\n    return out\n}\n\n// Random string of `length` characters from `alphabet`.\nmethod string(integer length, string alphabet): string {\n    var out = \"\"\n    var i = 0\n    while (i < length) {\n        out = out + alphabet.charAt(int(0, alphabet.length() - 1))\n        i = i + 1\n    }\n    return out\n}\n"));
+    if (nv_eq_bool(l_name, (&nv_lits[60]))) {
+        return nv_coerce_string((&nv_lits[85]));
     }
-    if (nv_eq_bool(l_name, nv_lit("strings"))) {
-        return nv_coerce_string(nv_lit("package strings\n\n// String helpers beyond the builtin methods (length, charAt, substring,\n// indexOf, contains, startsWith, endsWith, split, replace, trim, toUpper,\n// toLower).\n\nmethod repeat(string s, integer times): string {\n    var out = \"\"\n    var i = 0\n    while (i < times) {\n        out = out + s\n        i = i + 1\n    }\n    return out\n}\n\nmethod padLeft(string s, integer width): string {\n    return padLeftWith(s, width, \" \")\n}\n\nmethod padRight(string s, integer width): string {\n    return padRightWith(s, width, \" \")\n}\n\nmethod padLeftWith(string s, integer width, string fill): string {\n    var out = s\n    while (out.length() < width) {\n        out = fill + out\n    }\n    return out\n}\n\nmethod padRightWith(string s, integer width, string fill): string {\n    var out = s\n    while (out.length() < width) {\n        out = out + fill\n    }\n    return out\n}\n\nmethod reverse(string s): string {\n    var out = \"\"\n    var i = s.length()\n    while (i > 0) {\n        out = out + s.charAt(i - 1)\n        i = i - 1\n    }\n    return out\n}\n\nmethod lines(string s): array<string> {\n    return s.replace(\"\\r\\n\", \"\\n\").split(\"\\n\")\n}\n\n// Words separated by any run of whitespace.\nmethod words(string s): array<string> native \"nv_str_words\"\n\nmethod count(string s, string sub): integer {\n    if (sub == \"\") {\n        return 0\n    }\n    var n = 0\n    var at = s.indexOf(sub)\n    while (at >= 0) {\n        n = n + 1\n        at = s.indexOf(sub, at + sub.length())\n    }\n    return n\n}\n\nmethod lastIndexOf(string s, string sub): integer {\n    var last = -1\n    var at = s.indexOf(sub)\n    while (at >= 0) {\n        last = at\n        at = s.indexOf(sub, at + 1)\n    }\n    return last\n}\n\nmethod capitalize(string s): string {\n    if (s == \"\") {\n        return s\n    }\n    return s.charAt(0).toUpper() + s.substring(1, s.length())\n}\n\nmethod isDigit(string c): bool {\n    return c >= \"0\" && c <= \"9\"\n}\n\nmethod isAlpha(string c): bool {\n    return (c >= \"a\" && c <= \"z\") || (c >= \"A\" && c <= \"Z\")\n}\n\nmethod isSpace(string c): bool {\n    return c == \" \" || c == \"\\t\" || c == \"\\n\" || c == \"\\r\"\n}\n\nmethod isNumeric(string s): bool {\n    if (s == \"\") {\n        return false\n    }\n    var i = 0\n    if (s.charAt(0) == \"-\") {\n        i = 1\n    }\n    if (i >= s.length()) {\n        return false\n    }\n    while (i < s.length()) {\n        if (isDigit(s.charAt(i)) == false) {\n            return false\n        }\n        i = i + 1\n    }\n    return true\n}\n\nmethod chars(string s): array<string> {\n    return s.split(\"\")\n}\n\n// Removes `prefix` when present.\nmethod stripPrefix(string s, string prefix): string {\n    if (s.startsWith(prefix)) {\n        return s.substring(prefix.length(), s.length())\n    }\n    return s\n}\n\nmethod stripSuffix(string s, string suffix): string {\n    if (suffix != \"\" && s.endsWith(suffix)) {\n        return s.substring(0, s.length() - suffix.length())\n    }\n    return s\n}\n\n// Shortens to `width` characters, ending with \"...\" when cut.\nmethod truncate(string s, integer width): string {\n    if (s.length() <= width) {\n        return s\n    }\n    if (width <= 3) {\n        return s.substring(0, width)\n    }\n    return s.substring(0, width - 3) + \"...\"\n}\n\nmethod compare(string a, string b): integer {\n    if (a < b) {\n        return -1\n    }\n    if (a > b) {\n        return 1\n    }\n    return 0\n}\n"));
+    if (nv_eq_bool(l_name, (&nv_lits[61]))) {
+        return nv_coerce_string((&nv_lits[86]));
     }
-    if (nv_eq_bool(l_name, nv_lit("test"))) {
-        return nv_coerce_string(nv_add_chain(5, nv_lit("package test\n\n// Minimal test helpers: assertions count failures, report() prints a\n// summary and returns the exit code.\n\nvar passed = 0\nvar failed = 0\n\nmethod assert(bool condition, string name) {\n    if (condition) {\n        passed = passed + 1\n        return\n    }\n    failed = failed + 1\n    eprintln \"FAIL \" + name\n}\n\nmethod assertEqual(object actual, object expected, string name) {\n    if (actual == expected) {\n        passed = passed + 1\n        return\n    }\n    failed = failed + 1\n    eprintln \"FAIL \" + name + \": expected \" + expected + \" but got \" + actual\n}\n\nmethod report(): integer {\n    println \""), nv_chr(nv_int(36LL)), nv_lit("{passed} passed, "), nv_chr(nv_int(36LL)), nv_lit("{failed} failed\"\n    if (failed > 0) {\n        return 1\n    }\n    return 0\n}\n")));
+    if (nv_eq_bool(l_name, (&nv_lits[62]))) {
+        return nv_coerce_string((&nv_lits[87]));
     }
-    if (nv_eq_bool(l_name, nv_lit("time"))) {
-        return nv_coerce_string(nv_add_chain(15, nv_lit("package time\n\nimport math\n\n// Time: unix seconds, wall clock, formatting.\n\nmethod now(): integer native \"nv_os_time\"          // unix seconds\nmethod clock(): float native \"nv_os_clock\"         // seconds with sub-second precision\nmethod sleep(integer milliseconds) native \"nv_os_sleep\"\nmethod iso(integer unixSeconds): string native \"nv_time_iso\"        // 2026-09-01T12:34:56Z (UTC)\nmethod format(integer unixSeconds, string layout): string native \"nv_time_format\"  // strftime layout, UTC\nmethod parts(integer unixSeconds): map<string, integer> native \"nv_time_parts\"     // year, month, day, hour, minute, second, weekday, yearday (UTC)\n\nmethod nowIso(): string {\n    return iso(now())\n}\n\n// Milliseconds since `startClock` (from clock()).\nmethod elapsedMs(float startClock): integer {\n    return math.round((clock() - startClock) * 1000.0)\n}\n\n// \"1h 2m 3s\" style duration for a number of seconds.\nmethod duration(integer seconds): string {\n    if (seconds < 60) {\n        return \""), nv_chr(nv_int(36LL)), nv_lit("{seconds}s\"\n    }\n    if (seconds < 3600) {\n        return \""), nv_chr(nv_int(36LL)), nv_lit("{seconds / 60}m "), nv_chr(nv_int(36LL)), nv_lit("{seconds % 60}s\"\n    }\n    if (seconds < 86400) {\n        return \""), nv_chr(nv_int(36LL)), nv_lit("{seconds / 3600}h "), nv_chr(nv_int(36LL)), nv_lit("{(seconds % 3600) / 60}m\"\n    }\n    return \""), nv_chr(nv_int(36LL)), nv_lit("{seconds / 86400}d "), nv_chr(nv_int(36LL)), nv_lit("{(seconds % 86400) / 3600}h\"\n}\n")));
+    if (nv_eq_bool(l_name, (&nv_lits[63]))) {
+        return nv_coerce_string((&nv_lits[88]));
     }
-    return nv_coerce_string(nv_lit(""));
-    return nv_lit("");
+    if (nv_eq_bool(l_name, (&nv_lits[64]))) {
+        return nv_coerce_string((&nv_lits[89]));
+    }
+    if (nv_eq_bool(l_name, (&nv_lits[65]))) {
+        return nv_coerce_string((&nv_lits[90]));
+    }
+    if (nv_eq_bool(l_name, (&nv_lits[66]))) {
+        return nv_coerce_string(nv_add_chain(5, (&nv_lits[91]), nv_chr(nv_int(36LL)), (&nv_lits[92]), nv_chr(nv_int(36LL)), (&nv_lits[93])));
+    }
+    if (nv_eq_bool(l_name, (&nv_lits[67]))) {
+        return nv_coerce_string((&nv_lits[94]));
+    }
+    if (nv_eq_bool(l_name, (&nv_lits[68]))) {
+        return nv_coerce_string(nv_add_chain(15, (&nv_lits[95]), nv_chr(nv_int(36LL)), (&nv_lits[96]), nv_chr(nv_int(36LL)), (&nv_lits[97]), nv_chr(nv_int(36LL)), (&nv_lits[98]), nv_chr(nv_int(36LL)), (&nv_lits[99]), nv_chr(nv_int(36LL)), (&nv_lits[100]), nv_chr(nv_int(36LL)), (&nv_lits[101]), nv_chr(nv_int(36LL)), (&nv_lits[102])));
+    }
+    if (nv_eq_bool(l_name, (&nv_lits[69]))) {
+        return nv_coerce_string((&nv_lits[103]));
+    }
+    return nv_coerce_string((&nv_lits[5]));
+    return (&nv_empty_str_val);
 }
 
 static nv f_expectArgs_4(nv a0, nv a1, nv a2, nv a3) {
@@ -4683,7 +9751,7 @@ static nv f_expectArgs_4(nv a0, nv a1, nv a2, nv a3) {
     long long l_want = nv_as_int(a2);
     nv l_ctx = a3;
     if (l_got != l_want) {
-        (void)f_fail_2(nv_add_chain(5, l_what, nv_lit(" expects "), nv_int(l_want), nv_lit(" argument(s) but got "), nv_int(l_got)), nv_index(l_ctx, nv_lit("pos")));
+        (void)f_fail_2(nv_add_chain(5, l_what, (&nv_lits[104]), nv_int(l_want), (&nv_lits[105]), nv_int(l_got)), nv_index(l_ctx, (&nv_lits[40])));
     }
     return nv_coerce_int(nv_int(0LL));
     return nv_int(0);
@@ -4694,85 +9762,142 @@ static nv f_genBuiltinCall_4(nv a0, nv a1, nv a2, nv a3) {
     long long l_nargs = nv_as_int(a1);
     nv l_args = nv_coerce_string(a2);
     nv l_ctx = a3;
-    if (nv_eq_bool(l_name, nv_lit("readFile"))) {
-        (void)f_expectArgs_4(nv_lit("readFile"), nv_int(l_nargs), nv_int(1LL), l_ctx);
-        return nv_coerce_string(nv_add_chain(3, nv_lit("nv_read_file("), l_args, nv_lit(")")));
+    if (nv_eq_bool(l_name, (&nv_lits[106]))) {
+        (void)f_expectArgs_4((&nv_lits[106]), nv_int(l_nargs), nv_int(1LL), l_ctx);
+        return nv_coerce_string(nv_add_chain(3, (&nv_lits[107]), l_args, (&nv_lits[8])));
     }
-    if (nv_eq_bool(l_name, nv_lit("writeFile"))) {
-        (void)f_expectArgs_4(nv_lit("writeFile"), nv_int(l_nargs), nv_int(2LL), l_ctx);
-        return nv_coerce_string(nv_add_chain(3, nv_lit("nv_write_file("), l_args, nv_lit(")")));
+    if (nv_eq_bool(l_name, (&nv_lits[108]))) {
+        (void)f_expectArgs_4((&nv_lits[108]), nv_int(l_nargs), nv_int(2LL), l_ctx);
+        return nv_coerce_string(nv_add_chain(3, (&nv_lits[109]), l_args, (&nv_lits[8])));
     }
-    if (nv_eq_bool(l_name, nv_lit("fileExists"))) {
-        (void)f_expectArgs_4(nv_lit("fileExists"), nv_int(l_nargs), nv_int(1LL), l_ctx);
-        return nv_coerce_string(nv_add_chain(3, nv_lit("nv_file_exists("), l_args, nv_lit(")")));
+    if (nv_eq_bool(l_name, (&nv_lits[110]))) {
+        (void)f_expectArgs_4((&nv_lits[110]), nv_int(l_nargs), nv_int(1LL), l_ctx);
+        return nv_coerce_string(nv_add_chain(3, (&nv_lits[111]), l_args, (&nv_lits[8])));
     }
-    if (nv_eq_bool(l_name, nv_lit("args"))) {
-        (void)f_expectArgs_4(nv_lit("args"), nv_int(l_nargs), nv_int(0LL), l_ctx);
-        return nv_coerce_string(nv_lit("nv_args()"));
+    if (nv_eq_bool(l_name, (&nv_lits[112]))) {
+        (void)f_expectArgs_4((&nv_lits[112]), nv_int(l_nargs), nv_int(0LL), l_ctx);
+        return nv_coerce_string((&nv_lits[113]));
     }
-    if (nv_eq_bool(l_name, nv_lit("parseInt"))) {
-        (void)f_expectArgs_4(nv_lit("parseInt"), nv_int(l_nargs), nv_int(1LL), l_ctx);
-        return nv_coerce_string(nv_add_chain(3, nv_lit("nv_parse_int("), l_args, nv_lit(")")));
+    if (nv_eq_bool(l_name, (&nv_lits[114]))) {
+        (void)f_expectArgs_4((&nv_lits[114]), nv_int(l_nargs), nv_int(1LL), l_ctx);
+        return nv_coerce_string(nv_add_chain(3, (&nv_lits[115]), l_args, (&nv_lits[8])));
     }
-    if (nv_eq_bool(l_name, nv_lit("parseFloat"))) {
-        (void)f_expectArgs_4(nv_lit("parseFloat"), nv_int(l_nargs), nv_int(1LL), l_ctx);
-        return nv_coerce_string(nv_add_chain(3, nv_lit("nv_parse_float("), l_args, nv_lit(")")));
+    if (nv_eq_bool(l_name, (&nv_lits[116]))) {
+        (void)f_expectArgs_4((&nv_lits[116]), nv_int(l_nargs), nv_int(1LL), l_ctx);
+        return nv_coerce_string(nv_add_chain(3, (&nv_lits[117]), l_args, (&nv_lits[8])));
     }
-    if (nv_eq_bool(l_name, nv_lit("chr"))) {
-        (void)f_expectArgs_4(nv_lit("chr"), nv_int(l_nargs), nv_int(1LL), l_ctx);
-        return nv_coerce_string(nv_add_chain(3, nv_lit("nv_chr("), l_args, nv_lit(")")));
+    if (nv_eq_bool(l_name, (&nv_lits[118]))) {
+        (void)f_expectArgs_4((&nv_lits[118]), nv_int(l_nargs), nv_int(1LL), l_ctx);
+        return nv_coerce_string(nv_add_chain(3, (&nv_lits[119]), l_args, (&nv_lits[8])));
     }
-    if (nv_eq_bool(l_name, nv_lit("ord"))) {
-        (void)f_expectArgs_4(nv_lit("ord"), nv_int(l_nargs), nv_int(1LL), l_ctx);
-        return nv_coerce_string(nv_add_chain(3, nv_lit("nv_ord("), l_args, nv_lit(")")));
+    if (nv_eq_bool(l_name, (&nv_lits[120]))) {
+        (void)f_expectArgs_4((&nv_lits[120]), nv_int(l_nargs), nv_int(1LL), l_ctx);
+        return nv_coerce_string(nv_add_chain(3, (&nv_lits[121]), l_args, (&nv_lits[8])));
     }
-    if (nv_eq_bool(l_name, nv_lit("typeOf"))) {
-        (void)f_expectArgs_4(nv_lit("typeOf"), nv_int(l_nargs), nv_int(1LL), l_ctx);
-        return nv_coerce_string(nv_add_chain(3, nv_lit("nv_typeof_builtin("), l_args, nv_lit(")")));
+    if (nv_eq_bool(l_name, (&nv_lits[122]))) {
+        (void)f_expectArgs_4((&nv_lits[122]), nv_int(l_nargs), nv_int(1LL), l_ctx);
+        return nv_coerce_string(nv_add_chain(3, (&nv_lits[123]), l_args, (&nv_lits[8])));
     }
-    if (nv_eq_bool(l_name, nv_lit("exec"))) {
-        (void)f_expectArgs_4(nv_lit("exec"), nv_int(l_nargs), nv_int(1LL), l_ctx);
-        return nv_coerce_string(nv_add_chain(3, nv_lit("nv_exec("), l_args, nv_lit(")")));
+    if (nv_eq_bool(l_name, (&nv_lits[124]))) {
+        (void)f_expectArgs_4((&nv_lits[124]), nv_int(l_nargs), nv_int(1LL), l_ctx);
+        return nv_coerce_string(nv_add_chain(3, (&nv_lits[125]), l_args, (&nv_lits[8])));
     }
-    if (nv_eq_bool(l_name, nv_lit("env"))) {
-        (void)f_expectArgs_4(nv_lit("env"), nv_int(l_nargs), nv_int(1LL), l_ctx);
-        return nv_coerce_string(nv_add_chain(3, nv_lit("nv_env("), l_args, nv_lit(")")));
+    if (nv_eq_bool(l_name, (&nv_lits[126]))) {
+        (void)f_expectArgs_4((&nv_lits[126]), nv_int(l_nargs), nv_int(1LL), l_ctx);
+        return nv_coerce_string(nv_add_chain(3, (&nv_lits[127]), l_args, (&nv_lits[8])));
     }
-    if (nv_eq_bool(l_name, nv_lit("exit"))) {
-        (void)f_expectArgs_4(nv_lit("exit"), nv_int(l_nargs), nv_int(1LL), l_ctx);
-        return nv_coerce_string(nv_add_chain(3, nv_lit("nv_exit("), l_args, nv_lit(")")));
+    if (nv_eq_bool(l_name, (&nv_lits[128]))) {
+        (void)f_expectArgs_4((&nv_lits[128]), nv_int(l_nargs), nv_int(1LL), l_ctx);
+        return nv_coerce_string(nv_add_chain(3, (&nv_lits[129]), l_args, (&nv_lits[8])));
     }
-    if (nv_eq_bool(l_name, nv_lit("platform"))) {
-        (void)f_expectArgs_4(nv_lit("platform"), nv_int(l_nargs), nv_int(0LL), l_ctx);
-        return nv_coerce_string(nv_lit("nv_platform()"));
+    if (nv_eq_bool(l_name, (&nv_lits[130]))) {
+        (void)f_expectArgs_4((&nv_lits[130]), nv_int(l_nargs), nv_int(0LL), l_ctx);
+        return nv_coerce_string((&nv_lits[131]));
     }
-    if (nv_eq_bool(l_name, nv_lit("readLine"))) {
-        (void)f_expectArgs_4(nv_lit("readLine"), nv_int(l_nargs), nv_int(0LL), l_ctx);
-        return nv_coerce_string(nv_lit("nv_read_line()"));
+    if (nv_eq_bool(l_name, (&nv_lits[132]))) {
+        (void)f_expectArgs_4((&nv_lits[132]), nv_int(l_nargs), nv_int(0LL), l_ctx);
+        return nv_coerce_string((&nv_lits[133]));
     }
-    if (nv_eq_bool(l_name, nv_lit("removeFile"))) {
-        (void)f_expectArgs_4(nv_lit("removeFile"), nv_int(l_nargs), nv_int(1LL), l_ctx);
-        return nv_coerce_string(nv_add_chain(3, nv_lit("nv_remove_file("), l_args, nv_lit(")")));
+    if (nv_eq_bool(l_name, (&nv_lits[134]))) {
+        (void)f_expectArgs_4((&nv_lits[134]), nv_int(l_nargs), nv_int(1LL), l_ctx);
+        return nv_coerce_string(nv_add_chain(3, (&nv_lits[135]), l_args, (&nv_lits[8])));
     }
-    return nv_coerce_string(nv_lit(""));
-    return nv_lit("");
+    return nv_coerce_string((&nv_lits[5]));
+    return (&nv_empty_str_val);
 }
 
 static nv f_isCoreBuiltin_1(nv a0) {
     nv l_name = nv_coerce_string(a0);
-    return nv_bool(nv_truthy(nv_bool(nv_truthy(nv_bool(nv_truthy(nv_bool(nv_truthy(nv_bool(nv_truthy(nv_bool(nv_truthy(nv_bool(nv_truthy(nv_eq(l_name, nv_lit("readFile"))) || nv_truthy(nv_eq(l_name, nv_lit("writeFile"))))) || nv_truthy(nv_eq(l_name, nv_lit("fileExists"))))) || nv_truthy(nv_eq(l_name, nv_lit("args"))))) || nv_truthy(nv_eq(l_name, nv_lit("parseInt"))))) || nv_truthy(nv_eq(l_name, nv_lit("chr"))))) || nv_truthy(nv_eq(l_name, nv_lit("ord"))))) || nv_truthy(nv_eq(l_name, nv_lit("typeOf"))));
+    return nv_bool(nv_truthy(nv_bool(nv_truthy(nv_bool(nv_truthy(nv_bool(nv_truthy(nv_bool(nv_truthy(nv_bool(nv_truthy(nv_bool(nv_truthy(nv_eq(l_name, (&nv_lits[106]))) || nv_truthy(nv_eq(l_name, (&nv_lits[108]))))) || nv_truthy(nv_eq(l_name, (&nv_lits[110]))))) || nv_truthy(nv_eq(l_name, (&nv_lits[112]))))) || nv_truthy(nv_eq(l_name, (&nv_lits[114]))))) || nv_truthy(nv_eq(l_name, (&nv_lits[118]))))) || nv_truthy(nv_eq(l_name, (&nv_lits[120]))))) || nv_truthy(nv_eq(l_name, (&nv_lits[122]))));
     return nv_bool(0);
 }
 
 static nv f_nl_0(void) {
     return nv_coerce_string(nv_chr(nv_int(10LL)));
-    return nv_lit("");
+    return (&nv_empty_str_val);
 }
 
 static nv f_cstr_1(nv a0) {
     nv l_text = nv_coerce_string(a0);
     return nv_coerce_string(nv_add_chain(3, f_q_0(), l_text, f_q_0()));
-    return nv_lit("");
+    return (&nv_empty_str_val);
+}
+
+static nv f_litRef_2(nv a0, nv a1) {
+    nv l_prog = a0;
+    nv l_cText = nv_coerce_string(a1);
+    nv l_key = nv_add_fast((&nv_lits[136]), l_cText);
+    if (nv_truthy(nv_has_key(l_prog, "has", l_key))) {
+        return nv_coerce_string(nv_add_chain(3, (&nv_lits[137]), nv_index(l_prog, l_key), (&nv_lits[138])));
+    }
+    nv l_index = nv_int(0LL);
+    if (nv_truthy(nv_has_key(l_prog, "has", (&nv_lits[139])))) {
+        l_index = nv_parse_int(nv_index(l_prog, (&nv_lits[139])));
+    }
+    nv_index_set(l_prog, l_key, f_intToStr_1(l_index));
+    nv_index_set(l_prog, nv_add_fast((&nv_lits[140]), l_index), l_cText);
+    nv_index_set(l_prog, (&nv_lits[139]), f_intToStr_1(nv_add_fast(l_index, nv_int(1LL))));
+    return nv_coerce_string(nv_add_chain(3, (&nv_lits[137]), l_index, (&nv_lits[138])));
+    return (&nv_empty_str_val);
+}
+
+static nv f_literalTable_1(nv a0) {
+    nv l_prog = a0;
+    if (nv_eq_bool(nv_has_key(l_prog, "has", (&nv_lits[139])), nv_bool(0))) {
+        return nv_coerce_string((&nv_lits[5]));
+    }
+    nv l_count = nv_parse_int(nv_index(l_prog, (&nv_lits[139])));
+    nv l_parts = nv_arr();
+    (void)nv_append(l_parts, "append", nv_add_chain(3, f_nl_0(), (&nv_lits[141]), f_nl_0()));
+    (void)nv_append(l_parts, "append", nv_add_chain(4, (&nv_lits[142]), l_count, (&nv_lits[143]), f_nl_0()));
+    (void)nv_append(l_parts, "append", nv_add_chain(4, (&nv_lits[144]), l_count, (&nv_lits[145]), f_nl_0()));
+    long long l_i = 0LL;
+    while (nv_lt_bool(nv_int(l_i), l_count)) {
+        (void)nv_append(l_parts, "append", nv_add_chain(4, (&nv_lits[146]), nv_index(l_prog, nv_add_fast((&nv_lits[140]), nv_int(l_i))), (&nv_lits[45]), f_nl_0()));
+        l_i = (l_i + 1LL);
+    }
+    (void)nv_append(l_parts, "append", nv_add_fast((&nv_lits[147]), f_nl_0()));
+    return nv_coerce_string(f_joinParts_1(l_parts));
+    return (&nv_empty_str_val);
+}
+
+static nv f_spawnBodies_1(nv a0) {
+    nv l_prog = a0;
+    if (nv_eq_bool(nv_has_key(l_prog, "has", (&nv_lits[148])), nv_bool(0))) {
+        return nv_coerce_string((&nv_lits[5]));
+    }
+    nv l_count = nv_parse_int(nv_index(l_prog, (&nv_lits[148])));
+    nv l_parts = nv_arr();
+    (void)nv_append(l_parts, "append", nv_add_chain(3, f_nl_0(), (&nv_lits[149]), f_nl_0()));
+    long long l_i = 0LL;
+    while (nv_lt_bool(nv_int(l_i), l_count)) {
+        (void)nv_append(l_parts, "append", nv_add_chain(4, (&nv_lits[150]), nv_int(l_i), (&nv_lits[151]), f_nl_0()));
+        (void)nv_append(l_parts, "append", nv_add_chain(4, (&nv_lits[152]), f_nl_0(), (&nv_lits[153]), f_nl_0()));
+        (void)nv_append(l_parts, "append", nv_add_chain(6, (&nv_lits[154]), nv_index(l_prog, nv_add_fast((&nv_lits[155]), nv_int(l_i))), (&nv_lits[156]), f_nl_0(), (&nv_lits[157]), f_nl_0()));
+        l_i = (l_i + 1LL);
+    }
+    return nv_coerce_string(f_joinParts_1(l_parts));
+    return (&nv_empty_str_val);
 }
 
 static nv f_copyMap_1(nv a0) {
@@ -4793,7 +9918,7 @@ static nv f_copyMap_1(nv a0) {
 static nv f_isPrimitiveType_1(nv a0) {
     nv l_t = nv_coerce_string(a0);
     nv l_n = f_normType_1(l_t);
-    return nv_bool(nv_truthy(nv_bool(nv_truthy(nv_eq(l_n, nv_lit("integer"))) || nv_truthy(nv_eq(l_n, nv_lit("float"))))) || nv_truthy(nv_eq(l_n, nv_lit("string"))));
+    return nv_bool(nv_truthy(nv_bool(nv_truthy(nv_eq(l_n, (&nv_lits[30]))) || nv_truthy(nv_eq(l_n, (&nv_lits[35]))))) || nv_truthy(nv_eq(l_n, (&nv_lits[28]))));
     return nv_bool(0);
 }
 
@@ -4801,42 +9926,42 @@ static nv f_coerceCode_2(nv a0, nv a1) {
     nv l_expr = nv_coerce_string(a0);
     nv l_t = nv_coerce_string(a1);
     nv l_n = f_normType_1(l_t);
-    if (nv_eq_bool(l_n, nv_lit("integer"))) {
-        return nv_coerce_string(nv_add_chain(3, nv_lit("nv_coerce_int("), l_expr, nv_lit(")")));
+    if (nv_eq_bool(l_n, (&nv_lits[30]))) {
+        return nv_coerce_string(nv_add_chain(3, (&nv_lits[158]), l_expr, (&nv_lits[8])));
     }
-    if (nv_eq_bool(l_n, nv_lit("float"))) {
-        return nv_coerce_string(nv_add_chain(3, nv_lit("nv_coerce_float("), l_expr, nv_lit(")")));
+    if (nv_eq_bool(l_n, (&nv_lits[35]))) {
+        return nv_coerce_string(nv_add_chain(3, (&nv_lits[159]), l_expr, (&nv_lits[8])));
     }
-    if (nv_eq_bool(l_n, nv_lit("string"))) {
-        return nv_coerce_string(nv_add_chain(3, nv_lit("nv_coerce_string("), l_expr, nv_lit(")")));
+    if (nv_eq_bool(l_n, (&nv_lits[28]))) {
+        return nv_coerce_string(nv_add_chain(3, (&nv_lits[160]), l_expr, (&nv_lits[8])));
     }
     return nv_coerce_string(l_expr);
-    return nv_lit("");
+    return (&nv_empty_str_val);
 }
 
 static nv f_defaultCode_1(nv a0) {
     nv l_t = nv_coerce_string(a0);
     nv l_n = f_normType_1(l_t);
-    if (nv_eq_bool(l_n, nv_lit("integer"))) {
-        return nv_coerce_string(nv_lit("nv_int(0)"));
+    if (nv_eq_bool(l_n, (&nv_lits[30]))) {
+        return nv_coerce_string((&nv_lits[161]));
     }
-    if (nv_eq_bool(l_n, nv_lit("float"))) {
-        return nv_coerce_string(nv_lit("nv_float(0.0)"));
+    if (nv_eq_bool(l_n, (&nv_lits[35]))) {
+        return nv_coerce_string((&nv_lits[162]));
     }
-    if (nv_eq_bool(l_n, nv_lit("string"))) {
-        return nv_coerce_string(nv_add_chain(3, nv_lit("nv_lit("), f_cstr_1(nv_lit("")), nv_lit(")")));
+    if (nv_eq_bool(l_n, (&nv_lits[28]))) {
+        return nv_coerce_string((&nv_lits[163]));
     }
-    if (nv_eq_bool(l_n, nv_lit("bool"))) {
-        return nv_coerce_string(nv_lit("nv_bool(0)"));
+    if (nv_eq_bool(l_n, (&nv_lits[32]))) {
+        return nv_coerce_string((&nv_lits[164]));
     }
-    return nv_coerce_string(nv_lit("nv_nil"));
-    return nv_lit("");
+    return nv_coerce_string((&nv_lits[165]));
+    return (&nv_empty_str_val);
 }
 
 static nv f_paramsNode_1(nv a0) {
     nv l_m = nv_coerce_string(a0);
     return nv_coerce_string(f_nodeChild_2(l_m, nv_int(3LL)));
-    return nv_lit("");
+    return (&nv_empty_str_val);
 }
 
 static nv f_arityOf_1(nv a0) {
@@ -4847,48 +9972,133 @@ static nv f_arityOf_1(nv a0) {
 
 static nv f_isAbstractMethod_1(nv a0) {
     nv l_m = nv_coerce_string(a0);
-    return nv_eq(f_nodeChild_2(l_m, nv_int(5LL)), nv_lit("(abstract)"));
+    return nv_eq(f_nodeChild_2(l_m, nv_int(5LL)), (&nv_lits[166]));
     return nv_bool(0);
 }
 
 static nv f_methodName_1(nv a0) {
     nv l_m = nv_coerce_string(a0);
     return nv_coerce_string(f_nodeChild_2(l_m, nv_int(1LL)));
-    return nv_lit("");
+    return (&nv_empty_str_val);
 }
 
 static nv f_methodRet_1(nv a0) {
     nv l_m = nv_coerce_string(a0);
     return nv_coerce_string(f_nodeChild_2(l_m, nv_int(2LL)));
-    return nv_lit("");
+    return (&nv_empty_str_val);
 }
 
 static nv f_cName_1(nv a0) {
     nv l_name = nv_coerce_string(a0);
-    return nv_coerce_string(nv_invoke2(l_name, "replace", nv_lit("."), nv_lit("__")));
-    return nv_lit("");
+    return nv_coerce_string(nv_invoke2(l_name, "replace", (&nv_lits[167]), (&nv_lits[168])));
+    return (&nv_empty_str_val);
 }
 
 static nv f_packageOf_1(nv a0) {
     nv l_name = nv_coerce_string(a0);
-    nv l_dot = nv_invoke1(l_name, "indexOf", nv_lit("."));
+    nv l_dot = nv_invoke1(l_name, "indexOf", (&nv_lits[167]));
     if (nv_lt_bool(l_dot, nv_int(0LL))) {
-        return nv_coerce_string(nv_lit(""));
+        return nv_coerce_string((&nv_lits[5]));
     }
     return nv_coerce_string(nv_invoke2(l_name, "substring", nv_int(0LL), l_dot));
-    return nv_lit("");
+    return (&nv_empty_str_val);
+}
+
+static nv f_hasAnnotation_2(nv a0, nv a1) {
+    nv l_m = nv_coerce_string(a0);
+    nv l_name = nv_coerce_string(a1);
+    nv l_annos = f_nodeChild_2(l_m, nv_int(4LL));
+    long long l_i = 1LL;
+    nv l_count = f_nodeCount_1(l_annos);
+    while (nv_lt_bool(nv_int(l_i), l_count)) {
+        if (nv_eq_bool(f_nodeChild_2(f_nodeChild_2(l_annos, nv_int(l_i)), nv_int(1LL)), l_name)) {
+            return nv_bool(1);
+        }
+        l_i = (l_i + 1LL);
+    }
+    return nv_bool(0);
+    return nv_bool(0);
+}
+
+static nv f_isAsyncMethod_1(nv a0) {
+    nv l_m = nv_coerce_string(a0);
+    return f_hasAnnotation_2(l_m, (&nv_lits[169]));
+    return nv_bool(0);
+}
+
+static nv f_argSlots_1(nv a0) {
+    long long l_arity = nv_as_int(a0);
+    nv l_out = (&nv_lits[5]);
+    long long l_i = 0LL;
+    while (l_i < l_arity) {
+        if (l_i > 0LL) {
+            l_out = nv_add_fast(l_out, (&nv_lits[170]));
+        }
+        l_out = nv_add_chain(4, l_out, (&nv_lits[171]), nv_int(l_i), (&nv_lits[172]));
+        l_i = (l_i + 1LL);
+    }
+    return nv_coerce_string(l_out);
+    return (&nv_empty_str_val);
+}
+
+static nv f_syncDepth_1(nv a0) {
+    nv l_ctx = a0;
+    if ((nv_eq_bool(nv_has_key(l_ctx, "has", (&nv_lits[173])), nv_bool(0)) || nv_eq_bool(nv_index(l_ctx, (&nv_lits[173])), (&nv_lits[5])))) {
+        return nv_coerce_int(nv_int(0LL));
+    }
+    return nv_coerce_int(nv_length_of(nv_invoke1(nv_index(l_ctx, (&nv_lits[173])), "split", (&nv_lits[9])), "length"));
+    return nv_int(0);
+}
+
+static nv f_syncHeld_1(nv a0) {
+    nv l_ctx = a0;
+    if (nv_truthy(nv_has_key(l_ctx, "has", (&nv_lits[173])))) {
+        return nv_coerce_string(nv_index(l_ctx, (&nv_lits[173])));
+    }
+    return nv_coerce_string((&nv_lits[5]));
+    return (&nv_empty_str_val);
+}
+
+static nv f_syncLoopHeld_1(nv a0) {
+    nv l_ctx = a0;
+    if (nv_truthy(nv_has_key(l_ctx, "has", (&nv_lits[174])))) {
+        return nv_coerce_string(nv_index(l_ctx, (&nv_lits[174])));
+    }
+    return nv_coerce_string((&nv_lits[5]));
+    return (&nv_empty_str_val);
+}
+
+static nv f_syncUnwind_2(nv a0, nv a1) {
+    nv l_held = nv_coerce_string(a0);
+    nv l_outer = nv_coerce_string(a1);
+    if (nv_eq_bool(l_held, (&nv_lits[5]))) {
+        return nv_coerce_string((&nv_lits[5]));
+    }
+    nv l_names = nv_invoke1(l_held, "split", (&nv_lits[9]));
+    nv l_keep = nv_int(0LL);
+    if (nv_ne_bool(l_outer, (&nv_lits[5]))) {
+        l_keep = nv_length_of(nv_invoke1(l_outer, "split", (&nv_lits[9])), "length");
+    }
+    nv l_out = (&nv_lits[5]);
+    nv l_i = nv_sub_fast(nv_length_of(l_names, "length"), nv_int(1LL));
+    while (nv_ge_bool(l_i, l_keep)) {
+        l_out = nv_add_chain(4, l_out, (&nv_lits[175]), nv_index(l_names, l_i), (&nv_lits[176]));
+        l_i = nv_sub_fast(l_i, nv_int(1LL));
+    }
+    return nv_coerce_string(l_out);
+    return (&nv_empty_str_val);
 }
 
 static nv f_isNativeMethod_1(nv a0) {
     nv l_m = nv_coerce_string(a0);
-    return nv_eq(f_nodeHead_1(f_nodeChild_2(l_m, nv_int(5LL))), nv_lit("native"));
+    return nv_eq(f_nodeHead_1(f_nodeChild_2(l_m, nv_int(5LL))), (&nv_lits[177]));
     return nv_bool(0);
 }
 
 static nv f_intToStr_1(nv a0) {
     long long l_i = nv_as_int(a0);
-    return nv_coerce_string(nv_add_fast(nv_lit(""), nv_int(l_i)));
-    return nv_lit("");
+    return nv_coerce_string(nv_add_fast((&nv_lits[5]), nv_int(l_i)));
+    return (&nv_empty_str_val);
 }
 
 static nv f_invokeCall_4(nv a0, nv a1, nv a2, nv a3) {
@@ -4896,61 +10106,79 @@ static nv f_invokeCall_4(nv a0, nv a1, nv a2, nv a3) {
     nv l_name = nv_coerce_string(a1);
     long long l_nargs = nv_as_int(a2);
     nv l_args = nv_coerce_string(a3);
-    if ((l_nargs == 1LL && nv_eq_bool(l_name, nv_lit("has")))) {
-        return nv_coerce_string(nv_add_chain(7, nv_lit("nv_has_key("), l_receiver, nv_lit(", "), f_cstr_1(l_name), nv_lit(", "), l_args, nv_lit(")")));
+    if ((l_nargs == 1LL && nv_eq_bool(l_name, (&nv_lits[178])))) {
+        return nv_coerce_string(nv_add_chain(7, (&nv_lits[179]), l_receiver, (&nv_lits[170]), f_cstr_1(l_name), (&nv_lits[170]), l_args, (&nv_lits[8])));
     }
-    if ((l_nargs == 1LL && (nv_eq_bool(l_name, nv_lit("append")) || nv_eq_bool(l_name, nv_lit("push"))))) {
-        return nv_coerce_string(nv_add_chain(7, nv_lit("nv_append("), l_receiver, nv_lit(", "), f_cstr_1(l_name), nv_lit(", "), l_args, nv_lit(")")));
+    if ((l_nargs == 1LL && (nv_eq_bool(l_name, (&nv_lits[181])) || nv_eq_bool(l_name, (&nv_lits[180]))))) {
+        return nv_coerce_string(nv_add_chain(7, (&nv_lits[182]), l_receiver, (&nv_lits[170]), f_cstr_1(l_name), (&nv_lits[170]), l_args, (&nv_lits[8])));
     }
     if ((l_nargs > 0LL && l_nargs < 4LL)) {
-        return nv_coerce_string(nv_add_chain(9, nv_lit("nv_invoke"), nv_int(l_nargs), nv_lit("("), l_receiver, nv_lit(", "), f_cstr_1(l_name), nv_lit(", "), l_args, nv_lit(")")));
+        return nv_coerce_string(nv_add_chain(9, (&nv_lits[183]), nv_int(l_nargs), (&nv_lits[7]), l_receiver, (&nv_lits[170]), f_cstr_1(l_name), (&nv_lits[170]), l_args, (&nv_lits[8])));
     }
-    return nv_coerce_string(nv_add_chain(9, nv_lit("nv_invoke("), l_receiver, nv_lit(", "), f_cstr_1(l_name), nv_lit(", "), nv_int(l_nargs), nv_lit(", "), l_args, nv_lit(")")));
-    return nv_lit("");
+    return nv_coerce_string(nv_add_chain(9, (&nv_lits[184]), l_receiver, (&nv_lits[170]), f_cstr_1(l_name), (&nv_lits[170]), nv_int(l_nargs), (&nv_lits[170]), l_args, (&nv_lits[8])));
+    return (&nv_empty_str_val);
 }
 
 static nv f_iterCall_2(nv a0, nv a1) {
     nv l_body = nv_coerce_string(a0);
     nv l_iter = nv_coerce_string(a1);
-    if (((nv_truthy(nv_invoke1(l_body, "contains", nv_lit("(mcall"))) || nv_truthy(nv_invoke1(l_body, "contains", nv_lit("(call")))) || nv_truthy(nv_invoke1(l_body, "contains", nv_lit("(setexpr"))))) {
-        return nv_coerce_string(nv_add_chain(3, nv_lit("nv_iter("), l_iter, nv_lit(")")));
+    if (((nv_truthy(nv_invoke1(l_body, "contains", (&nv_lits[187]))) || nv_truthy(nv_invoke1(l_body, "contains", (&nv_lits[186])))) || nv_truthy(nv_invoke1(l_body, "contains", (&nv_lits[185]))))) {
+        return nv_coerce_string(nv_add_chain(3, (&nv_lits[188]), l_iter, (&nv_lits[8])));
     }
-    return nv_coerce_string(nv_add_chain(3, nv_lit("nv_iter_live("), l_iter, nv_lit(")")));
-    return nv_lit("");
+    return nv_coerce_string(nv_add_chain(3, (&nv_lits[189]), l_iter, (&nv_lits[8])));
+    return (&nv_empty_str_val);
 }
 
 static nv f_invokeCall0_2(nv a0, nv a1) {
     nv l_receiver = nv_coerce_string(a0);
     nv l_name = nv_coerce_string(a1);
-    if (nv_eq_bool(l_name, nv_lit("length"))) {
-        return nv_coerce_string(nv_add_chain(5, nv_lit("nv_length_of("), l_receiver, nv_lit(", "), f_cstr_1(l_name), nv_lit(")")));
+    if (nv_eq_bool(l_name, (&nv_lits[190]))) {
+        return nv_coerce_string(nv_add_chain(5, (&nv_lits[191]), l_receiver, (&nv_lits[170]), f_cstr_1(l_name), (&nv_lits[8])));
     }
-    return nv_coerce_string(nv_add_chain(5, nv_lit("nv_invoke0("), l_receiver, nv_lit(", "), f_cstr_1(l_name), nv_lit(")")));
-    return nv_lit("");
+    return nv_coerce_string(nv_add_chain(5, (&nv_lits[192]), l_receiver, (&nv_lits[170]), f_cstr_1(l_name), (&nv_lits[8])));
+    return (&nv_empty_str_val);
 }
 
 static nv f_isKeywordWord_1(nv a0) {
     nv l_word = nv_coerce_string(a0);
-    nv l_keywords = nv_map_of(19, nv_lit("package"), nv_bool(1), nv_lit("import"), nv_bool(1), nv_lit("method"), nv_bool(1), nv_lit("var"), nv_bool(1), nv_lit("println"), nv_bool(1), nv_lit("print"), nv_bool(1), nv_lit("eprintln"), nv_bool(1), nv_lit("private"), nv_bool(1), nv_lit("final"), nv_bool(1), nv_lit("return"), nv_bool(1), nv_lit("if"), nv_bool(1), nv_lit("else"), nv_bool(1), nv_lit("while"), nv_bool(1), nv_lit("for"), nv_bool(1), nv_lit("in"), nv_bool(1), nv_lit("true"), nv_bool(1), nv_lit("false"), nv_bool(1), nv_lit("break"), nv_bool(1), nv_lit("continue"), nv_bool(1));
+    nv l_keywords = nv_map_of(19, (&nv_lits[193]), nv_bool(1), (&nv_lits[194]), nv_bool(1), (&nv_lits[195]), nv_bool(1), (&nv_lits[196]), nv_bool(1), (&nv_lits[197]), nv_bool(1), (&nv_lits[198]), nv_bool(1), (&nv_lits[199]), nv_bool(1), (&nv_lits[200]), nv_bool(1), (&nv_lits[201]), nv_bool(1), (&nv_lits[202]), nv_bool(1), (&nv_lits[203]), nv_bool(1), (&nv_lits[204]), nv_bool(1), (&nv_lits[205]), nv_bool(1), (&nv_lits[206]), nv_bool(1), (&nv_lits[207]), nv_bool(1), (&nv_lits[208]), nv_bool(1), (&nv_lits[209]), nv_bool(1), (&nv_lits[210]), nv_bool(1), (&nv_lits[211]), nv_bool(1));
     return nv_has_key(l_keywords, "has", l_word);
     return nv_bool(0);
 }
 
 static nv f_isTwoCharOp_1(nv a0) {
     nv l_op = nv_coerce_string(a0);
-    return nv_bool(nv_truthy(nv_bool(nv_truthy(nv_bool(nv_truthy(nv_bool(nv_truthy(nv_bool(nv_truthy(nv_bool(nv_truthy(nv_bool(nv_truthy(nv_eq(l_op, nv_lit("=="))) || nv_truthy(nv_eq(l_op, nv_lit("!="))))) || nv_truthy(nv_eq(l_op, nv_lit("<="))))) || nv_truthy(nv_eq(l_op, nv_lit(">="))))) || nv_truthy(nv_eq(l_op, nv_lit("&&"))))) || nv_truthy(nv_eq(l_op, nv_lit("||"))))) || nv_truthy(nv_eq(l_op, nv_lit("=>"))))) || nv_truthy(nv_eq(l_op, nv_lit("=<"))));
+    return nv_bool(nv_truthy(nv_bool(nv_truthy(nv_bool(nv_truthy(nv_bool(nv_truthy(nv_bool(nv_truthy(nv_bool(nv_truthy(nv_bool(nv_truthy(nv_bool(nv_truthy(nv_bool(nv_truthy(nv_eq(l_op, (&nv_lits[212]))) || nv_truthy(nv_eq(l_op, (&nv_lits[213]))))) || nv_truthy(nv_eq(l_op, (&nv_lits[214]))))) || nv_truthy(nv_eq(l_op, (&nv_lits[215]))))) || nv_truthy(nv_eq(l_op, (&nv_lits[216]))))) || nv_truthy(nv_eq(l_op, (&nv_lits[217]))))) || nv_truthy(nv_eq(l_op, (&nv_lits[218]))))) || nv_truthy(nv_eq(l_op, (&nv_lits[219]))))) || nv_truthy(nv_eq(l_op, (&nv_lits[220]))))) || nv_truthy(nv_eq(l_op, (&nv_lits[38]))));
     return nv_bool(0);
 }
 
 static nv f_isDigit_1(nv a0) {
     nv l_c = nv_coerce_string(a0);
-    return nv_bool(nv_truthy(nv_ge(l_c, nv_lit("0"))) && nv_truthy(nv_le(l_c, nv_lit("9"))));
+    return nv_bool(nv_truthy(nv_ge(l_c, (&nv_lits[221]))) && nv_truthy(nv_le(l_c, (&nv_lits[222]))));
     return nv_bool(0);
+}
+
+static nv f_isHexDigit_1(nv a0) {
+    nv l_c = nv_coerce_string(a0);
+    return nv_bool(nv_truthy(nv_bool(nv_truthy(f_isDigit_1(l_c)) || nv_truthy(nv_bool(nv_truthy(nv_ge(l_c, (&nv_lits[223]))) && nv_truthy(nv_le(l_c, (&nv_lits[224]))))))) || nv_truthy(nv_bool(nv_truthy(nv_ge(l_c, (&nv_lits[225]))) && nv_truthy(nv_le(l_c, (&nv_lits[226]))))));
+    return nv_bool(0);
+}
+
+static nv f_hexValue_1(nv a0) {
+    nv l_c = nv_coerce_string(a0);
+    if (nv_truthy(f_isDigit_1(l_c))) {
+        return nv_coerce_int(nv_sub_fast(nv_ord(l_c), nv_ord((&nv_lits[221]))));
+    }
+    if ((nv_ge_bool(l_c, (&nv_lits[223])) && nv_le_bool(l_c, (&nv_lits[224])))) {
+        return nv_coerce_int(nv_add_fast(nv_sub_fast(nv_ord(l_c), nv_ord((&nv_lits[223]))), nv_int(10LL)));
+    }
+    return nv_coerce_int(nv_add_fast(nv_sub_fast(nv_ord(l_c), nv_ord((&nv_lits[225]))), nv_int(10LL)));
+    return nv_int(0);
 }
 
 static nv f_isAlpha_1(nv a0) {
     nv l_c = nv_coerce_string(a0);
-    return nv_bool(nv_truthy(nv_bool(nv_truthy(nv_bool(nv_truthy(nv_ge(l_c, nv_lit("a"))) && nv_truthy(nv_le(l_c, nv_lit("z"))))) || nv_truthy(nv_bool(nv_truthy(nv_ge(l_c, nv_lit("A"))) && nv_truthy(nv_le(l_c, nv_lit("Z"))))))) || nv_truthy(nv_eq(l_c, nv_lit("_"))));
+    return nv_bool(nv_truthy(nv_bool(nv_truthy(nv_bool(nv_truthy(nv_ge(l_c, (&nv_lits[223]))) && nv_truthy(nv_le(l_c, (&nv_lits[227]))))) || nv_truthy(nv_bool(nv_truthy(nv_ge(l_c, (&nv_lits[225]))) && nv_truthy(nv_le(l_c, (&nv_lits[228]))))))) || nv_truthy(nv_eq(l_c, (&nv_lits[229]))));
     return nv_bool(0);
 }
 
@@ -4962,27 +10190,27 @@ static nv f_isAlphaNum_1(nv a0) {
 
 static nv f_isSymbolChar_1(nv a0) {
     nv l_c = nv_coerce_string(a0);
-    nv l_symbols = nv_map_of(20, nv_lit("{"), nv_bool(1), nv_lit("}"), nv_bool(1), nv_lit("("), nv_bool(1), nv_lit(")"), nv_bool(1), nv_lit("["), nv_bool(1), nv_lit("]"), nv_bool(1), nv_lit(":"), nv_bool(1), nv_lit(";"), nv_bool(1), nv_lit(","), nv_bool(1), nv_lit("."), nv_bool(1), nv_lit("+"), nv_bool(1), nv_lit("-"), nv_bool(1), nv_lit("*"), nv_bool(1), nv_lit("/"), nv_bool(1), nv_lit("%"), nv_bool(1), nv_lit("="), nv_bool(1), nv_lit("<"), nv_bool(1), nv_lit(">"), nv_bool(1), nv_lit("!"), nv_bool(1), nv_lit("@"), nv_bool(1));
+    nv l_symbols = nv_map_of(23, (&nv_lits[230]), nv_bool(1), (&nv_lits[157]), nv_bool(1), (&nv_lits[7]), nv_bool(1), (&nv_lits[8]), nv_bool(1), (&nv_lits[231]), nv_bool(1), (&nv_lits[172]), nv_bool(1), (&nv_lits[232]), nv_bool(1), (&nv_lits[156]), nv_bool(1), (&nv_lits[45]), nv_bool(1), (&nv_lits[167]), nv_bool(1), (&nv_lits[233]), nv_bool(1), (&nv_lits[234]), nv_bool(1), (&nv_lits[235]), nv_bool(1), (&nv_lits[6]), nv_bool(1), (&nv_lits[236]), nv_bool(1), (&nv_lits[237]), nv_bool(1), (&nv_lits[26]), nv_bool(1), (&nv_lits[37]), nv_bool(1), (&nv_lits[238]), nv_bool(1), (&nv_lits[239]), nv_bool(1), (&nv_lits[240]), nv_bool(1), (&nv_lits[241]), nv_bool(1), (&nv_lits[242]), nv_bool(1));
     return nv_has_key(l_symbols, "has", l_c);
     return nv_bool(0);
 }
 
 static nv f_lexEscape_1(nv a0) {
     nv l_c = nv_coerce_string(a0);
-    if (nv_eq_bool(l_c, nv_lit("n"))) {
+    if (nv_eq_bool(l_c, (&nv_lits[10]))) {
         return nv_coerce_string(nv_chr(nv_int(10LL)));
     }
-    if (nv_eq_bool(l_c, nv_lit("t"))) {
+    if (nv_eq_bool(l_c, (&nv_lits[12]))) {
         return nv_coerce_string(nv_chr(nv_int(9LL)));
     }
-    if (nv_eq_bool(l_c, nv_lit("r"))) {
+    if (nv_eq_bool(l_c, (&nv_lits[11]))) {
         return nv_coerce_string(nv_chr(nv_int(13LL)));
     }
-    if (nv_eq_bool(l_c, nv_lit("0"))) {
+    if (nv_eq_bool(l_c, (&nv_lits[221]))) {
         return nv_coerce_string(nv_chr(nv_int(0LL)));
     }
     return nv_coerce_string(l_c);
-    return nv_lit("");
+    return (&nv_empty_str_val);
 }
 
 static nv f_indexProgram_2(nv a0, nv a1) {
@@ -4995,35 +10223,35 @@ static nv f_indexProgram_2(nv a0, nv a1) {
             nv l_d = it_d->items[i_d];
             nv l_head = f_nodeHead_1(l_d);
             nv l_name = f_nodeChild_2(l_d, nv_int(1LL));
-            if (nv_eq_bool(l_head, nv_lit("method"))) {
-                nv l_key = nv_add_chain(3, l_name, nv_lit("/"), f_arityOf_1(l_d));
+            if (nv_eq_bool(l_head, (&nv_lits[195]))) {
+                nv l_key = nv_add_chain(3, l_name, (&nv_lits[6]), f_arityOf_1(l_d));
                 nv l_count = nv_int(0LL);
-                if (nv_truthy(nv_has_key(l_prog, "has", nv_add_fast(nv_lit("func:"), l_key)))) {
-                    l_count = nv_parse_int(nv_index(l_prog, nv_add_fast(nv_lit("func:"), l_key)));
+                if (nv_truthy(nv_has_key(l_prog, "has", nv_add_fast((&nv_lits[243]), l_key)))) {
+                    l_count = nv_parse_int(nv_index(l_prog, nv_add_fast((&nv_lits[243]), l_key)));
                 }
-                nv_index_set(l_prog, nv_add_chain(4, nv_lit("fnode:"), l_key, nv_lit("/"), l_count), l_d);
-                nv_index_set(l_prog, nv_add_fast(nv_lit("func:"), l_key), f_intToStr_1(nv_add_fast(l_count, nv_int(1LL))));
-                nv_index_set(l_prog, nv_add_fast(nv_lit("hasfunc:"), l_name), nv_lit("1"));
-                if (nv_ne_bool(f_packageOf_1(l_name), nv_lit(""))) {
-                    nv_index_set(l_prog, nv_add_fast(nv_lit("pkg:"), f_packageOf_1(l_name)), nv_lit("1"));
+                nv_index_set(l_prog, nv_add_chain(4, (&nv_lits[244]), l_key, (&nv_lits[6]), l_count), l_d);
+                nv_index_set(l_prog, nv_add_fast((&nv_lits[243]), l_key), f_intToStr_1(nv_add_fast(l_count, nv_int(1LL))));
+                nv_index_set(l_prog, nv_add_fast((&nv_lits[246]), l_name), (&nv_lits[245]));
+                if (nv_ne_bool(f_packageOf_1(l_name), (&nv_lits[5]))) {
+                    nv_index_set(l_prog, nv_add_fast((&nv_lits[247]), f_packageOf_1(l_name)), (&nv_lits[245]));
                 }
                 if ((nv_truthy(f_isNativeMethod_1(l_d)) && nv_gt_bool(f_nodeCount_1(f_nodeChild_2(l_d, nv_int(5LL))), nv_int(2LL)))) {
-                    nv_index_set(l_prog, nv_add_chain(3, nv_lit("fnode:"), l_name, nv_lit("/*/0")), l_d);
-                    nv_index_set(l_prog, nv_add_chain(3, nv_lit("func:"), l_name, nv_lit("/*")), nv_lit("1"));
+                    nv_index_set(l_prog, nv_add_chain(3, (&nv_lits[244]), l_name, (&nv_lits[248])), l_d);
+                    nv_index_set(l_prog, nv_add_chain(3, (&nv_lits[243]), l_name, (&nv_lits[249])), (&nv_lits[245]));
                 }
                 continue;
             }
-            if ((nv_eq_bool(l_head, nv_lit("class")) || nv_eq_bool(l_head, nv_lit("enum")))) {
-                if ((nv_truthy(f_isClassLike_2(l_prog, l_name)) || nv_truthy(nv_has_key(l_prog, "has", nv_add_fast(nv_lit("iface:"), l_name))))) {
-                    (void)f_fail_2(nv_add_chain(3, nv_lit("duplicate definition of '"), l_name, nv_lit("'")), nv_add_chain(3, l_head, nv_lit(" "), l_name));
+            if ((nv_eq_bool(l_head, (&nv_lits[251])) || nv_eq_bool(l_head, (&nv_lits[250])))) {
+                if ((nv_truthy(f_isClassLike_2(l_prog, l_name)) || nv_truthy(nv_has_key(l_prog, "has", nv_add_fast((&nv_lits[252]), l_name))))) {
+                    (void)f_fail_2(nv_add_chain(3, (&nv_lits[253]), l_name, (&nv_lits[21])), nv_add_chain(3, l_head, (&nv_lits[9]), l_name));
                 }
-                nv_index_set(l_prog, nv_add_chain(3, l_head, nv_lit(":"), l_name), l_d);
+                nv_index_set(l_prog, nv_add_chain(3, l_head, (&nv_lits[232]), l_name), l_d);
                 continue;
             }
-            if (((nv_eq_bool(l_head, nv_lit("iface")) || nv_eq_bool(l_head, nv_lit("annodef"))) || nv_eq_bool(l_head, nv_lit("global")))) {
-                nv_index_set(l_prog, nv_add_chain(3, l_head, nv_lit(":"), l_name), l_d);
-                if ((nv_eq_bool(l_head, nv_lit("global")) && nv_ne_bool(f_packageOf_1(l_name), nv_lit("")))) {
-                    nv_index_set(l_prog, nv_add_fast(nv_lit("pkg:"), f_packageOf_1(l_name)), nv_lit("1"));
+            if (((nv_eq_bool(l_head, (&nv_lits[256])) || nv_eq_bool(l_head, (&nv_lits[255]))) || nv_eq_bool(l_head, (&nv_lits[254])))) {
+                nv_index_set(l_prog, nv_add_chain(3, l_head, (&nv_lits[232]), l_name), l_d);
+                if ((nv_eq_bool(l_head, (&nv_lits[254])) && nv_ne_bool(f_packageOf_1(l_name), (&nv_lits[5])))) {
+                    nv_index_set(l_prog, nv_add_fast((&nv_lits[247]), f_packageOf_1(l_name)), (&nv_lits[245]));
                 }
             }
         }
@@ -5035,66 +10263,66 @@ static nv f_indexProgram_2(nv a0, nv a1) {
 static nv f_isClassLike_2(nv a0, nv a1) {
     nv l_prog = a0;
     nv l_name = nv_coerce_string(a1);
-    return nv_bool(nv_truthy(nv_has_key(l_prog, "has", nv_add_fast(nv_lit("class:"), l_name))) || nv_truthy(nv_has_key(l_prog, "has", nv_add_fast(nv_lit("enum:"), l_name))));
+    return nv_bool(nv_truthy(nv_has_key(l_prog, "has", nv_add_fast((&nv_lits[257]), l_name))) || nv_truthy(nv_has_key(l_prog, "has", nv_add_fast((&nv_lits[258]), l_name))));
     return nv_bool(0);
 }
 
 static nv f_typeNode_2(nv a0, nv a1) {
     nv l_prog = a0;
     nv l_name = nv_coerce_string(a1);
-    if (nv_truthy(nv_has_key(l_prog, "has", nv_add_fast(nv_lit("class:"), l_name)))) {
-        return nv_coerce_string(nv_index(l_prog, nv_add_fast(nv_lit("class:"), l_name)));
+    if (nv_truthy(nv_has_key(l_prog, "has", nv_add_fast((&nv_lits[257]), l_name)))) {
+        return nv_coerce_string(nv_index(l_prog, nv_add_fast((&nv_lits[257]), l_name)));
     }
-    if (nv_truthy(nv_has_key(l_prog, "has", nv_add_fast(nv_lit("enum:"), l_name)))) {
-        return nv_coerce_string(nv_index(l_prog, nv_add_fast(nv_lit("enum:"), l_name)));
+    if (nv_truthy(nv_has_key(l_prog, "has", nv_add_fast((&nv_lits[258]), l_name)))) {
+        return nv_coerce_string(nv_index(l_prog, nv_add_fast((&nv_lits[258]), l_name)));
     }
-    return nv_coerce_string(nv_lit(""));
-    return nv_lit("");
+    return nv_coerce_string((&nv_lits[5]));
+    return (&nv_empty_str_val);
 }
 
 static nv f_classBase_1(nv a0) {
     nv l_node = nv_coerce_string(a0);
-    if (nv_eq_bool(f_nodeHead_1(l_node), nv_lit("class"))) {
+    if (nv_eq_bool(f_nodeHead_1(l_node), (&nv_lits[251]))) {
         nv l_base = f_nodeChild_2(l_node, nv_int(2LL));
-        if (nv_eq_bool(l_base, nv_lit("-"))) {
-            return nv_coerce_string(nv_lit(""));
+        if (nv_eq_bool(l_base, (&nv_lits[234]))) {
+            return nv_coerce_string((&nv_lits[5]));
         }
         return nv_coerce_string(l_base);
     }
-    return nv_coerce_string(nv_lit(""));
-    return nv_lit("");
+    return nv_coerce_string((&nv_lits[5]));
+    return (&nv_empty_str_val);
 }
 
 static nv f_classFields_1(nv a0) {
     nv l_node = nv_coerce_string(a0);
-    if (nv_eq_bool(f_nodeHead_1(l_node), nv_lit("enum"))) {
+    if (nv_eq_bool(f_nodeHead_1(l_node), (&nv_lits[250]))) {
         return nv_coerce_string(f_nodeChild_2(l_node, nv_int(3LL)));
     }
     return nv_coerce_string(f_nodeChild_2(l_node, nv_int(4LL)));
-    return nv_lit("");
+    return (&nv_empty_str_val);
 }
 
 static nv f_classCtor_1(nv a0) {
     nv l_node = nv_coerce_string(a0);
-    if (nv_eq_bool(f_nodeHead_1(l_node), nv_lit("enum"))) {
+    if (nv_eq_bool(f_nodeHead_1(l_node), (&nv_lits[250]))) {
         return nv_coerce_string(f_nodeChild_2(l_node, nv_int(4LL)));
     }
     return nv_coerce_string(f_nodeChild_2(l_node, nv_int(5LL)));
-    return nv_lit("");
+    return (&nv_empty_str_val);
 }
 
 static nv f_classMethods_1(nv a0) {
     nv l_node = nv_coerce_string(a0);
-    if (nv_eq_bool(f_nodeHead_1(l_node), nv_lit("enum"))) {
+    if (nv_eq_bool(f_nodeHead_1(l_node), (&nv_lits[250]))) {
         return nv_coerce_string(f_nodeChild_2(l_node, nv_int(5LL)));
     }
     return nv_coerce_string(f_nodeChild_2(l_node, nv_int(6LL)));
-    return nv_lit("");
+    return (&nv_empty_str_val);
 }
 
 static nv f_classIsAbstract_1(nv a0) {
     nv l_node = nv_coerce_string(a0);
-    return nv_bool(nv_truthy(nv_eq(f_nodeHead_1(l_node), nv_lit("class"))) && nv_truthy(nv_eq(f_nodeChild_2(l_node, nv_int(3LL)), nv_lit("true"))));
+    return nv_bool(nv_truthy(nv_eq(f_nodeHead_1(l_node), (&nv_lits[251]))) && nv_truthy(nv_eq(f_nodeChild_2(l_node, nv_int(3LL)), (&nv_lits[208]))));
     return nv_bool(0);
 }
 
@@ -5104,14 +10332,15 @@ static nv f_findMethod_3(nv a0, nv a1, nv a2) {
     nv l_name = nv_coerce_string(a2);
     nv l_current = l_cls;
     long long l_guard = 0LL;
-    while ((nv_ne_bool(l_current, nv_lit("")) && l_guard < 64LL)) {
+    while ((nv_ne_bool(l_current, (&nv_lits[5])) && l_guard < 64LL)) {
         nv l_node = f_typeNode_2(l_prog, l_current);
-        if (nv_eq_bool(l_node, nv_lit(""))) {
-            return nv_coerce_string(nv_lit(""));
+        if (nv_eq_bool(l_node, (&nv_lits[5]))) {
+            return nv_coerce_string((&nv_lits[5]));
         }
         nv l_methods = f_classMethods_1(l_node);
         long long l_i = 1LL;
-        while (nv_lt_bool(nv_int(l_i), f_nodeCount_1(l_methods))) {
+        nv l_methodsCount = f_nodeCount_1(l_methods);
+        while (nv_lt_bool(nv_int(l_i), l_methodsCount)) {
             nv l_m = f_nodeChild_2(l_methods, nv_int(l_i));
             if (nv_eq_bool(f_methodName_1(l_m), l_name)) {
                 return nv_coerce_string(l_m);
@@ -5121,23 +10350,57 @@ static nv f_findMethod_3(nv a0, nv a1, nv a2) {
         l_current = f_classBase_1(l_node);
         l_guard = (l_guard + 1LL);
     }
-    return nv_coerce_string(nv_lit(""));
-    return nv_lit("");
+    return nv_coerce_string((&nv_lits[5]));
+    return (&nv_empty_str_val);
 }
 
 static nv f_classFieldCount_2(nv a0, nv a1) {
     nv l_prog = a0;
     nv l_cls = nv_coerce_string(a1);
+    nv l_cached = nv_add_fast((&nv_lits[259]), l_cls);
+    if (nv_truthy(nv_has_key(l_prog, "has", l_cached))) {
+        return nv_coerce_int(nv_parse_int(nv_index(l_prog, l_cached)));
+    }
     nv l_node = f_typeNode_2(l_prog, l_cls);
-    if (nv_eq_bool(l_node, nv_lit(""))) {
+    if (nv_eq_bool(l_node, (&nv_lits[5]))) {
         return nv_coerce_int(nv_int(0LL));
     }
     nv l_count = nv_sub_fast(f_nodeCount_1(f_classFields_1(l_node)), nv_int(1LL));
     nv l_base = f_classBase_1(l_node);
-    if ((nv_ne_bool(l_base, nv_lit("")) && nv_truthy(f_isClassLike_2(l_prog, l_base)))) {
+    if ((nv_ne_bool(l_base, (&nv_lits[5])) && nv_truthy(f_isClassLike_2(l_prog, l_base)))) {
         l_count = nv_add_fast(l_count, f_classFieldCount_2(l_prog, l_base));
     }
+    nv_index_set(l_prog, l_cached, f_intToStr_1(l_count));
     return nv_coerce_int(l_count);
+    return nv_int(0);
+}
+
+static nv f_indexClassFields_2(nv a0, nv a1) {
+    nv l_prog = a0;
+    nv l_cls = nv_coerce_string(a1);
+    if (nv_truthy(nv_has_key(l_prog, "has", nv_add_fast((&nv_lits[260]), l_cls)))) {
+        return nv_coerce_int(nv_int(0LL));
+    }
+    nv_index_set(l_prog, nv_add_fast((&nv_lits[260]), l_cls), (&nv_lits[245]));
+    nv l_node = f_typeNode_2(l_prog, l_cls);
+    if (nv_eq_bool(l_node, (&nv_lits[5]))) {
+        return nv_coerce_int(nv_int(0LL));
+    }
+    nv l_base = f_classBase_1(l_node);
+    nv l_offset = nv_int(0LL);
+    if ((nv_ne_bool(l_base, (&nv_lits[5])) && nv_truthy(f_isClassLike_2(l_prog, l_base)))) {
+        (void)f_indexClassFields_2(l_prog, l_base);
+        l_offset = f_classFieldCount_2(l_prog, l_base);
+    }
+    nv l_fields = f_classFields_1(l_node);
+    nv l_fieldsCount = f_nodeCount_1(l_fields);
+    long long l_i = 1LL;
+    while (nv_lt_bool(nv_int(l_i), l_fieldsCount)) {
+        nv l_name = f_nodeChild_2(f_nodeChild_2(l_fields, nv_int(l_i)), nv_int(2LL));
+        nv_index_set(l_prog, nv_add_chain(4, (&nv_lits[261]), l_cls, (&nv_lits[167]), l_name), f_intToStr_1(nv_sub_fast(nv_add_fast(l_offset, nv_int(l_i)), nv_int(1LL))));
+        l_i = (l_i + 1LL);
+    }
+    return nv_coerce_int(nv_int(0LL));
     return nv_int(0);
 }
 
@@ -5145,24 +10408,17 @@ static nv f_fieldSlot_3(nv a0, nv a1, nv a2) {
     nv l_prog = a0;
     nv l_cls = nv_coerce_string(a1);
     nv l_name = nv_coerce_string(a2);
+    (void)f_indexClassFields_2(l_prog, l_cls);
+    nv l_key = nv_add_chain(4, (&nv_lits[261]), l_cls, (&nv_lits[167]), l_name);
+    if (nv_truthy(nv_has_key(l_prog, "has", l_key))) {
+        return nv_coerce_int(nv_parse_int(nv_index(l_prog, l_key)));
+    }
     nv l_node = f_typeNode_2(l_prog, l_cls);
-    if (nv_eq_bool(l_node, nv_lit(""))) {
+    if (nv_eq_bool(l_node, (&nv_lits[5]))) {
         return nv_coerce_int(nv_int(-1LL));
     }
     nv l_base = f_classBase_1(l_node);
-    nv l_offset = nv_int(0LL);
-    if ((nv_ne_bool(l_base, nv_lit("")) && nv_truthy(f_isClassLike_2(l_prog, l_base)))) {
-        l_offset = f_classFieldCount_2(l_prog, l_base);
-    }
-    nv l_fields = f_classFields_1(l_node);
-    long long l_i = 1LL;
-    while (nv_lt_bool(nv_int(l_i), f_nodeCount_1(l_fields))) {
-        if (nv_eq_bool(f_nodeChild_2(f_nodeChild_2(l_fields, nv_int(l_i)), nv_int(2LL)), l_name)) {
-            return nv_coerce_int(nv_sub_fast(nv_add_fast(l_offset, nv_int(l_i)), nv_int(1LL)));
-        }
-        l_i = (l_i + 1LL);
-    }
-    if ((nv_ne_bool(l_base, nv_lit("")) && nv_truthy(f_isClassLike_2(l_prog, l_base)))) {
+    if ((nv_ne_bool(l_base, (&nv_lits[5])) && nv_truthy(f_isClassLike_2(l_prog, l_base)))) {
         return nv_coerce_int(f_fieldSlot_3(l_prog, l_base, l_name));
     }
     return nv_coerce_int(nv_int(-1LL));
@@ -5173,25 +10429,7 @@ static nv f_classHasField_3(nv a0, nv a1, nv a2) {
     nv l_prog = a0;
     nv l_cls = nv_coerce_string(a1);
     nv l_name = nv_coerce_string(a2);
-    nv l_current = l_cls;
-    long long l_guard = 0LL;
-    while ((nv_ne_bool(l_current, nv_lit("")) && l_guard < 64LL)) {
-        nv l_node = f_typeNode_2(l_prog, l_current);
-        if (nv_eq_bool(l_node, nv_lit(""))) {
-            return nv_bool(0);
-        }
-        nv l_fields = f_classFields_1(l_node);
-        long long l_i = 1LL;
-        while (nv_lt_bool(nv_int(l_i), f_nodeCount_1(l_fields))) {
-            if (nv_eq_bool(f_nodeChild_2(f_nodeChild_2(l_fields, nv_int(l_i)), nv_int(2LL)), l_name)) {
-                return nv_bool(1);
-            }
-            l_i = (l_i + 1LL);
-        }
-        l_current = f_classBase_1(l_node);
-        l_guard = (l_guard + 1LL);
-    }
-    return nv_bool(0);
+    return nv_ge(f_fieldSlot_3(l_prog, l_cls, l_name), nv_int(0LL));
     return nv_bool(0);
 }
 
@@ -5200,38 +10438,38 @@ static nv f_isImplicitField_4(nv a0, nv a1, nv a2, nv a3) {
     nv l_prog = a1;
     nv l_ctx = a2;
     nv l_locals = a3;
-    if (((nv_eq_bool(nv_index(l_ctx, nv_lit("class")), nv_lit("")) || nv_truthy(nv_has_key(l_locals, "has", l_name))) || nv_truthy(nv_has_key(l_prog, "has", nv_add_fast(nv_lit("global:"), l_name))))) {
+    if (((nv_eq_bool(nv_index(l_ctx, (&nv_lits[251])), (&nv_lits[5])) || nv_truthy(nv_has_key(l_locals, "has", l_name))) || nv_truthy(nv_has_key(l_prog, "has", nv_add_fast((&nv_lits[262]), l_name))))) {
         return nv_bool(0);
     }
-    return f_classHasField_3(l_prog, nv_index(l_ctx, nv_lit("class")), l_name);
+    return f_classHasField_3(l_prog, nv_index(l_ctx, (&nv_lits[251])), l_name);
     return nv_bool(0);
 }
 
 static nv f_markInt_2(nv a0, nv a1) {
     nv l_locals = a0;
     nv l_name = nv_coerce_string(a1);
-    nv_index_set(l_locals, nv_add_fast(nv_lit("int:"), l_name), nv_lit("1"));
+    nv_index_set(l_locals, nv_add_fast((&nv_lits[263]), l_name), (&nv_lits[245]));
     return nv_nil;
 }
 
 static nv f_isIntLocal_2(nv a0, nv a1) {
     nv l_locals = a0;
     nv l_name = nv_coerce_string(a1);
-    return nv_has_key(l_locals, "has", nv_add_fast(nv_lit("int:"), l_name));
+    return nv_has_key(l_locals, "has", nv_add_fast((&nv_lits[263]), l_name));
     return nv_bool(0);
 }
 
 static nv f_markFloat_2(nv a0, nv a1) {
     nv l_locals = a0;
     nv l_name = nv_coerce_string(a1);
-    nv_index_set(l_locals, nv_add_fast(nv_lit("float:"), l_name), nv_lit("1"));
+    nv_index_set(l_locals, nv_add_fast((&nv_lits[264]), l_name), (&nv_lits[245]));
     return nv_nil;
 }
 
 static nv f_isFloatLocal_2(nv a0, nv a1) {
     nv l_locals = a0;
     nv l_name = nv_coerce_string(a1);
-    return nv_has_key(l_locals, "has", nv_add_fast(nv_lit("float:"), l_name));
+    return nv_has_key(l_locals, "has", nv_add_fast((&nv_lits[264]), l_name));
     return nv_bool(0);
 }
 
@@ -5245,10 +10483,10 @@ static nv f_isFloatValue_2(nv a0, nv a1) {
         return f_isFloatLocal_2(l_locals, l_node);
     }
     nv l_head = f_nodeHead_1(l_node);
-    if (nv_eq_bool(l_head, nv_lit("neg"))) {
+    if (nv_eq_bool(l_head, (&nv_lits[265]))) {
         return f_isFloatValue_2(f_nodeChild_2(l_node, nv_int(1LL)), l_locals);
     }
-    nv l_arithmetic = nv_map_of(5, nv_lit("+"), nv_bool(1), nv_lit("-"), nv_bool(1), nv_lit("*"), nv_bool(1), nv_lit("/"), nv_bool(1), nv_lit("%"), nv_bool(1));
+    nv l_arithmetic = nv_map_of(5, (&nv_lits[233]), nv_bool(1), (&nv_lits[234]), nv_bool(1), (&nv_lits[235]), nv_bool(1), (&nv_lits[6]), nv_bool(1), (&nv_lits[236]), nv_bool(1));
     if ((nv_truthy(nv_has_key(l_arithmetic, "has", l_head)) && nv_eq_bool(f_nodeCount_1(l_node), nv_int(3LL)))) {
         nv l_left = f_nodeChild_2(l_node, nv_int(1LL));
         nv l_right = f_nodeChild_2(l_node, nv_int(2LL));
@@ -5271,10 +10509,10 @@ static nv f_isFloatExpr_3(nv a0, nv a1, nv a2) {
         return nv_has_key(l_floats, "has", l_node);
     }
     nv l_head = f_nodeHead_1(l_node);
-    if (nv_eq_bool(l_head, nv_lit("neg"))) {
+    if (nv_eq_bool(l_head, (&nv_lits[265]))) {
         return f_isFloatExpr_3(f_nodeChild_2(l_node, nv_int(1LL)), l_floats, l_ints);
     }
-    nv l_arithmetic = nv_map_of(5, nv_lit("+"), nv_bool(1), nv_lit("-"), nv_bool(1), nv_lit("*"), nv_bool(1), nv_lit("/"), nv_bool(1), nv_lit("%"), nv_bool(1));
+    nv l_arithmetic = nv_map_of(5, (&nv_lits[233]), nv_bool(1), (&nv_lits[234]), nv_bool(1), (&nv_lits[235]), nv_bool(1), (&nv_lits[6]), nv_bool(1), (&nv_lits[236]), nv_bool(1));
     if ((nv_truthy(nv_has_key(l_arithmetic, "has", l_head)) && nv_eq_bool(f_nodeCount_1(l_node), nv_int(3LL)))) {
         nv l_left = f_nodeChild_2(l_node, nv_int(1LL));
         nv l_right = f_nodeChild_2(l_node, nv_int(2LL));
@@ -5296,10 +10534,10 @@ static nv f_isIntValue_2(nv a0, nv a1) {
         return f_isIntLocal_2(l_locals, l_node);
     }
     nv l_head = f_nodeHead_1(l_node);
-    if (nv_eq_bool(l_head, nv_lit("neg"))) {
+    if (nv_eq_bool(l_head, (&nv_lits[265]))) {
         return f_isIntValue_2(f_nodeChild_2(l_node, nv_int(1LL)), l_locals);
     }
-    nv l_arithmetic = nv_map_of(5, nv_lit("+"), nv_bool(1), nv_lit("-"), nv_bool(1), nv_lit("*"), nv_bool(1), nv_lit("/"), nv_bool(1), nv_lit("%"), nv_bool(1));
+    nv l_arithmetic = nv_map_of(10, (&nv_lits[233]), nv_bool(1), (&nv_lits[234]), nv_bool(1), (&nv_lits[235]), nv_bool(1), (&nv_lits[6]), nv_bool(1), (&nv_lits[236]), nv_bool(1), (&nv_lits[240]), nv_bool(1), (&nv_lits[241]), nv_bool(1), (&nv_lits[242]), nv_bool(1), (&nv_lits[220]), nv_bool(1), (&nv_lits[38]), nv_bool(1));
     if ((nv_truthy(nv_has_key(l_arithmetic, "has", l_head)) && nv_eq_bool(f_nodeCount_1(l_node), nv_int(3LL)))) {
         return nv_bool(nv_truthy(f_isIntValue_2(f_nodeChild_2(l_node, nv_int(1LL)), l_locals)) && nv_truthy(f_isIntValue_2(f_nodeChild_2(l_node, nv_int(2LL)), l_locals)));
     }
@@ -5317,10 +10555,10 @@ static nv f_isIntExpr_2(nv a0, nv a1) {
         return nv_has_key(l_ints, "has", l_node);
     }
     nv l_head = f_nodeHead_1(l_node);
-    if (nv_eq_bool(l_head, nv_lit("neg"))) {
+    if (nv_eq_bool(l_head, (&nv_lits[265]))) {
         return f_isIntExpr_2(f_nodeChild_2(l_node, nv_int(1LL)), l_ints);
     }
-    nv l_arithmetic = nv_map_of(5, nv_lit("+"), nv_bool(1), nv_lit("-"), nv_bool(1), nv_lit("*"), nv_bool(1), nv_lit("/"), nv_bool(1), nv_lit("%"), nv_bool(1));
+    nv l_arithmetic = nv_map_of(10, (&nv_lits[233]), nv_bool(1), (&nv_lits[234]), nv_bool(1), (&nv_lits[235]), nv_bool(1), (&nv_lits[6]), nv_bool(1), (&nv_lits[236]), nv_bool(1), (&nv_lits[240]), nv_bool(1), (&nv_lits[241]), nv_bool(1), (&nv_lits[242]), nv_bool(1), (&nv_lits[220]), nv_bool(1), (&nv_lits[38]), nv_bool(1));
     if ((nv_truthy(nv_has_key(l_arithmetic, "has", l_head)) && nv_eq_bool(f_nodeCount_1(l_node), nv_int(3LL)))) {
         return nv_bool(nv_truthy(f_isIntExpr_2(f_nodeChild_2(l_node, nv_int(1LL)), l_ints)) && nv_truthy(f_isIntExpr_2(f_nodeChild_2(l_node, nv_int(2LL)), l_ints)));
     }
@@ -5334,61 +10572,66 @@ static nv f_collectAssignments_4(nv a0, nv a1, nv a2, nv a3) {
     nv l_values = a2;
     nv l_flags = a3;
     nv l_head = f_nodeHead_1(l_node);
-    if (nv_eq_bool(l_head, nv_lit("at"))) {
+    if (nv_eq_bool(l_head, (&nv_lits[266]))) {
         (void)f_collectAssignments_4(f_nodeChild_2(l_node, nv_int(2LL)), l_names, l_values, l_flags);
         return nv_nil;
     }
-    if (nv_eq_bool(l_head, nv_lit("block"))) {
+    if (nv_eq_bool(l_head, (&nv_lits[267]))) {
         long long l_i = 1LL;
-        while (nv_lt_bool(nv_int(l_i), f_nodeCount_1(l_node))) {
+        nv l_nodeCount = f_nodeCount_1(l_node);
+        while (nv_lt_bool(nv_int(l_i), l_nodeCount)) {
             (void)f_collectAssignments_4(f_nodeChild_2(l_node, nv_int(l_i)), l_names, l_values, l_flags);
             l_i = (l_i + 1LL);
         }
         return nv_nil;
     }
-    if (nv_eq_bool(l_head, nv_lit("if"))) {
+    if (nv_eq_bool(l_head, (&nv_lits[203]))) {
         (void)f_collectAssignments_4(f_nodeChild_2(l_node, nv_int(2LL)), l_names, l_values, l_flags);
         if (nv_gt_bool(f_nodeCount_1(l_node), nv_int(3LL))) {
             (void)f_collectAssignments_4(f_nodeChild_2(l_node, nv_int(3LL)), l_names, l_values, l_flags);
         }
         return nv_nil;
     }
-    if (nv_eq_bool(l_head, nv_lit("while"))) {
+    if (nv_eq_bool(l_head, (&nv_lits[205]))) {
         (void)f_collectAssignments_4(f_nodeChild_2(l_node, nv_int(2LL)), l_names, l_values, l_flags);
         return nv_nil;
     }
-    if (nv_eq_bool(l_head, nv_lit("forin"))) {
-        nv_index_set(l_flags, nv_add_fast(nv_lit("loop:"), f_nodeChild_2(l_node, nv_int(1LL))), nv_lit("1"));
+    if (nv_eq_bool(l_head, (&nv_lits[173]))) {
+        (void)f_collectAssignments_4(f_nodeChild_2(l_node, nv_int(2LL)), l_names, l_values, l_flags);
+        return nv_nil;
+    }
+    if (nv_eq_bool(l_head, (&nv_lits[268]))) {
+        nv_index_set(l_flags, nv_add_fast((&nv_lits[269]), f_nodeChild_2(l_node, nv_int(1LL))), (&nv_lits[245]));
         (void)f_collectAssignments_4(f_nodeChild_2(l_node, nv_int(3LL)), l_names, l_values, l_flags);
         return nv_nil;
     }
-    if ((nv_eq_bool(l_head, nv_lit("var")) || nv_eq_bool(l_head, nv_lit("assign")))) {
+    if ((nv_eq_bool(l_head, (&nv_lits[196])) || nv_eq_bool(l_head, (&nv_lits[270])))) {
         nv l_name = f_nodeChild_2(l_node, nv_int(1LL));
         (void)nv_append(l_names, "append", l_name);
         if (nv_gt_bool(f_nodeCount_1(l_node), nv_int(2LL))) {
             (void)nv_append(l_values, "append", f_nodeChild_2(l_node, nv_int(2LL)));
         } else {
-            (void)nv_append(l_values, "append", nv_lit("(none)"));
+            (void)nv_append(l_values, "append", (&nv_lits[271]));
         }
-        if (nv_eq_bool(l_head, nv_lit("var"))) {
-            nv_index_set(l_flags, nv_add_fast(nv_lit("declared:"), l_name), nv_lit("1"));
+        if (nv_eq_bool(l_head, (&nv_lits[196]))) {
+            nv_index_set(l_flags, nv_add_fast((&nv_lits[272]), l_name), (&nv_lits[245]));
         }
         return nv_nil;
     }
-    if (nv_eq_bool(l_head, nv_lit("tvar"))) {
+    if (nv_eq_bool(l_head, (&nv_lits[273]))) {
         nv l_tname = f_nodeChild_2(l_node, nv_int(2LL));
         (void)nv_append(l_names, "append", l_tname);
         if (nv_gt_bool(f_nodeCount_1(l_node), nv_int(3LL))) {
             (void)nv_append(l_values, "append", f_nodeChild_2(l_node, nv_int(3LL)));
         } else {
-            (void)nv_append(l_values, "append", nv_lit("(none)"));
+            (void)nv_append(l_values, "append", (&nv_lits[271]));
         }
-        nv_index_set(l_flags, nv_add_fast(nv_lit("declared:"), l_tname), nv_lit("1"));
+        nv_index_set(l_flags, nv_add_fast((&nv_lits[272]), l_tname), (&nv_lits[245]));
         nv l_declared = f_normType_1(f_nodeChild_2(l_node, nv_int(1LL)));
-        if ((nv_truthy(nv_has_key(l_flags, "has", nv_add_fast(nv_lit("type:"), l_tname))) && nv_ne_bool(nv_index(l_flags, nv_add_fast(nv_lit("type:"), l_tname)), l_declared))) {
-            l_declared = nv_lit("mixed");
+        if ((nv_truthy(nv_has_key(l_flags, "has", nv_add_fast((&nv_lits[274]), l_tname))) && nv_ne_bool(nv_index(l_flags, nv_add_fast((&nv_lits[274]), l_tname)), l_declared))) {
+            l_declared = (&nv_lits[275]);
         }
-        nv_index_set(l_flags, nv_add_fast(nv_lit("type:"), l_tname), l_declared);
+        nv_index_set(l_flags, nv_add_fast((&nv_lits[274]), l_tname), l_declared);
     }
     return nv_nil;
 }
@@ -5407,17 +10650,17 @@ static nv f_inferIntLocals_3(nv a0, nv a1, nv a2) {
         int n_name = it_name->len;
         for (int i_name = 0; i_name < n_name; i_name++) {
             nv l_name = it_name->items[i_name];
-            nv_index_set(l_ints, l_name, nv_lit("1"));
+            nv_index_set(l_ints, l_name, (&nv_lits[245]));
         }
     }
     long long l_i = 0LL;
     while (nv_lt_bool(nv_int(l_i), nv_length_of(l_names, "length"))) {
         nv l_name = nv_index(l_names, nv_int(l_i));
-        nv l_typed = nv_bool(nv_truthy(nv_eq(nv_has_key(l_flags, "has", nv_add_fast(nv_lit("type:"), l_name)), nv_bool(0))) || nv_truthy(nv_eq(nv_index(l_flags, nv_add_fast(nv_lit("type:"), l_name)), nv_lit("integer"))));
-        if ((((nv_truthy(nv_has_key(l_flags, "has", nv_add_fast(nv_lit("declared:"), l_name))) && nv_eq_bool(nv_has_key(l_flags, "has", nv_add_fast(nv_lit("loop:"), l_name)), nv_bool(0))) && nv_eq_bool(nv_has_key(l_parameters, "has", l_name), nv_bool(0))) && nv_truthy(l_typed))) {
-            nv_index_set(l_ints, l_name, nv_lit("1"));
+        nv l_typed = nv_bool(nv_truthy(nv_eq(nv_has_key(l_flags, "has", nv_add_fast((&nv_lits[274]), l_name)), nv_bool(0))) || nv_truthy(nv_eq(nv_index(l_flags, nv_add_fast((&nv_lits[274]), l_name)), (&nv_lits[30]))));
+        if ((((nv_truthy(nv_has_key(l_flags, "has", nv_add_fast((&nv_lits[272]), l_name))) && nv_eq_bool(nv_has_key(l_flags, "has", nv_add_fast((&nv_lits[269]), l_name)), nv_bool(0))) && nv_eq_bool(nv_has_key(l_parameters, "has", l_name), nv_bool(0))) && nv_truthy(l_typed))) {
+            nv_index_set(l_ints, l_name, (&nv_lits[245]));
         }
-        if ((nv_truthy(nv_has_key(l_flags, "has", nv_add_fast(nv_lit("loop:"), l_name))) || nv_eq_bool(l_typed, nv_bool(0)))) {
+        if ((nv_truthy(nv_has_key(l_flags, "has", nv_add_fast((&nv_lits[269]), l_name))) || nv_eq_bool(l_typed, nv_bool(0)))) {
             (void)nv_invoke1(l_ints, "remove", l_name);
         }
         l_i = (l_i + 1LL);
@@ -5456,18 +10699,18 @@ static nv f_inferFloatLocals_4(nv a0, nv a1, nv a2, nv a3) {
         int n_name = it_name->len;
         for (int i_name = 0; i_name < n_name; i_name++) {
             nv l_name = it_name->items[i_name];
-            nv_index_set(l_floats, l_name, nv_lit("1"));
+            nv_index_set(l_floats, l_name, (&nv_lits[245]));
         }
     }
     long long l_i = 0LL;
     while (nv_lt_bool(nv_int(l_i), nv_length_of(l_names, "length"))) {
         nv l_name = nv_index(l_names, nv_int(l_i));
-        nv l_typed = nv_bool(nv_truthy(nv_eq(nv_has_key(l_flags, "has", nv_add_fast(nv_lit("type:"), l_name)), nv_bool(0))) || nv_truthy(nv_eq(nv_index(l_flags, nv_add_fast(nv_lit("type:"), l_name)), nv_lit("float"))));
-        nv l_local = nv_bool(nv_truthy(nv_has_key(l_flags, "has", nv_add_fast(nv_lit("declared:"), l_name))) && nv_truthy(nv_eq(nv_has_key(l_flags, "has", nv_add_fast(nv_lit("loop:"), l_name)), nv_bool(0))));
+        nv l_typed = nv_bool(nv_truthy(nv_eq(nv_has_key(l_flags, "has", nv_add_fast((&nv_lits[274]), l_name)), nv_bool(0))) || nv_truthy(nv_eq(nv_index(l_flags, nv_add_fast((&nv_lits[274]), l_name)), (&nv_lits[35]))));
+        nv l_local = nv_bool(nv_truthy(nv_has_key(l_flags, "has", nv_add_fast((&nv_lits[272]), l_name))) && nv_truthy(nv_eq(nv_has_key(l_flags, "has", nv_add_fast((&nv_lits[269]), l_name)), nv_bool(0))));
         if ((((nv_truthy(l_local) && nv_eq_bool(nv_has_key(l_parameters, "has", l_name), nv_bool(0))) && nv_eq_bool(nv_has_key(l_ints, "has", l_name), nv_bool(0))) && nv_truthy(l_typed))) {
-            nv_index_set(l_floats, l_name, nv_lit("1"));
+            nv_index_set(l_floats, l_name, (&nv_lits[245]));
         }
-        if (((nv_truthy(nv_has_key(l_flags, "has", nv_add_fast(nv_lit("loop:"), l_name))) || nv_truthy(nv_has_key(l_ints, "has", l_name))) || nv_eq_bool(l_typed, nv_bool(0)))) {
+        if (((nv_truthy(nv_has_key(l_flags, "has", nv_add_fast((&nv_lits[269]), l_name))) || nv_truthy(nv_has_key(l_ints, "has", l_name))) || nv_eq_bool(l_typed, nv_bool(0)))) {
             (void)nv_invoke1(l_floats, "remove", l_name);
         }
         l_i = (l_i + 1LL);
@@ -5480,7 +10723,7 @@ static nv f_inferFloatLocals_4(nv a0, nv a1, nv a2, nv a3) {
         long long l_k = 0LL;
         while (nv_lt_bool(nv_int(l_k), nv_length_of(l_names, "length"))) {
             nv l_candidate = nv_index(l_names, nv_int(l_k));
-            nv l_declaredFloat = nv_bool(nv_truthy(nv_has_key(l_flags, "has", nv_add_fast(nv_lit("type:"), l_candidate))) && nv_truthy(nv_eq(nv_index(l_flags, nv_add_fast(nv_lit("type:"), l_candidate)), nv_lit("float"))));
+            nv l_declaredFloat = nv_bool(nv_truthy(nv_has_key(l_flags, "has", nv_add_fast((&nv_lits[274]), l_candidate))) && nv_truthy(nv_eq(nv_index(l_flags, nv_add_fast((&nv_lits[274]), l_candidate)), (&nv_lits[35]))));
             nv l_ok = nv_bool(nv_truthy(f_isFloatExpr_3(nv_index(l_values, nv_int(l_k)), l_floats, l_ints)) || nv_truthy(nv_bool(nv_truthy(l_declaredFloat) && nv_truthy(f_isIntExpr_2(nv_index(l_values, nv_int(l_k)), l_ints)))));
             if ((nv_truthy(nv_has_key(l_floats, "has", l_candidate)) && nv_eq_bool(l_ok, nv_bool(0)))) {
                 (void)nv_invoke1(l_floats, "remove", l_candidate);
@@ -5508,6 +10751,9 @@ static nv f_isNumberAtom_1(nv a0) {
     if ((nv_eq_bool(nv_length_of(l_node, "length"), nv_int(0LL)) || nv_truthy(f_isList_1(l_node)))) {
         return nv_bool(0);
     }
+    if ((nv_eq_bool(nv_invoke1(l_node, "charAt", nv_int(0LL)), (&nv_lits[234])) && nv_gt_bool(nv_length_of(l_node, "length"), nv_int(1LL)))) {
+        return f_isDigit_1(nv_invoke1(l_node, "charAt", nv_int(1LL)));
+    }
     return f_isDigit_1(nv_invoke1(l_node, "charAt", nv_int(0LL)));
     return nv_bool(0);
 }
@@ -5516,7 +10762,7 @@ static nv f_hasDot_1(nv a0) {
     nv l_s = nv_coerce_string(a0);
     long long l_i = 0LL;
     while (nv_lt_bool(nv_int(l_i), nv_length_of(l_s, "length"))) {
-        if (nv_eq_bool(nv_invoke1(l_s, "charAt", nv_int(l_i)), nv_lit("."))) {
+        if (nv_eq_bool(nv_invoke1(l_s, "charAt", nv_int(l_i)), (&nv_lits[167]))) {
             return nv_bool(1);
         }
         l_i = (l_i + 1LL);
@@ -5533,20 +10779,20 @@ static nv f_resolveVar_4(nv a0, nv a1, nv a2, nv a3) {
     if (nv_truthy(nv_has_key(l_locals, "has", l_name))) {
         return nv_coerce_string(nv_index(l_locals, l_name));
     }
-    if (nv_eq_bool(l_name, nv_lit("this"))) {
-        if (nv_ne_bool(nv_index(l_ctx, nv_lit("class")), nv_lit(""))) {
-            return nv_coerce_string(nv_lit("self"));
+    if (nv_eq_bool(l_name, (&nv_lits[276]))) {
+        if (nv_ne_bool(nv_index(l_ctx, (&nv_lits[251])), (&nv_lits[5]))) {
+            return nv_coerce_string((&nv_lits[277]));
         }
-        return nv_coerce_string(nv_lit(""));
+        return nv_coerce_string((&nv_lits[5]));
     }
-    if ((nv_ne_bool(nv_index(l_ctx, nv_lit("pkg")), nv_lit("")) && nv_truthy(nv_has_key(l_prog, "has", nv_add_chain(4, nv_lit("global:"), nv_index(l_ctx, nv_lit("pkg")), nv_lit("."), l_name))))) {
-        return nv_coerce_string(nv_add_fast(nv_lit("g_"), f_cName_1(nv_add_chain(3, nv_index(l_ctx, nv_lit("pkg")), nv_lit("."), l_name))));
+    if ((nv_ne_bool(nv_index(l_ctx, (&nv_lits[278])), (&nv_lits[5])) && nv_truthy(nv_has_key(l_prog, "has", nv_add_chain(4, (&nv_lits[262]), nv_index(l_ctx, (&nv_lits[278])), (&nv_lits[167]), l_name))))) {
+        return nv_coerce_string(nv_add_fast((&nv_lits[279]), f_cName_1(nv_add_chain(3, nv_index(l_ctx, (&nv_lits[278])), (&nv_lits[167]), l_name))));
     }
-    if (nv_truthy(nv_has_key(l_prog, "has", nv_add_fast(nv_lit("global:"), l_name)))) {
-        return nv_coerce_string(nv_add_fast(nv_lit("g_"), f_cName_1(l_name)));
+    if (nv_truthy(nv_has_key(l_prog, "has", nv_add_fast((&nv_lits[262]), l_name)))) {
+        return nv_coerce_string(nv_add_fast((&nv_lits[279]), f_cName_1(l_name)));
     }
-    return nv_coerce_string(nv_lit(""));
-    return nv_lit("");
+    return nv_coerce_string((&nv_lits[5]));
+    return (&nv_empty_str_val);
 }
 
 static nv f_genFloat_4(nv a0, nv a1, nv a2, nv a3) {
@@ -5561,27 +10807,27 @@ static nv f_genFloat_4(nv a0, nv a1, nv a2, nv a3) {
         return nv_coerce_string(nv_index(l_locals, l_node));
     }
     nv l_head = f_nodeHead_1(l_node);
-    if (nv_eq_bool(l_head, nv_lit("neg"))) {
-        return nv_coerce_string(nv_add_chain(3, nv_lit("(-"), f_genFloat_4(f_nodeChild_2(l_node, nv_int(1LL)), l_prog, l_ctx, l_locals), nv_lit(")")));
+    if (nv_eq_bool(l_head, (&nv_lits[265]))) {
+        return nv_coerce_string(nv_add_chain(3, (&nv_lits[280]), f_genFloat_4(f_nodeChild_2(l_node, nv_int(1LL)), l_prog, l_ctx, l_locals), (&nv_lits[8])));
     }
     nv l_left = f_nodeChild_2(l_node, nv_int(1LL));
     nv l_right = f_nodeChild_2(l_node, nv_int(2LL));
     nv l_l = f_genFloat_4(l_left, l_prog, l_ctx, l_locals);
     nv l_r = f_genFloat_4(l_right, l_prog, l_ctx, l_locals);
     if (nv_eq_bool(f_isFloatValue_2(l_left, l_locals), nv_bool(0))) {
-        l_l = nv_add_chain(3, nv_lit("(double)("), f_genInt_4(l_left, l_prog, l_ctx, l_locals), nv_lit(")"));
+        l_l = nv_add_chain(3, (&nv_lits[281]), f_genInt_4(l_left, l_prog, l_ctx, l_locals), (&nv_lits[8]));
     }
     if (nv_eq_bool(f_isFloatValue_2(l_right, l_locals), nv_bool(0))) {
-        l_r = nv_add_chain(3, nv_lit("(double)("), f_genInt_4(l_right, l_prog, l_ctx, l_locals), nv_lit(")"));
+        l_r = nv_add_chain(3, (&nv_lits[281]), f_genInt_4(l_right, l_prog, l_ctx, l_locals), (&nv_lits[8]));
     }
-    if (nv_eq_bool(l_head, nv_lit("/"))) {
-        return nv_coerce_string(nv_add_chain(5, nv_lit("nv_fdiv("), l_l, nv_lit(", "), l_r, nv_lit(")")));
+    if (nv_eq_bool(l_head, (&nv_lits[6]))) {
+        return nv_coerce_string(nv_add_chain(5, (&nv_lits[282]), l_l, (&nv_lits[170]), l_r, (&nv_lits[8])));
     }
-    if (nv_eq_bool(l_head, nv_lit("%"))) {
-        return nv_coerce_string(nv_add_chain(5, nv_lit("nv_fmod_("), l_l, nv_lit(", "), l_r, nv_lit(")")));
+    if (nv_eq_bool(l_head, (&nv_lits[236]))) {
+        return nv_coerce_string(nv_add_chain(5, (&nv_lits[283]), l_l, (&nv_lits[170]), l_r, (&nv_lits[8])));
     }
-    return nv_coerce_string(nv_add_chain(7, nv_lit("("), l_l, nv_lit(" "), l_head, nv_lit(" "), l_r, nv_lit(")")));
-    return nv_lit("");
+    return nv_coerce_string(nv_add_chain(7, (&nv_lits[7]), l_l, (&nv_lits[9]), l_head, (&nv_lits[9]), l_r, (&nv_lits[8])));
+    return (&nv_empty_str_val);
 }
 
 static nv f_genInt_4(nv a0, nv a1, nv a2, nv a3) {
@@ -5591,38 +10837,44 @@ static nv f_genInt_4(nv a0, nv a1, nv a2, nv a3) {
     nv l_locals = a3;
     if (nv_eq_bool(f_isList_1(l_node), nv_bool(0))) {
         if (nv_truthy(f_isNumberAtom_1(l_node))) {
-            return nv_coerce_string(nv_add_fast(l_node, nv_lit("LL")));
+            return nv_coerce_string(nv_add_fast(l_node, (&nv_lits[284])));
         }
         if (nv_eq_bool(nv_has_key(l_locals, "has", l_node), nv_bool(0))) {
-            (void)f_fail_2(nv_add_chain(3, nv_lit("internal: '"), l_node, nv_lit("' inferred as an integer but not a local")), nv_index(l_ctx, nv_lit("pos")));
+            (void)f_fail_2(nv_add_chain(3, (&nv_lits[285]), l_node, (&nv_lits[286])), nv_index(l_ctx, (&nv_lits[40])));
         }
         return nv_coerce_string(nv_index(l_locals, l_node));
     }
     nv l_head = f_nodeHead_1(l_node);
-    if (nv_eq_bool(l_head, nv_lit("neg"))) {
-        return nv_coerce_string(nv_add_chain(3, nv_lit("(-"), f_genInt_4(f_nodeChild_2(l_node, nv_int(1LL)), l_prog, l_ctx, l_locals), nv_lit(")")));
+    if (nv_eq_bool(l_head, (&nv_lits[265]))) {
+        return nv_coerce_string(nv_add_chain(3, (&nv_lits[280]), f_genInt_4(f_nodeChild_2(l_node, nv_int(1LL)), l_prog, l_ctx, l_locals), (&nv_lits[8])));
     }
     nv l_left = f_genInt_4(f_nodeChild_2(l_node, nv_int(1LL)), l_prog, l_ctx, l_locals);
     nv l_right = f_genInt_4(f_nodeChild_2(l_node, nv_int(2LL)), l_prog, l_ctx, l_locals);
-    if (nv_eq_bool(l_head, nv_lit("/"))) {
-        return nv_coerce_string(nv_add_chain(5, nv_lit("nv_idiv("), l_left, nv_lit(", "), l_right, nv_lit(")")));
+    if (nv_eq_bool(l_head, (&nv_lits[6]))) {
+        return nv_coerce_string(nv_add_chain(5, (&nv_lits[287]), l_left, (&nv_lits[170]), l_right, (&nv_lits[8])));
     }
-    if (nv_eq_bool(l_head, nv_lit("%"))) {
-        return nv_coerce_string(nv_add_chain(5, nv_lit("nv_imod("), l_left, nv_lit(", "), l_right, nv_lit(")")));
+    if (nv_eq_bool(l_head, (&nv_lits[236]))) {
+        return nv_coerce_string(nv_add_chain(5, (&nv_lits[288]), l_left, (&nv_lits[170]), l_right, (&nv_lits[8])));
     }
-    return nv_coerce_string(nv_add_chain(7, nv_lit("("), l_left, nv_lit(" "), l_head, nv_lit(" "), l_right, nv_lit(")")));
-    return nv_lit("");
+    if (nv_eq_bool(l_head, (&nv_lits[220]))) {
+        return nv_coerce_string(nv_add_chain(5, (&nv_lits[289]), l_left, (&nv_lits[170]), l_right, (&nv_lits[8])));
+    }
+    if (nv_eq_bool(l_head, (&nv_lits[38]))) {
+        return nv_coerce_string(nv_add_chain(5, (&nv_lits[290]), l_left, (&nv_lits[170]), l_right, (&nv_lits[8])));
+    }
+    return nv_coerce_string(nv_add_chain(7, (&nv_lits[7]), l_left, (&nv_lits[9]), l_head, (&nv_lits[9]), l_right, (&nv_lits[8])));
+    return (&nv_empty_str_val);
 }
 
 static nv f_failModuleUse_3(nv a0, nv a1, nv a2) {
     nv l_name = nv_coerce_string(a0);
     nv l_prog = a1;
     nv l_ctx = a2;
-    if (nv_truthy(nv_has_key(l_prog, "has", nv_add_fast(nv_lit("pkg:"), l_name)))) {
-        (void)f_fail_2(nv_add_chain(5, nv_lit("'"), l_name, nv_lit("' is a module - call one of its functions, e.g. "), l_name, nv_lit(".x()")), nv_index(l_ctx, nv_lit("pos")));
+    if (nv_truthy(nv_has_key(l_prog, "has", nv_add_fast((&nv_lits[247]), l_name)))) {
+        (void)f_fail_2(nv_add_chain(5, (&nv_lits[21]), l_name, (&nv_lits[291]), l_name, (&nv_lits[292])), nv_index(l_ctx, (&nv_lits[40])));
     }
     if (nv_truthy(nv_invoke1(f_stdModules_0(), "contains", l_name))) {
-        (void)f_fail_2(nv_add_chain(5, nv_lit("module '"), l_name, nv_lit("' is not imported - add 'import "), l_name, nv_lit("'")), nv_index(l_ctx, nv_lit("pos")));
+        (void)f_fail_2(nv_add_chain(5, (&nv_lits[293]), l_name, (&nv_lits[294]), l_name, (&nv_lits[21])), nv_index(l_ctx, (&nv_lits[40])));
     }
     return nv_coerce_int(nv_int(0LL));
     return nv_int(0);
@@ -5634,39 +10886,39 @@ static nv f_genCondition_4(nv a0, nv a1, nv a2, nv a3) {
     nv l_ctx = a2;
     nv l_locals = a3;
     nv l_head = f_nodeHead_1(l_node);
-    if (nv_eq_bool(l_head, nv_lit("&&"))) {
-        return nv_coerce_string(nv_add_chain(5, nv_lit("("), f_genCondition_4(f_nodeChild_2(l_node, nv_int(1LL)), l_prog, l_ctx, l_locals), nv_lit(" && "), f_genCondition_4(f_nodeChild_2(l_node, nv_int(2LL)), l_prog, l_ctx, l_locals), nv_lit(")")));
+    if (nv_eq_bool(l_head, (&nv_lits[216]))) {
+        return nv_coerce_string(nv_add_chain(5, (&nv_lits[7]), f_genCondition_4(f_nodeChild_2(l_node, nv_int(1LL)), l_prog, l_ctx, l_locals), (&nv_lits[295]), f_genCondition_4(f_nodeChild_2(l_node, nv_int(2LL)), l_prog, l_ctx, l_locals), (&nv_lits[8])));
     }
-    if (nv_eq_bool(l_head, nv_lit("||"))) {
-        return nv_coerce_string(nv_add_chain(5, nv_lit("("), f_genCondition_4(f_nodeChild_2(l_node, nv_int(1LL)), l_prog, l_ctx, l_locals), nv_lit(" || "), f_genCondition_4(f_nodeChild_2(l_node, nv_int(2LL)), l_prog, l_ctx, l_locals), nv_lit(")")));
+    if (nv_eq_bool(l_head, (&nv_lits[217]))) {
+        return nv_coerce_string(nv_add_chain(5, (&nv_lits[7]), f_genCondition_4(f_nodeChild_2(l_node, nv_int(1LL)), l_prog, l_ctx, l_locals), (&nv_lits[296]), f_genCondition_4(f_nodeChild_2(l_node, nv_int(2LL)), l_prog, l_ctx, l_locals), (&nv_lits[8])));
     }
-    if (nv_eq_bool(l_head, nv_lit("!"))) {
-        return nv_coerce_string(nv_add_chain(3, nv_lit("(!("), f_genCondition_4(f_nodeChild_2(l_node, nv_int(1LL)), l_prog, l_ctx, l_locals), nv_lit("))")));
+    if (nv_eq_bool(l_head, (&nv_lits[238]))) {
+        return nv_coerce_string(nv_add_chain(3, (&nv_lits[297]), f_genCondition_4(f_nodeChild_2(l_node, nv_int(1LL)), l_prog, l_ctx, l_locals), (&nv_lits[298])));
     }
-    nv l_bools = nv_map_of(6, nv_lit("<"), nv_lit("nv_lt_bool"), nv_lit(">"), nv_lit("nv_gt_bool"), nv_lit("<="), nv_lit("nv_le_bool"), nv_lit(">="), nv_lit("nv_ge_bool"), nv_lit("=="), nv_lit("nv_eq_bool"), nv_lit("!="), nv_lit("nv_ne_bool"));
+    nv l_bools = nv_map_of(6, (&nv_lits[26]), (&nv_lits[299]), (&nv_lits[37]), (&nv_lits[300]), (&nv_lits[214]), (&nv_lits[301]), (&nv_lits[215]), (&nv_lits[302]), (&nv_lits[212]), (&nv_lits[303]), (&nv_lits[213]), (&nv_lits[304]));
     if ((nv_truthy(nv_has_key(l_bools, "has", l_head)) && nv_eq_bool(f_nodeCount_1(l_node), nv_int(3LL)))) {
         nv l_left = f_nodeChild_2(l_node, nv_int(1LL));
         nv l_right = f_nodeChild_2(l_node, nv_int(2LL));
         if ((nv_truthy(f_isIntValue_2(l_left, l_locals)) && nv_truthy(f_isIntValue_2(l_right, l_locals)))) {
-            return nv_coerce_string(nv_add_chain(5, f_genInt_4(l_left, l_prog, l_ctx, l_locals), nv_lit(" "), l_head, nv_lit(" "), f_genInt_4(l_right, l_prog, l_ctx, l_locals)));
+            return nv_coerce_string(nv_add_chain(5, f_genInt_4(l_left, l_prog, l_ctx, l_locals), (&nv_lits[9]), l_head, (&nv_lits[9]), f_genInt_4(l_right, l_prog, l_ctx, l_locals)));
         }
         if ((nv_truthy(f_isFloatValue_2(l_left, l_locals)) || nv_truthy(f_isFloatValue_2(l_right, l_locals)))) {
             nv l_numeric = nv_bool(nv_truthy(f_isFloatValue_2(l_left, l_locals)) || nv_truthy(f_isIntValue_2(l_left, l_locals)));
             l_numeric = nv_bool(nv_truthy(l_numeric) && nv_truthy(nv_bool(nv_truthy(f_isFloatValue_2(l_right, l_locals)) || nv_truthy(f_isIntValue_2(l_right, l_locals)))));
             if (nv_truthy(l_numeric)) {
-                return nv_coerce_string(nv_add_chain(5, f_genFloatOperand_4(l_left, l_prog, l_ctx, l_locals), nv_lit(" "), l_head, nv_lit(" "), f_genFloatOperand_4(l_right, l_prog, l_ctx, l_locals)));
+                return nv_coerce_string(nv_add_chain(5, f_genFloatOperand_4(l_left, l_prog, l_ctx, l_locals), (&nv_lits[9]), l_head, (&nv_lits[9]), f_genFloatOperand_4(l_right, l_prog, l_ctx, l_locals)));
             }
         }
-        return nv_coerce_string(nv_add_chain(6, nv_index(l_bools, l_head), nv_lit("("), f_genExpr_4(l_left, l_prog, l_ctx, l_locals), nv_lit(", "), f_genExpr_4(l_right, l_prog, l_ctx, l_locals), nv_lit(")")));
+        return nv_coerce_string(nv_add_chain(6, nv_index(l_bools, l_head), (&nv_lits[7]), f_genExpr_4(l_left, l_prog, l_ctx, l_locals), (&nv_lits[170]), f_genExpr_4(l_right, l_prog, l_ctx, l_locals), (&nv_lits[8])));
     }
-    if (nv_eq_bool(l_node, nv_lit("true"))) {
-        return nv_coerce_string(nv_lit("1"));
+    if (nv_eq_bool(l_node, (&nv_lits[208]))) {
+        return nv_coerce_string((&nv_lits[245]));
     }
-    if (nv_eq_bool(l_node, nv_lit("false"))) {
-        return nv_coerce_string(nv_lit("0"));
+    if (nv_eq_bool(l_node, (&nv_lits[209]))) {
+        return nv_coerce_string((&nv_lits[221]));
     }
-    return nv_coerce_string(nv_add_chain(3, nv_lit("nv_truthy("), f_genExpr_4(l_node, l_prog, l_ctx, l_locals), nv_lit(")")));
-    return nv_lit("");
+    return nv_coerce_string(nv_add_chain(3, (&nv_lits[305]), f_genExpr_4(l_node, l_prog, l_ctx, l_locals), (&nv_lits[8])));
+    return (&nv_empty_str_val);
 }
 
 static nv f_genFloatOperand_4(nv a0, nv a1, nv a2, nv a3) {
@@ -5677,8 +10929,8 @@ static nv f_genFloatOperand_4(nv a0, nv a1, nv a2, nv a3) {
     if (nv_truthy(f_isFloatValue_2(l_node, l_locals))) {
         return nv_coerce_string(f_genFloat_4(l_node, l_prog, l_ctx, l_locals));
     }
-    return nv_coerce_string(nv_add_chain(3, nv_lit("(double)("), f_genInt_4(l_node, l_prog, l_ctx, l_locals), nv_lit(")")));
-    return nv_lit("");
+    return nv_coerce_string(nv_add_chain(3, (&nv_lits[281]), f_genInt_4(l_node, l_prog, l_ctx, l_locals), (&nv_lits[8])));
+    return (&nv_empty_str_val);
 }
 
 static nv f_genExpr_4(nv a0, nv a1, nv a2, nv a3) {
@@ -5687,172 +10939,182 @@ static nv f_genExpr_4(nv a0, nv a1, nv a2, nv a3) {
     nv l_ctx = a2;
     nv l_locals = a3;
     if (nv_eq_bool(f_isList_1(l_node), nv_bool(0))) {
-        if (nv_eq_bool(l_node, nv_lit("true"))) {
-            return nv_coerce_string(nv_lit("nv_bool(1)"));
+        if (nv_eq_bool(l_node, (&nv_lits[208]))) {
+            return nv_coerce_string((&nv_lits[306]));
         }
-        if (nv_eq_bool(l_node, nv_lit("false"))) {
-            return nv_coerce_string(nv_lit("nv_bool(0)"));
+        if (nv_eq_bool(l_node, (&nv_lits[209]))) {
+            return nv_coerce_string((&nv_lits[164]));
         }
         if (nv_truthy(f_isNumberAtom_1(l_node))) {
             if (nv_truthy(f_hasDot_1(l_node))) {
-                return nv_coerce_string(nv_add_chain(3, nv_lit("nv_float("), l_node, nv_lit(")")));
+                return nv_coerce_string(nv_add_chain(3, (&nv_lits[307]), l_node, (&nv_lits[8])));
             }
-            return nv_coerce_string(nv_add_chain(3, nv_lit("nv_int("), l_node, nv_lit("LL)")));
+            return nv_coerce_string(nv_add_chain(3, (&nv_lits[308]), l_node, (&nv_lits[309])));
         }
         nv l_v = f_resolveVar_4(l_node, l_prog, l_ctx, l_locals);
-        if (nv_ne_bool(l_v, nv_lit(""))) {
+        if (nv_ne_bool(l_v, (&nv_lits[5]))) {
             if (nv_truthy(f_isIntLocal_2(l_locals, l_node))) {
-                return nv_coerce_string(nv_add_chain(3, nv_lit("nv_int("), l_v, nv_lit(")")));
+                return nv_coerce_string(nv_add_chain(3, (&nv_lits[308]), l_v, (&nv_lits[8])));
             }
             if (nv_truthy(f_isFloatLocal_2(l_locals, l_node))) {
-                return nv_coerce_string(nv_add_chain(3, nv_lit("nv_float("), l_v, nv_lit(")")));
+                return nv_coerce_string(nv_add_chain(3, (&nv_lits[307]), l_v, (&nv_lits[8])));
             }
             return nv_coerce_string(l_v);
         }
         if (nv_truthy(f_isImplicitField_4(l_node, l_prog, l_ctx, l_locals))) {
-            return nv_coerce_string(nv_add_chain(3, nv_lit("nv_fields(self->o)["), f_fieldSlot_3(l_prog, nv_index(l_ctx, nv_lit("class")), l_node), nv_lit("]")));
+            return nv_coerce_string(nv_add_chain(3, (&nv_lits[310]), f_fieldSlot_3(l_prog, nv_index(l_ctx, (&nv_lits[251])), l_node), (&nv_lits[172])));
         }
         if (nv_truthy(f_isClassLike_2(l_prog, l_node))) {
-            (void)f_fail_2(nv_add_chain(3, nv_lit("'"), l_node, nv_lit("' is a type, not a value")), nv_index(l_ctx, nv_lit("pos")));
+            (void)f_fail_2(nv_add_chain(3, (&nv_lits[21]), l_node, (&nv_lits[311])), nv_index(l_ctx, (&nv_lits[40])));
         }
-        if (nv_eq_bool(l_node, nv_lit("this"))) {
-            (void)f_fail_2(nv_lit("'this' is only available inside classes"), nv_index(l_ctx, nv_lit("pos")));
+        if (nv_eq_bool(l_node, (&nv_lits[276]))) {
+            (void)f_fail_2((&nv_lits[312]), nv_index(l_ctx, (&nv_lits[40])));
         }
         (void)f_failModuleUse_3(l_node, l_prog, l_ctx);
-        (void)f_fail_2(nv_add_chain(3, nv_lit("unknown variable '"), l_node, nv_lit("'")), nv_index(l_ctx, nv_lit("pos")));
+        (void)f_fail_2(nv_add_chain(3, (&nv_lits[313]), l_node, (&nv_lits[21])), nv_index(l_ctx, (&nv_lits[40])));
     }
     nv l_head = f_nodeHead_1(l_node);
-    if (nv_eq_bool(l_head, nv_lit("str"))) {
-        return nv_coerce_string(nv_add_chain(3, nv_lit("nv_lit("), f_nodeChild_2(l_node, nv_int(1LL)), nv_lit(")")));
+    if (nv_eq_bool(l_head, (&nv_lits[27]))) {
+        return nv_coerce_string(f_litRef_2(l_prog, f_nodeChild_2(l_node, nv_int(1LL))));
     }
-    if (nv_eq_bool(l_head, nv_lit("neg"))) {
+    if (nv_eq_bool(l_head, (&nv_lits[314]))) {
+        return nv_coerce_string(nv_add_chain(3, (&nv_lits[315]), f_genExpr_4(f_nodeChild_2(l_node, nv_int(1LL)), l_prog, l_ctx, l_locals), (&nv_lits[8])));
+    }
+    if (nv_eq_bool(l_head, (&nv_lits[316]))) {
+        return nv_coerce_string(f_genSpawn_4(l_node, l_prog, l_ctx, l_locals));
+    }
+    if (nv_eq_bool(l_head, (&nv_lits[317]))) {
+        return nv_coerce_string(f_sexpUnescape_1(f_nodeChild_2(l_node, nv_int(1LL))));
+    }
+    if (nv_eq_bool(l_head, (&nv_lits[265]))) {
         nv l_operand = f_nodeChild_2(l_node, nv_int(1LL));
         if (nv_truthy(f_isNumberAtom_1(l_operand))) {
             if (nv_truthy(f_hasDot_1(l_operand))) {
-                return nv_coerce_string(nv_add_chain(3, nv_lit("nv_float(-"), l_operand, nv_lit(")")));
+                return nv_coerce_string(nv_add_chain(3, (&nv_lits[318]), l_operand, (&nv_lits[8])));
             }
-            return nv_coerce_string(nv_add_chain(3, nv_lit("nv_int(-"), l_operand, nv_lit("LL)")));
+            return nv_coerce_string(nv_add_chain(3, (&nv_lits[319]), l_operand, (&nv_lits[309])));
         }
-        return nv_coerce_string(nv_add_chain(3, nv_lit("nv_neg("), f_genExpr_4(l_operand, l_prog, l_ctx, l_locals), nv_lit(")")));
+        return nv_coerce_string(nv_add_chain(3, (&nv_lits[320]), f_genExpr_4(l_operand, l_prog, l_ctx, l_locals), (&nv_lits[8])));
     }
-    if (nv_eq_bool(l_head, nv_lit("!"))) {
-        return nv_coerce_string(nv_add_chain(3, nv_lit("nv_not("), f_genExpr_4(f_nodeChild_2(l_node, nv_int(1LL)), l_prog, l_ctx, l_locals), nv_lit(")")));
+    if (nv_eq_bool(l_head, (&nv_lits[238]))) {
+        return nv_coerce_string(nv_add_chain(3, (&nv_lits[321]), f_genExpr_4(f_nodeChild_2(l_node, nv_int(1LL)), l_prog, l_ctx, l_locals), (&nv_lits[8])));
     }
-    if (nv_eq_bool(l_head, nv_lit("arr"))) {
+    if (nv_eq_bool(l_head, (&nv_lits[322]))) {
         nv l_count = nv_sub_fast(f_nodeCount_1(l_node), nv_int(1LL));
         if (nv_eq_bool(l_count, nv_int(0LL))) {
-            return nv_coerce_string(nv_lit("nv_arr()"));
+            return nv_coerce_string((&nv_lits[323]));
         }
-        return nv_coerce_string(nv_add_chain(5, nv_lit("nv_arr_of("), l_count, nv_lit(", "), f_genArgs_5(l_node, nv_int(1LL), l_prog, l_ctx, l_locals), nv_lit(")")));
+        return nv_coerce_string(nv_add_chain(5, (&nv_lits[324]), l_count, (&nv_lits[170]), f_genArgs_5(l_node, nv_int(1LL), l_prog, l_ctx, l_locals), (&nv_lits[8])));
     }
-    if (nv_eq_bool(l_head, nv_lit("mapl"))) {
+    if (nv_eq_bool(l_head, (&nv_lits[325]))) {
         nv l_pairs = nv_div(nv_sub_fast(f_nodeCount_1(l_node), nv_int(1LL)), nv_int(2LL));
         if (nv_eq_bool(l_pairs, nv_int(0LL))) {
-            return nv_coerce_string(nv_lit("nv_map()"));
+            return nv_coerce_string((&nv_lits[326]));
         }
-        return nv_coerce_string(nv_add_chain(5, nv_lit("nv_map_of("), l_pairs, nv_lit(", "), f_genArgs_5(l_node, nv_int(1LL), l_prog, l_ctx, l_locals), nv_lit(")")));
+        return nv_coerce_string(nv_add_chain(5, (&nv_lits[327]), l_pairs, (&nv_lits[170]), f_genArgs_5(l_node, nv_int(1LL), l_prog, l_ctx, l_locals), (&nv_lits[8])));
     }
-    if (nv_eq_bool(l_head, nv_lit("obj"))) {
+    if (nv_eq_bool(l_head, (&nv_lits[328]))) {
         nv l_cls = f_nodeChild_2(l_node, nv_int(1LL));
         if (nv_eq_bool(f_isClassLike_2(l_prog, l_cls), nv_bool(0))) {
-            (void)f_fail_2(nv_add_chain(3, nv_lit("unknown class '"), l_cls, nv_lit("'")), nv_index(l_ctx, nv_lit("pos")));
+            (void)f_fail_2(nv_add_chain(3, (&nv_lits[329]), l_cls, (&nv_lits[21])), nv_index(l_ctx, (&nv_lits[40])));
         }
-        if (nv_truthy(nv_has_key(l_prog, "has", nv_add_fast(nv_lit("enum:"), l_cls)))) {
-            (void)f_fail_2(nv_add_chain(3, nv_lit("'"), l_cls, nv_lit("' is an enum and cannot be constructed")), nv_index(l_ctx, nv_lit("pos")));
+        if (nv_truthy(nv_has_key(l_prog, "has", nv_add_fast((&nv_lits[258]), l_cls)))) {
+            (void)f_fail_2(nv_add_chain(3, (&nv_lits[21]), l_cls, (&nv_lits[330])), nv_index(l_ctx, (&nv_lits[40])));
         }
-        if (nv_truthy(f_classIsAbstract_1(nv_index(l_prog, nv_add_fast(nv_lit("class:"), l_cls))))) {
-            (void)f_fail_2(nv_add_chain(3, nv_lit("cannot instantiate abstract class '"), l_cls, nv_lit("'")), nv_index(l_ctx, nv_lit("pos")));
+        if (nv_truthy(f_classIsAbstract_1(nv_index(l_prog, nv_add_fast((&nv_lits[257]), l_cls))))) {
+            (void)f_fail_2(nv_add_chain(3, (&nv_lits[331]), l_cls, (&nv_lits[21])), nv_index(l_ctx, (&nv_lits[40])));
         }
-        nv l_out = nv_add_chain(6, nv_lit("nv_new_object_fields_cached(&nv_cls_"), l_cls, nv_lit(", "), f_cstr_1(l_cls), nv_lit(", "), nv_sub_fast(f_nodeCount_1(l_node), nv_int(2LL)));
+        nv l_out = nv_add_chain(6, (&nv_lits[332]), l_cls, (&nv_lits[170]), f_cstr_1(l_cls), (&nv_lits[170]), nv_sub_fast(f_nodeCount_1(l_node), nv_int(2LL)));
         long long l_i = 2LL;
-        while (nv_lt_bool(nv_int(l_i), f_nodeCount_1(l_node))) {
+        nv l_nodeCount = f_nodeCount_1(l_node);
+        while (nv_lt_bool(nv_int(l_i), l_nodeCount)) {
             nv l_f = f_nodeChild_2(l_node, nv_int(l_i));
-            l_out = nv_add_chain(5, l_out, nv_lit(", "), f_cstr_1(f_nodeChild_2(l_f, nv_int(1LL))), nv_lit(", "), f_genExpr_4(f_nodeChild_2(l_f, nv_int(2LL)), l_prog, l_ctx, l_locals));
+            l_out = nv_add_chain(5, l_out, (&nv_lits[170]), f_cstr_1(f_nodeChild_2(l_f, nv_int(1LL))), (&nv_lits[170]), f_genExpr_4(f_nodeChild_2(l_f, nv_int(2LL)), l_prog, l_ctx, l_locals));
             l_i = (l_i + 1LL);
         }
-        return nv_coerce_string(nv_add_fast(l_out, nv_lit(")")));
+        return nv_coerce_string(nv_add_fast(l_out, (&nv_lits[8])));
     }
-    if (nv_eq_bool(l_head, nv_lit("idx"))) {
-        return nv_coerce_string(nv_add_chain(5, nv_lit("nv_index("), f_genExpr_4(f_nodeChild_2(l_node, nv_int(1LL)), l_prog, l_ctx, l_locals), nv_lit(", "), f_genExpr_4(f_nodeChild_2(l_node, nv_int(2LL)), l_prog, l_ctx, l_locals), nv_lit(")")));
+    if (nv_eq_bool(l_head, (&nv_lits[333]))) {
+        return nv_coerce_string(nv_add_chain(5, (&nv_lits[334]), f_genExpr_4(f_nodeChild_2(l_node, nv_int(1LL)), l_prog, l_ctx, l_locals), (&nv_lits[170]), f_genExpr_4(f_nodeChild_2(l_node, nv_int(2LL)), l_prog, l_ctx, l_locals), (&nv_lits[8])));
     }
-    if (nv_eq_bool(l_head, nv_lit("mget"))) {
+    if (nv_eq_bool(l_head, (&nv_lits[335]))) {
         nv l_target = f_nodeChild_2(l_node, nv_int(1LL));
         nv l_member = f_nodeChild_2(l_node, nv_int(2LL));
-        if (((nv_truthy(f_isIdentAtom_1(l_target)) && nv_eq_bool(f_resolveVar_4(l_target, l_prog, l_ctx, l_locals), nv_lit(""))) && nv_eq_bool(f_isImplicitField_4(l_target, l_prog, l_ctx, l_locals), nv_bool(0)))) {
-            if (nv_truthy(nv_has_key(l_prog, "has", nv_add_fast(nv_lit("enum:"), l_target)))) {
-                return nv_coerce_string(nv_add_chain(5, nv_lit("nv_enum_get("), f_cstr_1(l_target), nv_lit(", "), f_cstr_1(l_member), nv_lit(")")));
+        if (((nv_truthy(f_isIdentAtom_1(l_target)) && nv_eq_bool(f_resolveVar_4(l_target, l_prog, l_ctx, l_locals), (&nv_lits[5]))) && nv_eq_bool(f_isImplicitField_4(l_target, l_prog, l_ctx, l_locals), nv_bool(0)))) {
+            if (nv_truthy(nv_has_key(l_prog, "has", nv_add_fast((&nv_lits[258]), l_target)))) {
+                return nv_coerce_string(nv_add_chain(5, (&nv_lits[336]), f_cstr_1(l_target), (&nv_lits[170]), f_cstr_1(l_member), (&nv_lits[8])));
             }
-            if (nv_truthy(nv_has_key(l_prog, "has", nv_add_fast(nv_lit("pkg:"), l_target)))) {
-                if (nv_truthy(nv_has_key(l_prog, "has", nv_add_chain(4, nv_lit("global:"), l_target, nv_lit("."), l_member)))) {
-                    return nv_coerce_string(nv_add_fast(nv_lit("g_"), f_cName_1(nv_add_chain(3, l_target, nv_lit("."), l_member))));
+            if (nv_truthy(nv_has_key(l_prog, "has", nv_add_fast((&nv_lits[247]), l_target)))) {
+                if (nv_truthy(nv_has_key(l_prog, "has", nv_add_chain(4, (&nv_lits[262]), l_target, (&nv_lits[167]), l_member)))) {
+                    return nv_coerce_string(nv_add_fast((&nv_lits[279]), f_cName_1(nv_add_chain(3, l_target, (&nv_lits[167]), l_member))));
                 }
                 return nv_coerce_string(f_genQualifiedCall_7(l_target, l_member, l_node, nv_int(3LL), l_prog, l_ctx, l_locals));
             }
             if (nv_truthy(f_isClassLike_2(l_prog, l_target))) {
-                (void)f_fail_2(nv_add_chain(3, nv_lit("'"), l_target, nv_lit("' is a type, not a value")), nv_index(l_ctx, nv_lit("pos")));
+                (void)f_fail_2(nv_add_chain(3, (&nv_lits[21]), l_target, (&nv_lits[311])), nv_index(l_ctx, (&nv_lits[40])));
             }
             (void)f_failModuleUse_3(l_target, l_prog, l_ctx);
-            (void)f_fail_2(nv_add_chain(3, nv_lit("unknown variable '"), l_target, nv_lit("'")), nv_index(l_ctx, nv_lit("pos")));
+            (void)f_fail_2(nv_add_chain(3, (&nv_lits[313]), l_target, (&nv_lits[21])), nv_index(l_ctx, (&nv_lits[40])));
         }
-        if (((nv_eq_bool(l_target, nv_lit("this")) && nv_ne_bool(nv_index(l_ctx, nv_lit("class")), nv_lit(""))) && nv_ge_bool(f_fieldSlot_3(l_prog, nv_index(l_ctx, nv_lit("class")), l_member), nv_int(0LL)))) {
-            return nv_coerce_string(nv_add_chain(3, nv_lit("nv_fields(self->o)["), f_fieldSlot_3(l_prog, nv_index(l_ctx, nv_lit("class")), l_member), nv_lit("]")));
+        if (((nv_eq_bool(l_target, (&nv_lits[276])) && nv_ne_bool(nv_index(l_ctx, (&nv_lits[251])), (&nv_lits[5]))) && nv_ge_bool(f_fieldSlot_3(l_prog, nv_index(l_ctx, (&nv_lits[251])), l_member), nv_int(0LL)))) {
+            return nv_coerce_string(nv_add_chain(3, (&nv_lits[310]), f_fieldSlot_3(l_prog, nv_index(l_ctx, (&nv_lits[251])), l_member), (&nv_lits[172])));
         }
-        return nv_coerce_string(nv_add_chain(5, nv_lit("nv_get_member("), f_genExpr_4(l_target, l_prog, l_ctx, l_locals), nv_lit(", "), f_cstr_1(l_member), nv_lit(")")));
+        return nv_coerce_string(nv_add_chain(5, (&nv_lits[337]), f_genExpr_4(l_target, l_prog, l_ctx, l_locals), (&nv_lits[170]), f_cstr_1(l_member), (&nv_lits[8])));
     }
-    if (nv_eq_bool(l_head, nv_lit("mcall"))) {
+    if (nv_eq_bool(l_head, (&nv_lits[338]))) {
         nv l_mtarget = f_nodeChild_2(l_node, nv_int(1LL));
         nv l_mname = f_nodeChild_2(l_node, nv_int(2LL));
         nv l_nargs = nv_sub_fast(f_nodeCount_1(l_node), nv_int(3LL));
-        if (((nv_truthy(f_isIdentAtom_1(l_mtarget)) && nv_eq_bool(f_resolveVar_4(l_mtarget, l_prog, l_ctx, l_locals), nv_lit(""))) && nv_eq_bool(f_isImplicitField_4(l_mtarget, l_prog, l_ctx, l_locals), nv_bool(0)))) {
-            if (nv_truthy(nv_has_key(l_prog, "has", nv_add_fast(nv_lit("pkg:"), l_mtarget)))) {
+        if (((nv_truthy(f_isIdentAtom_1(l_mtarget)) && nv_eq_bool(f_resolveVar_4(l_mtarget, l_prog, l_ctx, l_locals), (&nv_lits[5]))) && nv_eq_bool(f_isImplicitField_4(l_mtarget, l_prog, l_ctx, l_locals), nv_bool(0)))) {
+            if (nv_truthy(nv_has_key(l_prog, "has", nv_add_fast((&nv_lits[247]), l_mtarget)))) {
                 return nv_coerce_string(f_genQualifiedCall_7(l_mtarget, l_mname, l_node, nv_int(3LL), l_prog, l_ctx, l_locals));
             }
-            if (nv_truthy(nv_has_key(l_prog, "has", nv_add_fast(nv_lit("enum:"), l_mtarget)))) {
-                if (nv_eq_bool(l_mname, nv_lit("values"))) {
-                    return nv_coerce_string(nv_add_chain(3, nv_lit("nv_enum_values("), f_cstr_1(l_mtarget), nv_lit(")")));
+            if (nv_truthy(nv_has_key(l_prog, "has", nv_add_fast((&nv_lits[258]), l_mtarget)))) {
+                if (nv_eq_bool(l_mname, (&nv_lits[339]))) {
+                    return nv_coerce_string(nv_add_chain(3, (&nv_lits[340]), f_cstr_1(l_mtarget), (&nv_lits[8])));
                 }
-                (void)f_fail_2(nv_add_chain(5, nv_lit("unknown enum function "), l_mtarget, nv_lit("."), l_mname, nv_lit("()")), nv_index(l_ctx, nv_lit("pos")));
+                (void)f_fail_2(nv_add_chain(5, (&nv_lits[341]), l_mtarget, (&nv_lits[167]), l_mname, (&nv_lits[342])), nv_index(l_ctx, (&nv_lits[40])));
             }
             if (nv_truthy(f_isClassLike_2(l_prog, l_mtarget))) {
-                (void)f_fail_2(nv_add_chain(3, nv_lit("'"), l_mtarget, nv_lit("' is a type, not a value")), nv_index(l_ctx, nv_lit("pos")));
+                (void)f_fail_2(nv_add_chain(3, (&nv_lits[21]), l_mtarget, (&nv_lits[311])), nv_index(l_ctx, (&nv_lits[40])));
             }
             (void)f_failModuleUse_3(l_mtarget, l_prog, l_ctx);
-            (void)f_fail_2(nv_add_chain(3, nv_lit("unknown variable '"), l_mtarget, nv_lit("'")), nv_index(l_ctx, nv_lit("pos")));
+            (void)f_fail_2(nv_add_chain(3, (&nv_lits[313]), l_mtarget, (&nv_lits[21])), nv_index(l_ctx, (&nv_lits[40])));
         }
         if (nv_eq_bool(l_nargs, nv_int(0LL))) {
-            if (((nv_eq_bool(l_mtarget, nv_lit("this")) && nv_ne_bool(nv_index(l_ctx, nv_lit("class")), nv_lit(""))) && nv_ge_bool(f_fieldSlot_3(l_prog, nv_index(l_ctx, nv_lit("class")), l_mname), nv_int(0LL)))) {
-                return nv_coerce_string(nv_add_chain(3, nv_lit("nv_fields(self->o)["), f_fieldSlot_3(l_prog, nv_index(l_ctx, nv_lit("class")), l_mname), nv_lit("]")));
+            if (((nv_eq_bool(l_mtarget, (&nv_lits[276])) && nv_ne_bool(nv_index(l_ctx, (&nv_lits[251])), (&nv_lits[5]))) && nv_ge_bool(f_fieldSlot_3(l_prog, nv_index(l_ctx, (&nv_lits[251])), l_mname), nv_int(0LL)))) {
+                return nv_coerce_string(nv_add_chain(3, (&nv_lits[310]), f_fieldSlot_3(l_prog, nv_index(l_ctx, (&nv_lits[251])), l_mname), (&nv_lits[172])));
             }
             return nv_coerce_string(f_invokeCall0_2(f_genExpr_4(l_mtarget, l_prog, l_ctx, l_locals), l_mname));
         }
         return nv_coerce_string(f_invokeCall_4(f_genExpr_4(l_mtarget, l_prog, l_ctx, l_locals), l_mname, l_nargs, f_genArgs_5(l_node, nv_int(3LL), l_prog, l_ctx, l_locals)));
     }
-    if (nv_eq_bool(l_head, nv_lit("call"))) {
+    if (nv_eq_bool(l_head, (&nv_lits[343]))) {
         return nv_coerce_string(f_genCall_4(l_node, l_prog, l_ctx, l_locals));
     }
     if (nv_truthy(f_isIntValue_2(l_node, l_locals))) {
-        return nv_coerce_string(nv_add_chain(3, nv_lit("nv_int("), f_genInt_4(l_node, l_prog, l_ctx, l_locals), nv_lit(")")));
+        return nv_coerce_string(nv_add_chain(3, (&nv_lits[308]), f_genInt_4(l_node, l_prog, l_ctx, l_locals), (&nv_lits[8])));
     }
     if (nv_truthy(f_isFloatValue_2(l_node, l_locals))) {
-        return nv_coerce_string(nv_add_chain(3, nv_lit("nv_float("), f_genFloat_4(l_node, l_prog, l_ctx, l_locals), nv_lit(")")));
+        return nv_coerce_string(nv_add_chain(3, (&nv_lits[307]), f_genFloat_4(l_node, l_prog, l_ctx, l_locals), (&nv_lits[8])));
     }
-    if (((nv_eq_bool(l_head, nv_lit("+")) && nv_truthy(f_isList_1(f_nodeChild_2(l_node, nv_int(1LL))))) && nv_eq_bool(f_nodeHead_1(f_nodeChild_2(l_node, nv_int(1LL))), nv_lit("+")))) {
+    if (((nv_eq_bool(l_head, (&nv_lits[233])) && nv_truthy(f_isList_1(f_nodeChild_2(l_node, nv_int(1LL))))) && nv_eq_bool(f_nodeHead_1(f_nodeChild_2(l_node, nv_int(1LL))), (&nv_lits[233])))) {
         return nv_coerce_string(f_genAddChain_4(l_node, l_prog, l_ctx, l_locals));
     }
     nv l_l = f_genExpr_4(f_nodeChild_2(l_node, nv_int(1LL)), l_prog, l_ctx, l_locals);
     nv l_r = f_genExpr_4(f_nodeChild_2(l_node, nv_int(2LL)), l_prog, l_ctx, l_locals);
-    if (nv_eq_bool(l_head, nv_lit("&&"))) {
-        return nv_coerce_string(nv_add_chain(5, nv_lit("nv_bool(nv_truthy("), l_l, nv_lit(") && nv_truthy("), l_r, nv_lit("))")));
+    if (nv_eq_bool(l_head, (&nv_lits[216]))) {
+        return nv_coerce_string(nv_add_chain(5, (&nv_lits[344]), l_l, (&nv_lits[345]), l_r, (&nv_lits[298])));
     }
-    if (nv_eq_bool(l_head, nv_lit("||"))) {
-        return nv_coerce_string(nv_add_chain(5, nv_lit("nv_bool(nv_truthy("), l_l, nv_lit(") || nv_truthy("), l_r, nv_lit("))")));
+    if (nv_eq_bool(l_head, (&nv_lits[217]))) {
+        return nv_coerce_string(nv_add_chain(5, (&nv_lits[344]), l_l, (&nv_lits[346]), l_r, (&nv_lits[298])));
     }
-    nv l_ops = nv_map_of(11, nv_lit("+"), nv_lit("nv_add_fast"), nv_lit("-"), nv_lit("nv_sub_fast"), nv_lit("*"), nv_lit("nv_mul_fast"), nv_lit("/"), nv_lit("nv_div"), nv_lit("%"), nv_lit("nv_mod"), nv_lit("=="), nv_lit("nv_eq"), nv_lit("!="), nv_lit("nv_ne"), nv_lit("<"), nv_lit("nv_lt"), nv_lit(">"), nv_lit("nv_gt"), nv_lit("<="), nv_lit("nv_le"), nv_lit(">="), nv_lit("nv_ge"));
+    nv l_ops = nv_map_of(16, (&nv_lits[233]), (&nv_lits[347]), (&nv_lits[234]), (&nv_lits[348]), (&nv_lits[235]), (&nv_lits[349]), (&nv_lits[6]), (&nv_lits[350]), (&nv_lits[236]), (&nv_lits[351]), (&nv_lits[212]), (&nv_lits[352]), (&nv_lits[213]), (&nv_lits[353]), (&nv_lits[26]), (&nv_lits[354]), (&nv_lits[37]), (&nv_lits[355]), (&nv_lits[214]), (&nv_lits[356]), (&nv_lits[215]), (&nv_lits[357]), (&nv_lits[240]), (&nv_lits[358]), (&nv_lits[241]), (&nv_lits[359]), (&nv_lits[242]), (&nv_lits[360]), (&nv_lits[220]), (&nv_lits[361]), (&nv_lits[38]), (&nv_lits[362]));
     if (nv_eq_bool(nv_has_key(l_ops, "has", l_head), nv_bool(0))) {
-        (void)f_fail_2(nv_add_chain(3, nv_lit("unsupported expression '"), l_head, nv_lit("'")), nv_index(l_ctx, nv_lit("pos")));
+        (void)f_fail_2(nv_add_chain(3, (&nv_lits[363]), l_head, (&nv_lits[21])), nv_index(l_ctx, (&nv_lits[40])));
     }
-    return nv_coerce_string(nv_add_chain(6, nv_index(l_ops, l_head), nv_lit("("), l_l, nv_lit(", "), l_r, nv_lit(")")));
-    return nv_lit("");
+    return nv_coerce_string(nv_add_chain(6, nv_index(l_ops, l_head), (&nv_lits[7]), l_l, (&nv_lits[170]), l_r, (&nv_lits[8])));
+    return (&nv_empty_str_val);
 }
 
 static nv f_genAddChain_4(nv a0, nv a1, nv a2, nv a3) {
@@ -5862,22 +11124,22 @@ static nv f_genAddChain_4(nv a0, nv a1, nv a2, nv a3) {
     nv l_locals = a3;
     nv l_parts = nv_arr();
     nv l_walk = l_node;
-    while ((((nv_truthy(f_isList_1(l_walk)) && nv_eq_bool(f_nodeHead_1(l_walk), nv_lit("+"))) && nv_eq_bool(f_nodeCount_1(l_walk), nv_int(3LL))) && nv_lt_bool(nv_length_of(l_parts, "length"), nv_int(15LL)))) {
+    while ((((nv_truthy(f_isList_1(l_walk)) && nv_eq_bool(f_nodeHead_1(l_walk), (&nv_lits[233]))) && nv_eq_bool(f_nodeCount_1(l_walk), nv_int(3LL))) && nv_lt_bool(nv_length_of(l_parts, "length"), nv_int(15LL)))) {
         (void)nv_append(l_parts, "append", f_nodeChild_2(l_walk, nv_int(2LL)));
         l_walk = f_nodeChild_2(l_walk, nv_int(1LL));
     }
     (void)nv_append(l_parts, "append", l_walk);
-    nv l_args = nv_lit("");
+    nv l_args = (&nv_lits[5]);
     nv l_i = nv_length_of(l_parts, "length");
     while (nv_gt_bool(l_i, nv_int(0LL))) {
-        if (nv_ne_bool(l_args, nv_lit(""))) {
-            l_args = nv_add_fast(l_args, nv_lit(", "));
+        if (nv_ne_bool(l_args, (&nv_lits[5]))) {
+            l_args = nv_add_fast(l_args, (&nv_lits[170]));
         }
         l_args = nv_add_fast(l_args, f_genExpr_4(nv_index(l_parts, nv_sub_fast(l_i, nv_int(1LL))), l_prog, l_ctx, l_locals));
         l_i = nv_sub_fast(l_i, nv_int(1LL));
     }
-    return nv_coerce_string(nv_add_chain(5, nv_lit("nv_add_chain("), nv_length_of(l_parts, "length"), nv_lit(", "), l_args, nv_lit(")")));
-    return nv_lit("");
+    return nv_coerce_string(nv_add_chain(5, (&nv_lits[364]), nv_length_of(l_parts, "length"), (&nv_lits[170]), l_args, (&nv_lits[8])));
+    return (&nv_empty_str_val);
 }
 
 static nv f_genArgs_5(nv a0, nv a1, nv a2, nv a3, nv a4) {
@@ -5886,17 +11148,18 @@ static nv f_genArgs_5(nv a0, nv a1, nv a2, nv a3, nv a4) {
     nv l_prog = a2;
     nv l_ctx = a3;
     nv l_locals = a4;
-    nv l_out = nv_lit("");
+    nv l_out = (&nv_lits[5]);
     long long l_i = l_from;
-    while (nv_lt_bool(nv_int(l_i), f_nodeCount_1(l_node))) {
+    nv l_nodeCount = f_nodeCount_1(l_node);
+    while (nv_lt_bool(nv_int(l_i), l_nodeCount)) {
         if (l_i > l_from) {
-            l_out = nv_add_fast(l_out, nv_lit(", "));
+            l_out = nv_add_fast(l_out, (&nv_lits[170]));
         }
         l_out = nv_add_fast(l_out, f_genExpr_4(f_nodeChild_2(l_node, nv_int(l_i)), l_prog, l_ctx, l_locals));
         l_i = (l_i + 1LL);
     }
     return nv_coerce_string(l_out);
-    return nv_lit("");
+    return (&nv_empty_str_val);
 }
 
 static nv f_genResolvedCall_4(nv a0, nv a1, nv a2, nv a3) {
@@ -5904,26 +11167,26 @@ static nv f_genResolvedCall_4(nv a0, nv a1, nv a2, nv a3) {
     long long l_nargs = nv_as_int(a1);
     nv l_args = nv_coerce_string(a2);
     nv l_prog = a3;
-    nv l_m = nv_lit("");
-    if (nv_truthy(nv_has_key(l_prog, "has", nv_add_chain(4, nv_lit("func:"), l_name, nv_lit("/"), nv_int(l_nargs))))) {
-        l_m = nv_index(l_prog, nv_add_chain(5, nv_lit("fnode:"), l_name, nv_lit("/"), nv_int(l_nargs), nv_lit("/0")));
+    nv l_m = (&nv_lits[5]);
+    if (nv_truthy(nv_has_key(l_prog, "has", nv_add_chain(4, (&nv_lits[243]), l_name, (&nv_lits[6]), nv_int(l_nargs))))) {
+        l_m = nv_index(l_prog, nv_add_chain(5, (&nv_lits[244]), l_name, (&nv_lits[6]), nv_int(l_nargs), (&nv_lits[365])));
     }
-    if (nv_eq_bool(l_m, nv_lit(""))) {
-        l_m = nv_index(l_prog, nv_add_chain(3, nv_lit("fnode:"), l_name, nv_lit("/*/0")));
+    if (nv_eq_bool(l_m, (&nv_lits[5]))) {
+        l_m = nv_index(l_prog, nv_add_chain(3, (&nv_lits[244]), l_name, (&nv_lits[248])));
     }
     if (nv_truthy(f_isNativeMethod_1(l_m))) {
         nv l_body = f_nodeChild_2(l_m, nv_int(5LL));
         nv l_cfn = f_sexpUnescape_1(f_nodeChild_2(l_body, nv_int(1LL)));
         if (nv_gt_bool(f_nodeCount_1(l_body), nv_int(2LL))) {
             if (l_nargs == 0LL) {
-                return nv_coerce_string(nv_add_fast(l_cfn, nv_lit("(0)")));
+                return nv_coerce_string(nv_add_fast(l_cfn, (&nv_lits[366])));
             }
-            return nv_coerce_string(nv_add_chain(6, l_cfn, nv_lit("("), nv_int(l_nargs), nv_lit(", "), l_args, nv_lit(")")));
+            return nv_coerce_string(nv_add_chain(6, l_cfn, (&nv_lits[7]), nv_int(l_nargs), (&nv_lits[170]), l_args, (&nv_lits[8])));
         }
-        return nv_coerce_string(nv_add_chain(4, l_cfn, nv_lit("("), l_args, nv_lit(")")));
+        return nv_coerce_string(nv_add_chain(4, l_cfn, (&nv_lits[7]), l_args, (&nv_lits[8])));
     }
-    return nv_coerce_string(nv_add_chain(7, nv_lit("f_"), f_cName_1(l_name), nv_lit("_"), nv_int(l_nargs), nv_lit("("), l_args, nv_lit(")")));
-    return nv_lit("");
+    return nv_coerce_string(nv_add_chain(7, (&nv_lits[367]), f_cName_1(l_name), (&nv_lits[229]), nv_int(l_nargs), (&nv_lits[7]), l_args, (&nv_lits[8])));
+    return (&nv_empty_str_val);
 }
 
 static nv f_genQualifiedCall_7(nv a0, nv a1, nv a2, nv a3, nv a4, nv a5, nv a6) {
@@ -5935,19 +11198,77 @@ static nv f_genQualifiedCall_7(nv a0, nv a1, nv a2, nv a3, nv a4, nv a5, nv a6) 
     nv l_ctx = a5;
     nv l_locals = a6;
     nv l_nargs = nv_sub_fast(f_nodeCount_1(l_node), nv_int(l_from));
-    nv l_name = nv_add_chain(3, l_module, nv_lit("."), l_fname);
-    if ((nv_truthy(nv_has_key(l_prog, "has", nv_add_chain(4, nv_lit("func:"), l_name, nv_lit("/"), l_nargs))) || nv_truthy(nv_has_key(l_prog, "has", nv_add_chain(3, nv_lit("func:"), l_name, nv_lit("/*")))))) {
+    nv l_name = nv_add_chain(3, l_module, (&nv_lits[167]), l_fname);
+    if ((nv_truthy(nv_has_key(l_prog, "has", nv_add_chain(4, (&nv_lits[243]), l_name, (&nv_lits[6]), l_nargs))) || nv_truthy(nv_has_key(l_prog, "has", nv_add_chain(3, (&nv_lits[243]), l_name, (&nv_lits[249])))))) {
         return nv_coerce_string(f_genResolvedCall_4(l_name, l_nargs, f_genArgs_5(l_node, nv_int(l_from), l_prog, l_ctx, l_locals), l_prog));
     }
-    if (nv_truthy(nv_has_key(l_prog, "has", nv_add_fast(nv_lit("hasfunc:"), l_name)))) {
-        (void)f_fail_2(nv_add_chain(5, nv_lit("no overload of "), l_name, nv_lit("() takes "), l_nargs, nv_lit(" argument(s)")), nv_index(l_ctx, nv_lit("pos")));
+    if (nv_truthy(nv_has_key(l_prog, "has", nv_add_fast((&nv_lits[246]), l_name)))) {
+        (void)f_fail_2(nv_add_chain(5, (&nv_lits[368]), l_name, (&nv_lits[369]), l_nargs, (&nv_lits[370])), nv_index(l_ctx, (&nv_lits[40])));
     }
-    if (nv_truthy(nv_has_key(l_prog, "has", nv_add_fast(nv_lit("pkg:"), l_module)))) {
-        (void)f_fail_2(nv_add_chain(5, nv_lit("module '"), l_module, nv_lit("' has no function '"), l_fname, nv_lit("'")), nv_index(l_ctx, nv_lit("pos")));
+    if (nv_truthy(nv_has_key(l_prog, "has", nv_add_fast((&nv_lits[247]), l_module)))) {
+        (void)f_fail_2(nv_add_chain(5, (&nv_lits[293]), l_module, (&nv_lits[371]), l_fname, (&nv_lits[21])), nv_index(l_ctx, (&nv_lits[40])));
     }
-    (void)f_fail_2(nv_add_chain(5, nv_lit("module '"), l_module, nv_lit("' is not imported - add 'import "), l_module, nv_lit("'")), nv_index(l_ctx, nv_lit("pos")));
-    return nv_coerce_string(nv_lit(""));
-    return nv_lit("");
+    (void)f_fail_2(nv_add_chain(5, (&nv_lits[293]), l_module, (&nv_lits[294]), l_module, (&nv_lits[21])), nv_index(l_ctx, (&nv_lits[40])));
+    return nv_coerce_string((&nv_lits[5]));
+    return (&nv_empty_str_val);
+}
+
+static nv f_spawnBody_2(nv a0, nv a1) {
+    nv l_prog = a0;
+    nv l_body = nv_coerce_string(a1);
+    nv l_index = nv_int(0LL);
+    if (nv_truthy(nv_has_key(l_prog, "has", (&nv_lits[148])))) {
+        l_index = nv_parse_int(nv_index(l_prog, (&nv_lits[148])));
+    }
+    nv_index_set(l_prog, nv_add_fast((&nv_lits[155]), l_index), l_body);
+    nv_index_set(l_prog, (&nv_lits[148]), f_intToStr_1(nv_add_fast(l_index, nv_int(1LL))));
+    return nv_coerce_string(nv_add_fast((&nv_lits[372]), l_index));
+    return (&nv_empty_str_val);
+}
+
+static nv f_genSpawn_4(nv a0, nv a1, nv a2, nv a3) {
+    nv l_node = nv_coerce_string(a0);
+    nv l_prog = a1;
+    nv l_ctx = a2;
+    nv l_locals = a3;
+    nv l_kind = (&nv_lits[245]);
+    if (nv_eq_bool(f_nodeChild_2(l_node, nv_int(1LL)), (&nv_lits[62]))) {
+        l_kind = (&nv_lits[221]);
+    }
+    nv l_call = f_nodeChild_2(l_node, nv_int(2LL));
+    nv l_values = nv_arr();
+    nv l_moved = (&nv_lits[5]);
+    if (nv_eq_bool(f_nodeHead_1(l_call), (&nv_lits[338]))) {
+        (void)nv_append(l_values, "append", f_genExpr_4(f_nodeChild_2(l_call, nv_int(1LL)), l_prog, l_ctx, l_locals));
+        l_moved = nv_add_chain(4, (&nv_lits[373]), f_sexpStr_1((&nv_lits[374])), (&nv_lits[375]), f_nodeChild_2(l_call, nv_int(2LL)));
+        long long l_i = 3LL;
+        nv l_mcount = f_nodeCount_1(l_call);
+        while (nv_lt_bool(nv_int(l_i), l_mcount)) {
+            (void)nv_append(l_values, "append", f_genExpr_4(f_nodeChild_2(l_call, nv_int(l_i)), l_prog, l_ctx, l_locals));
+            l_moved = nv_add_chain(4, l_moved, (&nv_lits[376]), f_sexpStr_1(nv_add_chain(3, (&nv_lits[171]), nv_sub_fast(nv_length_of(l_values, "length"), nv_int(1LL)), (&nv_lits[172]))), (&nv_lits[8]));
+            l_i = (l_i + 1LL);
+        }
+        l_moved = nv_add_fast(l_moved, (&nv_lits[8]));
+    } else {
+        l_moved = nv_add_fast((&nv_lits[377]), f_nodeChild_2(l_call, nv_int(1LL)));
+        long long l_k = 2LL;
+        nv l_ccount = f_nodeCount_1(l_call);
+        while (nv_lt_bool(nv_int(l_k), l_ccount)) {
+            (void)nv_append(l_values, "append", f_genExpr_4(f_nodeChild_2(l_call, nv_int(l_k)), l_prog, l_ctx, l_locals));
+            l_moved = nv_add_chain(4, l_moved, (&nv_lits[376]), f_sexpStr_1(nv_add_chain(3, (&nv_lits[171]), nv_sub_fast(nv_length_of(l_values, "length"), nv_int(1LL)), (&nv_lits[172]))), (&nv_lits[8]));
+            l_k = (l_k + 1LL);
+        }
+        l_moved = nv_add_fast(l_moved, (&nv_lits[8]));
+    }
+    nv l_body = f_spawnBody_2(l_prog, f_genExpr_4(l_moved, l_prog, l_ctx, l_locals));
+    nv l_out = nv_add_chain(6, (&nv_lits[378]), l_kind, (&nv_lits[170]), l_body, (&nv_lits[170]), nv_length_of(l_values, "length"));
+    long long l_v = 0LL;
+    while (nv_lt_bool(nv_int(l_v), nv_length_of(l_values, "length"))) {
+        l_out = nv_add_chain(3, l_out, (&nv_lits[170]), nv_index(l_values, nv_int(l_v)));
+        l_v = (l_v + 1LL);
+    }
+    return nv_coerce_string(nv_add_fast(l_out, (&nv_lits[8])));
+    return (&nv_empty_str_val);
 }
 
 static nv f_genCall_4(nv a0, nv a1, nv a2, nv a3) {
@@ -5957,53 +11278,53 @@ static nv f_genCall_4(nv a0, nv a1, nv a2, nv a3) {
     nv l_locals = a3;
     nv l_name = f_nodeChild_2(l_node, nv_int(1LL));
     nv l_nargs = nv_sub_fast(f_nodeCount_1(l_node), nv_int(2LL));
-    nv l_key = nv_add_chain(3, l_name, nv_lit("/"), l_nargs);
-    if ((nv_ne_bool(nv_index(l_ctx, nv_lit("pkg")), nv_lit("")) && (nv_truthy(nv_has_key(l_prog, "has", nv_add_chain(6, nv_lit("func:"), nv_index(l_ctx, nv_lit("pkg")), nv_lit("."), l_name, nv_lit("/"), l_nargs))) || nv_truthy(nv_has_key(l_prog, "has", nv_add_chain(5, nv_lit("func:"), nv_index(l_ctx, nv_lit("pkg")), nv_lit("."), l_name, nv_lit("/*"))))))) {
-        return nv_coerce_string(f_genResolvedCall_4(nv_add_chain(3, nv_index(l_ctx, nv_lit("pkg")), nv_lit("."), l_name), l_nargs, f_genArgs_5(l_node, nv_int(2LL), l_prog, l_ctx, l_locals), l_prog));
+    nv l_key = nv_add_chain(3, l_name, (&nv_lits[6]), l_nargs);
+    if ((nv_ne_bool(nv_index(l_ctx, (&nv_lits[278])), (&nv_lits[5])) && (nv_truthy(nv_has_key(l_prog, "has", nv_add_chain(6, (&nv_lits[243]), nv_index(l_ctx, (&nv_lits[278])), (&nv_lits[167]), l_name, (&nv_lits[6]), l_nargs))) || nv_truthy(nv_has_key(l_prog, "has", nv_add_chain(5, (&nv_lits[243]), nv_index(l_ctx, (&nv_lits[278])), (&nv_lits[167]), l_name, (&nv_lits[249]))))))) {
+        return nv_coerce_string(f_genResolvedCall_4(nv_add_chain(3, nv_index(l_ctx, (&nv_lits[278])), (&nv_lits[167]), l_name), l_nargs, f_genArgs_5(l_node, nv_int(2LL), l_prog, l_ctx, l_locals), l_prog));
     }
-    if ((nv_ne_bool(nv_index(l_ctx, nv_lit("class")), nv_lit("")) && nv_ne_bool(f_findMethod_3(l_prog, nv_index(l_ctx, nv_lit("class")), l_name), nv_lit("")))) {
+    if ((nv_ne_bool(nv_index(l_ctx, (&nv_lits[251])), (&nv_lits[5])) && nv_ne_bool(f_findMethod_3(l_prog, nv_index(l_ctx, (&nv_lits[251])), l_name), (&nv_lits[5])))) {
         if (nv_eq_bool(l_nargs, nv_int(0LL))) {
-            if (nv_ge_bool(f_fieldSlot_3(l_prog, nv_index(l_ctx, nv_lit("class")), l_name), nv_int(0LL))) {
-                return nv_coerce_string(nv_add_chain(3, nv_lit("nv_fields(self->o)["), f_fieldSlot_3(l_prog, nv_index(l_ctx, nv_lit("class")), l_name), nv_lit("]")));
+            if (nv_ge_bool(f_fieldSlot_3(l_prog, nv_index(l_ctx, (&nv_lits[251])), l_name), nv_int(0LL))) {
+                return nv_coerce_string(nv_add_chain(3, (&nv_lits[310]), f_fieldSlot_3(l_prog, nv_index(l_ctx, (&nv_lits[251])), l_name), (&nv_lits[172])));
             }
-            return nv_coerce_string(f_invokeCall0_2(nv_lit("self"), l_name));
+            return nv_coerce_string(f_invokeCall0_2((&nv_lits[277]), l_name));
         }
-        return nv_coerce_string(f_invokeCall_4(nv_lit("self"), l_name, l_nargs, f_genArgs_5(l_node, nv_int(2LL), l_prog, l_ctx, l_locals)));
+        return nv_coerce_string(f_invokeCall_4((&nv_lits[277]), l_name, l_nargs, f_genArgs_5(l_node, nv_int(2LL), l_prog, l_ctx, l_locals)));
     }
-    if ((nv_truthy(f_isCoreBuiltin_1(l_name)) || (nv_eq_bool(nv_has_key(l_prog, "has", nv_add_fast(nv_lit("hasfunc:"), l_name)), nv_bool(0)) && nv_eq_bool(f_isClassLike_2(l_prog, l_name), nv_bool(0))))) {
+    if ((nv_truthy(f_isCoreBuiltin_1(l_name)) || (nv_eq_bool(nv_has_key(l_prog, "has", nv_add_fast((&nv_lits[246]), l_name)), nv_bool(0)) && nv_eq_bool(f_isClassLike_2(l_prog, l_name), nv_bool(0))))) {
         nv l_builtin = f_genBuiltinCall_4(l_name, l_nargs, f_genArgs_5(l_node, nv_int(2LL), l_prog, l_ctx, l_locals), l_ctx);
-        if (nv_ne_bool(l_builtin, nv_lit(""))) {
+        if (nv_ne_bool(l_builtin, (&nv_lits[5]))) {
             return nv_coerce_string(l_builtin);
         }
     }
-    if (nv_truthy(nv_has_key(l_prog, "has", nv_add_fast(nv_lit("class:"), l_name)))) {
-        if (nv_truthy(f_classIsAbstract_1(nv_index(l_prog, nv_add_fast(nv_lit("class:"), l_name))))) {
-            (void)f_fail_2(nv_add_chain(3, nv_lit("cannot instantiate abstract class '"), l_name, nv_lit("'")), nv_index(l_ctx, nv_lit("pos")));
+    if (nv_truthy(nv_has_key(l_prog, "has", nv_add_fast((&nv_lits[257]), l_name)))) {
+        if (nv_truthy(f_classIsAbstract_1(nv_index(l_prog, nv_add_fast((&nv_lits[257]), l_name))))) {
+            (void)f_fail_2(nv_add_chain(3, (&nv_lits[331]), l_name, (&nv_lits[21])), nv_index(l_ctx, (&nv_lits[40])));
         }
         if (nv_le_bool(l_nargs, nv_int(3LL))) {
-            nv l_direct = nv_add_chain(6, nv_lit("nv_construct"), l_nargs, nv_lit("(&nv_cls_"), l_name, nv_lit(", "), f_cstr_1(l_name));
+            nv l_direct = nv_add_chain(6, (&nv_lits[379]), l_nargs, (&nv_lits[380]), l_name, (&nv_lits[170]), f_cstr_1(l_name));
             if (nv_gt_bool(l_nargs, nv_int(0LL))) {
-                l_direct = nv_add_chain(3, l_direct, nv_lit(", "), f_genArgs_5(l_node, nv_int(2LL), l_prog, l_ctx, l_locals));
+                l_direct = nv_add_chain(3, l_direct, (&nv_lits[170]), f_genArgs_5(l_node, nv_int(2LL), l_prog, l_ctx, l_locals));
             }
-            return nv_coerce_string(nv_add_fast(l_direct, nv_lit(")")));
+            return nv_coerce_string(nv_add_fast(l_direct, (&nv_lits[8])));
         }
-        return nv_coerce_string(nv_add_chain(9, nv_lit("nv_construct_cached(&nv_cls_"), l_name, nv_lit(", "), f_cstr_1(l_name), nv_lit(", "), l_nargs, nv_lit(", "), f_genArgs_5(l_node, nv_int(2LL), l_prog, l_ctx, l_locals), nv_lit(")")));
+        return nv_coerce_string(nv_add_chain(9, (&nv_lits[381]), l_name, (&nv_lits[170]), f_cstr_1(l_name), (&nv_lits[170]), l_nargs, (&nv_lits[170]), f_genArgs_5(l_node, nv_int(2LL), l_prog, l_ctx, l_locals), (&nv_lits[8])));
     }
-    if (nv_truthy(nv_has_key(l_prog, "has", nv_add_fast(nv_lit("enum:"), l_name)))) {
-        (void)f_fail_2(nv_add_chain(3, nv_lit("'"), l_name, nv_lit("' is an enum and cannot be constructed")), nv_index(l_ctx, nv_lit("pos")));
+    if (nv_truthy(nv_has_key(l_prog, "has", nv_add_fast((&nv_lits[258]), l_name)))) {
+        (void)f_fail_2(nv_add_chain(3, (&nv_lits[21]), l_name, (&nv_lits[330])), nv_index(l_ctx, (&nv_lits[40])));
     }
-    if (nv_truthy(nv_has_key(l_prog, "has", nv_add_fast(nv_lit("func:"), l_key)))) {
+    if (nv_truthy(nv_has_key(l_prog, "has", nv_add_fast((&nv_lits[243]), l_key)))) {
         return nv_coerce_string(f_genResolvedCall_4(l_name, l_nargs, f_genArgs_5(l_node, nv_int(2LL), l_prog, l_ctx, l_locals), l_prog));
     }
-    if (nv_truthy(nv_has_key(l_prog, "has", nv_add_fast(nv_lit("hasfunc:"), l_name)))) {
-        (void)f_fail_2(nv_add_chain(5, nv_lit("no overload of '"), l_name, nv_lit("' takes "), l_nargs, nv_lit(" argument(s)")), nv_index(l_ctx, nv_lit("pos")));
+    if (nv_truthy(nv_has_key(l_prog, "has", nv_add_fast((&nv_lits[246]), l_name)))) {
+        (void)f_fail_2(nv_add_chain(5, (&nv_lits[382]), l_name, (&nv_lits[383]), l_nargs, (&nv_lits[370])), nv_index(l_ctx, (&nv_lits[40])));
     }
-    if (nv_truthy(nv_has_key(l_prog, "has", nv_add_fast(nv_lit("iface:"), l_name)))) {
-        (void)f_fail_2(nv_add_chain(3, nv_lit("cannot instantiate interface '"), l_name, nv_lit("'")), nv_index(l_ctx, nv_lit("pos")));
+    if (nv_truthy(nv_has_key(l_prog, "has", nv_add_fast((&nv_lits[252]), l_name)))) {
+        (void)f_fail_2(nv_add_chain(3, (&nv_lits[384]), l_name, (&nv_lits[21])), nv_index(l_ctx, (&nv_lits[40])));
     }
-    (void)f_fail_2(nv_add_chain(3, nv_lit("unknown method '"), l_name, nv_lit("()'")), nv_index(l_ctx, nv_lit("pos")));
-    return nv_coerce_string(nv_lit(""));
-    return nv_lit("");
+    (void)f_fail_2(nv_add_chain(3, (&nv_lits[385]), l_name, (&nv_lits[386])), nv_index(l_ctx, (&nv_lits[40])));
+    return nv_coerce_string((&nv_lits[5]));
+    return (&nv_empty_str_val);
 }
 
 static nv f_checkClasses_2(nv a0, nv a1) {
@@ -6014,41 +11335,43 @@ static nv f_checkClasses_2(nv a0, nv a1) {
         int n_d = it_d->len;
         for (int i_d = 0; i_d < n_d; i_d++) {
             nv l_d = it_d->items[i_d];
-            if (nv_eq_bool(f_nodeHead_1(l_d), nv_lit("class"))) {
+            if (nv_eq_bool(f_nodeHead_1(l_d), (&nv_lits[251]))) {
                 nv l_name = f_nodeChild_2(l_d, nv_int(1LL));
                 nv l_base = f_classBase_1(l_d);
-                nv l_where = nv_add_fast(nv_lit("class "), l_name);
-                if (((nv_ne_bool(l_base, nv_lit("")) && nv_eq_bool(f_isClassLike_2(l_prog, l_base), nv_bool(0))) && nv_eq_bool(nv_has_key(l_prog, "has", nv_add_fast(nv_lit("iface:"), l_base)), nv_bool(0)))) {
-                    (void)f_fail_2(nv_add_chain(3, nv_lit("unknown base type '"), l_base, nv_lit("'")), l_where);
+                nv l_where = nv_add_fast((&nv_lits[387]), l_name);
+                if (((nv_ne_bool(l_base, (&nv_lits[5])) && nv_eq_bool(f_isClassLike_2(l_prog, l_base), nv_bool(0))) && nv_eq_bool(nv_has_key(l_prog, "has", nv_add_fast((&nv_lits[252]), l_base)), nv_bool(0)))) {
+                    (void)f_fail_2(nv_add_chain(3, (&nv_lits[388]), l_base, (&nv_lits[21])), l_where);
                 }
                 if (nv_eq_bool(f_classIsAbstract_1(l_d), nv_bool(0))) {
-                    if (nv_truthy(nv_has_key(l_prog, "has", nv_add_fast(nv_lit("iface:"), l_base)))) {
-                        nv l_names = f_nodeChild_2(nv_index(l_prog, nv_add_fast(nv_lit("iface:"), l_base)), nv_int(2LL));
+                    if (nv_truthy(nv_has_key(l_prog, "has", nv_add_fast((&nv_lits[252]), l_base)))) {
+                        nv l_names = f_nodeChild_2(nv_index(l_prog, nv_add_fast((&nv_lits[252]), l_base)), nv_int(2LL));
                         long long l_i = 1LL;
-                        while (nv_lt_bool(nv_int(l_i), f_nodeCount_1(l_names))) {
+                        nv l_namesCount = f_nodeCount_1(l_names);
+                        while (nv_lt_bool(nv_int(l_i), l_namesCount)) {
                             nv l_required = f_nodeChild_2(l_names, nv_int(l_i));
                             nv l_found = f_findMethod_3(l_prog, l_name, l_required);
-                            if ((nv_eq_bool(l_found, nv_lit("")) || nv_truthy(f_isAbstractMethod_1(l_found)))) {
-                                (void)f_fail_2(nv_add_chain(6, nv_lit("class '"), l_name, nv_lit("' does not implement '"), l_required, nv_lit("()' from interface "), l_base), l_where);
+                            if ((nv_eq_bool(l_found, (&nv_lits[5])) || nv_truthy(f_isAbstractMethod_1(l_found)))) {
+                                (void)f_fail_2(nv_add_chain(6, (&nv_lits[389]), l_name, (&nv_lits[390]), l_required, (&nv_lits[391]), l_base), l_where);
                             }
                             l_i = (l_i + 1LL);
                         }
                     }
                     nv l_current = l_name;
                     long long l_guard = 0LL;
-                    while ((nv_ne_bool(l_current, nv_lit("")) && l_guard < 64LL)) {
+                    while ((nv_ne_bool(l_current, (&nv_lits[5])) && l_guard < 64LL)) {
                         nv l_node = f_typeNode_2(l_prog, l_current);
-                        if (nv_eq_bool(l_node, nv_lit(""))) {
+                        if (nv_eq_bool(l_node, (&nv_lits[5]))) {
                             break;
                         }
                         nv l_methods = f_classMethods_1(l_node);
                         long long l_k = 1LL;
-                        while (nv_lt_bool(nv_int(l_k), f_nodeCount_1(l_methods))) {
+                        nv l_methodsCount = f_nodeCount_1(l_methods);
+                        while (nv_lt_bool(nv_int(l_k), l_methodsCount)) {
                             nv l_m = f_nodeChild_2(l_methods, nv_int(l_k));
                             if (nv_truthy(f_isAbstractMethod_1(l_m))) {
                                 nv l_resolved = f_findMethod_3(l_prog, l_name, f_methodName_1(l_m));
-                                if ((nv_eq_bool(l_resolved, nv_lit("")) || nv_truthy(f_isAbstractMethod_1(l_resolved)))) {
-                                    (void)f_fail_2(nv_add_chain(5, nv_lit("class '"), l_name, nv_lit("' must implement abstract method '"), f_methodName_1(l_m), nv_lit("()'")), l_where);
+                                if ((nv_eq_bool(l_resolved, (&nv_lits[5])) || nv_truthy(f_isAbstractMethod_1(l_resolved)))) {
+                                    (void)f_fail_2(nv_add_chain(5, (&nv_lits[389]), l_name, (&nv_lits[392]), f_methodName_1(l_m), (&nv_lits[386])), l_where);
                                 }
                             }
                             l_k = (l_k + 1LL);
@@ -6074,18 +11397,19 @@ static nv f_genBlock_5(nv a0, nv a1, nv a2, nv a3, nv a4) {
     nv l_blockVars = nv_map();
     nv l_parts = nv_arr();
     long long l_i = 1LL;
-    while (nv_lt_bool(nv_int(l_i), f_nodeCount_1(l_block))) {
+    nv l_blockCount = f_nodeCount_1(l_block);
+    while (nv_lt_bool(nv_int(l_i), l_blockCount)) {
         nv l_at = f_nodeChild_2(l_block, nv_int(l_i));
         nv l_stmt = l_at;
-        if (nv_eq_bool(f_nodeHead_1(l_at), nv_lit("at"))) {
-            nv_index_set(l_ctx, nv_lit("pos"), f_nodeChild_2(l_at, nv_int(1LL)));
+        if (nv_eq_bool(f_nodeHead_1(l_at), (&nv_lits[266]))) {
+            nv_index_set(l_ctx, (&nv_lits[40]), f_nodeChild_2(l_at, nv_int(1LL)));
             l_stmt = f_nodeChild_2(l_at, nv_int(2LL));
         }
         (void)nv_append(l_parts, "append", f_genStatement_6(l_stmt, l_indent, l_prog, l_ctx, l_locals, l_blockVars));
         l_i = (l_i + 1LL);
     }
     return nv_coerce_string(f_joinParts_1(l_parts));
-    return nv_lit("");
+    return (&nv_empty_str_val);
 }
 
 static nv f_declareLocal_5(nv a0, nv a1, nv a2, nv a3, nv a4) {
@@ -6094,20 +11418,20 @@ static nv f_declareLocal_5(nv a0, nv a1, nv a2, nv a3, nv a4) {
     nv l_indent = nv_coerce_string(a2);
     nv l_locals = a3;
     nv l_blockVars = a4;
-    nv l_type = nv_lit("nv ");
+    nv l_type = (&nv_lits[393]);
     if (nv_truthy(f_isIntLocal_2(l_locals, l_name))) {
-        l_type = nv_lit("long long ");
+        l_type = (&nv_lits[394]);
     }
     if (nv_truthy(f_isFloatLocal_2(l_locals, l_name))) {
-        l_type = nv_lit("double ");
+        l_type = (&nv_lits[395]);
     }
     if (nv_truthy(nv_has_key(l_blockVars, "has", l_name))) {
-        return nv_coerce_string(nv_add_chain(7, l_indent, nv_lit("l_"), l_name, nv_lit(" = "), l_init, nv_lit(";"), f_nl_0()));
+        return nv_coerce_string(nv_add_chain(7, l_indent, (&nv_lits[396]), l_name, (&nv_lits[397]), l_init, (&nv_lits[156]), f_nl_0()));
     }
-    nv_index_set(l_locals, l_name, nv_add_fast(nv_lit("l_"), l_name));
-    nv_index_set(l_blockVars, l_name, nv_lit("1"));
-    return nv_coerce_string(nv_add_chain(8, l_indent, l_type, nv_lit("l_"), l_name, nv_lit(" = "), l_init, nv_lit(";"), f_nl_0()));
-    return nv_lit("");
+    nv_index_set(l_locals, l_name, nv_add_fast((&nv_lits[396]), l_name));
+    nv_index_set(l_blockVars, l_name, (&nv_lits[245]));
+    return nv_coerce_string(nv_add_chain(8, l_indent, l_type, (&nv_lits[396]), l_name, (&nv_lits[397]), l_init, (&nv_lits[156]), f_nl_0()));
+    return (&nv_empty_str_val);
 }
 
 static nv f_genValueFor_5(nv a0, nv a1, nv a2, nv a3, nv a4) {
@@ -6123,7 +11447,7 @@ static nv f_genValueFor_5(nv a0, nv a1, nv a2, nv a3, nv a4) {
         return nv_coerce_string(f_genFloat_4(l_node, l_prog, l_ctx, l_locals));
     }
     return nv_coerce_string(f_genExpr_4(l_node, l_prog, l_ctx, l_locals));
-    return nv_lit("");
+    return (&nv_empty_str_val);
 }
 
 static nv f_genStatement_6(nv a0, nv a1, nv a2, nv a3, nv a4, nv a5) {
@@ -6134,26 +11458,26 @@ static nv f_genStatement_6(nv a0, nv a1, nv a2, nv a3, nv a4, nv a5) {
     nv l_locals = a4;
     nv l_blockVars = a5;
     if (nv_eq_bool(f_isList_1(l_node), nv_bool(0))) {
-        return nv_coerce_string(nv_add_chain(5, l_indent, nv_lit("(void)"), f_genExpr_4(l_node, l_prog, l_ctx, l_locals), nv_lit(";"), f_nl_0()));
+        return nv_coerce_string(nv_add_chain(5, l_indent, (&nv_lits[398]), f_genExpr_4(l_node, l_prog, l_ctx, l_locals), (&nv_lits[156]), f_nl_0()));
     }
     nv l_head = f_nodeHead_1(l_node);
-    if (nv_eq_bool(l_head, nv_lit("nop"))) {
-        return nv_coerce_string(nv_lit(""));
+    if (nv_eq_bool(l_head, (&nv_lits[399]))) {
+        return nv_coerce_string((&nv_lits[5]));
     }
-    if (nv_eq_bool(l_head, nv_lit("var"))) {
+    if (nv_eq_bool(l_head, (&nv_lits[196]))) {
         nv l_name = f_nodeChild_2(l_node, nv_int(1LL));
         if (nv_gt_bool(f_nodeCount_1(l_node), nv_int(2LL))) {
             return nv_coerce_string(f_declareLocal_5(l_name, f_genValueFor_5(l_name, f_nodeChild_2(l_node, nv_int(2LL)), l_prog, l_ctx, l_locals), l_indent, l_locals, l_blockVars));
         }
         if (nv_truthy(f_isIntLocal_2(l_locals, l_name))) {
-            return nv_coerce_string(f_declareLocal_5(l_name, nv_lit("0"), l_indent, l_locals, l_blockVars));
+            return nv_coerce_string(f_declareLocal_5(l_name, (&nv_lits[221]), l_indent, l_locals, l_blockVars));
         }
         if (nv_truthy(f_isFloatLocal_2(l_locals, l_name))) {
-            return nv_coerce_string(f_declareLocal_5(l_name, nv_lit("0.0"), l_indent, l_locals, l_blockVars));
+            return nv_coerce_string(f_declareLocal_5(l_name, (&nv_lits[400]), l_indent, l_locals, l_blockVars));
         }
-        return nv_coerce_string(f_declareLocal_5(l_name, nv_lit("nv_nil"), l_indent, l_locals, l_blockVars));
+        return nv_coerce_string(f_declareLocal_5(l_name, (&nv_lits[165]), l_indent, l_locals, l_blockVars));
     }
-    if (nv_eq_bool(l_head, nv_lit("tvar"))) {
+    if (nv_eq_bool(l_head, (&nv_lits[273]))) {
         nv l_tname = f_nodeChild_2(l_node, nv_int(2LL));
         nv l_ttype = f_nodeChild_2(l_node, nv_int(1LL));
         if (nv_gt_bool(f_nodeCount_1(l_node), nv_int(3LL))) {
@@ -6167,89 +11491,117 @@ static nv f_genStatement_6(nv a0, nv a1, nv a2, nv a3, nv a4, nv a5) {
         }
         return nv_coerce_string(f_declareLocal_5(l_tname, f_defaultCode_1(l_ttype), l_indent, l_locals, l_blockVars));
     }
-    if (nv_eq_bool(l_head, nv_lit("assign"))) {
+    if (nv_eq_bool(l_head, (&nv_lits[270]))) {
         nv l_target = f_nodeChild_2(l_node, nv_int(1LL));
         nv l_cname = f_resolveVar_4(l_target, l_prog, l_ctx, l_locals);
-        if ((nv_eq_bool(l_cname, nv_lit("")) && nv_truthy(f_isImplicitField_4(l_target, l_prog, l_ctx, l_locals)))) {
-            return nv_coerce_string(nv_add_chain(7, l_indent, nv_lit("nv_fields(self->o)["), f_fieldSlot_3(l_prog, nv_index(l_ctx, nv_lit("class")), l_target), nv_lit("] = "), f_genExpr_4(f_nodeChild_2(l_node, nv_int(2LL)), l_prog, l_ctx, l_locals), nv_lit(";"), f_nl_0()));
+        if ((nv_eq_bool(l_cname, (&nv_lits[5])) && nv_truthy(f_isImplicitField_4(l_target, l_prog, l_ctx, l_locals)))) {
+            return nv_coerce_string(nv_add_chain(7, l_indent, (&nv_lits[310]), f_fieldSlot_3(l_prog, nv_index(l_ctx, (&nv_lits[251])), l_target), (&nv_lits[401]), f_genExpr_4(f_nodeChild_2(l_node, nv_int(2LL)), l_prog, l_ctx, l_locals), (&nv_lits[156]), f_nl_0()));
         }
-        if ((nv_eq_bool(l_cname, nv_lit("")) || nv_eq_bool(l_cname, nv_lit("self")))) {
-            (void)f_fail_2(nv_add_chain(3, nv_lit("unknown variable '"), l_target, nv_lit("'")), nv_index(l_ctx, nv_lit("pos")));
+        if ((nv_eq_bool(l_cname, (&nv_lits[5])) || nv_eq_bool(l_cname, (&nv_lits[277])))) {
+            (void)f_fail_2(nv_add_chain(3, (&nv_lits[313]), l_target, (&nv_lits[21])), nv_index(l_ctx, (&nv_lits[40])));
         }
-        return nv_coerce_string(nv_add_chain(6, l_indent, l_cname, nv_lit(" = "), f_genValueFor_5(l_target, f_nodeChild_2(l_node, nv_int(2LL)), l_prog, l_ctx, l_locals), nv_lit(";"), f_nl_0()));
+        return nv_coerce_string(nv_add_chain(6, l_indent, l_cname, (&nv_lits[397]), f_genValueFor_5(l_target, f_nodeChild_2(l_node, nv_int(2LL)), l_prog, l_ctx, l_locals), (&nv_lits[156]), f_nl_0()));
     }
-    if (nv_eq_bool(l_head, nv_lit("setexpr"))) {
+    if (nv_eq_bool(l_head, (&nv_lits[402]))) {
         nv l_lhs = f_nodeChild_2(l_node, nv_int(1LL));
         nv l_value = f_genExpr_4(f_nodeChild_2(l_node, nv_int(2LL)), l_prog, l_ctx, l_locals);
-        if (nv_eq_bool(f_nodeHead_1(l_lhs), nv_lit("idx"))) {
-            return nv_coerce_string(nv_add_chain(9, l_indent, nv_lit("nv_index_set("), f_genExpr_4(f_nodeChild_2(l_lhs, nv_int(1LL)), l_prog, l_ctx, l_locals), nv_lit(", "), f_genExpr_4(f_nodeChild_2(l_lhs, nv_int(2LL)), l_prog, l_ctx, l_locals), nv_lit(", "), l_value, nv_lit(");"), f_nl_0()));
+        if (nv_eq_bool(f_nodeHead_1(l_lhs), (&nv_lits[333]))) {
+            return nv_coerce_string(nv_add_chain(9, l_indent, (&nv_lits[403]), f_genExpr_4(f_nodeChild_2(l_lhs, nv_int(1LL)), l_prog, l_ctx, l_locals), (&nv_lits[170]), f_genExpr_4(f_nodeChild_2(l_lhs, nv_int(2LL)), l_prog, l_ctx, l_locals), (&nv_lits[170]), l_value, (&nv_lits[404]), f_nl_0()));
         }
-        if (nv_eq_bool(f_nodeHead_1(l_lhs), nv_lit("mget"))) {
+        if (nv_eq_bool(f_nodeHead_1(l_lhs), (&nv_lits[335]))) {
             nv l_receiver = f_nodeChild_2(l_lhs, nv_int(1LL));
             nv l_member = f_nodeChild_2(l_lhs, nv_int(2LL));
-            if (((nv_eq_bool(l_receiver, nv_lit("this")) && nv_ne_bool(nv_index(l_ctx, nv_lit("class")), nv_lit(""))) && nv_ge_bool(f_fieldSlot_3(l_prog, nv_index(l_ctx, nv_lit("class")), l_member), nv_int(0LL)))) {
-                return nv_coerce_string(nv_add_chain(7, l_indent, nv_lit("nv_fields(self->o)["), f_fieldSlot_3(l_prog, nv_index(l_ctx, nv_lit("class")), l_member), nv_lit("] = "), l_value, nv_lit(";"), f_nl_0()));
+            if (((nv_eq_bool(l_receiver, (&nv_lits[276])) && nv_ne_bool(nv_index(l_ctx, (&nv_lits[251])), (&nv_lits[5]))) && nv_ge_bool(f_fieldSlot_3(l_prog, nv_index(l_ctx, (&nv_lits[251])), l_member), nv_int(0LL)))) {
+                return nv_coerce_string(nv_add_chain(7, l_indent, (&nv_lits[310]), f_fieldSlot_3(l_prog, nv_index(l_ctx, (&nv_lits[251])), l_member), (&nv_lits[401]), l_value, (&nv_lits[156]), f_nl_0()));
             }
-            return nv_coerce_string(nv_add_chain(9, l_indent, nv_lit("nv_set_member("), f_genExpr_4(l_receiver, l_prog, l_ctx, l_locals), nv_lit(", "), f_cstr_1(l_member), nv_lit(", "), l_value, nv_lit(");"), f_nl_0()));
+            return nv_coerce_string(nv_add_chain(9, l_indent, (&nv_lits[405]), f_genExpr_4(l_receiver, l_prog, l_ctx, l_locals), (&nv_lits[170]), f_cstr_1(l_member), (&nv_lits[170]), l_value, (&nv_lits[404]), f_nl_0()));
         }
-        (void)f_fail_2(nv_lit("invalid assignment target"), nv_index(l_ctx, nv_lit("pos")));
+        (void)f_fail_2((&nv_lits[406]), nv_index(l_ctx, (&nv_lits[40])));
     }
-    if (nv_eq_bool(l_head, nv_lit("return"))) {
+    if (nv_eq_bool(l_head, (&nv_lits[202]))) {
+        nv l_leaveAll = f_syncUnwind_2(f_syncHeld_1(l_ctx), (&nv_lits[5]));
         if (nv_gt_bool(f_nodeCount_1(l_node), nv_int(1LL))) {
-            return nv_coerce_string(nv_add_chain(5, l_indent, nv_lit("return "), f_coerceCode_2(f_genExpr_4(f_nodeChild_2(l_node, nv_int(1LL)), l_prog, l_ctx, l_locals), nv_index(l_ctx, nv_lit("ret"))), nv_lit(";"), f_nl_0()));
+            return nv_coerce_string(nv_add_chain(6, l_indent, l_leaveAll, (&nv_lits[407]), f_coerceCode_2(f_genExpr_4(f_nodeChild_2(l_node, nv_int(1LL)), l_prog, l_ctx, l_locals), nv_index(l_ctx, (&nv_lits[408]))), (&nv_lits[156]), f_nl_0()));
         }
-        return nv_coerce_string(nv_add_chain(3, l_indent, nv_lit("return nv_nil;"), f_nl_0()));
+        return nv_coerce_string(nv_add_chain(4, l_indent, l_leaveAll, (&nv_lits[409]), f_nl_0()));
     }
-    if (nv_eq_bool(l_head, nv_lit("println"))) {
-        return nv_coerce_string(nv_add_chain(5, l_indent, nv_lit("nv_println("), f_genExpr_4(f_nodeChild_2(l_node, nv_int(1LL)), l_prog, l_ctx, l_locals), nv_lit(");"), f_nl_0()));
+    if (nv_eq_bool(l_head, (&nv_lits[173]))) {
+        nv l_lock = (&nv_lits[165]);
+        if (nv_ne_bool(f_nodeChild_2(l_node, nv_int(1LL)), (&nv_lits[234]))) {
+            l_lock = f_genExpr_4(f_nodeChild_2(l_node, nv_int(1LL)), l_prog, l_ctx, l_locals);
+        }
+        nv l_held = f_syncHeld_1(l_ctx);
+        nv l_guard = nv_add_fast((&nv_lits[410]), f_syncDepth_1(l_ctx));
+        nv l_inner = nv_add_fast(l_indent, (&nv_lits[146]));
+        nv l_out = nv_add_chain(3, l_indent, (&nv_lits[230]), f_nl_0());
+        l_out = nv_add_chain(8, l_out, l_inner, (&nv_lits[411]), l_guard, (&nv_lits[412]), l_lock, (&nv_lits[404]), f_nl_0());
+        if (nv_eq_bool(l_held, (&nv_lits[5]))) {
+            nv_index_set(l_ctx, (&nv_lits[173]), l_guard);
+        } else {
+            nv_index_set(l_ctx, (&nv_lits[173]), nv_add_chain(3, l_held, (&nv_lits[9]), l_guard));
+        }
+        l_out = nv_add_fast(l_out, f_genBlock_5(f_nodeChild_2(l_node, nv_int(2LL)), l_inner, l_prog, l_ctx, l_locals));
+        nv_index_set(l_ctx, (&nv_lits[173]), l_held);
+        l_out = nv_add_chain(6, l_out, l_inner, (&nv_lits[175]), l_guard, (&nv_lits[404]), f_nl_0());
+        return nv_coerce_string(nv_add_chain(4, l_out, l_indent, (&nv_lits[157]), f_nl_0()));
     }
-    if (nv_eq_bool(l_head, nv_lit("print"))) {
-        return nv_coerce_string(nv_add_chain(5, l_indent, nv_lit("nv_print("), f_genExpr_4(f_nodeChild_2(l_node, nv_int(1LL)), l_prog, l_ctx, l_locals), nv_lit(");"), f_nl_0()));
+    if (nv_eq_bool(l_head, (&nv_lits[197]))) {
+        return nv_coerce_string(nv_add_chain(5, l_indent, (&nv_lits[413]), f_genExpr_4(f_nodeChild_2(l_node, nv_int(1LL)), l_prog, l_ctx, l_locals), (&nv_lits[404]), f_nl_0()));
     }
-    if (nv_eq_bool(l_head, nv_lit("eprintln"))) {
-        return nv_coerce_string(nv_add_chain(5, l_indent, nv_lit("nv_eprintln("), f_genExpr_4(f_nodeChild_2(l_node, nv_int(1LL)), l_prog, l_ctx, l_locals), nv_lit(");"), f_nl_0()));
+    if (nv_eq_bool(l_head, (&nv_lits[198]))) {
+        return nv_coerce_string(nv_add_chain(5, l_indent, (&nv_lits[414]), f_genExpr_4(f_nodeChild_2(l_node, nv_int(1LL)), l_prog, l_ctx, l_locals), (&nv_lits[404]), f_nl_0()));
     }
-    if (nv_eq_bool(l_head, nv_lit("if"))) {
-        nv l_out = nv_add_chain(5, l_indent, nv_lit("if ("), f_genCondition_4(f_nodeChild_2(l_node, nv_int(1LL)), l_prog, l_ctx, l_locals), nv_lit(") {"), f_nl_0());
-        l_out = nv_add_fast(l_out, f_genBlock_5(f_nodeChild_2(l_node, nv_int(2LL)), nv_add_fast(l_indent, nv_lit("    ")), l_prog, l_ctx, l_locals));
-        l_out = nv_add_chain(3, l_out, l_indent, nv_lit("}"));
+    if (nv_eq_bool(l_head, (&nv_lits[199]))) {
+        return nv_coerce_string(nv_add_chain(5, l_indent, (&nv_lits[415]), f_genExpr_4(f_nodeChild_2(l_node, nv_int(1LL)), l_prog, l_ctx, l_locals), (&nv_lits[404]), f_nl_0()));
+    }
+    if (nv_eq_bool(l_head, (&nv_lits[203]))) {
+        nv l_out = nv_add_chain(5, l_indent, (&nv_lits[416]), f_genCondition_4(f_nodeChild_2(l_node, nv_int(1LL)), l_prog, l_ctx, l_locals), (&nv_lits[417]), f_nl_0());
+        l_out = nv_add_fast(l_out, f_genBlock_5(f_nodeChild_2(l_node, nv_int(2LL)), nv_add_fast(l_indent, (&nv_lits[146])), l_prog, l_ctx, l_locals));
+        l_out = nv_add_chain(3, l_out, l_indent, (&nv_lits[157]));
         if (nv_gt_bool(f_nodeCount_1(l_node), nv_int(3LL))) {
             nv l_elseNode = f_nodeChild_2(l_node, nv_int(3LL));
-            if (nv_eq_bool(f_nodeHead_1(l_elseNode), nv_lit("if"))) {
+            if (nv_eq_bool(f_nodeHead_1(l_elseNode), (&nv_lits[203]))) {
                 nv l_ec = f_genStatement_6(l_elseNode, l_indent, l_prog, l_ctx, l_locals, l_blockVars);
-                return nv_coerce_string(nv_add_chain(3, l_out, nv_lit(" else "), nv_invoke2(l_ec, "substring", nv_length_of(l_indent, "length"), nv_length_of(l_ec, "length"))));
+                return nv_coerce_string(nv_add_chain(3, l_out, (&nv_lits[418]), nv_invoke2(l_ec, "substring", nv_length_of(l_indent, "length"), nv_length_of(l_ec, "length"))));
             }
-            l_out = nv_add_chain(6, l_out, nv_lit(" else {"), f_nl_0(), f_genBlock_5(l_elseNode, nv_add_fast(l_indent, nv_lit("    ")), l_prog, l_ctx, l_locals), l_indent, nv_lit("}"));
+            l_out = nv_add_chain(6, l_out, (&nv_lits[419]), f_nl_0(), f_genBlock_5(l_elseNode, nv_add_fast(l_indent, (&nv_lits[146])), l_prog, l_ctx, l_locals), l_indent, (&nv_lits[157]));
         }
         return nv_coerce_string(nv_add_fast(l_out, f_nl_0()));
     }
-    if (nv_eq_bool(l_head, nv_lit("while"))) {
-        nv l_wout = nv_add_chain(5, l_indent, nv_lit("while ("), f_genCondition_4(f_nodeChild_2(l_node, nv_int(1LL)), l_prog, l_ctx, l_locals), nv_lit(") {"), f_nl_0());
-        return nv_coerce_string(nv_add_chain(5, l_wout, f_genBlock_5(f_nodeChild_2(l_node, nv_int(2LL)), nv_add_fast(l_indent, nv_lit("    ")), l_prog, l_ctx, l_locals), l_indent, nv_lit("}"), f_nl_0()));
+    if (nv_eq_bool(l_head, (&nv_lits[205]))) {
+        nv l_wout = nv_add_chain(5, l_indent, (&nv_lits[420]), f_genCondition_4(f_nodeChild_2(l_node, nv_int(1LL)), l_prog, l_ctx, l_locals), (&nv_lits[417]), f_nl_0());
+        nv l_wouter = f_syncLoopHeld_1(l_ctx);
+        nv_index_set(l_ctx, (&nv_lits[174]), f_syncHeld_1(l_ctx));
+        l_wout = nv_add_fast(l_wout, f_genBlock_5(f_nodeChild_2(l_node, nv_int(2LL)), nv_add_fast(l_indent, (&nv_lits[146])), l_prog, l_ctx, l_locals));
+        nv_index_set(l_ctx, (&nv_lits[174]), l_wouter);
+        return nv_coerce_string(nv_add_chain(4, l_wout, l_indent, (&nv_lits[157]), f_nl_0()));
     }
-    if (nv_eq_bool(l_head, nv_lit("forin"))) {
+    if (nv_eq_bool(l_head, (&nv_lits[268]))) {
         nv l_v = f_nodeChild_2(l_node, nv_int(1LL));
         nv l_iter = f_genExpr_4(f_nodeChild_2(l_node, nv_int(2LL)), l_prog, l_ctx, l_locals);
-        nv l_inner = nv_add_fast(l_indent, nv_lit("    "));
-        nv l_fout = nv_add_chain(3, l_indent, nv_lit("{"), f_nl_0());
-        l_fout = nv_add_chain(8, l_fout, l_inner, nv_lit("NvArr *it_"), l_v, nv_lit(" = "), f_iterCall_2(f_nodeChild_2(l_node, nv_int(3LL)), l_iter), nv_lit(";"), f_nl_0());
-        l_fout = nv_add_chain(8, l_fout, l_inner, nv_lit("int n_"), l_v, nv_lit(" = it_"), l_v, nv_lit("->len;"), f_nl_0());
-        l_fout = nv_add_chain(12, l_fout, l_inner, nv_lit("for (int i_"), l_v, nv_lit(" = 0; i_"), l_v, nv_lit(" < n_"), l_v, nv_lit("; i_"), l_v, nv_lit("++) {"), f_nl_0());
-        l_fout = nv_add_chain(10, l_fout, l_inner, nv_lit("    nv l_"), l_v, nv_lit(" = it_"), l_v, nv_lit("->items[i_"), l_v, nv_lit("];"), f_nl_0());
+        nv l_inner = nv_add_fast(l_indent, (&nv_lits[146]));
+        nv l_fout = nv_add_chain(3, l_indent, (&nv_lits[230]), f_nl_0());
+        l_fout = nv_add_chain(8, l_fout, l_inner, (&nv_lits[421]), l_v, (&nv_lits[397]), f_iterCall_2(f_nodeChild_2(l_node, nv_int(3LL)), l_iter), (&nv_lits[156]), f_nl_0());
+        l_fout = nv_add_chain(8, l_fout, l_inner, (&nv_lits[422]), l_v, (&nv_lits[423]), l_v, (&nv_lits[424]), f_nl_0());
+        l_fout = nv_add_chain(12, l_fout, l_inner, (&nv_lits[425]), l_v, (&nv_lits[426]), l_v, (&nv_lits[427]), l_v, (&nv_lits[428]), l_v, (&nv_lits[429]), f_nl_0());
+        l_fout = nv_add_chain(10, l_fout, l_inner, (&nv_lits[430]), l_v, (&nv_lits[423]), l_v, (&nv_lits[431]), l_v, (&nv_lits[143]), f_nl_0());
         nv l_bodyLocals = f_copyMap_1(l_locals);
-        nv_index_set(l_bodyLocals, l_v, nv_add_fast(nv_lit("l_"), l_v));
-        l_fout = nv_add_fast(l_fout, f_genBlock_5(f_nodeChild_2(l_node, nv_int(3LL)), nv_add_fast(l_inner, nv_lit("    ")), l_prog, l_ctx, l_bodyLocals));
-        l_fout = nv_add_chain(4, l_fout, l_inner, nv_lit("}"), f_nl_0());
-        return nv_coerce_string(nv_add_chain(4, l_fout, l_indent, nv_lit("}"), f_nl_0()));
+        nv_index_set(l_bodyLocals, l_v, nv_add_fast((&nv_lits[396]), l_v));
+        nv l_fouter = f_syncLoopHeld_1(l_ctx);
+        nv_index_set(l_ctx, (&nv_lits[174]), f_syncHeld_1(l_ctx));
+        l_fout = nv_add_fast(l_fout, f_genBlock_5(f_nodeChild_2(l_node, nv_int(3LL)), nv_add_fast(l_inner, (&nv_lits[146])), l_prog, l_ctx, l_bodyLocals));
+        nv_index_set(l_ctx, (&nv_lits[174]), l_fouter);
+        l_fout = nv_add_chain(4, l_fout, l_inner, (&nv_lits[157]), f_nl_0());
+        return nv_coerce_string(nv_add_chain(4, l_fout, l_indent, (&nv_lits[157]), f_nl_0()));
     }
-    if (nv_eq_bool(l_head, nv_lit("break"))) {
-        return nv_coerce_string(nv_add_chain(3, l_indent, nv_lit("break;"), f_nl_0()));
+    if (nv_eq_bool(l_head, (&nv_lits[210]))) {
+        return nv_coerce_string(nv_add_chain(4, l_indent, f_syncUnwind_2(f_syncHeld_1(l_ctx), f_syncLoopHeld_1(l_ctx)), (&nv_lits[432]), f_nl_0()));
     }
-    if (nv_eq_bool(l_head, nv_lit("continue"))) {
-        return nv_coerce_string(nv_add_chain(3, l_indent, nv_lit("continue;"), f_nl_0()));
+    if (nv_eq_bool(l_head, (&nv_lits[211]))) {
+        return nv_coerce_string(nv_add_chain(4, l_indent, f_syncUnwind_2(f_syncHeld_1(l_ctx), f_syncLoopHeld_1(l_ctx)), (&nv_lits[433]), f_nl_0()));
     }
-    return nv_coerce_string(nv_add_chain(5, l_indent, nv_lit("(void)"), f_genExpr_4(l_node, l_prog, l_ctx, l_locals), nv_lit(";"), f_nl_0()));
-    return nv_lit("");
+    return nv_coerce_string(nv_add_chain(5, l_indent, (&nv_lits[398]), f_genExpr_4(l_node, l_prog, l_ctx, l_locals), (&nv_lits[156]), f_nl_0()));
+    return (&nv_empty_str_val);
 }
 
 static nv f_deprecationCode_3(nv a0, nv a1, nv a2) {
@@ -6258,28 +11610,30 @@ static nv f_deprecationCode_3(nv a0, nv a1, nv a2) {
     nv l_flagName = nv_coerce_string(a2);
     nv l_annos = f_nodeChild_2(l_m, nv_int(4LL));
     long long l_i = 1LL;
-    while (nv_lt_bool(nv_int(l_i), f_nodeCount_1(l_annos))) {
+    nv l_annosCount = f_nodeCount_1(l_annos);
+    while (nv_lt_bool(nv_int(l_i), l_annosCount)) {
         nv l_anno = f_nodeChild_2(l_annos, nv_int(l_i));
-        if (nv_eq_bool(f_nodeChild_2(l_anno, nv_int(1LL)), nv_lit("Deprecated"))) {
-            nv l_text = f_cstr_1(nv_lit(""));
-            nv l_since = f_cstr_1(nv_lit(""));
+        if (nv_eq_bool(f_nodeChild_2(l_anno, nv_int(1LL)), (&nv_lits[434]))) {
+            nv l_text = f_cstr_1((&nv_lits[5]));
+            nv l_since = f_cstr_1((&nv_lits[5]));
             long long l_k = 2LL;
-            while (nv_lt_bool(nv_int(l_k), f_nodeCount_1(l_anno))) {
+            nv l_annoCount = f_nodeCount_1(l_anno);
+            while (nv_lt_bool(nv_int(l_k), l_annoCount)) {
                 nv l_arg = f_nodeChild_2(l_anno, nv_int(l_k));
-                if (nv_eq_bool(f_nodeChild_2(l_arg, nv_int(1LL)), nv_lit("text"))) {
+                if (nv_eq_bool(f_nodeChild_2(l_arg, nv_int(1LL)), (&nv_lits[435]))) {
                     l_text = f_nodeChild_2(l_arg, nv_int(2LL));
                 }
-                if (nv_eq_bool(f_nodeChild_2(l_arg, nv_int(1LL)), nv_lit("since"))) {
+                if (nv_eq_bool(f_nodeChild_2(l_arg, nv_int(1LL)), (&nv_lits[436]))) {
                     l_since = f_nodeChild_2(l_arg, nv_int(2LL));
                 }
                 l_k = (l_k + 1LL);
             }
-            return nv_coerce_string(nv_add_chain(11, l_indent, nv_lit("nv_warn_deprecated(&"), l_flagName, nv_lit(", "), f_cstr_1(f_methodName_1(l_m)), nv_lit(", "), l_since, nv_lit(", "), l_text, nv_lit(");"), f_nl_0()));
+            return nv_coerce_string(nv_add_chain(11, l_indent, (&nv_lits[437]), l_flagName, (&nv_lits[170]), f_cstr_1(f_methodName_1(l_m)), (&nv_lits[170]), l_since, (&nv_lits[170]), l_text, (&nv_lits[404]), f_nl_0()));
         }
         l_i = (l_i + 1LL);
     }
-    return nv_coerce_string(nv_lit(""));
-    return nv_lit("");
+    return nv_coerce_string((&nv_lits[5]));
+    return (&nv_empty_str_val);
 }
 
 static nv f_bindArrayParams_3(nv a0, nv a1, nv a2) {
@@ -6287,38 +11641,40 @@ static nv f_bindArrayParams_3(nv a0, nv a1, nv a2) {
     nv l_indent = nv_coerce_string(a1);
     nv l_locals = a2;
     nv l_params = f_paramsNode_1(l_m);
-    nv l_out = nv_lit("");
+    nv l_out = (&nv_lits[5]);
     long long l_i = 1LL;
-    while (nv_lt_bool(nv_int(l_i), f_nodeCount_1(l_params))) {
+    nv l_paramsCount = f_nodeCount_1(l_params);
+    while (nv_lt_bool(nv_int(l_i), l_paramsCount)) {
         nv l_p = f_nodeChild_2(l_params, nv_int(l_i));
         nv l_ptype = f_nodeChild_2(l_p, nv_int(1LL));
         nv l_pname = f_nodeChild_2(l_p, nv_int(2LL));
-        nv l_src = nv_add_chain(5, nv_lit("(n > "), nv_int((l_i - 1LL)), nv_lit(" \? args["), nv_int((l_i - 1LL)), nv_lit("] : nv_nil)"));
-        l_out = nv_add_chain(8, l_out, l_indent, nv_lit("nv l_"), l_pname, nv_lit(" = "), f_coerceCode_2(l_src, l_ptype), nv_lit(";"), f_nl_0());
-        nv_index_set(l_locals, l_pname, nv_add_fast(nv_lit("l_"), l_pname));
+        nv l_src = nv_add_chain(5, (&nv_lits[438]), nv_int((l_i - 1LL)), (&nv_lits[439]), nv_int((l_i - 1LL)), (&nv_lits[440]));
+        l_out = nv_add_chain(8, l_out, l_indent, (&nv_lits[441]), l_pname, (&nv_lits[397]), f_coerceCode_2(l_src, l_ptype), (&nv_lits[156]), f_nl_0());
+        nv_index_set(l_locals, l_pname, nv_add_fast((&nv_lits[396]), l_pname));
         l_i = (l_i + 1LL);
     }
     return nv_coerce_string(l_out);
-    return nv_lit("");
+    return (&nv_empty_str_val);
 }
 
 static nv f_cParamList_1(nv a0) {
     nv l_m = nv_coerce_string(a0);
     nv l_params = f_paramsNode_1(l_m);
-    nv l_out = nv_lit("");
+    nv l_out = (&nv_lits[5]);
     long long l_i = 1LL;
-    while (nv_lt_bool(nv_int(l_i), f_nodeCount_1(l_params))) {
+    nv l_paramsCount = f_nodeCount_1(l_params);
+    while (nv_lt_bool(nv_int(l_i), l_paramsCount)) {
         if (l_i > 1LL) {
-            l_out = nv_add_fast(l_out, nv_lit(", "));
+            l_out = nv_add_fast(l_out, (&nv_lits[170]));
         }
-        l_out = nv_add_chain(3, l_out, nv_lit("nv a"), nv_int((l_i - 1LL)));
+        l_out = nv_add_chain(3, l_out, (&nv_lits[442]), nv_int((l_i - 1LL)));
         l_i = (l_i + 1LL);
     }
-    if (nv_eq_bool(l_out, nv_lit(""))) {
-        return nv_coerce_string(nv_lit("void"));
+    if (nv_eq_bool(l_out, (&nv_lits[5]))) {
+        return nv_coerce_string((&nv_lits[443]));
     }
     return nv_coerce_string(l_out);
-    return nv_lit("");
+    return (&nv_empty_str_val);
 }
 
 static nv f_funcCName_4(nv a0, nv a1, nv a2, nv a3) {
@@ -6326,48 +11682,71 @@ static nv f_funcCName_4(nv a0, nv a1, nv a2, nv a3) {
     long long l_arity = nv_as_int(a1);
     long long l_variant = nv_as_int(a2);
     long long l_variants = nv_as_int(a3);
-    nv l_base = nv_add_chain(4, nv_lit("f_"), f_cName_1(l_name), nv_lit("_"), nv_int(l_arity));
+    nv l_base = nv_add_chain(4, (&nv_lits[367]), f_cName_1(l_name), (&nv_lits[229]), nv_int(l_arity));
     if (l_variants > 1LL) {
-        return nv_coerce_string(nv_add_chain(3, l_base, nv_lit("_v"), nv_int(l_variant)));
+        return nv_coerce_string(nv_add_chain(3, l_base, (&nv_lits[444]), nv_int(l_variant)));
     }
     return nv_coerce_string(l_base);
-    return nv_lit("");
+    return (&nv_empty_str_val);
 }
 
 static nv f_argNames_1(nv a0) {
     long long l_arity = nv_as_int(a0);
-    nv l_out = nv_lit("");
+    nv l_out = (&nv_lits[5]);
     long long l_i = 0LL;
     while (l_i < l_arity) {
         if (l_i > 0LL) {
-            l_out = nv_add_fast(l_out, nv_lit(", "));
+            l_out = nv_add_fast(l_out, (&nv_lits[170]));
         }
-        l_out = nv_add_chain(3, l_out, nv_lit("a"), nv_int(l_i));
+        l_out = nv_add_chain(3, l_out, (&nv_lits[223]), nv_int(l_i));
         l_i = (l_i + 1LL);
     }
     return nv_coerce_string(l_out);
-    return nv_lit("");
+    return (&nv_empty_str_val);
 }
 
 static nv f_genFreeMethod_3(nv a0, nv a1, nv a2) {
     nv l_m = nv_coerce_string(a0);
     nv l_cname = nv_coerce_string(a1);
     nv l_prog = a2;
+    if (nv_eq_bool(f_isAsyncMethod_1(l_m), nv_bool(0))) {
+        return nv_coerce_string(f_genFreeMethodBody_3(l_m, l_cname, l_prog));
+    }
+    nv l_inner = nv_add_fast(l_cname, (&nv_lits[445]));
+    nv l_arity = f_arityOf_1(l_m);
+    nv l_out = f_genFreeMethodBody_3(l_m, l_inner, l_prog);
+    l_out = nv_add_chain(5, l_out, (&nv_lits[446]), l_cname, (&nv_lits[151]), f_nl_0());
+    l_out = nv_add_chain(5, l_out, (&nv_lits[152]), f_nl_0(), (&nv_lits[153]), f_nl_0());
+    l_out = nv_add_chain(9, l_out, (&nv_lits[154]), l_inner, (&nv_lits[7]), f_argSlots_1(l_arity), (&nv_lits[404]), f_nl_0(), (&nv_lits[157]), f_nl_0());
+    l_out = nv_add_chain(7, l_out, (&nv_lits[447]), l_cname, (&nv_lits[7]), f_cParamList_1(l_m), (&nv_lits[417]), f_nl_0());
+    l_out = nv_add_chain(5, l_out, (&nv_lits[448]), l_cname, (&nv_lits[170]), l_arity);
+    if (nv_gt_bool(l_arity, nv_int(0LL))) {
+        l_out = nv_add_chain(3, l_out, (&nv_lits[170]), f_argNames_1(l_arity));
+    }
+    return nv_coerce_string(nv_add_chain(5, l_out, (&nv_lits[404]), f_nl_0(), (&nv_lits[157]), f_nl_0()));
+    return (&nv_empty_str_val);
+}
+
+static nv f_genFreeMethodBody_3(nv a0, nv a1, nv a2) {
+    nv l_m = nv_coerce_string(a0);
+    nv l_cname = nv_coerce_string(a1);
+    nv l_prog = a2;
     nv l_name = f_methodName_1(l_m);
-    nv l_ctx = nv_map_of(5, nv_lit("class"), nv_lit(""), nv_lit("pkg"), f_packageOf_1(l_name), nv_lit("func"), l_name, nv_lit("ret"), f_methodRet_1(l_m), nv_lit("pos"), nv_add_fast(nv_lit("method "), l_name));
+    nv l_ctx = nv_map_of(5, (&nv_lits[251]), (&nv_lits[5]), (&nv_lits[278]), f_packageOf_1(l_name), (&nv_lits[449]), l_name, (&nv_lits[408]), f_methodRet_1(l_m), (&nv_lits[40]), nv_add_fast((&nv_lits[450]), l_name));
     nv l_locals = nv_map();
     nv l_params = f_paramsNode_1(l_m);
     nv l_parameters = nv_map();
     nv l_candidates = nv_map();
     long long l_i = 1LL;
-    while (nv_lt_bool(nv_int(l_i), f_nodeCount_1(l_params))) {
+    nv l_paramsCount = f_nodeCount_1(l_params);
+    while (nv_lt_bool(nv_int(l_i), l_paramsCount)) {
         nv l_p = f_nodeChild_2(l_params, nv_int(l_i));
         nv l_pname = f_nodeChild_2(l_p, nv_int(2LL));
-        nv_index_set(l_parameters, l_pname, nv_lit("1"));
-        if (nv_eq_bool(f_normType_1(f_nodeChild_2(l_p, nv_int(1LL))), nv_lit("integer"))) {
-            nv_index_set(l_candidates, l_pname, nv_lit("1"));
+        nv_index_set(l_parameters, l_pname, (&nv_lits[245]));
+        if (nv_eq_bool(f_normType_1(f_nodeChild_2(l_p, nv_int(1LL))), (&nv_lits[30]))) {
+            nv_index_set(l_candidates, l_pname, (&nv_lits[245]));
         }
-        nv_index_set(l_locals, l_pname, nv_add_fast(nv_lit("l_"), l_pname));
+        nv_index_set(l_locals, l_pname, nv_add_fast((&nv_lits[396]), l_pname));
         l_i = (l_i + 1LL);
     }
     nv l_ints = f_inferIntLocals_3(f_nodeChild_2(l_m, nv_int(5LL)), l_parameters, l_candidates);
@@ -6381,10 +11760,11 @@ static nv f_genFreeMethod_3(nv a0, nv a1, nv a2) {
     }
     nv l_floatCandidates = nv_map();
     l_i = 1LL;
-    while (nv_lt_bool(nv_int(l_i), f_nodeCount_1(l_params))) {
+    l_paramsCount = f_nodeCount_1(l_params);
+    while (nv_lt_bool(nv_int(l_i), l_paramsCount)) {
         nv l_fp = f_nodeChild_2(l_params, nv_int(l_i));
-        if (nv_eq_bool(f_normType_1(f_nodeChild_2(l_fp, nv_int(1LL))), nv_lit("float"))) {
-            nv_index_set(l_floatCandidates, f_nodeChild_2(l_fp, nv_int(2LL)), nv_lit("1"));
+        if (nv_eq_bool(f_normType_1(f_nodeChild_2(l_fp, nv_int(1LL))), (&nv_lits[35]))) {
+            nv_index_set(l_floatCandidates, f_nodeChild_2(l_fp, nv_int(2LL)), (&nv_lits[245]));
         }
         l_i = (l_i + 1LL);
     }
@@ -6397,27 +11777,28 @@ static nv f_genFreeMethod_3(nv a0, nv a1, nv a2) {
             (void)f_markFloat_2(l_locals, l_name);
         }
     }
-    nv l_out = nv_add_chain(6, nv_lit("static nv "), l_cname, nv_lit("("), f_cParamList_1(l_m), nv_lit(") {"), f_nl_0());
+    nv l_out = nv_add_chain(6, (&nv_lits[447]), l_cname, (&nv_lits[7]), f_cParamList_1(l_m), (&nv_lits[417]), f_nl_0());
     l_i = 1LL;
-    while (nv_lt_bool(nv_int(l_i), f_nodeCount_1(l_params))) {
+    l_paramsCount = f_nodeCount_1(l_params);
+    while (nv_lt_bool(nv_int(l_i), l_paramsCount)) {
         nv l_p = f_nodeChild_2(l_params, nv_int(l_i));
         nv l_pname = f_nodeChild_2(l_p, nv_int(2LL));
         if (nv_truthy(nv_has_key(l_ints, "has", l_pname))) {
-            l_out = nv_add_chain(7, l_out, nv_lit("    long long l_"), l_pname, nv_lit(" = nv_as_int(a"), nv_int((l_i - 1LL)), nv_lit(");"), f_nl_0());
+            l_out = nv_add_chain(7, l_out, (&nv_lits[451]), l_pname, (&nv_lits[452]), nv_int((l_i - 1LL)), (&nv_lits[404]), f_nl_0());
         } else if (nv_truthy(nv_has_key(l_floats, "has", l_pname))) {
-            l_out = nv_add_chain(7, l_out, nv_lit("    double l_"), l_pname, nv_lit(" = nv_as_double(a"), nv_int((l_i - 1LL)), nv_lit(");"), f_nl_0());
+            l_out = nv_add_chain(7, l_out, (&nv_lits[453]), l_pname, (&nv_lits[454]), nv_int((l_i - 1LL)), (&nv_lits[404]), f_nl_0());
         } else {
-            l_out = nv_add_chain(7, l_out, nv_lit("    nv l_"), l_pname, nv_lit(" = "), f_coerceCode_2(nv_add_fast(nv_lit("a"), nv_int((l_i - 1LL))), f_nodeChild_2(l_p, nv_int(1LL))), nv_lit(";"), f_nl_0());
+            l_out = nv_add_chain(7, l_out, (&nv_lits[430]), l_pname, (&nv_lits[397]), f_coerceCode_2(nv_add_fast((&nv_lits[223]), nv_int((l_i - 1LL))), f_nodeChild_2(l_p, nv_int(1LL))), (&nv_lits[156]), f_nl_0());
         }
         l_i = (l_i + 1LL);
     }
-    nv l_dep = f_deprecationCode_3(l_m, nv_lit("    "), nv_add_fast(nv_lit("dep_"), l_cname));
-    if (nv_ne_bool(l_dep, nv_lit(""))) {
-        l_out = nv_add_chain(6, nv_lit("static int dep_"), l_cname, nv_lit(" = 0;"), f_nl_0(), l_out, l_dep);
+    nv l_dep = f_deprecationCode_3(l_m, (&nv_lits[146]), nv_add_fast((&nv_lits[455]), l_cname));
+    if (nv_ne_bool(l_dep, (&nv_lits[5]))) {
+        l_out = nv_add_chain(6, (&nv_lits[456]), l_cname, (&nv_lits[457]), f_nl_0(), l_out, l_dep);
     }
-    l_out = nv_add_fast(l_out, f_genBlock_5(f_nodeChild_2(l_m, nv_int(5LL)), nv_lit("    "), l_prog, l_ctx, l_locals));
-    return nv_coerce_string(nv_add_chain(7, l_out, nv_lit("    return "), f_defaultCode_1(f_methodRet_1(l_m)), nv_lit(";"), f_nl_0(), nv_lit("}"), f_nl_0()));
-    return nv_lit("");
+    l_out = nv_add_fast(l_out, f_genBlock_5(f_nodeChild_2(l_m, nv_int(5LL)), (&nv_lits[146]), l_prog, l_ctx, l_locals));
+    return nv_coerce_string(nv_add_chain(7, l_out, (&nv_lits[154]), f_defaultCode_1(f_methodRet_1(l_m)), (&nv_lits[156]), f_nl_0(), (&nv_lits[157]), f_nl_0()));
+    return (&nv_empty_str_val);
 }
 
 static nv f_genDispatcher_4(nv a0, nv a1, nv a2, nv a3) {
@@ -6425,42 +11806,43 @@ static nv f_genDispatcher_4(nv a0, nv a1, nv a2, nv a3) {
     long long l_arity = nv_as_int(a1);
     long long l_variants = nv_as_int(a2);
     nv l_prog = a3;
-    nv l_key = nv_add_chain(3, l_name, nv_lit("/"), nv_int(l_arity));
-    nv l_first = nv_index(l_prog, nv_add_chain(3, nv_lit("fnode:"), l_key, nv_lit("/0")));
-    nv l_out = nv_add_chain(6, nv_lit("static nv "), f_funcCName_4(l_name, nv_int(l_arity), nv_int(0LL), nv_int(1LL)), nv_lit("("), f_cParamList_1(l_first), nv_lit(") {"), f_nl_0());
+    nv l_key = nv_add_chain(3, l_name, (&nv_lits[6]), nv_int(l_arity));
+    nv l_first = nv_index(l_prog, nv_add_chain(3, (&nv_lits[244]), l_key, (&nv_lits[365])));
+    nv l_out = nv_add_chain(6, (&nv_lits[447]), f_funcCName_4(l_name, nv_int(l_arity), nv_int(0LL), nv_int(1LL)), (&nv_lits[7]), f_cParamList_1(l_first), (&nv_lits[417]), f_nl_0());
     long long l_k = 0LL;
     while (l_k < l_variants) {
-        nv l_m = nv_index(l_prog, nv_add_chain(4, nv_lit("fnode:"), l_key, nv_lit("/"), nv_int(l_k)));
+        nv l_m = nv_index(l_prog, nv_add_chain(4, (&nv_lits[244]), l_key, (&nv_lits[6]), nv_int(l_k)));
         nv l_params = f_paramsNode_1(l_m);
-        nv l_cond = nv_lit("");
+        nv l_cond = (&nv_lits[5]);
         long long l_i = 1LL;
-        while (nv_lt_bool(nv_int(l_i), f_nodeCount_1(l_params))) {
+        nv l_paramsCount = f_nodeCount_1(l_params);
+        while (nv_lt_bool(nv_int(l_i), l_paramsCount)) {
             if (l_i > 1LL) {
-                l_cond = nv_add_fast(l_cond, nv_lit(" && "));
+                l_cond = nv_add_fast(l_cond, (&nv_lits[295]));
             }
-            l_cond = nv_add_chain(6, l_cond, nv_lit("nv_type_is(a"), nv_int((l_i - 1LL)), nv_lit(", "), f_cstr_1(f_nodeChild_2(f_nodeChild_2(l_params, nv_int(l_i)), nv_int(1LL))), nv_lit(")"));
+            l_cond = nv_add_chain(6, l_cond, (&nv_lits[458]), nv_int((l_i - 1LL)), (&nv_lits[170]), f_cstr_1(f_nodeChild_2(f_nodeChild_2(l_params, nv_int(l_i)), nv_int(1LL))), (&nv_lits[8]));
             l_i = (l_i + 1LL);
         }
-        if (nv_eq_bool(l_cond, nv_lit(""))) {
-            l_cond = nv_lit("1");
+        if (nv_eq_bool(l_cond, (&nv_lits[5]))) {
+            l_cond = (&nv_lits[245]);
         }
-        l_out = nv_add_chain(13, l_out, nv_lit("    if ("), l_cond, nv_lit(") {"), f_nl_0(), nv_lit("        return "), f_funcCName_4(l_name, nv_int(l_arity), nv_int(l_k), nv_int(l_variants)), nv_lit("("), f_argNames_1(nv_int(l_arity)), nv_lit(");"), f_nl_0(), nv_lit("    }"), f_nl_0());
+        l_out = nv_add_chain(13, l_out, (&nv_lits[459]), l_cond, (&nv_lits[417]), f_nl_0(), (&nv_lits[460]), f_funcCName_4(l_name, nv_int(l_arity), nv_int(l_k), nv_int(l_variants)), (&nv_lits[7]), f_argNames_1(nv_int(l_arity)), (&nv_lits[404]), f_nl_0(), (&nv_lits[461]), f_nl_0());
         l_k = (l_k + 1LL);
     }
-    return nv_coerce_string(nv_add_chain(9, l_out, nv_lit("    return "), f_funcCName_4(l_name, nv_int(l_arity), nv_int(0LL), nv_int(l_variants)), nv_lit("("), f_argNames_1(nv_int(l_arity)), nv_lit(");"), f_nl_0(), nv_lit("}"), f_nl_0()));
-    return nv_lit("");
+    return nv_coerce_string(nv_add_chain(9, l_out, (&nv_lits[154]), f_funcCName_4(l_name, nv_int(l_arity), nv_int(0LL), nv_int(l_variants)), (&nv_lits[7]), f_argNames_1(nv_int(l_arity)), (&nv_lits[404]), f_nl_0(), (&nv_lits[157]), f_nl_0()));
+    return (&nv_empty_str_val);
 }
 
 static nv f_methodCName_3(nv a0, nv a1, nv a2) {
     nv l_cls = nv_coerce_string(a0);
     nv l_m = nv_coerce_string(a1);
     long long l_variant = nv_as_int(a2);
-    nv l_base = nv_add_chain(6, nv_lit("m_"), l_cls, nv_lit("_"), f_methodName_1(l_m), nv_lit("_"), f_arityOf_1(l_m));
+    nv l_base = nv_add_chain(6, (&nv_lits[462]), l_cls, (&nv_lits[229]), f_methodName_1(l_m), (&nv_lits[229]), f_arityOf_1(l_m));
     if (l_variant > 0LL) {
-        return nv_coerce_string(nv_add_chain(3, l_base, nv_lit("_v"), nv_int(l_variant)));
+        return nv_coerce_string(nv_add_chain(3, l_base, (&nv_lits[444]), nv_int(l_variant)));
     }
     return nv_coerce_string(l_base);
-    return nv_lit("");
+    return (&nv_empty_str_val);
 }
 
 static nv f_genClassMethod_4(nv a0, nv a1, nv a2, nv a3) {
@@ -6468,10 +11850,10 @@ static nv f_genClassMethod_4(nv a0, nv a1, nv a2, nv a3) {
     nv l_m = nv_coerce_string(a1);
     nv l_cname = nv_coerce_string(a2);
     nv l_prog = a3;
-    nv l_ctx = nv_map_of(5, nv_lit("class"), l_cls, nv_lit("pkg"), nv_lit(""), nv_lit("func"), f_methodName_1(l_m), nv_lit("ret"), f_methodRet_1(l_m), nv_lit("pos"), nv_add_chain(4, nv_lit("method "), l_cls, nv_lit("."), f_methodName_1(l_m)));
+    nv l_ctx = nv_map_of(5, (&nv_lits[251]), l_cls, (&nv_lits[278]), (&nv_lits[5]), (&nv_lits[449]), f_methodName_1(l_m), (&nv_lits[408]), f_methodRet_1(l_m), (&nv_lits[40]), nv_add_chain(4, (&nv_lits[450]), l_cls, (&nv_lits[167]), f_methodName_1(l_m)));
     nv l_locals = nv_map();
-    nv l_out = nv_add_chain(4, nv_lit("static nv "), l_cname, nv_lit("(nv self, nv *args, int n) {"), f_nl_0());
-    l_out = nv_add_fast(l_out, f_bindArrayParams_3(l_m, nv_lit("    "), l_locals));
+    nv l_out = nv_add_chain(4, (&nv_lits[447]), l_cname, (&nv_lits[463]), f_nl_0());
+    l_out = nv_add_fast(l_out, f_bindArrayParams_3(l_m, (&nv_lits[146]), l_locals));
     nv l_ints = f_inferIntLocals_3(f_nodeChild_2(l_m, nv_int(5LL)), l_locals, nv_map());
     {
         NvArr *it_name = nv_iter(l_ints);
@@ -6489,34 +11871,35 @@ static nv f_genClassMethod_4(nv a0, nv a1, nv a2, nv a3) {
             (void)f_markFloat_2(l_locals, l_name);
         }
     }
-    nv l_dep = f_deprecationCode_3(l_m, nv_lit("    "), nv_add_fast(nv_lit("dep_"), l_cname));
-    if (nv_ne_bool(l_dep, nv_lit(""))) {
-        l_out = nv_add_chain(6, nv_lit("static int dep_"), l_cname, nv_lit(" = 0;"), f_nl_0(), l_out, l_dep);
+    nv l_dep = f_deprecationCode_3(l_m, (&nv_lits[146]), nv_add_fast((&nv_lits[455]), l_cname));
+    if (nv_ne_bool(l_dep, (&nv_lits[5]))) {
+        l_out = nv_add_chain(6, (&nv_lits[456]), l_cname, (&nv_lits[457]), f_nl_0(), l_out, l_dep);
     }
-    l_out = nv_add_chain(3, l_out, nv_lit("    (void)n;"), f_nl_0());
-    l_out = nv_add_fast(l_out, f_genBlock_5(f_nodeChild_2(l_m, nv_int(5LL)), nv_lit("    "), l_prog, l_ctx, l_locals));
-    return nv_coerce_string(nv_add_chain(7, l_out, nv_lit("    return "), f_defaultCode_1(f_methodRet_1(l_m)), nv_lit(";"), f_nl_0(), nv_lit("}"), f_nl_0()));
-    return nv_lit("");
+    l_out = nv_add_chain(3, l_out, (&nv_lits[153]), f_nl_0());
+    l_out = nv_add_fast(l_out, f_genBlock_5(f_nodeChild_2(l_m, nv_int(5LL)), (&nv_lits[146]), l_prog, l_ctx, l_locals));
+    return nv_coerce_string(nv_add_chain(7, l_out, (&nv_lits[154]), f_defaultCode_1(f_methodRet_1(l_m)), (&nv_lits[156]), f_nl_0(), (&nv_lits[157]), f_nl_0()));
+    return (&nv_empty_str_val);
 }
 
 static nv f_genCtor_3(nv a0, nv a1, nv a2) {
     nv l_cls = nv_coerce_string(a0);
     nv l_ctor = nv_coerce_string(a1);
     nv l_prog = a2;
-    nv l_ctx = nv_map_of(5, nv_lit("class"), l_cls, nv_lit("pkg"), nv_lit(""), nv_lit("func"), nv_lit("construct"), nv_lit("ret"), nv_lit("void"), nv_lit("pos"), nv_add_fast(nv_lit("constructor of "), l_cls));
+    nv l_ctx = nv_map_of(5, (&nv_lits[251]), l_cls, (&nv_lits[278]), (&nv_lits[5]), (&nv_lits[449]), (&nv_lits[464]), (&nv_lits[408]), (&nv_lits[443]), (&nv_lits[40]), nv_add_fast((&nv_lits[465]), l_cls));
     nv l_locals = nv_map();
-    nv l_out = nv_add_chain(4, nv_lit("static nv c_"), l_cls, nv_lit("(nv self, nv *args, int n) {"), f_nl_0());
+    nv l_out = nv_add_chain(4, (&nv_lits[466]), l_cls, (&nv_lits[463]), f_nl_0());
     nv l_params = f_nodeChild_2(l_ctor, nv_int(1LL));
     long long l_i = 1LL;
-    while (nv_lt_bool(nv_int(l_i), f_nodeCount_1(l_params))) {
+    nv l_paramsCount = f_nodeCount_1(l_params);
+    while (nv_lt_bool(nv_int(l_i), l_paramsCount)) {
         nv l_p = f_nodeChild_2(l_params, nv_int(l_i));
         nv l_pname = f_nodeChild_2(l_p, nv_int(2LL));
-        nv l_src = nv_add_chain(5, nv_lit("(n > "), nv_int((l_i - 1LL)), nv_lit(" \? args["), nv_int((l_i - 1LL)), nv_lit("] : nv_nil)"));
-        l_out = nv_add_chain(7, l_out, nv_lit("    nv l_"), l_pname, nv_lit(" = "), f_coerceCode_2(l_src, f_nodeChild_2(l_p, nv_int(1LL))), nv_lit(";"), f_nl_0());
-        nv_index_set(l_locals, l_pname, nv_add_fast(nv_lit("l_"), l_pname));
+        nv l_src = nv_add_chain(5, (&nv_lits[438]), nv_int((l_i - 1LL)), (&nv_lits[439]), nv_int((l_i - 1LL)), (&nv_lits[440]));
+        l_out = nv_add_chain(7, l_out, (&nv_lits[430]), l_pname, (&nv_lits[397]), f_coerceCode_2(l_src, f_nodeChild_2(l_p, nv_int(1LL))), (&nv_lits[156]), f_nl_0());
+        nv_index_set(l_locals, l_pname, nv_add_fast((&nv_lits[396]), l_pname));
         l_i = (l_i + 1LL);
     }
-    l_out = nv_add_chain(3, l_out, nv_lit("    (void)n;"), f_nl_0());
+    l_out = nv_add_chain(3, l_out, (&nv_lits[153]), f_nl_0());
     nv l_ctorInts = f_inferIntLocals_3(f_nodeChild_2(l_ctor, nv_int(2LL)), l_locals, nv_map());
     {
         NvArr *it_name = nv_iter(l_ctorInts);
@@ -6534,9 +11917,9 @@ static nv f_genCtor_3(nv a0, nv a1, nv a2) {
             (void)f_markFloat_2(l_locals, l_name);
         }
     }
-    l_out = nv_add_fast(l_out, f_genBlock_5(f_nodeChild_2(l_ctor, nv_int(2LL)), nv_lit("    "), l_prog, l_ctx, l_locals));
-    return nv_coerce_string(nv_add_chain(5, l_out, nv_lit("    return nv_nil;"), f_nl_0(), nv_lit("}"), f_nl_0()));
-    return nv_lit("");
+    l_out = nv_add_fast(l_out, f_genBlock_5(f_nodeChild_2(l_ctor, nv_int(2LL)), (&nv_lits[146]), l_prog, l_ctx, l_locals));
+    return nv_coerce_string(nv_add_chain(5, l_out, (&nv_lits[467]), f_nl_0(), (&nv_lits[157]), f_nl_0()));
+    return (&nv_empty_str_val);
 }
 
 static nv f_methodVariant_2(nv a0, nv a1) {
@@ -6563,43 +11946,45 @@ static nv f_genClassCode_5(nv a0, nv a1, nv a2, nv a3, nv a4) {
     nv l_bodies = a3;
     nv l_registry = a4;
     nv l_cls = f_nodeChild_2(l_node, nv_int(1LL));
-    nv l_isEnum = nv_lit("0");
-    if (nv_eq_bool(f_nodeHead_1(l_node), nv_lit("enum"))) {
-        l_isEnum = nv_lit("1");
+    nv l_isEnum = (&nv_lits[221]);
+    if (nv_eq_bool(f_nodeHead_1(l_node), (&nv_lits[250]))) {
+        l_isEnum = (&nv_lits[245]);
     }
     nv l_base = f_classBase_1(l_node);
     if (nv_eq_bool(f_isClassLike_2(l_prog, l_base), nv_bool(0))) {
-        l_base = nv_lit("");
+        l_base = (&nv_lits[5]);
     }
-    nv l_abstractFlag = nv_lit("0");
+    nv l_abstractFlag = (&nv_lits[221]);
     if (nv_truthy(f_classIsAbstract_1(l_node))) {
-        l_abstractFlag = nv_lit("1");
+        l_abstractFlag = (&nv_lits[245]);
     }
-    (void)nv_append(l_protos, "append", nv_add_chain(4, nv_lit("static NvClass *nv_cls_"), l_cls, nv_lit(";"), f_nl_0()));
-    (void)nv_append(l_registry, "append", nv_add_chain(10, nv_lit("    c = nv_class_define("), f_cstr_1(l_cls), nv_lit(", "), f_cstr_1(l_base), nv_lit(", "), l_abstractFlag, nv_lit(", "), l_isEnum, nv_lit(");"), f_nl_0()));
-    (void)nv_append(l_registry, "append", nv_add_chain(4, nv_lit("    nv_cls_"), l_cls, nv_lit(" = c;"), f_nl_0()));
+    (void)nv_append(l_protos, "append", nv_add_chain(4, (&nv_lits[468]), l_cls, (&nv_lits[156]), f_nl_0()));
+    (void)nv_append(l_registry, "append", nv_add_chain(10, (&nv_lits[469]), f_cstr_1(l_cls), (&nv_lits[170]), f_cstr_1(l_base), (&nv_lits[170]), l_abstractFlag, (&nv_lits[170]), l_isEnum, (&nv_lits[404]), f_nl_0()));
+    (void)nv_append(l_registry, "append", nv_add_chain(4, (&nv_lits[470]), l_cls, (&nv_lits[471]), f_nl_0()));
     nv l_fields = f_classFields_1(l_node);
     long long l_i = 1LL;
-    while (nv_lt_bool(nv_int(l_i), f_nodeCount_1(l_fields))) {
+    nv l_fieldsCount = f_nodeCount_1(l_fields);
+    while (nv_lt_bool(nv_int(l_i), l_fieldsCount)) {
         nv l_f = f_nodeChild_2(l_fields, nv_int(l_i));
-        (void)nv_append(l_registry, "append", nv_add_chain(6, nv_lit("    nv_class_field(c, "), f_cstr_1(f_nodeChild_2(l_f, nv_int(2LL))), nv_lit(", "), f_cstr_1(f_normType_1(f_nodeChild_2(l_f, nv_int(1LL)))), nv_lit(");"), f_nl_0()));
+        (void)nv_append(l_registry, "append", nv_add_chain(6, (&nv_lits[472]), f_cstr_1(f_nodeChild_2(l_f, nv_int(2LL))), (&nv_lits[170]), f_cstr_1(f_normType_1(f_nodeChild_2(l_f, nv_int(1LL)))), (&nv_lits[404]), f_nl_0()));
         l_i = (l_i + 1LL);
     }
     nv l_ctor = f_classCtor_1(l_node);
-    if (nv_eq_bool(f_nodeHead_1(l_ctor), nv_lit("ctor"))) {
-        (void)nv_append(l_protos, "append", nv_add_chain(4, nv_lit("static nv c_"), l_cls, nv_lit("(nv self, nv *args, int n);"), f_nl_0()));
+    if (nv_eq_bool(f_nodeHead_1(l_ctor), (&nv_lits[473]))) {
+        (void)nv_append(l_protos, "append", nv_add_chain(4, (&nv_lits[466]), l_cls, (&nv_lits[474]), f_nl_0()));
         (void)nv_append(l_bodies, "append", f_genCtor_3(l_cls, l_ctor, l_prog));
-        (void)nv_append(l_registry, "append", nv_add_chain(6, nv_lit("    nv_class_ctor(c, "), nv_sub_fast(f_nodeCount_1(f_nodeChild_2(l_ctor, nv_int(1LL))), nv_int(1LL)), nv_lit(", c_"), l_cls, nv_lit(");"), f_nl_0()));
+        (void)nv_append(l_registry, "append", nv_add_chain(6, (&nv_lits[475]), nv_sub_fast(f_nodeCount_1(f_nodeChild_2(l_ctor, nv_int(1LL))), nv_int(1LL)), (&nv_lits[476]), l_cls, (&nv_lits[404]), f_nl_0()));
     }
     nv l_methods = f_classMethods_1(l_node);
     long long l_k = 1LL;
-    while (nv_lt_bool(nv_int(l_k), f_nodeCount_1(l_methods))) {
+    nv l_methodsCount = f_nodeCount_1(l_methods);
+    while (nv_lt_bool(nv_int(l_k), l_methodsCount)) {
         nv l_m = f_nodeChild_2(l_methods, nv_int(l_k));
         if (nv_eq_bool(f_isAbstractMethod_1(l_m), nv_bool(0))) {
             nv l_cname = f_methodCName_3(l_cls, l_m, f_methodVariant_2(l_methods, nv_int(l_k)));
-            (void)nv_append(l_protos, "append", nv_add_chain(4, nv_lit("static nv "), l_cname, nv_lit("(nv self, nv *args, int n);"), f_nl_0()));
+            (void)nv_append(l_protos, "append", nv_add_chain(4, (&nv_lits[447]), l_cname, (&nv_lits[474]), f_nl_0()));
             (void)nv_append(l_bodies, "append", f_genClassMethod_4(l_cls, l_m, l_cname, l_prog));
-            (void)nv_append(l_registry, "append", nv_add_chain(8, nv_lit("    nv_class_method(c, "), f_cstr_1(f_methodName_1(l_m)), nv_lit(", "), f_arityOf_1(l_m), nv_lit(", "), l_cname, nv_lit(");"), f_nl_0()));
+            (void)nv_append(l_registry, "append", nv_add_chain(8, (&nv_lits[477]), f_cstr_1(f_methodName_1(l_m)), (&nv_lits[170]), f_arityOf_1(l_m), (&nv_lits[170]), l_cname, (&nv_lits[404]), f_nl_0()));
         }
         l_k = (l_k + 1LL);
     }
@@ -6612,55 +11997,59 @@ static nv f_genEnumInit_2(nv a0, nv a1) {
     nv l_prog = a1;
     nv l_name = f_nodeChild_2(l_node, nv_int(1LL));
     nv l_consts = f_nodeChild_2(l_node, nv_int(2LL));
-    nv l_ctx = nv_map_of(5, nv_lit("class"), nv_lit(""), nv_lit("pkg"), nv_lit(""), nv_lit("func"), nv_lit(""), nv_lit("ret"), nv_lit("void"), nv_lit("pos"), nv_add_fast(nv_lit("enum "), l_name));
+    nv l_ctx = nv_map_of(5, (&nv_lits[251]), (&nv_lits[5]), (&nv_lits[278]), (&nv_lits[5]), (&nv_lits[449]), (&nv_lits[5]), (&nv_lits[408]), (&nv_lits[443]), (&nv_lits[40]), nv_add_fast((&nv_lits[478]), l_name));
     nv l_locals = nv_map();
-    nv l_out = nv_lit("");
+    nv l_out = (&nv_lits[5]);
     long long l_i = 1LL;
-    while (nv_lt_bool(nv_int(l_i), f_nodeCount_1(l_consts))) {
+    nv l_constsCount = f_nodeCount_1(l_consts);
+    while (nv_lt_bool(nv_int(l_i), l_constsCount)) {
         nv l_c = f_nodeChild_2(l_consts, nv_int(l_i));
         nv l_nargs = nv_sub_fast(f_nodeCount_1(l_c), nv_int(2LL));
-        nv l_constructor = nv_add_chain(4, nv_lit("nv_construct("), f_cstr_1(l_name), nv_lit(", "), l_nargs);
+        nv l_constructor = nv_add_chain(4, (&nv_lits[479]), f_cstr_1(l_name), (&nv_lits[170]), l_nargs);
         if (nv_gt_bool(l_nargs, nv_int(0LL))) {
-            l_constructor = nv_add_chain(3, l_constructor, nv_lit(", "), f_genArgs_5(l_c, nv_int(2LL), l_prog, l_ctx, l_locals));
+            l_constructor = nv_add_chain(3, l_constructor, (&nv_lits[170]), f_genArgs_5(l_c, nv_int(2LL), l_prog, l_ctx, l_locals));
         }
-        l_out = nv_add_chain(9, l_out, nv_lit("    nv_enum_add("), f_cstr_1(l_name), nv_lit(", "), f_cstr_1(f_nodeChild_2(l_c, nv_int(1LL))), nv_lit(", "), l_constructor, nv_lit("));"), f_nl_0());
+        l_out = nv_add_chain(9, l_out, (&nv_lits[480]), f_cstr_1(l_name), (&nv_lits[170]), f_cstr_1(f_nodeChild_2(l_c, nv_int(1LL))), (&nv_lits[170]), l_constructor, (&nv_lits[481]), f_nl_0());
         l_i = (l_i + 1LL);
     }
     return nv_coerce_string(l_out);
-    return nv_lit("");
+    return (&nv_empty_str_val);
 }
 
 static nv f_genMainEntry_1(nv a0) {
     nv l_prog = a0;
-    nv l_hasMain0 = nv_has_key(l_prog, "has", nv_lit("func:main/0"));
-    nv l_hasMain1 = nv_has_key(l_prog, "has", nv_lit("func:main/1"));
+    nv l_hasMain0 = nv_has_key(l_prog, "has", (&nv_lits[482]));
+    nv l_hasMain1 = nv_has_key(l_prog, "has", (&nv_lits[483]));
     if ((nv_eq_bool(l_hasMain0, nv_bool(0)) && nv_eq_bool(l_hasMain1, nv_bool(0)))) {
-        (void)f_fail_2(nv_lit("no 'method main' found"), nv_lit("program"));
+        (void)f_fail_2((&nv_lits[484]), (&nv_lits[485]));
     }
-    nv l_out = nv_add_fast(nv_lit("int main(int argc, char **argv) {"), f_nl_0());
-    l_out = nv_add_chain(3, l_out, nv_lit("    nv result = nv_nil;"), f_nl_0());
-    l_out = nv_add_chain(3, l_out, nv_lit("    nv_init_args(argc, argv);"), f_nl_0());
-    l_out = nv_add_chain(3, l_out, nv_lit("    nv_register_classes();"), f_nl_0());
-    l_out = nv_add_chain(3, l_out, nv_lit("    nv_init_globals();"), f_nl_0());
-    l_out = nv_add_chain(3, l_out, nv_lit("    nv_init_enums();"), f_nl_0());
+    nv l_out = nv_add_fast((&nv_lits[486]), f_nl_0());
+    l_out = nv_add_chain(3, l_out, (&nv_lits[487]), f_nl_0());
+    if (nv_truthy(nv_has_key(l_prog, "has", (&nv_lits[139])))) {
+        l_out = nv_add_chain(5, l_out, (&nv_lits[488]), nv_index(l_prog, (&nv_lits[139])), (&nv_lits[404]), f_nl_0());
+    }
+    l_out = nv_add_chain(3, l_out, (&nv_lits[489]), f_nl_0());
+    l_out = nv_add_chain(3, l_out, (&nv_lits[490]), f_nl_0());
+    l_out = nv_add_chain(3, l_out, (&nv_lits[491]), f_nl_0());
+    l_out = nv_add_chain(3, l_out, (&nv_lits[492]), f_nl_0());
     l_out = nv_add_fast(l_out, f_mainCallCode_2(l_hasMain0, l_hasMain1));
-    l_out = nv_add_chain(3, l_out, nv_lit("    fflush(stdout);"), f_nl_0());
-    l_out = nv_add_chain(3, l_out, nv_lit("    return nv_exit_code(result);"), f_nl_0());
-    return nv_coerce_string(nv_add_chain(3, l_out, nv_lit("}"), f_nl_0()));
-    return nv_lit("");
+    l_out = nv_add_chain(3, l_out, (&nv_lits[493]), f_nl_0());
+    l_out = nv_add_chain(3, l_out, (&nv_lits[494]), f_nl_0());
+    return nv_coerce_string(nv_add_chain(3, l_out, (&nv_lits[157]), f_nl_0()));
+    return (&nv_empty_str_val);
 }
 
 static nv f_mainCallCode_2(nv a0, nv a1) {
     nv l_hasMain0 = a0;
     nv l_hasMain1 = a1;
     if ((nv_truthy(l_hasMain0) && nv_truthy(l_hasMain1))) {
-        return nv_coerce_string(nv_add_chain(10, nv_lit("    if (argc > 1) {"), f_nl_0(), nv_lit("        result = f_main_1(nv_args());"), f_nl_0(), nv_lit("    } else {"), f_nl_0(), nv_lit("        result = f_main_0();"), f_nl_0(), nv_lit("    }"), f_nl_0()));
+        return nv_coerce_string(nv_add_chain(10, (&nv_lits[495]), f_nl_0(), (&nv_lits[496]), f_nl_0(), (&nv_lits[497]), f_nl_0(), (&nv_lits[498]), f_nl_0(), (&nv_lits[461]), f_nl_0()));
     }
     if (nv_truthy(l_hasMain1)) {
-        return nv_coerce_string(nv_add_fast(nv_lit("    result = f_main_1(nv_args());"), f_nl_0()));
+        return nv_coerce_string(nv_add_fast((&nv_lits[499]), f_nl_0()));
     }
-    return nv_coerce_string(nv_add_fast(nv_lit("    result = f_main_0();"), f_nl_0()));
-    return nv_lit("");
+    return nv_coerce_string(nv_add_fast((&nv_lits[500]), f_nl_0()));
+    return (&nv_empty_str_val);
 }
 
 static nv f_generateProgram_2(nv a0, nv a1) {
@@ -6681,63 +12070,65 @@ static nv f_generateProgram_2(nv a0, nv a1) {
         for (int i_d = 0; i_d < n_d; i_d++) {
             nv l_d = it_d->items[i_d];
             nv l_head = f_nodeHead_1(l_d);
-            if ((nv_eq_bool(l_head, nv_lit("method")) && nv_truthy(f_isNativeMethod_1(l_d)))) {
+            if ((nv_eq_bool(l_head, (&nv_lits[195])) && nv_truthy(f_isNativeMethod_1(l_d)))) {
                 continue;
             }
-            if (nv_eq_bool(l_head, nv_lit("method"))) {
+            if (nv_eq_bool(l_head, (&nv_lits[195]))) {
                 nv l_name = f_methodName_1(l_d);
                 nv l_arity = f_arityOf_1(l_d);
-                nv l_key = nv_add_chain(3, l_name, nv_lit("/"), l_arity);
-                nv l_variants = nv_parse_int(nv_index(l_prog, nv_add_fast(nv_lit("func:"), l_key)));
+                nv l_key = nv_add_chain(3, l_name, (&nv_lits[6]), l_arity);
+                nv l_variants = nv_parse_int(nv_index(l_prog, nv_add_fast((&nv_lits[243]), l_key)));
                 nv l_variant = nv_int(0LL);
                 if (nv_truthy(nv_has_key(l_emitted, "has", l_key))) {
                     l_variant = nv_parse_int(nv_index(l_emitted, l_key));
                 }
                 nv_index_set(l_emitted, l_key, f_intToStr_1(nv_add_fast(l_variant, nv_int(1LL))));
                 nv l_cname = f_funcCName_4(l_name, l_arity, l_variant, l_variants);
-                (void)nv_append(l_protos, "append", nv_add_chain(6, nv_lit("static nv "), l_cname, nv_lit("("), f_cParamList_1(l_d), nv_lit(");"), f_nl_0()));
+                (void)nv_append(l_protos, "append", nv_add_chain(6, (&nv_lits[447]), l_cname, (&nv_lits[7]), f_cParamList_1(l_d), (&nv_lits[404]), f_nl_0()));
                 (void)nv_append(l_bodies, "append", f_genFreeMethod_3(l_d, l_cname, l_prog));
                 if ((nv_gt_bool(l_variants, nv_int(1LL)) && nv_eq_bool(l_variant, nv_int(0LL)))) {
-                    (void)nv_append(l_protos, "append", nv_add_chain(6, nv_lit("static nv "), f_funcCName_4(l_name, l_arity, nv_int(0LL), nv_int(1LL)), nv_lit("("), f_cParamList_1(l_d), nv_lit(");"), f_nl_0()));
+                    (void)nv_append(l_protos, "append", nv_add_chain(6, (&nv_lits[447]), f_funcCName_4(l_name, l_arity, nv_int(0LL), nv_int(1LL)), (&nv_lits[7]), f_cParamList_1(l_d), (&nv_lits[404]), f_nl_0()));
                     (void)nv_append(l_bodies, "append", f_genDispatcher_4(l_name, l_arity, l_variants, l_prog));
                 }
                 continue;
             }
-            if ((nv_eq_bool(l_head, nv_lit("class")) || nv_eq_bool(l_head, nv_lit("enum")))) {
+            if ((nv_eq_bool(l_head, (&nv_lits[251])) || nv_eq_bool(l_head, (&nv_lits[250])))) {
                 (void)f_genClassCode_5(l_d, l_prog, l_protos, l_bodies, l_registry);
-                if (nv_eq_bool(l_head, nv_lit("enum"))) {
+                if (nv_eq_bool(l_head, (&nv_lits[250]))) {
                     (void)nv_append(l_enumsInit, "append", f_genEnumInit_2(l_d, l_prog));
                 }
                 continue;
             }
-            if (nv_eq_bool(l_head, nv_lit("global"))) {
+            if (nv_eq_bool(l_head, (&nv_lits[254]))) {
                 nv l_gname = f_nodeChild_2(l_d, nv_int(1LL));
-                nv l_gctx = nv_map_of(5, nv_lit("class"), nv_lit(""), nv_lit("pkg"), f_packageOf_1(l_gname), nv_lit("func"), nv_lit(""), nv_lit("ret"), nv_lit("void"), nv_lit("pos"), nv_add_fast(nv_lit("constant "), l_gname));
+                nv l_gctx = nv_map_of(5, (&nv_lits[251]), (&nv_lits[5]), (&nv_lits[278]), f_packageOf_1(l_gname), (&nv_lits[449]), (&nv_lits[5]), (&nv_lits[408]), (&nv_lits[443]), (&nv_lits[40]), nv_add_fast((&nv_lits[501]), l_gname));
                 nv l_glocals = nv_map();
-                (void)nv_append(l_protos, "append", nv_add_chain(4, nv_lit("static nv g_"), f_cName_1(l_gname), nv_lit(";"), f_nl_0()));
-                (void)nv_append(l_globalsInit, "append", nv_add_chain(6, nv_lit("    g_"), f_cName_1(l_gname), nv_lit(" = "), f_genExpr_4(f_nodeChild_2(l_d, nv_int(2LL)), l_prog, l_gctx, l_glocals), nv_lit(";"), f_nl_0()));
+                (void)nv_append(l_protos, "append", nv_add_chain(4, (&nv_lits[502]), f_cName_1(l_gname), (&nv_lits[156]), f_nl_0()));
+                (void)nv_append(l_globalsInit, "append", nv_add_chain(6, (&nv_lits[503]), f_cName_1(l_gname), (&nv_lits[397]), f_genExpr_4(f_nodeChild_2(l_d, nv_int(2LL)), l_prog, l_gctx, l_glocals), (&nv_lits[156]), f_nl_0()));
             }
         }
     }
     nv l_out = nv_arr();
-    (void)nv_append(l_out, "append", nv_add_fast(nv_lit("/* generated by novusc - do not edit */"), f_nl_0()));
-    if (nv_eq_bool(l_runtime, nv_lit(""))) {
-        (void)nv_append(l_out, "append", nv_add_chain(3, nv_lit("#include "), f_cstr_1(nv_lit("novus_rt.h")), f_nl_0()));
+    (void)nv_append(l_out, "append", nv_add_fast((&nv_lits[504]), f_nl_0()));
+    if (nv_eq_bool(l_runtime, (&nv_lits[5]))) {
+        (void)nv_append(l_out, "append", nv_add_chain(3, (&nv_lits[505]), f_cstr_1((&nv_lits[506])), f_nl_0()));
     } else {
         (void)nv_append(l_out, "append", l_runtime);
         if (nv_ne_bool(nv_invoke1(l_runtime, "charAt", nv_sub_fast(nv_length_of(l_runtime, "length"), nv_int(1LL))), f_nl_0())) {
             (void)nv_append(l_out, "append", f_nl_0());
         }
     }
-    (void)nv_append(l_out, "append", nv_add_chain(3, f_nl_0(), nv_lit("/* declarations */"), f_nl_0()));
+    (void)nv_append(l_out, "append", nv_add_chain(3, f_nl_0(), (&nv_lits[507]), f_nl_0()));
     (void)nv_append(l_out, "append", f_joinParts_1(l_protos));
-    (void)nv_append(l_out, "append", nv_add_chain(7, f_nl_0(), nv_lit("static void nv_register_classes(void) {"), f_nl_0(), nv_lit("    NvClass *c = 0;"), f_nl_0(), nv_lit("    (void)c;"), f_nl_0()));
+    (void)nv_append(l_out, "append", f_literalTable_1(l_prog));
+    (void)nv_append(l_out, "append", f_spawnBodies_1(l_prog));
+    (void)nv_append(l_out, "append", nv_add_chain(7, f_nl_0(), (&nv_lits[508]), f_nl_0(), (&nv_lits[509]), f_nl_0(), (&nv_lits[510]), f_nl_0()));
     (void)nv_append(l_out, "append", f_joinParts_1(l_registry));
-    (void)nv_append(l_out, "append", nv_add_chain(5, nv_lit("}"), f_nl_0(), f_nl_0(), nv_lit("static void nv_init_globals(void) {"), f_nl_0()));
+    (void)nv_append(l_out, "append", nv_add_chain(5, (&nv_lits[157]), f_nl_0(), f_nl_0(), (&nv_lits[511]), f_nl_0()));
     (void)nv_append(l_out, "append", f_joinParts_1(l_globalsInit));
-    (void)nv_append(l_out, "append", nv_add_chain(5, nv_lit("}"), f_nl_0(), f_nl_0(), nv_lit("static void nv_init_enums(void) {"), f_nl_0()));
+    (void)nv_append(l_out, "append", nv_add_chain(5, (&nv_lits[157]), f_nl_0(), f_nl_0(), (&nv_lits[512]), f_nl_0()));
     (void)nv_append(l_out, "append", f_joinParts_1(l_enumsInit));
-    (void)nv_append(l_out, "append", nv_add_chain(3, nv_lit("}"), f_nl_0(), f_nl_0()));
+    (void)nv_append(l_out, "append", nv_add_chain(3, (&nv_lits[157]), f_nl_0(), f_nl_0()));
     long long l_i = 0LL;
     while (nv_lt_bool(nv_int(l_i), nv_length_of(l_bodies, "length"))) {
         (void)nv_append(l_out, "append", nv_add_fast(nv_index(l_bodies, nv_int(l_i)), f_nl_0()));
@@ -6745,7 +12136,7 @@ static nv f_generateProgram_2(nv a0, nv a1) {
     }
     (void)nv_append(l_out, "append", f_genMainEntry_1(l_prog));
     return nv_coerce_string(f_joinParts_1(l_out));
-    return nv_lit("");
+    return (&nv_empty_str_val);
 }
 
 static nv f_lex_2(nv a0, nv a1) {
@@ -6760,50 +12151,60 @@ static nv f_lex_2(nv a0, nv a1) {
     long long l_line = 1LL;
     while (nv_lt_bool(nv_int(l_i), l_n)) {
         nv l_c = nv_invoke1(l_source, "charAt", nv_int(l_i));
-        nv l_pos = nv_add_chain(3, l_file, nv_lit(":"), nv_int(l_line));
+        nv l_pos = nv_add_chain(3, l_file, (&nv_lits[232]), nv_int(l_line));
         if (nv_eq_bool(l_c, l_newline)) {
             l_line = (l_line + 1LL);
             l_i = (l_i + 1LL);
             continue;
         }
-        if (nv_le_bool(l_c, nv_lit(" "))) {
+        if (nv_le_bool(l_c, (&nv_lits[9]))) {
             l_i = (l_i + 1LL);
             continue;
         }
         if (nv_truthy(f_isAlpha_1(l_c))) {
-            nv l_word = nv_lit("");
+            nv l_word = (&nv_lits[5]);
             while ((nv_lt_bool(nv_int(l_i), l_n) && nv_truthy(f_isAlphaNum_1(nv_invoke1(l_source, "charAt", nv_int(l_i)))))) {
                 l_word = nv_add_fast(l_word, nv_invoke1(l_source, "charAt", nv_int(l_i)));
                 l_i = (l_i + 1LL);
             }
-            nv l_wordKind = nv_lit("IDENT");
+            nv l_wordKind = (&nv_lits[18]);
             if (nv_truthy(f_isKeywordWord_1(l_word))) {
-                l_wordKind = nv_lit("KEYWORD");
+                l_wordKind = (&nv_lits[17]);
             }
-            (void)nv_append(l_tokens, "append", nv_add_chain(5, l_wordKind, nv_lit(" "), l_pos, nv_lit(" "), l_word));
+            (void)nv_append(l_tokens, "append", nv_add_chain(5, l_wordKind, (&nv_lits[9]), l_pos, (&nv_lits[9]), l_word));
             continue;
         }
         if (nv_truthy(f_isDigit_1(l_c))) {
-            nv l_num = nv_lit("");
-            nv l_numKind = nv_lit("INT");
+            nv l_num = (&nv_lits[5]);
+            nv l_numKind = (&nv_lits[513]);
+            if ((((nv_eq_bool(l_c, (&nv_lits[221])) && nv_lt_bool(nv_int((l_i + 2LL)), l_n)) && (nv_eq_bool(nv_invoke1(l_source, "charAt", nv_int((l_i + 1LL))), (&nv_lits[515])) || nv_eq_bool(nv_invoke1(l_source, "charAt", nv_int((l_i + 1LL))), (&nv_lits[514])))) && nv_truthy(f_isHexDigit_1(nv_invoke1(l_source, "charAt", nv_int((l_i + 2LL))))))) {
+                nv l_hex = nv_int(0LL);
+                l_i = (l_i + 2LL);
+                while ((nv_lt_bool(nv_int(l_i), l_n) && nv_truthy(f_isHexDigit_1(nv_invoke1(l_source, "charAt", nv_int(l_i)))))) {
+                    l_hex = nv_add_fast(nv_mul_fast(l_hex, nv_int(16LL)), f_hexValue_1(nv_invoke1(l_source, "charAt", nv_int(l_i))));
+                    l_i = (l_i + 1LL);
+                }
+                (void)nv_append(l_tokens, "append", nv_add_chain(4, (&nv_lits[516]), l_pos, (&nv_lits[9]), l_hex));
+                continue;
+            }
             while ((nv_lt_bool(nv_int(l_i), l_n) && nv_truthy(f_isDigit_1(nv_invoke1(l_source, "charAt", nv_int(l_i)))))) {
                 l_num = nv_add_fast(l_num, nv_invoke1(l_source, "charAt", nv_int(l_i)));
                 l_i = (l_i + 1LL);
             }
-            if (((nv_lt_bool(nv_int((l_i + 1LL)), l_n) && nv_eq_bool(nv_invoke1(l_source, "charAt", nv_int(l_i)), nv_lit("."))) && nv_truthy(f_isDigit_1(nv_invoke1(l_source, "charAt", nv_int((l_i + 1LL))))))) {
-                l_numKind = nv_lit("FLOAT");
-                l_num = nv_add_fast(l_num, nv_lit("."));
+            if (((nv_lt_bool(nv_int((l_i + 1LL)), l_n) && nv_eq_bool(nv_invoke1(l_source, "charAt", nv_int(l_i)), (&nv_lits[167]))) && nv_truthy(f_isDigit_1(nv_invoke1(l_source, "charAt", nv_int((l_i + 1LL))))))) {
+                l_numKind = (&nv_lits[517]);
+                l_num = nv_add_fast(l_num, (&nv_lits[167]));
                 l_i = (l_i + 1LL);
                 while ((nv_lt_bool(nv_int(l_i), l_n) && nv_truthy(f_isDigit_1(nv_invoke1(l_source, "charAt", nv_int(l_i)))))) {
                     l_num = nv_add_fast(l_num, nv_invoke1(l_source, "charAt", nv_int(l_i)));
                     l_i = (l_i + 1LL);
                 }
             }
-            (void)nv_append(l_tokens, "append", nv_add_chain(5, l_numKind, nv_lit(" "), l_pos, nv_lit(" "), l_num));
+            (void)nv_append(l_tokens, "append", nv_add_chain(5, l_numKind, (&nv_lits[9]), l_pos, (&nv_lits[9]), l_num));
             continue;
         }
         if (nv_eq_bool(l_c, l_quote)) {
-            nv l_text = nv_lit("");
+            nv l_text = (&nv_lits[5]);
             l_i = (l_i + 1LL);
             while ((nv_lt_bool(nv_int(l_i), l_n) && nv_ne_bool(nv_invoke1(l_source, "charAt", nv_int(l_i)), l_quote))) {
                 nv l_sc = nv_invoke1(l_source, "charAt", nv_int(l_i));
@@ -6819,22 +12220,22 @@ static nv f_lex_2(nv a0, nv a1) {
                 l_i = (l_i + 1LL);
             }
             l_i = (l_i + 1LL);
-            (void)nv_append(l_tokens, "append", nv_add_chain(4, nv_lit("STRING "), l_pos, nv_lit(" "), l_text));
+            (void)nv_append(l_tokens, "append", nv_add_chain(4, (&nv_lits[518]), l_pos, (&nv_lits[9]), l_text));
             continue;
         }
-        nv l_two = nv_lit("");
+        nv l_two = (&nv_lits[5]);
         if (nv_lt_bool(nv_int((l_i + 1LL)), l_n)) {
             l_two = nv_add_fast(l_c, nv_invoke1(l_source, "charAt", nv_int((l_i + 1LL))));
         }
-        if (nv_eq_bool(l_two, nv_lit("//"))) {
+        if (nv_eq_bool(l_two, (&nv_lits[519]))) {
             while ((nv_lt_bool(nv_int(l_i), l_n) && nv_ne_bool(nv_invoke1(l_source, "charAt", nv_int(l_i)), l_newline))) {
                 l_i = (l_i + 1LL);
             }
             continue;
         }
-        if (nv_eq_bool(l_two, nv_lit("/*"))) {
+        if (nv_eq_bool(l_two, (&nv_lits[249]))) {
             l_i = (l_i + 2LL);
-            while ((nv_lt_bool(nv_int((l_i + 1LL)), l_n) && (nv_ne_bool(nv_invoke1(l_source, "charAt", nv_int(l_i)), nv_lit("*")) || nv_ne_bool(nv_invoke1(l_source, "charAt", nv_int((l_i + 1LL))), nv_lit("/"))))) {
+            while ((nv_lt_bool(nv_int((l_i + 1LL)), l_n) && (nv_ne_bool(nv_invoke1(l_source, "charAt", nv_int(l_i)), (&nv_lits[235])) || nv_ne_bool(nv_invoke1(l_source, "charAt", nv_int((l_i + 1LL))), (&nv_lits[6]))))) {
                 if (nv_eq_bool(nv_invoke1(l_source, "charAt", nv_int(l_i)), l_newline)) {
                     l_line = (l_line + 1LL);
                 }
@@ -6844,22 +12245,22 @@ static nv f_lex_2(nv a0, nv a1) {
             continue;
         }
         if (nv_truthy(f_isTwoCharOp_1(l_two))) {
-            if (nv_eq_bool(l_two, nv_lit("=>"))) {
-                l_two = nv_lit(">=");
+            if (nv_eq_bool(l_two, (&nv_lits[218]))) {
+                l_two = (&nv_lits[215]);
             }
-            if (nv_eq_bool(l_two, nv_lit("=<"))) {
-                l_two = nv_lit("<=");
+            if (nv_eq_bool(l_two, (&nv_lits[219]))) {
+                l_two = (&nv_lits[214]);
             }
-            (void)nv_append(l_tokens, "append", nv_add_chain(4, nv_lit("SYM "), l_pos, nv_lit(" "), l_two));
+            (void)nv_append(l_tokens, "append", nv_add_chain(4, (&nv_lits[520]), l_pos, (&nv_lits[9]), l_two));
             l_i = (l_i + 2LL);
             continue;
         }
         if (nv_truthy(f_isSymbolChar_1(l_c))) {
-            (void)nv_append(l_tokens, "append", nv_add_chain(4, nv_lit("SYM "), l_pos, nv_lit(" "), l_c));
+            (void)nv_append(l_tokens, "append", nv_add_chain(4, (&nv_lits[520]), l_pos, (&nv_lits[9]), l_c));
         }
         l_i = (l_i + 1LL);
     }
-    (void)nv_append(l_tokens, "append", nv_add_chain(5, nv_lit("EOF "), l_file, nv_lit(":"), nv_int(l_line), nv_lit(" ")));
+    (void)nv_append(l_tokens, "append", nv_add_chain(5, (&nv_lits[521]), l_file, (&nv_lits[232]), nv_int(l_line), (&nv_lits[9])));
     return l_tokens;
     return nv_nil;
 }
@@ -6871,10 +12272,10 @@ static nv f_precedenceOf_2(nv a0, nv a1) {
         return nv_coerce_int(nv_int((0LL - 1LL)));
     }
     nv l_t = nv_index(l_tokens, nv_int(l_p));
-    if (nv_ne_bool(f_tokKind_1(l_t), nv_lit("SYM"))) {
+    if (nv_ne_bool(f_tokKind_1(l_t), (&nv_lits[16]))) {
         return nv_coerce_int(nv_int((0LL - 1LL)));
     }
-    nv l_precs = nv_map_of(13, nv_lit("||"), nv_int(1LL), nv_lit("&&"), nv_int(2LL), nv_lit("=="), nv_int(3LL), nv_lit("!="), nv_int(3LL), nv_lit("<"), nv_int(4LL), nv_lit(">"), nv_int(4LL), nv_lit("<="), nv_int(4LL), nv_lit(">="), nv_int(4LL), nv_lit("+"), nv_int(5LL), nv_lit("-"), nv_int(5LL), nv_lit("*"), nv_int(6LL), nv_lit("/"), nv_int(6LL), nv_lit("%"), nv_int(6LL));
+    nv l_precs = nv_map_of(18, (&nv_lits[217]), nv_int(1LL), (&nv_lits[216]), nv_int(2LL), (&nv_lits[241]), nv_int(3LL), (&nv_lits[242]), nv_int(4LL), (&nv_lits[240]), nv_int(5LL), (&nv_lits[212]), nv_int(6LL), (&nv_lits[213]), nv_int(6LL), (&nv_lits[26]), nv_int(7LL), (&nv_lits[37]), nv_int(7LL), (&nv_lits[214]), nv_int(7LL), (&nv_lits[215]), nv_int(7LL), (&nv_lits[220]), nv_int(8LL), (&nv_lits[38]), nv_int(8LL), (&nv_lits[233]), nv_int(9LL), (&nv_lits[234]), nv_int(9LL), (&nv_lits[235]), nv_int(10LL), (&nv_lits[6]), nv_int(10LL), (&nv_lits[236]), nv_int(10LL));
     nv l_op = f_tokVal_1(l_t);
     if (nv_truthy(nv_has_key(l_precs, "has", l_op))) {
         return nv_coerce_int(nv_parse_int(nv_index(l_precs, l_op)));
@@ -6888,13 +12289,13 @@ static nv f_afterListItem_4(nv a0, nv a1, nv a2, nv a3) {
     long long l_pos = nv_as_int(a1);
     nv l_closer = nv_coerce_string(a2);
     nv l_what = nv_coerce_string(a3);
-    if (nv_truthy(f_isSym_3(l_tokens, nv_int(l_pos), nv_lit(",")))) {
+    if (nv_truthy(f_isSym_3(l_tokens, nv_int(l_pos), (&nv_lits[45])))) {
         return nv_coerce_int(nv_int((l_pos + 1LL)));
     }
     if (nv_truthy(f_isSym_3(l_tokens, nv_int(l_pos), l_closer))) {
         return nv_coerce_int(nv_int(l_pos));
     }
-    (void)f_fail_2(nv_add_chain(6, nv_lit("expected ',' or '"), l_closer, nv_lit("' in "), l_what, nv_lit(" but found "), f_describe_2(l_tokens, nv_int(l_pos))), f_posOf_2(l_tokens, nv_int(l_pos)));
+    (void)f_fail_2(nv_add_chain(6, (&nv_lits[522]), l_closer, (&nv_lits[523]), l_what, (&nv_lits[25]), f_describe_2(l_tokens, nv_int(l_pos))), f_posOf_2(l_tokens, nv_int(l_pos)));
     return nv_coerce_int(nv_int(l_pos));
     return nv_int(0);
 }
@@ -6903,16 +12304,16 @@ static nv f_parseArgs_2(nv a0, nv a1) {
     nv l_tokens = a0;
     long long l_pos = nv_as_int(a1);
     nv l_p = nv_int(l_pos);
-    nv l_node = nv_lit("");
-    while (nv_eq_bool(f_isSym_3(l_tokens, l_p, nv_lit(")")), nv_bool(0))) {
+    nv l_node = (&nv_lits[5]);
+    while (nv_eq_bool(f_isSym_3(l_tokens, l_p, (&nv_lits[8])), nv_bool(0))) {
         if (nv_truthy(f_atEnd_2(l_tokens, l_p))) {
-            (void)f_fail_2(nv_lit("unterminated argument list"), f_posOf_2(l_tokens, l_p));
+            (void)f_fail_2((&nv_lits[524]), f_posOf_2(l_tokens, l_p));
         }
         nv l_arg = f_parseExpr_3(l_tokens, l_p, nv_int(0LL));
-        l_node = nv_add_chain(3, l_node, nv_lit(" "), nv_index(l_arg, nv_lit("node")));
-        l_p = f_afterListItem_4(l_tokens, nv_parse_int(nv_index(l_arg, nv_lit("pos"))), nv_lit(")"), nv_lit("argument list"));
+        l_node = nv_add_chain(3, l_node, (&nv_lits[9]), nv_index(l_arg, (&nv_lits[39])));
+        l_p = f_afterListItem_4(l_tokens, nv_parse_int(nv_index(l_arg, (&nv_lits[40]))), (&nv_lits[8]), (&nv_lits[525]));
     }
-    return nv_map_of(2, nv_lit("node"), l_node, nv_lit("pos"), nv_add_fast(l_p, nv_int(1LL)));
+    return nv_map_of(2, (&nv_lits[39]), l_node, (&nv_lits[40]), nv_add_fast(l_p, nv_int(1LL)));
     return nv_nil;
 }
 
@@ -6922,19 +12323,19 @@ static nv f_parseInterpolated_2(nv a0, nv a1) {
     nv l_dollar = nv_chr(nv_int(36LL));
     nv l_n = nv_length_of(l_text, "length");
     long long l_i = 0LL;
-    nv l_current = nv_lit("");
-    nv l_node = nv_lit("");
+    nv l_current = (&nv_lits[5]);
+    nv l_node = (&nv_lits[5]);
     nv l_first = nv_bool(1);
     while (nv_lt_bool(nv_int(l_i), l_n)) {
         nv l_c = nv_invoke1(l_text, "charAt", nv_int(l_i));
-        if (((nv_eq_bool(l_c, l_dollar) && nv_lt_bool(nv_int((l_i + 1LL)), l_n)) && nv_eq_bool(nv_invoke1(l_text, "charAt", nv_int((l_i + 1LL))), nv_lit("{")))) {
+        if (((nv_eq_bool(l_c, l_dollar) && nv_lt_bool(nv_int((l_i + 1LL)), l_n)) && nv_eq_bool(nv_invoke1(l_text, "charAt", nv_int((l_i + 1LL))), (&nv_lits[230])))) {
             long long l_depth = 1LL;
             long long l_j = (l_i + 2LL);
             while ((nv_lt_bool(nv_int(l_j), l_n) && l_depth > 0LL)) {
-                if (nv_eq_bool(nv_invoke1(l_text, "charAt", nv_int(l_j)), nv_lit("{"))) {
+                if (nv_eq_bool(nv_invoke1(l_text, "charAt", nv_int(l_j)), (&nv_lits[230]))) {
                     l_depth = (l_depth + 1LL);
                 }
-                if (nv_eq_bool(nv_invoke1(l_text, "charAt", nv_int(l_j)), nv_lit("}"))) {
+                if (nv_eq_bool(nv_invoke1(l_text, "charAt", nv_int(l_j)), (&nv_lits[157]))) {
                     l_depth = (l_depth - 1LL);
                 }
                 l_j = (l_j + 1LL);
@@ -6947,15 +12348,15 @@ static nv f_parseInterpolated_2(nv a0, nv a1) {
                 nv l_innerTokens = f_lex_2(l_inner, l_pos);
                 nv l_e = f_parseExpr_3(l_innerTokens, nv_int(0LL), nv_int(0LL));
                 if (nv_truthy(l_first)) {
-                    l_node = nv_add_chain(3, nv_lit("(str "), f_sexpStr_1(l_current), nv_lit(")"));
+                    l_node = nv_add_chain(3, (&nv_lits[526]), f_sexpStr_1(l_current), (&nv_lits[8]));
                     l_first = nv_bool(0);
                 } else {
-                    if (nv_ne_bool(l_current, nv_lit(""))) {
-                        l_node = nv_add_chain(5, nv_lit("(+ "), l_node, nv_lit(" (str "), f_sexpStr_1(l_current), nv_lit("))"));
+                    if (nv_ne_bool(l_current, (&nv_lits[5]))) {
+                        l_node = nv_add_chain(5, (&nv_lits[527]), l_node, (&nv_lits[528]), f_sexpStr_1(l_current), (&nv_lits[298]));
                     }
                 }
-                l_node = nv_add_chain(5, nv_lit("(+ "), l_node, nv_lit(" "), nv_index(l_e, nv_lit("node")), nv_lit(")"));
-                l_current = nv_lit("");
+                l_node = nv_add_chain(5, (&nv_lits[527]), l_node, (&nv_lits[9]), nv_index(l_e, (&nv_lits[39])), (&nv_lits[8]));
+                l_current = (&nv_lits[5]);
                 l_i = l_j;
             }
         } else {
@@ -6964,112 +12365,152 @@ static nv f_parseInterpolated_2(nv a0, nv a1) {
         }
     }
     if (nv_truthy(l_first)) {
-        return nv_coerce_string(nv_add_chain(3, nv_lit("(str "), f_sexpStr_1(l_current), nv_lit(")")));
+        return nv_coerce_string(nv_add_chain(3, (&nv_lits[526]), f_sexpStr_1(l_current), (&nv_lits[8])));
     }
-    if (nv_ne_bool(l_current, nv_lit(""))) {
-        l_node = nv_add_chain(5, nv_lit("(+ "), l_node, nv_lit(" (str "), f_sexpStr_1(l_current), nv_lit("))"));
+    if (nv_ne_bool(l_current, (&nv_lits[5]))) {
+        l_node = nv_add_chain(5, (&nv_lits[527]), l_node, (&nv_lits[528]), f_sexpStr_1(l_current), (&nv_lits[298]));
     }
     return nv_coerce_string(l_node);
-    return nv_lit("");
+    return (&nv_empty_str_val);
 }
 
 static nv f_parsePrimary_2(nv a0, nv a1) {
     nv l_tokens = a0;
     long long l_pos = nv_as_int(a1);
     if (nv_truthy(f_atEnd_2(l_tokens, nv_int(l_pos)))) {
-        (void)f_fail_2(nv_lit("unexpected end of file in expression"), f_posOf_2(l_tokens, nv_int(l_pos)));
+        (void)f_fail_2((&nv_lits[529]), f_posOf_2(l_tokens, nv_int(l_pos)));
     }
     nv l_t = nv_index(l_tokens, nv_int(l_pos));
     nv l_kind = f_tokKind_1(l_t);
     nv l_val = f_tokVal_1(l_t);
-    if (nv_eq_bool(l_kind, nv_lit("SYM"))) {
-        if (nv_eq_bool(l_val, nv_lit("("))) {
+    if (nv_eq_bool(l_kind, (&nv_lits[16]))) {
+        if (nv_eq_bool(l_val, (&nv_lits[7]))) {
             nv l_inner = f_parseExpr_3(l_tokens, nv_int((l_pos + 1LL)), nv_int(0LL));
-            nv l_after = f_expectSym_3(l_tokens, nv_parse_int(nv_index(l_inner, nv_lit("pos"))), nv_lit(")"));
-            return f_parsePostfix_3(l_tokens, nv_index(l_inner, nv_lit("node")), l_after);
+            nv l_after = f_expectSym_3(l_tokens, nv_parse_int(nv_index(l_inner, (&nv_lits[40]))), (&nv_lits[8]));
+            return f_parsePostfix_3(l_tokens, nv_index(l_inner, (&nv_lits[39])), l_after);
         }
-        if (nv_eq_bool(l_val, nv_lit("!"))) {
+        if (nv_eq_bool(l_val, (&nv_lits[238]))) {
             nv l_operand = f_parseUnary_2(l_tokens, nv_int((l_pos + 1LL)));
-            return nv_map_of(2, nv_lit("node"), nv_add_chain(3, nv_lit("(! "), nv_index(l_operand, nv_lit("node")), nv_lit(")")), nv_lit("pos"), nv_parse_int(nv_index(l_operand, nv_lit("pos"))));
+            return nv_map_of(2, (&nv_lits[39]), nv_add_chain(3, (&nv_lits[530]), nv_index(l_operand, (&nv_lits[39])), (&nv_lits[8])), (&nv_lits[40]), nv_parse_int(nv_index(l_operand, (&nv_lits[40]))));
         }
-        if (nv_eq_bool(l_val, nv_lit("-"))) {
+        if (nv_eq_bool(l_val, (&nv_lits[234]))) {
             nv l_negated = f_parseUnary_2(l_tokens, nv_int((l_pos + 1LL)));
-            return nv_map_of(2, nv_lit("node"), nv_add_chain(3, nv_lit("(neg "), nv_index(l_negated, nv_lit("node")), nv_lit(")")), nv_lit("pos"), nv_parse_int(nv_index(l_negated, nv_lit("pos"))));
+            return nv_map_of(2, (&nv_lits[39]), nv_add_chain(3, (&nv_lits[531]), nv_index(l_negated, (&nv_lits[39])), (&nv_lits[8])), (&nv_lits[40]), nv_parse_int(nv_index(l_negated, (&nv_lits[40]))));
         }
-        if (nv_eq_bool(l_val, nv_lit("["))) {
-            nv l_node = nv_lit("(arr");
+        if (nv_eq_bool(l_val, (&nv_lits[231]))) {
+            nv l_node = (&nv_lits[532]);
             nv l_p = nv_int((l_pos + 1LL));
-            while (nv_eq_bool(f_isSym_3(l_tokens, l_p, nv_lit("]")), nv_bool(0))) {
+            while (nv_eq_bool(f_isSym_3(l_tokens, l_p, (&nv_lits[172])), nv_bool(0))) {
                 if (nv_truthy(f_atEnd_2(l_tokens, l_p))) {
-                    (void)f_fail_2(nv_lit("unterminated array literal"), f_posOf_2(l_tokens, l_p));
+                    (void)f_fail_2((&nv_lits[533]), f_posOf_2(l_tokens, l_p));
                 }
                 nv l_e = f_parseExpr_3(l_tokens, l_p, nv_int(0LL));
-                l_node = nv_add_chain(3, l_node, nv_lit(" "), nv_index(l_e, nv_lit("node")));
-                l_p = f_afterListItem_4(l_tokens, nv_parse_int(nv_index(l_e, nv_lit("pos"))), nv_lit("]"), nv_lit("array literal"));
+                l_node = nv_add_chain(3, l_node, (&nv_lits[9]), nv_index(l_e, (&nv_lits[39])));
+                l_p = f_afterListItem_4(l_tokens, nv_parse_int(nv_index(l_e, (&nv_lits[40]))), (&nv_lits[172]), (&nv_lits[534]));
             }
-            return f_parsePostfix_3(l_tokens, nv_add_fast(l_node, nv_lit(")")), nv_add_fast(l_p, nv_int(1LL)));
+            return f_parsePostfix_3(l_tokens, nv_add_fast(l_node, (&nv_lits[8])), nv_add_fast(l_p, nv_int(1LL)));
         }
-        if (nv_eq_bool(l_val, nv_lit("{"))) {
-            nv l_mnode = nv_lit("(mapl");
+        if (nv_eq_bool(l_val, (&nv_lits[230]))) {
+            nv l_mnode = (&nv_lits[535]);
             nv l_mp = nv_int((l_pos + 1LL));
-            while (nv_eq_bool(f_isSym_3(l_tokens, l_mp, nv_lit("}")), nv_bool(0))) {
+            while (nv_eq_bool(f_isSym_3(l_tokens, l_mp, (&nv_lits[157])), nv_bool(0))) {
                 if (nv_truthy(f_atEnd_2(l_tokens, l_mp))) {
-                    (void)f_fail_2(nv_lit("unterminated map literal"), f_posOf_2(l_tokens, l_mp));
+                    (void)f_fail_2((&nv_lits[536]), f_posOf_2(l_tokens, l_mp));
                 }
                 nv l_k = f_parseExpr_3(l_tokens, l_mp, nv_int(0LL));
-                l_mnode = nv_add_chain(3, l_mnode, nv_lit(" "), nv_index(l_k, nv_lit("node")));
-                l_mp = f_expectSym_3(l_tokens, nv_parse_int(nv_index(l_k, nv_lit("pos"))), nv_lit(":"));
+                l_mnode = nv_add_chain(3, l_mnode, (&nv_lits[9]), nv_index(l_k, (&nv_lits[39])));
+                l_mp = f_expectSym_3(l_tokens, nv_parse_int(nv_index(l_k, (&nv_lits[40]))), (&nv_lits[232]));
                 nv l_v = f_parseExpr_3(l_tokens, l_mp, nv_int(0LL));
-                l_mnode = nv_add_chain(3, l_mnode, nv_lit(" "), nv_index(l_v, nv_lit("node")));
-                l_mp = f_afterListItem_4(l_tokens, nv_parse_int(nv_index(l_v, nv_lit("pos"))), nv_lit("}"), nv_lit("map literal"));
+                l_mnode = nv_add_chain(3, l_mnode, (&nv_lits[9]), nv_index(l_v, (&nv_lits[39])));
+                l_mp = f_afterListItem_4(l_tokens, nv_parse_int(nv_index(l_v, (&nv_lits[40]))), (&nv_lits[157]), (&nv_lits[537]));
             }
-            return f_parsePostfix_3(l_tokens, nv_add_fast(l_mnode, nv_lit(")")), nv_add_fast(l_mp, nv_int(1LL)));
+            return f_parsePostfix_3(l_tokens, nv_add_fast(l_mnode, (&nv_lits[8])), nv_add_fast(l_mp, nv_int(1LL)));
         }
-        (void)f_fail_2(nv_add_chain(3, nv_lit("unexpected "), f_describe_2(l_tokens, nv_int(l_pos)), nv_lit(" in expression")), f_posOf_2(l_tokens, nv_int(l_pos)));
+        (void)f_fail_2(nv_add_chain(3, (&nv_lits[538]), f_describe_2(l_tokens, nv_int(l_pos)), (&nv_lits[539])), f_posOf_2(l_tokens, nv_int(l_pos)));
     }
-    if (nv_eq_bool(l_kind, nv_lit("STRING"))) {
+    if (nv_eq_bool(l_kind, (&nv_lits[540]))) {
         return f_parsePostfix_3(l_tokens, f_parseInterpolated_2(l_val, f_tokPos_1(l_t)), nv_int((l_pos + 1LL)));
     }
-    if ((nv_eq_bool(l_kind, nv_lit("INT")) || nv_eq_bool(l_kind, nv_lit("FLOAT")))) {
+    if ((nv_eq_bool(l_kind, (&nv_lits[513])) || nv_eq_bool(l_kind, (&nv_lits[517])))) {
         return f_parsePostfix_3(l_tokens, l_val, nv_int((l_pos + 1LL)));
     }
-    if (nv_eq_bool(l_kind, nv_lit("KEYWORD"))) {
-        if ((nv_eq_bool(l_val, nv_lit("true")) || nv_eq_bool(l_val, nv_lit("false")))) {
-            return nv_map_of(2, nv_lit("node"), l_val, nv_lit("pos"), nv_int((l_pos + 1LL)));
+    if (nv_eq_bool(l_kind, (&nv_lits[17]))) {
+        if ((nv_eq_bool(l_val, (&nv_lits[208])) || nv_eq_bool(l_val, (&nv_lits[209])))) {
+            return nv_map_of(2, (&nv_lits[39]), l_val, (&nv_lits[40]), nv_int((l_pos + 1LL)));
         }
-        (void)f_fail_2(nv_add_chain(3, nv_lit("unexpected keyword '"), l_val, nv_lit("' in expression")), f_posOf_2(l_tokens, nv_int(l_pos)));
+        (void)f_fail_2(nv_add_chain(3, (&nv_lits[541]), l_val, (&nv_lits[542])), f_posOf_2(l_tokens, nv_int(l_pos)));
     }
-    if (nv_eq_bool(l_kind, nv_lit("IDENT"))) {
-        if (nv_truthy(f_isSym_3(l_tokens, nv_int((l_pos + 1LL)), nv_lit("{")))) {
-            nv l_onode = nv_add_fast(nv_lit("(obj "), l_val);
+    if (nv_eq_bool(l_kind, (&nv_lits[18]))) {
+        if (nv_truthy(f_isSym_3(l_tokens, nv_int((l_pos + 1LL)), (&nv_lits[230])))) {
+            nv l_onode = nv_add_fast((&nv_lits[543]), l_val);
             nv l_op = nv_int((l_pos + 2LL));
-            while (nv_eq_bool(f_isSym_3(l_tokens, l_op, nv_lit("}")), nv_bool(0))) {
+            while (nv_eq_bool(f_isSym_3(l_tokens, l_op, (&nv_lits[157])), nv_bool(0))) {
                 if (nv_truthy(f_atEnd_2(l_tokens, l_op))) {
-                    (void)f_fail_2(nv_lit("unterminated object literal"), f_posOf_2(l_tokens, l_op));
+                    (void)f_fail_2((&nv_lits[544]), f_posOf_2(l_tokens, l_op));
                 }
-                l_op = f_expectIdent_3(l_tokens, l_op, nv_lit("field name in object literal"));
+                l_op = f_expectIdent_3(l_tokens, l_op, (&nv_lits[545]));
                 nv l_fname = f_tokVal_1(nv_index(l_tokens, nv_sub_fast(l_op, nv_int(1LL))));
-                l_op = f_expectSym_3(l_tokens, l_op, nv_lit("="));
+                l_op = f_expectSym_3(l_tokens, l_op, (&nv_lits[237]));
                 nv l_fe = f_parseExpr_3(l_tokens, l_op, nv_int(0LL));
-                l_onode = nv_add_chain(6, l_onode, nv_lit(" (f "), l_fname, nv_lit(" "), nv_index(l_fe, nv_lit("node")), nv_lit(")"));
-                l_op = f_afterListItem_4(l_tokens, nv_parse_int(nv_index(l_fe, nv_lit("pos"))), nv_lit("}"), nv_lit("object literal"));
+                l_onode = nv_add_chain(6, l_onode, (&nv_lits[546]), l_fname, (&nv_lits[9]), nv_index(l_fe, (&nv_lits[39])), (&nv_lits[8]));
+                l_op = f_afterListItem_4(l_tokens, nv_parse_int(nv_index(l_fe, (&nv_lits[40]))), (&nv_lits[157]), (&nv_lits[547]));
             }
-            return f_parsePostfix_3(l_tokens, nv_add_fast(l_onode, nv_lit(")")), nv_add_fast(l_op, nv_int(1LL)));
+            return f_parsePostfix_3(l_tokens, nv_add_fast(l_onode, (&nv_lits[8])), nv_add_fast(l_op, nv_int(1LL)));
         }
-        if (nv_truthy(f_isSym_3(l_tokens, nv_int((l_pos + 1LL)), nv_lit("(")))) {
+        if (nv_truthy(f_isSym_3(l_tokens, nv_int((l_pos + 1LL)), (&nv_lits[7])))) {
             nv l_args = f_parseArgs_2(l_tokens, nv_int((l_pos + 2LL)));
-            return f_parsePostfix_3(l_tokens, nv_add_chain(4, nv_lit("(call "), l_val, nv_index(l_args, nv_lit("node")), nv_lit(")")), nv_parse_int(nv_index(l_args, nv_lit("pos"))));
+            return f_parsePostfix_3(l_tokens, nv_add_chain(4, (&nv_lits[377]), l_val, nv_index(l_args, (&nv_lits[39])), (&nv_lits[8])), nv_parse_int(nv_index(l_args, (&nv_lits[40]))));
         }
         return f_parsePostfix_3(l_tokens, l_val, nv_int((l_pos + 1LL)));
     }
-    (void)f_fail_2(nv_add_chain(3, nv_lit("unexpected "), f_describe_2(l_tokens, nv_int(l_pos)), nv_lit(" in expression")), f_posOf_2(l_tokens, nv_int(l_pos)));
-    return nv_map_of(2, nv_lit("node"), nv_lit(""), nv_lit("pos"), nv_int((l_pos + 1LL)));
+    (void)f_fail_2(nv_add_chain(3, (&nv_lits[538]), f_describe_2(l_tokens, nv_int(l_pos)), (&nv_lits[539])), f_posOf_2(l_tokens, nv_int(l_pos)));
+    return nv_map_of(2, (&nv_lits[39]), (&nv_lits[5]), (&nv_lits[40]), nv_int((l_pos + 1LL)));
     return nv_nil;
+}
+
+static nv f_startsExpression_2(nv a0, nv a1) {
+    nv l_tokens = a0;
+    long long l_pos = nv_as_int(a1);
+    if (nv_truthy(f_atEnd_2(l_tokens, nv_int(l_pos)))) {
+        return nv_bool(0);
+    }
+    nv l_kind = f_tokKind_1(nv_index(l_tokens, nv_int(l_pos)));
+    if ((((nv_eq_bool(l_kind, (&nv_lits[18])) || nv_eq_bool(l_kind, (&nv_lits[513]))) || nv_eq_bool(l_kind, (&nv_lits[517]))) || nv_eq_bool(l_kind, (&nv_lits[540])))) {
+        return nv_bool(1);
+    }
+    nv l_val = f_tokVal_1(nv_index(l_tokens, nv_int(l_pos)));
+    if (nv_eq_bool(l_kind, (&nv_lits[17]))) {
+        return nv_bool(nv_truthy(nv_eq(l_val, (&nv_lits[208]))) || nv_truthy(nv_eq(l_val, (&nv_lits[209]))));
+    }
+    if (nv_eq_bool(l_kind, (&nv_lits[16]))) {
+        return nv_bool(nv_truthy(nv_bool(nv_truthy(nv_bool(nv_truthy(nv_bool(nv_truthy(nv_eq(l_val, (&nv_lits[7]))) || nv_truthy(nv_eq(l_val, (&nv_lits[231]))))) || nv_truthy(nv_eq(l_val, (&nv_lits[230]))))) || nv_truthy(nv_eq(l_val, (&nv_lits[234]))))) || nv_truthy(nv_eq(l_val, (&nv_lits[238]))));
+    }
+    return nv_bool(0);
+    return nv_bool(0);
 }
 
 static nv f_parseUnary_2(nv a0, nv a1) {
     nv l_tokens = a0;
     long long l_pos = nv_as_int(a1);
+    if (nv_truthy(f_isIdent_2(l_tokens, nv_int(l_pos)))) {
+        nv l_word = f_tokVal_1(nv_index(l_tokens, nv_int(l_pos)));
+        if ((nv_eq_bool(l_word, (&nv_lits[314])) && nv_truthy(f_startsExpression_2(l_tokens, nv_int((l_pos + 1LL)))))) {
+            nv l_awaited = f_parseUnary_2(l_tokens, nv_int((l_pos + 1LL)));
+            return nv_map_of(2, (&nv_lits[39]), nv_add_chain(3, (&nv_lits[548]), nv_index(l_awaited, (&nv_lits[39])), (&nv_lits[8])), (&nv_lits[40]), nv_parse_int(nv_index(l_awaited, (&nv_lits[40]))));
+        }
+        if (((nv_eq_bool(l_word, (&nv_lits[67])) || nv_eq_bool(l_word, (&nv_lits[549]))) && nv_truthy(f_isIdent_2(l_tokens, nv_int((l_pos + 1LL)))))) {
+            nv l_spawned = f_parseUnary_2(l_tokens, nv_int((l_pos + 1LL)));
+            nv l_spawnedHead = f_nodeHead_1(nv_index(l_spawned, (&nv_lits[39])));
+            if ((nv_ne_bool(l_spawnedHead, (&nv_lits[343])) && nv_ne_bool(l_spawnedHead, (&nv_lits[338])))) {
+                (void)f_fail_2(nv_add_chain(5, (&nv_lits[21]), l_word, (&nv_lits[550]), l_word, (&nv_lits[551])), f_posOf_2(l_tokens, nv_int(l_pos)));
+            }
+            nv l_kind = (&nv_lits[549]);
+            if (nv_eq_bool(l_word, (&nv_lits[67]))) {
+                l_kind = (&nv_lits[62]);
+            }
+            return nv_map_of(2, (&nv_lits[39]), nv_add_chain(5, (&nv_lits[552]), l_kind, (&nv_lits[9]), nv_index(l_spawned, (&nv_lits[39])), (&nv_lits[8])), (&nv_lits[40]), nv_parse_int(nv_index(l_spawned, (&nv_lits[40]))));
+        }
+    }
     return f_parsePrimary_2(l_tokens, nv_int(l_pos));
     return nv_nil;
 }
@@ -7079,26 +12520,26 @@ static nv f_parsePostfix_3(nv a0, nv a1, nv a2) {
     nv l_node = nv_coerce_string(a1);
     nv l_pos = nv_coerce_int(a2);
     while (1) {
-        if (nv_truthy(f_isSym_3(l_tokens, l_pos, nv_lit("[")))) {
+        if (nv_truthy(f_isSym_3(l_tokens, l_pos, (&nv_lits[231])))) {
             nv l_idxE = f_parseExpr_3(l_tokens, nv_add_fast(l_pos, nv_int(1LL)), nv_int(0LL));
-            l_node = nv_add_chain(5, nv_lit("(idx "), l_node, nv_lit(" "), nv_index(l_idxE, nv_lit("node")), nv_lit(")"));
-            l_pos = f_expectSym_3(l_tokens, nv_parse_int(nv_index(l_idxE, nv_lit("pos"))), nv_lit("]"));
+            l_node = nv_add_chain(5, (&nv_lits[553]), l_node, (&nv_lits[9]), nv_index(l_idxE, (&nv_lits[39])), (&nv_lits[8]));
+            l_pos = f_expectSym_3(l_tokens, nv_parse_int(nv_index(l_idxE, (&nv_lits[40]))), (&nv_lits[172]));
             continue;
         }
-        if (nv_eq_bool(f_isSym_3(l_tokens, l_pos, nv_lit(".")), nv_bool(0))) {
+        if (nv_eq_bool(f_isSym_3(l_tokens, l_pos, (&nv_lits[167])), nv_bool(0))) {
             break;
         }
-        l_pos = f_expectIdent_3(l_tokens, nv_add_fast(l_pos, nv_int(1LL)), nv_lit("member name after '.'"));
+        l_pos = f_expectIdent_3(l_tokens, nv_add_fast(l_pos, nv_int(1LL)), (&nv_lits[554]));
         nv l_name = f_tokVal_1(nv_index(l_tokens, nv_sub_fast(l_pos, nv_int(1LL))));
-        if (nv_truthy(f_isSym_3(l_tokens, l_pos, nv_lit("(")))) {
+        if (nv_truthy(f_isSym_3(l_tokens, l_pos, (&nv_lits[7])))) {
             nv l_args = f_parseArgs_2(l_tokens, nv_add_fast(l_pos, nv_int(1LL)));
-            l_node = nv_add_chain(6, nv_lit("(mcall "), l_node, nv_lit(" "), l_name, nv_index(l_args, nv_lit("node")), nv_lit(")"));
-            l_pos = nv_parse_int(nv_index(l_args, nv_lit("pos")));
+            l_node = nv_add_chain(6, (&nv_lits[555]), l_node, (&nv_lits[9]), l_name, nv_index(l_args, (&nv_lits[39])), (&nv_lits[8]));
+            l_pos = nv_parse_int(nv_index(l_args, (&nv_lits[40])));
             continue;
         }
-        l_node = nv_add_chain(5, nv_lit("(mget "), l_node, nv_lit(" "), l_name, nv_lit(")"));
+        l_node = nv_add_chain(5, (&nv_lits[556]), l_node, (&nv_lits[9]), l_name, (&nv_lits[8]));
     }
-    return nv_map_of(2, nv_lit("node"), l_node, nv_lit("pos"), l_pos);
+    return nv_map_of(2, (&nv_lits[39]), l_node, (&nv_lits[40]), l_pos);
     return nv_nil;
 }
 
@@ -7107,8 +12548,8 @@ static nv f_parseExpr_3(nv a0, nv a1, nv a2) {
     long long l_pos = nv_as_int(a1);
     long long l_minPrec = nv_as_int(a2);
     nv l_left = f_parseUnary_2(l_tokens, nv_int(l_pos));
-    nv l_node = nv_index(l_left, nv_lit("node"));
-    nv l_p = nv_parse_int(nv_index(l_left, nv_lit("pos")));
+    nv l_node = nv_index(l_left, (&nv_lits[39]));
+    nv l_p = nv_parse_int(nv_index(l_left, (&nv_lits[40])));
     while (nv_lt_bool(l_p, nv_length_of(l_tokens, "length"))) {
         nv l_prec = f_precedenceOf_2(l_tokens, l_p);
         if ((nv_lt_bool(l_prec, nv_int(0LL)) || nv_lt_bool(l_prec, nv_int(l_minPrec)))) {
@@ -7116,54 +12557,54 @@ static nv f_parseExpr_3(nv a0, nv a1, nv a2) {
         }
         nv l_op = f_tokVal_1(nv_index(l_tokens, l_p));
         nv l_right = f_parseExpr_3(l_tokens, nv_add_fast(l_p, nv_int(1LL)), nv_add_fast(l_prec, nv_int(1LL)));
-        l_node = nv_add_chain(7, nv_lit("("), l_op, nv_lit(" "), l_node, nv_lit(" "), nv_index(l_right, nv_lit("node")), nv_lit(")"));
-        l_p = nv_parse_int(nv_index(l_right, nv_lit("pos")));
+        l_node = nv_add_chain(7, (&nv_lits[7]), l_op, (&nv_lits[9]), l_node, (&nv_lits[9]), nv_index(l_right, (&nv_lits[39])), (&nv_lits[8]));
+        l_p = nv_parse_int(nv_index(l_right, (&nv_lits[40])));
     }
-    return nv_map_of(2, nv_lit("node"), l_node, nv_lit("pos"), l_p);
+    return nv_map_of(2, (&nv_lits[39]), l_node, (&nv_lits[40]), l_p);
     return nv_nil;
 }
 
 static nv f_parseBlock_2(nv a0, nv a1) {
     nv l_tokens = a0;
     long long l_pos = nv_as_int(a1);
-    nv l_p = f_expectSym_3(l_tokens, nv_int(l_pos), nv_lit("{"));
-    nv l_node = nv_lit("(block");
-    while (nv_eq_bool(f_isSym_3(l_tokens, l_p, nv_lit("}")), nv_bool(0))) {
+    nv l_p = f_expectSym_3(l_tokens, nv_int(l_pos), (&nv_lits[230]));
+    nv l_node = (&nv_lits[557]);
+    while (nv_eq_bool(f_isSym_3(l_tokens, l_p, (&nv_lits[157])), nv_bool(0))) {
         if (nv_truthy(f_atEnd_2(l_tokens, l_p))) {
-            (void)f_fail_2(nv_lit("unterminated block (missing '}')"), f_posOf_2(l_tokens, l_p));
+            (void)f_fail_2((&nv_lits[558]), f_posOf_2(l_tokens, l_p));
         }
         nv l_at = f_posOf_2(l_tokens, l_p);
         nv l_s = f_parseStatement_2(l_tokens, l_p);
-        if (nv_ne_bool(nv_index(l_s, nv_lit("node")), nv_lit("(nop)"))) {
-            l_node = nv_add_chain(6, l_node, nv_lit(" (at "), l_at, nv_lit(" "), nv_index(l_s, nv_lit("node")), nv_lit(")"));
+        if (nv_ne_bool(nv_index(l_s, (&nv_lits[39])), (&nv_lits[559]))) {
+            l_node = nv_add_chain(6, l_node, (&nv_lits[560]), l_at, (&nv_lits[9]), nv_index(l_s, (&nv_lits[39])), (&nv_lits[8]));
         }
-        l_p = nv_parse_int(nv_index(l_s, nv_lit("pos")));
+        l_p = nv_parse_int(nv_index(l_s, (&nv_lits[40])));
     }
-    return nv_map_of(2, nv_lit("node"), nv_add_fast(l_node, nv_lit(")")), nv_lit("pos"), nv_add_fast(l_p, nv_int(1LL)));
+    return nv_map_of(2, (&nv_lits[39]), nv_add_fast(l_node, (&nv_lits[8])), (&nv_lits[40]), nv_add_fast(l_p, nv_int(1LL)));
     return nv_nil;
 }
 
 static nv f_parseIf_2(nv a0, nv a1) {
     nv l_tokens = a0;
     long long l_pos = nv_as_int(a1);
-    nv l_p = f_expectSym_3(l_tokens, nv_int((l_pos + 1LL)), nv_lit("("));
+    nv l_p = f_expectSym_3(l_tokens, nv_int((l_pos + 1LL)), (&nv_lits[7]));
     nv l_c = f_parseExpr_3(l_tokens, l_p, nv_int(0LL));
-    l_p = f_expectSym_3(l_tokens, nv_parse_int(nv_index(l_c, nv_lit("pos"))), nv_lit(")"));
+    l_p = f_expectSym_3(l_tokens, nv_parse_int(nv_index(l_c, (&nv_lits[40]))), (&nv_lits[8]));
     nv l_thenBlock = f_parseBlock_2(l_tokens, l_p);
-    nv l_node = nv_add_chain(4, nv_lit("(if "), nv_index(l_c, nv_lit("node")), nv_lit(" "), nv_index(l_thenBlock, nv_lit("node")));
-    l_p = nv_parse_int(nv_index(l_thenBlock, nv_lit("pos")));
-    if (nv_truthy(f_isKw_3(l_tokens, l_p, nv_lit("else")))) {
-        if (nv_truthy(f_isKw_3(l_tokens, nv_add_fast(l_p, nv_int(1LL)), nv_lit("if")))) {
+    nv l_node = nv_add_chain(4, (&nv_lits[561]), nv_index(l_c, (&nv_lits[39])), (&nv_lits[9]), nv_index(l_thenBlock, (&nv_lits[39])));
+    l_p = nv_parse_int(nv_index(l_thenBlock, (&nv_lits[40])));
+    if (nv_truthy(f_isKw_3(l_tokens, l_p, (&nv_lits[204])))) {
+        if (nv_truthy(f_isKw_3(l_tokens, nv_add_fast(l_p, nv_int(1LL)), (&nv_lits[203])))) {
             nv l_elseIf = f_parseIf_2(l_tokens, nv_add_fast(l_p, nv_int(1LL)));
-            l_node = nv_add_chain(3, l_node, nv_lit(" "), nv_index(l_elseIf, nv_lit("node")));
-            l_p = nv_parse_int(nv_index(l_elseIf, nv_lit("pos")));
+            l_node = nv_add_chain(3, l_node, (&nv_lits[9]), nv_index(l_elseIf, (&nv_lits[39])));
+            l_p = nv_parse_int(nv_index(l_elseIf, (&nv_lits[40])));
         } else {
             nv l_elseBlock = f_parseBlock_2(l_tokens, nv_add_fast(l_p, nv_int(1LL)));
-            l_node = nv_add_chain(3, l_node, nv_lit(" "), nv_index(l_elseBlock, nv_lit("node")));
-            l_p = nv_parse_int(nv_index(l_elseBlock, nv_lit("pos")));
+            l_node = nv_add_chain(3, l_node, (&nv_lits[9]), nv_index(l_elseBlock, (&nv_lits[39])));
+            l_p = nv_parse_int(nv_index(l_elseBlock, (&nv_lits[40])));
         }
     }
-    return nv_map_of(2, nv_lit("node"), nv_add_fast(l_node, nv_lit(")")), nv_lit("pos"), l_p);
+    return nv_map_of(2, (&nv_lits[39]), nv_add_fast(l_node, (&nv_lits[8])), (&nv_lits[40]), l_p);
     return nv_nil;
 }
 
@@ -7174,13 +12615,13 @@ static nv f_isTypedDecl_2(nv a0, nv a1) {
         return nv_bool(0);
     }
     long long l_p = (l_pos + 1LL);
-    if (nv_truthy(f_isSym_3(l_tokens, nv_int(l_p), nv_lit("<")))) {
+    if (nv_truthy(f_isSym_3(l_tokens, nv_int(l_p), (&nv_lits[26])))) {
         long long l_depth = 0LL;
         while (nv_eq_bool(f_atEnd_2(l_tokens, nv_int(l_p)), nv_bool(0))) {
-            if (nv_truthy(f_isSym_3(l_tokens, nv_int(l_p), nv_lit("<")))) {
+            if (nv_truthy(f_isSym_3(l_tokens, nv_int(l_p), (&nv_lits[26])))) {
                 l_depth = (l_depth + 1LL);
             }
-            if (nv_truthy(f_isSym_3(l_tokens, nv_int(l_p), nv_lit(">")))) {
+            if (nv_truthy(f_isSym_3(l_tokens, nv_int(l_p), (&nv_lits[37])))) {
                 l_depth = (l_depth - 1LL);
             }
             l_p = (l_p + 1LL);
@@ -7189,7 +12630,7 @@ static nv f_isTypedDecl_2(nv a0, nv a1) {
             }
         }
     }
-    return nv_bool(nv_truthy(f_isIdent_2(l_tokens, nv_int(l_p))) && nv_truthy(f_isSym_3(l_tokens, nv_int((l_p + 1LL)), nv_lit("="))));
+    return nv_bool(nv_truthy(f_isIdent_2(l_tokens, nv_int(l_p))) && nv_truthy(f_isSym_3(l_tokens, nv_int((l_p + 1LL)), (&nv_lits[237]))));
     return nv_bool(0);
 }
 
@@ -7200,128 +12641,139 @@ static nv f_parseStatement_2(nv a0, nv a1) {
     nv l_kind = f_tokKind_1(l_t);
     nv l_val = f_tokVal_1(l_t);
     nv l_here = f_tokPos_1(l_t);
-    if ((nv_eq_bool(l_kind, nv_lit("SYM")) && nv_eq_bool(l_val, nv_lit(";")))) {
-        return nv_map_of(2, nv_lit("node"), nv_lit("(nop)"), nv_lit("pos"), nv_int((l_pos + 1LL)));
+    if ((nv_eq_bool(l_kind, (&nv_lits[16])) && nv_eq_bool(l_val, (&nv_lits[156])))) {
+        return nv_map_of(2, (&nv_lits[39]), (&nv_lits[559]), (&nv_lits[40]), nv_int((l_pos + 1LL)));
     }
-    if (nv_eq_bool(l_kind, nv_lit("KEYWORD"))) {
-        if (nv_eq_bool(l_val, nv_lit("var"))) {
-            nv l_p = f_expectIdent_3(l_tokens, nv_int((l_pos + 1LL)), nv_lit("variable name"));
+    if (nv_eq_bool(l_kind, (&nv_lits[17]))) {
+        if (nv_eq_bool(l_val, (&nv_lits[196]))) {
+            nv l_p = f_expectIdent_3(l_tokens, nv_int((l_pos + 1LL)), (&nv_lits[562]));
             nv l_name = f_tokVal_1(nv_index(l_tokens, nv_sub_fast(l_p, nv_int(1LL))));
-            nv l_declType = nv_lit("");
-            if (nv_truthy(f_isSym_3(l_tokens, l_p, nv_lit(":")))) {
+            nv l_declType = (&nv_lits[5]);
+            if (nv_truthy(f_isSym_3(l_tokens, l_p, (&nv_lits[232])))) {
                 nv l_ty = f_parseType_2(l_tokens, nv_add_fast(l_p, nv_int(1LL)));
-                l_declType = nv_index(l_ty, nv_lit("node"));
-                l_p = nv_parse_int(nv_index(l_ty, nv_lit("pos")));
+                l_declType = nv_index(l_ty, (&nv_lits[39]));
+                l_p = nv_parse_int(nv_index(l_ty, (&nv_lits[40])));
             }
-            if (nv_truthy(f_isSym_3(l_tokens, l_p, nv_lit("=")))) {
+            if (nv_truthy(f_isSym_3(l_tokens, l_p, (&nv_lits[237])))) {
                 nv l_e = f_parseExpr_3(l_tokens, nv_add_fast(l_p, nv_int(1LL)), nv_int(0LL));
-                if (nv_ne_bool(l_declType, nv_lit(""))) {
-                    return nv_map_of(2, nv_lit("node"), nv_add_chain(7, nv_lit("(tvar "), l_declType, nv_lit(" "), l_name, nv_lit(" "), nv_index(l_e, nv_lit("node")), nv_lit(")")), nv_lit("pos"), nv_parse_int(nv_index(l_e, nv_lit("pos"))));
+                if (nv_ne_bool(l_declType, (&nv_lits[5]))) {
+                    return nv_map_of(2, (&nv_lits[39]), nv_add_chain(7, (&nv_lits[563]), l_declType, (&nv_lits[9]), l_name, (&nv_lits[9]), nv_index(l_e, (&nv_lits[39])), (&nv_lits[8])), (&nv_lits[40]), nv_parse_int(nv_index(l_e, (&nv_lits[40]))));
                 }
-                return nv_map_of(2, nv_lit("node"), nv_add_chain(5, nv_lit("(var "), l_name, nv_lit(" "), nv_index(l_e, nv_lit("node")), nv_lit(")")), nv_lit("pos"), nv_parse_int(nv_index(l_e, nv_lit("pos"))));
+                return nv_map_of(2, (&nv_lits[39]), nv_add_chain(5, (&nv_lits[564]), l_name, (&nv_lits[9]), nv_index(l_e, (&nv_lits[39])), (&nv_lits[8])), (&nv_lits[40]), nv_parse_int(nv_index(l_e, (&nv_lits[40]))));
             }
-            if (nv_ne_bool(l_declType, nv_lit(""))) {
-                return nv_map_of(2, nv_lit("node"), nv_add_chain(5, nv_lit("(tvar "), l_declType, nv_lit(" "), l_name, nv_lit(")")), nv_lit("pos"), l_p);
+            if (nv_ne_bool(l_declType, (&nv_lits[5]))) {
+                return nv_map_of(2, (&nv_lits[39]), nv_add_chain(5, (&nv_lits[563]), l_declType, (&nv_lits[9]), l_name, (&nv_lits[8])), (&nv_lits[40]), l_p);
             }
-            return nv_map_of(2, nv_lit("node"), nv_add_chain(3, nv_lit("(var "), l_name, nv_lit(")")), nv_lit("pos"), l_p);
+            return nv_map_of(2, (&nv_lits[39]), nv_add_chain(3, (&nv_lits[564]), l_name, (&nv_lits[8])), (&nv_lits[40]), l_p);
         }
-        if (nv_eq_bool(l_val, nv_lit("return"))) {
+        if (nv_eq_bool(l_val, (&nv_lits[202]))) {
             long long l_next = (l_pos + 1LL);
-            if (((nv_truthy(f_atEnd_2(l_tokens, nv_int(l_next))) || nv_truthy(f_isSym_3(l_tokens, nv_int(l_next), nv_lit("}")))) || nv_ne_bool(f_tokPos_1(nv_index(l_tokens, nv_int(l_next))), l_here))) {
-                return nv_map_of(2, nv_lit("node"), nv_lit("(return)"), nv_lit("pos"), nv_int(l_next));
+            if (((nv_truthy(f_atEnd_2(l_tokens, nv_int(l_next))) || nv_truthy(f_isSym_3(l_tokens, nv_int(l_next), (&nv_lits[157])))) || nv_ne_bool(f_tokPos_1(nv_index(l_tokens, nv_int(l_next))), l_here))) {
+                return nv_map_of(2, (&nv_lits[39]), (&nv_lits[565]), (&nv_lits[40]), nv_int(l_next));
             }
             nv l_re = f_parseExpr_3(l_tokens, nv_int(l_next), nv_int(0LL));
-            return nv_map_of(2, nv_lit("node"), nv_add_chain(3, nv_lit("(return "), nv_index(l_re, nv_lit("node")), nv_lit(")")), nv_lit("pos"), nv_parse_int(nv_index(l_re, nv_lit("pos"))));
+            return nv_map_of(2, (&nv_lits[39]), nv_add_chain(3, (&nv_lits[566]), nv_index(l_re, (&nv_lits[39])), (&nv_lits[8])), (&nv_lits[40]), nv_parse_int(nv_index(l_re, (&nv_lits[40]))));
         }
-        if (((nv_eq_bool(l_val, nv_lit("println")) || nv_eq_bool(l_val, nv_lit("print"))) || nv_eq_bool(l_val, nv_lit("eprintln")))) {
+        if (((nv_eq_bool(l_val, (&nv_lits[197])) || nv_eq_bool(l_val, (&nv_lits[198]))) || nv_eq_bool(l_val, (&nv_lits[199])))) {
             nv l_pe = f_parseExpr_3(l_tokens, nv_int((l_pos + 1LL)), nv_int(0LL));
-            return nv_map_of(2, nv_lit("node"), nv_add_chain(5, nv_lit("("), l_val, nv_lit(" "), nv_index(l_pe, nv_lit("node")), nv_lit(")")), nv_lit("pos"), nv_parse_int(nv_index(l_pe, nv_lit("pos"))));
+            return nv_map_of(2, (&nv_lits[39]), nv_add_chain(5, (&nv_lits[7]), l_val, (&nv_lits[9]), nv_index(l_pe, (&nv_lits[39])), (&nv_lits[8])), (&nv_lits[40]), nv_parse_int(nv_index(l_pe, (&nv_lits[40]))));
         }
-        if (nv_eq_bool(l_val, nv_lit("if"))) {
+        if (nv_eq_bool(l_val, (&nv_lits[203]))) {
             return f_parseIf_2(l_tokens, nv_int(l_pos));
         }
-        if (nv_eq_bool(l_val, nv_lit("while"))) {
-            nv l_wp = f_expectSym_3(l_tokens, nv_int((l_pos + 1LL)), nv_lit("("));
+        if (nv_eq_bool(l_val, (&nv_lits[205]))) {
+            nv l_wp = f_expectSym_3(l_tokens, nv_int((l_pos + 1LL)), (&nv_lits[7]));
             nv l_c = f_parseExpr_3(l_tokens, l_wp, nv_int(0LL));
-            l_wp = f_expectSym_3(l_tokens, nv_parse_int(nv_index(l_c, nv_lit("pos"))), nv_lit(")"));
+            l_wp = f_expectSym_3(l_tokens, nv_parse_int(nv_index(l_c, (&nv_lits[40]))), (&nv_lits[8]));
             nv l_b = f_parseBlock_2(l_tokens, l_wp);
-            return nv_map_of(2, nv_lit("node"), nv_add_chain(5, nv_lit("(while "), nv_index(l_c, nv_lit("node")), nv_lit(" "), nv_index(l_b, nv_lit("node")), nv_lit(")")), nv_lit("pos"), nv_parse_int(nv_index(l_b, nv_lit("pos"))));
+            return nv_map_of(2, (&nv_lits[39]), nv_add_chain(5, (&nv_lits[567]), nv_index(l_c, (&nv_lits[39])), (&nv_lits[9]), nv_index(l_b, (&nv_lits[39])), (&nv_lits[8])), (&nv_lits[40]), nv_parse_int(nv_index(l_b, (&nv_lits[40]))));
         }
-        if (nv_eq_bool(l_val, nv_lit("for"))) {
-            nv l_fp = f_expectSym_3(l_tokens, nv_int((l_pos + 1LL)), nv_lit("("));
-            l_fp = f_expectIdent_3(l_tokens, l_fp, nv_lit("loop variable name"));
+        if (nv_eq_bool(l_val, (&nv_lits[206]))) {
+            nv l_fp = f_expectSym_3(l_tokens, nv_int((l_pos + 1LL)), (&nv_lits[7]));
+            l_fp = f_expectIdent_3(l_tokens, l_fp, (&nv_lits[568]));
             nv l_loopVar = f_tokVal_1(nv_index(l_tokens, nv_sub_fast(l_fp, nv_int(1LL))));
-            if (nv_eq_bool(f_isKw_3(l_tokens, l_fp, nv_lit("in")), nv_bool(0))) {
-                (void)f_fail_2(nv_add_fast(nv_lit("expected 'in' in for loop but found "), f_describe_2(l_tokens, l_fp)), f_posOf_2(l_tokens, l_fp));
+            if (nv_eq_bool(f_isKw_3(l_tokens, l_fp, (&nv_lits[207])), nv_bool(0))) {
+                (void)f_fail_2(nv_add_fast((&nv_lits[569]), f_describe_2(l_tokens, l_fp)), f_posOf_2(l_tokens, l_fp));
             }
             nv l_iterable = f_parseExpr_3(l_tokens, nv_add_fast(l_fp, nv_int(1LL)), nv_int(0LL));
-            l_fp = f_expectSym_3(l_tokens, nv_parse_int(nv_index(l_iterable, nv_lit("pos"))), nv_lit(")"));
+            l_fp = f_expectSym_3(l_tokens, nv_parse_int(nv_index(l_iterable, (&nv_lits[40]))), (&nv_lits[8]));
             nv l_fb = f_parseBlock_2(l_tokens, l_fp);
-            return nv_map_of(2, nv_lit("node"), nv_add_chain(7, nv_lit("(forin "), l_loopVar, nv_lit(" "), nv_index(l_iterable, nv_lit("node")), nv_lit(" "), nv_index(l_fb, nv_lit("node")), nv_lit(")")), nv_lit("pos"), nv_parse_int(nv_index(l_fb, nv_lit("pos"))));
+            return nv_map_of(2, (&nv_lits[39]), nv_add_chain(7, (&nv_lits[570]), l_loopVar, (&nv_lits[9]), nv_index(l_iterable, (&nv_lits[39])), (&nv_lits[9]), nv_index(l_fb, (&nv_lits[39])), (&nv_lits[8])), (&nv_lits[40]), nv_parse_int(nv_index(l_fb, (&nv_lits[40]))));
         }
-        if (nv_eq_bool(l_val, nv_lit("break"))) {
-            return nv_map_of(2, nv_lit("node"), nv_lit("(break)"), nv_lit("pos"), nv_int((l_pos + 1LL)));
+        if (nv_eq_bool(l_val, (&nv_lits[210]))) {
+            return nv_map_of(2, (&nv_lits[39]), (&nv_lits[571]), (&nv_lits[40]), nv_int((l_pos + 1LL)));
         }
-        if (nv_eq_bool(l_val, nv_lit("continue"))) {
-            return nv_map_of(2, nv_lit("node"), nv_lit("(continue)"), nv_lit("pos"), nv_int((l_pos + 1LL)));
+        if (nv_eq_bool(l_val, (&nv_lits[211]))) {
+            return nv_map_of(2, (&nv_lits[39]), (&nv_lits[572]), (&nv_lits[40]), nv_int((l_pos + 1LL)));
         }
-        if (nv_eq_bool(l_val, nv_lit("package"))) {
-            return nv_map_of(2, nv_lit("node"), nv_lit("(nop)"), nv_lit("pos"), nv_int((l_pos + 2LL)));
+        if (nv_eq_bool(l_val, (&nv_lits[193]))) {
+            return nv_map_of(2, (&nv_lits[39]), (&nv_lits[559]), (&nv_lits[40]), nv_int((l_pos + 2LL)));
         }
-        (void)f_fail_2(nv_add_chain(3, nv_lit("unexpected keyword '"), l_val, nv_lit("'")), l_here);
+        (void)f_fail_2(nv_add_chain(3, (&nv_lits[541]), l_val, (&nv_lits[21])), l_here);
     }
-    if ((nv_eq_bool(l_kind, nv_lit("IDENT")) && nv_truthy(f_isSym_3(l_tokens, nv_int((l_pos + 1LL)), nv_lit("="))))) {
+    if (((nv_eq_bool(l_kind, (&nv_lits[18])) && nv_eq_bool(l_val, (&nv_lits[173]))) && (nv_truthy(f_isSym_3(l_tokens, nv_int((l_pos + 1LL)), (&nv_lits[230]))) || nv_truthy(f_isSym_3(l_tokens, nv_int((l_pos + 1LL)), (&nv_lits[7])))))) {
+        nv l_sp = nv_int((l_pos + 1LL));
+        nv l_lock = (&nv_lits[234]);
+        if (nv_truthy(f_isSym_3(l_tokens, l_sp, (&nv_lits[7])))) {
+            nv l_le = f_parseExpr_3(l_tokens, nv_add_fast(l_sp, nv_int(1LL)), nv_int(0LL));
+            l_sp = f_expectSym_3(l_tokens, nv_parse_int(nv_index(l_le, (&nv_lits[40]))), (&nv_lits[8]));
+            l_lock = nv_index(l_le, (&nv_lits[39]));
+        }
+        nv l_sb = f_parseBlock_2(l_tokens, l_sp);
+        return nv_map_of(2, (&nv_lits[39]), nv_add_chain(5, (&nv_lits[573]), l_lock, (&nv_lits[9]), nv_index(l_sb, (&nv_lits[39])), (&nv_lits[8])), (&nv_lits[40]), nv_parse_int(nv_index(l_sb, (&nv_lits[40]))));
+    }
+    if ((nv_eq_bool(l_kind, (&nv_lits[18])) && nv_truthy(f_isSym_3(l_tokens, nv_int((l_pos + 1LL)), (&nv_lits[237]))))) {
         nv l_ae = f_parseExpr_3(l_tokens, nv_int((l_pos + 2LL)), nv_int(0LL));
-        return nv_map_of(2, nv_lit("node"), nv_add_chain(5, nv_lit("(assign "), l_val, nv_lit(" "), nv_index(l_ae, nv_lit("node")), nv_lit(")")), nv_lit("pos"), nv_parse_int(nv_index(l_ae, nv_lit("pos"))));
+        return nv_map_of(2, (&nv_lits[39]), nv_add_chain(5, (&nv_lits[574]), l_val, (&nv_lits[9]), nv_index(l_ae, (&nv_lits[39])), (&nv_lits[8])), (&nv_lits[40]), nv_parse_int(nv_index(l_ae, (&nv_lits[40]))));
     }
     if (nv_truthy(f_isTypedDecl_2(l_tokens, nv_int(l_pos)))) {
         nv l_dt = f_parseType_2(l_tokens, nv_int(l_pos));
-        nv l_dp = nv_parse_int(nv_index(l_dt, nv_lit("pos")));
+        nv l_dp = nv_parse_int(nv_index(l_dt, (&nv_lits[40])));
         nv l_dname = f_tokVal_1(nv_index(l_tokens, l_dp));
         nv l_de = f_parseExpr_3(l_tokens, nv_add_fast(l_dp, nv_int(2LL)), nv_int(0LL));
-        return nv_map_of(2, nv_lit("node"), nv_add_chain(7, nv_lit("(tvar "), nv_index(l_dt, nv_lit("node")), nv_lit(" "), l_dname, nv_lit(" "), nv_index(l_de, nv_lit("node")), nv_lit(")")), nv_lit("pos"), nv_parse_int(nv_index(l_de, nv_lit("pos"))));
+        return nv_map_of(2, (&nv_lits[39]), nv_add_chain(7, (&nv_lits[563]), nv_index(l_dt, (&nv_lits[39])), (&nv_lits[9]), l_dname, (&nv_lits[9]), nv_index(l_de, (&nv_lits[39])), (&nv_lits[8])), (&nv_lits[40]), nv_parse_int(nv_index(l_de, (&nv_lits[40]))));
     }
     nv l_e = f_parseExpr_3(l_tokens, nv_int(l_pos), nv_int(0LL));
-    nv l_ep = nv_parse_int(nv_index(l_e, nv_lit("pos")));
-    if (nv_truthy(f_isSym_3(l_tokens, l_ep, nv_lit("=")))) {
+    nv l_ep = nv_parse_int(nv_index(l_e, (&nv_lits[40])));
+    if (nv_truthy(f_isSym_3(l_tokens, l_ep, (&nv_lits[237])))) {
         nv l_rhs = f_parseExpr_3(l_tokens, nv_add_fast(l_ep, nv_int(1LL)), nv_int(0LL));
-        return nv_map_of(2, nv_lit("node"), nv_add_chain(5, nv_lit("(setexpr "), nv_index(l_e, nv_lit("node")), nv_lit(" "), nv_index(l_rhs, nv_lit("node")), nv_lit(")")), nv_lit("pos"), nv_parse_int(nv_index(l_rhs, nv_lit("pos"))));
+        return nv_map_of(2, (&nv_lits[39]), nv_add_chain(5, (&nv_lits[575]), nv_index(l_e, (&nv_lits[39])), (&nv_lits[9]), nv_index(l_rhs, (&nv_lits[39])), (&nv_lits[8])), (&nv_lits[40]), nv_parse_int(nv_index(l_rhs, (&nv_lits[40]))));
     }
-    return nv_map_of(2, nv_lit("node"), nv_index(l_e, nv_lit("node")), nv_lit("pos"), l_ep);
+    return nv_map_of(2, (&nv_lits[39]), nv_index(l_e, (&nv_lits[39])), (&nv_lits[40]), l_ep);
     return nv_nil;
 }
 
 static nv f_parseAnnotation_2(nv a0, nv a1) {
     nv l_tokens = a0;
     long long l_pos = nv_as_int(a1);
-    nv l_p = f_expectIdent_3(l_tokens, nv_int((l_pos + 1LL)), nv_lit("annotation name after '@'"));
-    nv l_node = nv_add_fast(nv_lit("(anno "), f_tokVal_1(nv_index(l_tokens, nv_sub_fast(l_p, nv_int(1LL)))));
-    if (nv_truthy(f_isSym_3(l_tokens, l_p, nv_lit("{")))) {
+    nv l_p = f_expectIdent_3(l_tokens, nv_int((l_pos + 1LL)), (&nv_lits[576]));
+    nv l_node = nv_add_fast((&nv_lits[577]), f_tokVal_1(nv_index(l_tokens, nv_sub_fast(l_p, nv_int(1LL)))));
+    if (nv_truthy(f_isSym_3(l_tokens, l_p, (&nv_lits[230])))) {
         l_p = nv_add_fast(l_p, nv_int(1LL));
-        while (nv_eq_bool(f_isSym_3(l_tokens, l_p, nv_lit("}")), nv_bool(0))) {
+        while (nv_eq_bool(f_isSym_3(l_tokens, l_p, (&nv_lits[157])), nv_bool(0))) {
             if (nv_truthy(f_atEnd_2(l_tokens, l_p))) {
-                (void)f_fail_2(nv_lit("unterminated annotation arguments"), f_posOf_2(l_tokens, l_p));
+                (void)f_fail_2((&nv_lits[578]), f_posOf_2(l_tokens, l_p));
             }
-            if ((nv_truthy(f_isIdent_2(l_tokens, l_p)) && nv_truthy(f_isSym_3(l_tokens, nv_add_fast(l_p, nv_int(1LL)), nv_lit("="))))) {
+            if ((nv_truthy(f_isIdent_2(l_tokens, l_p)) && nv_truthy(f_isSym_3(l_tokens, nv_add_fast(l_p, nv_int(1LL)), (&nv_lits[237]))))) {
                 nv l_key = f_tokVal_1(nv_index(l_tokens, l_p));
                 l_p = nv_add_fast(l_p, nv_int(2LL));
-                if (nv_eq_bool(f_tokKind_1(nv_index(l_tokens, l_p)), nv_lit("STRING"))) {
-                    l_node = nv_add_chain(6, l_node, nv_lit(" (a "), l_key, nv_lit(" "), f_sexpStr_1(f_tokVal_1(nv_index(l_tokens, l_p))), nv_lit(")"));
+                if (nv_eq_bool(f_tokKind_1(nv_index(l_tokens, l_p)), (&nv_lits[540]))) {
+                    l_node = nv_add_chain(6, l_node, (&nv_lits[579]), l_key, (&nv_lits[9]), f_sexpStr_1(f_tokVal_1(nv_index(l_tokens, l_p))), (&nv_lits[8]));
                     l_p = nv_add_fast(l_p, nv_int(1LL));
                 } else {
                     nv l_ignored = f_parseExpr_3(l_tokens, l_p, nv_int(0LL));
-                    l_p = nv_parse_int(nv_index(l_ignored, nv_lit("pos")));
+                    l_p = nv_parse_int(nv_index(l_ignored, (&nv_lits[40])));
                 }
             } else {
                 l_p = nv_add_fast(l_p, nv_int(1LL));
             }
-            if (nv_truthy(f_isSym_3(l_tokens, l_p, nv_lit(",")))) {
+            if (nv_truthy(f_isSym_3(l_tokens, l_p, (&nv_lits[45])))) {
                 l_p = nv_add_fast(l_p, nv_int(1LL));
             }
         }
         l_p = nv_add_fast(l_p, nv_int(1LL));
     }
-    return nv_map_of(2, nv_lit("node"), nv_add_fast(l_node, nv_lit(")")), nv_lit("pos"), l_p);
+    return nv_map_of(2, (&nv_lits[39]), nv_add_fast(l_node, (&nv_lits[8])), (&nv_lits[40]), l_p);
     return nv_nil;
 }
 
@@ -7329,35 +12781,35 @@ static nv f_parseMethodDecl_3(nv a0, nv a1, nv a2) {
     nv l_tokens = a0;
     long long l_pos = nv_as_int(a1);
     nv l_annos = nv_coerce_string(a2);
-    nv l_p = f_expectIdent_3(l_tokens, nv_int((l_pos + 1LL)), nv_lit("method name"));
+    nv l_p = f_expectIdent_3(l_tokens, nv_int((l_pos + 1LL)), (&nv_lits[580]));
     nv l_name = f_tokVal_1(nv_index(l_tokens, nv_sub_fast(l_p, nv_int(1LL))));
-    nv l_params = nv_lit("(params)");
-    if (nv_truthy(f_isSym_3(l_tokens, l_p, nv_lit("(")))) {
+    nv l_params = (&nv_lits[581]);
+    if (nv_truthy(f_isSym_3(l_tokens, l_p, (&nv_lits[7])))) {
         nv l_pr = f_parseParams_2(l_tokens, l_p);
-        l_params = nv_index(l_pr, nv_lit("node"));
-        l_p = nv_parse_int(nv_index(l_pr, nv_lit("pos")));
+        l_params = nv_index(l_pr, (&nv_lits[39]));
+        l_p = nv_parse_int(nv_index(l_pr, (&nv_lits[40])));
     }
-    nv l_ret = nv_lit("void");
-    if (nv_truthy(f_isSym_3(l_tokens, l_p, nv_lit(":")))) {
+    nv l_ret = (&nv_lits[443]);
+    if (nv_truthy(f_isSym_3(l_tokens, l_p, (&nv_lits[232])))) {
         nv l_rt = f_parseType_2(l_tokens, nv_add_fast(l_p, nv_int(1LL)));
-        l_ret = nv_index(l_rt, nv_lit("node"));
-        l_p = nv_parse_int(nv_index(l_rt, nv_lit("pos")));
+        l_ret = nv_index(l_rt, (&nv_lits[39]));
+        l_p = nv_parse_int(nv_index(l_rt, (&nv_lits[40])));
     }
-    if (nv_truthy(f_isIdentNamed_3(l_tokens, l_p, nv_lit("native")))) {
-        if (nv_ne_bool(f_tokKind_1(nv_index(l_tokens, nv_add_fast(l_p, nv_int(1LL)))), nv_lit("STRING"))) {
-            (void)f_fail_2(nv_lit("expected the C function name after 'native'"), f_posOf_2(l_tokens, l_p));
+    if (nv_truthy(f_isIdentNamed_3(l_tokens, l_p, (&nv_lits[177])))) {
+        if (nv_ne_bool(f_tokKind_1(nv_index(l_tokens, nv_add_fast(l_p, nv_int(1LL)))), (&nv_lits[540]))) {
+            (void)f_fail_2((&nv_lits[582]), f_posOf_2(l_tokens, l_p));
         }
-        nv l_body = nv_add_fast(nv_lit("(native "), f_sexpStr_1(f_tokVal_1(nv_index(l_tokens, nv_add_fast(l_p, nv_int(1LL))))));
+        nv l_body = nv_add_fast((&nv_lits[583]), f_sexpStr_1(f_tokVal_1(nv_index(l_tokens, nv_add_fast(l_p, nv_int(1LL))))));
         l_p = nv_add_fast(l_p, nv_int(2LL));
-        if (nv_truthy(f_isIdentNamed_3(l_tokens, l_p, nv_lit("variadic")))) {
-            l_body = nv_add_fast(l_body, nv_lit(" variadic"));
+        if (nv_truthy(f_isIdentNamed_3(l_tokens, l_p, (&nv_lits[584])))) {
+            l_body = nv_add_fast(l_body, (&nv_lits[585]));
             l_p = nv_add_fast(l_p, nv_int(1LL));
         }
-        return nv_map_of(2, nv_lit("node"), nv_add_chain(11, nv_lit("(method "), l_name, nv_lit(" "), l_ret, nv_lit(" "), l_params, nv_lit(" "), l_annos, nv_lit(" "), l_body, nv_lit("))")), nv_lit("pos"), l_p);
+        return nv_map_of(2, (&nv_lits[39]), nv_add_chain(11, (&nv_lits[586]), l_name, (&nv_lits[9]), l_ret, (&nv_lits[9]), l_params, (&nv_lits[9]), l_annos, (&nv_lits[9]), l_body, (&nv_lits[298])), (&nv_lits[40]), l_p);
     }
     nv l_b = f_parseBlock_2(l_tokens, l_p);
-    nv l_node = nv_add_chain(11, nv_lit("(method "), l_name, nv_lit(" "), l_ret, nv_lit(" "), l_params, nv_lit(" "), l_annos, nv_lit(" "), nv_index(l_b, nv_lit("node")), nv_lit(")"));
-    return nv_map_of(2, nv_lit("node"), l_node, nv_lit("pos"), nv_parse_int(nv_index(l_b, nv_lit("pos"))));
+    nv l_node = nv_add_chain(11, (&nv_lits[586]), l_name, (&nv_lits[9]), l_ret, (&nv_lits[9]), l_params, (&nv_lits[9]), l_annos, (&nv_lits[9]), nv_index(l_b, (&nv_lits[39])), (&nv_lits[8]));
+    return nv_map_of(2, (&nv_lits[39]), l_node, (&nv_lits[40]), nv_parse_int(nv_index(l_b, (&nv_lits[40]))));
     return nv_nil;
 }
 
@@ -7365,97 +12817,100 @@ static nv f_parseMembers_2(nv a0, nv a1) {
     nv l_tokens = a0;
     long long l_pos = nv_as_int(a1);
     nv l_p = nv_int(l_pos);
-    nv l_fields = nv_lit("(fields");
-    nv l_ctor = nv_lit("(noctor)");
-    nv l_methods = nv_lit("(methods");
-    nv l_annos = nv_lit("(annos)");
-    while (nv_eq_bool(f_isSym_3(l_tokens, l_p, nv_lit("}")), nv_bool(0))) {
+    nv l_fields = (&nv_lits[587]);
+    nv l_ctor = (&nv_lits[588]);
+    nv l_methods = (&nv_lits[589]);
+    nv l_annos = (&nv_lits[590]);
+    while (nv_eq_bool(f_isSym_3(l_tokens, l_p, (&nv_lits[157])), nv_bool(0))) {
         if (nv_truthy(f_atEnd_2(l_tokens, l_p))) {
-            (void)f_fail_2(nv_lit("unterminated class body (missing '}')"), f_posOf_2(l_tokens, l_p));
+            (void)f_fail_2((&nv_lits[591]), f_posOf_2(l_tokens, l_p));
         }
-        if (nv_truthy(f_isSym_3(l_tokens, l_p, nv_lit("@")))) {
+        if (nv_truthy(f_isSym_3(l_tokens, l_p, (&nv_lits[239])))) {
             nv l_an = f_parseAnnotation_2(l_tokens, l_p);
-            l_annos = nv_add_chain(4, nv_invoke2(l_annos, "substring", nv_int(0LL), nv_sub_fast(nv_length_of(l_annos, "length"), nv_int(1LL))), nv_lit(" "), nv_index(l_an, nv_lit("node")), nv_lit(")"));
-            l_p = nv_parse_int(nv_index(l_an, nv_lit("pos")));
+            l_annos = nv_add_chain(4, nv_invoke2(l_annos, "substring", nv_int(0LL), nv_sub_fast(nv_length_of(l_annos, "length"), nv_int(1LL))), (&nv_lits[9]), nv_index(l_an, (&nv_lits[39])), (&nv_lits[8]));
+            l_p = nv_parse_int(nv_index(l_an, (&nv_lits[40])));
             continue;
         }
-        if (nv_truthy(f_isSym_3(l_tokens, l_p, nv_lit(";")))) {
+        if (nv_truthy(f_isSym_3(l_tokens, l_p, (&nv_lits[156])))) {
             l_p = nv_add_fast(l_p, nv_int(1LL));
             continue;
         }
-        while ((nv_truthy(f_isKw_3(l_tokens, l_p, nv_lit("private"))) || nv_truthy(f_isKw_3(l_tokens, l_p, nv_lit("final"))))) {
+        while ((nv_truthy(f_isKw_3(l_tokens, l_p, (&nv_lits[200]))) || nv_truthy(f_isKw_3(l_tokens, l_p, (&nv_lits[201]))))) {
             l_p = nv_add_fast(l_p, nv_int(1LL));
         }
-        if ((nv_truthy(f_isIdentNamed_3(l_tokens, l_p, nv_lit("abstract"))) && nv_truthy(f_isKw_3(l_tokens, nv_add_fast(l_p, nv_int(1LL)), nv_lit("method"))))) {
-            l_p = f_expectIdent_3(l_tokens, nv_add_fast(l_p, nv_int(2LL)), nv_lit("method name after 'abstract method'"));
+        if ((nv_truthy(f_isIdentNamed_3(l_tokens, l_p, (&nv_lits[592]))) && nv_truthy(f_isKw_3(l_tokens, nv_add_fast(l_p, nv_int(1LL)), (&nv_lits[195]))))) {
+            l_p = f_expectIdent_3(l_tokens, nv_add_fast(l_p, nv_int(2LL)), (&nv_lits[593]));
             nv l_aname = f_tokVal_1(nv_index(l_tokens, nv_sub_fast(l_p, nv_int(1LL))));
-            nv l_aparams = nv_lit("(params)");
-            if (nv_truthy(f_isSym_3(l_tokens, l_p, nv_lit("(")))) {
+            nv l_aparams = (&nv_lits[581]);
+            if (nv_truthy(f_isSym_3(l_tokens, l_p, (&nv_lits[7])))) {
                 nv l_apr = f_parseParams_2(l_tokens, l_p);
-                l_aparams = nv_index(l_apr, nv_lit("node"));
-                l_p = nv_parse_int(nv_index(l_apr, nv_lit("pos")));
+                l_aparams = nv_index(l_apr, (&nv_lits[39]));
+                l_p = nv_parse_int(nv_index(l_apr, (&nv_lits[40])));
             }
-            nv l_aret = nv_lit("void");
-            if (nv_truthy(f_isSym_3(l_tokens, l_p, nv_lit(":")))) {
+            nv l_aret = (&nv_lits[443]);
+            if (nv_truthy(f_isSym_3(l_tokens, l_p, (&nv_lits[232])))) {
                 nv l_art = f_parseType_2(l_tokens, nv_add_fast(l_p, nv_int(1LL)));
-                l_aret = nv_index(l_art, nv_lit("node"));
-                l_p = nv_parse_int(nv_index(l_art, nv_lit("pos")));
+                l_aret = nv_index(l_art, (&nv_lits[39]));
+                l_p = nv_parse_int(nv_index(l_art, (&nv_lits[40])));
             }
-            l_methods = nv_add_chain(10, l_methods, nv_lit(" (method "), l_aname, nv_lit(" "), l_aret, nv_lit(" "), l_aparams, nv_lit(" "), l_annos, nv_lit(" (abstract))"));
-            l_annos = nv_lit("(annos)");
+            l_methods = nv_add_chain(10, l_methods, (&nv_lits[594]), l_aname, (&nv_lits[9]), l_aret, (&nv_lits[9]), l_aparams, (&nv_lits[9]), l_annos, (&nv_lits[595]));
+            l_annos = (&nv_lits[590]);
             continue;
         }
-        if (nv_truthy(f_isKw_3(l_tokens, l_p, nv_lit("method")))) {
+        if ((nv_truthy(f_isIdentNamed_3(l_tokens, l_p, (&nv_lits[596]))) && nv_truthy(f_isKw_3(l_tokens, nv_add_fast(l_p, nv_int(1LL)), (&nv_lits[195]))))) {
+            (void)f_fail_2((&nv_lits[597]), f_posOf_2(l_tokens, l_p));
+        }
+        if (nv_truthy(f_isKw_3(l_tokens, l_p, (&nv_lits[195])))) {
             nv l_m = f_parseMethodDecl_3(l_tokens, l_p, l_annos);
-            l_methods = nv_add_chain(3, l_methods, nv_lit(" "), nv_index(l_m, nv_lit("node")));
-            l_annos = nv_lit("(annos)");
-            l_p = nv_parse_int(nv_index(l_m, nv_lit("pos")));
+            l_methods = nv_add_chain(3, l_methods, (&nv_lits[9]), nv_index(l_m, (&nv_lits[39])));
+            l_annos = (&nv_lits[590]);
+            l_p = nv_parse_int(nv_index(l_m, (&nv_lits[40])));
             continue;
         }
-        if ((nv_truthy(f_isIdentNamed_3(l_tokens, l_p, nv_lit("construct"))) && nv_truthy(f_isSym_3(l_tokens, nv_add_fast(l_p, nv_int(1LL)), nv_lit("("))))) {
+        if ((nv_truthy(f_isIdentNamed_3(l_tokens, l_p, (&nv_lits[464]))) && nv_truthy(f_isSym_3(l_tokens, nv_add_fast(l_p, nv_int(1LL)), (&nv_lits[7]))))) {
             nv l_cpr = f_parseParams_2(l_tokens, nv_add_fast(l_p, nv_int(1LL)));
-            nv l_cb = f_parseBlock_2(l_tokens, nv_parse_int(nv_index(l_cpr, nv_lit("pos"))));
-            l_ctor = nv_add_chain(5, nv_lit("(ctor "), nv_index(l_cpr, nv_lit("node")), nv_lit(" "), nv_index(l_cb, nv_lit("node")), nv_lit(")"));
-            l_annos = nv_lit("(annos)");
-            l_p = nv_parse_int(nv_index(l_cb, nv_lit("pos")));
+            nv l_cb = f_parseBlock_2(l_tokens, nv_parse_int(nv_index(l_cpr, (&nv_lits[40]))));
+            l_ctor = nv_add_chain(5, (&nv_lits[598]), nv_index(l_cpr, (&nv_lits[39])), (&nv_lits[9]), nv_index(l_cb, (&nv_lits[39])), (&nv_lits[8]));
+            l_annos = (&nv_lits[590]);
+            l_p = nv_parse_int(nv_index(l_cb, (&nv_lits[40])));
             continue;
         }
-        if ((nv_truthy(f_isIdent_2(l_tokens, l_p)) && nv_truthy(f_isSym_3(l_tokens, nv_add_fast(l_p, nv_int(1LL)), nv_lit("("))))) {
+        if ((nv_truthy(f_isIdent_2(l_tokens, l_p)) && nv_truthy(f_isSym_3(l_tokens, nv_add_fast(l_p, nv_int(1LL)), (&nv_lits[7]))))) {
             nv l_iname = f_tokVal_1(nv_index(l_tokens, l_p));
             nv l_ipr = f_parseParams_2(l_tokens, nv_add_fast(l_p, nv_int(1LL)));
-            l_p = nv_parse_int(nv_index(l_ipr, nv_lit("pos")));
-            nv l_iret = nv_lit("void");
-            if (nv_truthy(f_isSym_3(l_tokens, l_p, nv_lit(":")))) {
+            l_p = nv_parse_int(nv_index(l_ipr, (&nv_lits[40])));
+            nv l_iret = (&nv_lits[443]);
+            if (nv_truthy(f_isSym_3(l_tokens, l_p, (&nv_lits[232])))) {
                 nv l_irt = f_parseType_2(l_tokens, nv_add_fast(l_p, nv_int(1LL)));
-                l_iret = nv_index(l_irt, nv_lit("node"));
-                l_p = nv_parse_int(nv_index(l_irt, nv_lit("pos")));
+                l_iret = nv_index(l_irt, (&nv_lits[39]));
+                l_p = nv_parse_int(nv_index(l_irt, (&nv_lits[40])));
             }
-            nv l_ibody = nv_lit("(abstract)");
-            if (nv_truthy(f_isSym_3(l_tokens, l_p, nv_lit("{")))) {
+            nv l_ibody = (&nv_lits[166]);
+            if (nv_truthy(f_isSym_3(l_tokens, l_p, (&nv_lits[230])))) {
                 nv l_ib = f_parseBlock_2(l_tokens, l_p);
-                l_ibody = nv_index(l_ib, nv_lit("node"));
-                l_p = nv_parse_int(nv_index(l_ib, nv_lit("pos")));
+                l_ibody = nv_index(l_ib, (&nv_lits[39]));
+                l_p = nv_parse_int(nv_index(l_ib, (&nv_lits[40])));
             }
-            l_methods = nv_add_chain(12, l_methods, nv_lit(" (method "), l_iname, nv_lit(" "), l_iret, nv_lit(" "), nv_index(l_ipr, nv_lit("node")), nv_lit(" "), l_annos, nv_lit(" "), l_ibody, nv_lit(")"));
-            l_annos = nv_lit("(annos)");
+            l_methods = nv_add_chain(12, l_methods, (&nv_lits[594]), l_iname, (&nv_lits[9]), l_iret, (&nv_lits[9]), nv_index(l_ipr, (&nv_lits[39])), (&nv_lits[9]), l_annos, (&nv_lits[9]), l_ibody, (&nv_lits[8]));
+            l_annos = (&nv_lits[590]);
             continue;
         }
         nv l_ft = f_parseType_2(l_tokens, l_p);
-        l_p = f_expectIdent_3(l_tokens, nv_parse_int(nv_index(l_ft, nv_lit("pos"))), nv_lit("field name"));
-        l_fields = nv_add_chain(6, l_fields, nv_lit(" (f "), nv_index(l_ft, nv_lit("node")), nv_lit(" "), f_tokVal_1(nv_index(l_tokens, nv_sub_fast(l_p, nv_int(1LL)))), nv_lit(")"));
-        if (nv_truthy(f_isSym_3(l_tokens, l_p, nv_lit(":")))) {
+        l_p = f_expectIdent_3(l_tokens, nv_parse_int(nv_index(l_ft, (&nv_lits[40]))), (&nv_lits[599]));
+        l_fields = nv_add_chain(6, l_fields, (&nv_lits[546]), nv_index(l_ft, (&nv_lits[39])), (&nv_lits[9]), f_tokVal_1(nv_index(l_tokens, nv_sub_fast(l_p, nv_int(1LL)))), (&nv_lits[8]));
+        if (nv_truthy(f_isSym_3(l_tokens, l_p, (&nv_lits[232])))) {
             l_p = nv_add_fast(l_p, nv_int(1LL));
-            while ((nv_truthy(f_isIdentNamed_3(l_tokens, l_p, nv_lit("get"))) || nv_truthy(f_isIdentNamed_3(l_tokens, l_p, nv_lit("set"))))) {
+            while ((nv_truthy(f_isIdentNamed_3(l_tokens, l_p, (&nv_lits[601]))) || nv_truthy(f_isIdentNamed_3(l_tokens, l_p, (&nv_lits[600]))))) {
                 l_p = nv_add_fast(l_p, nv_int(1LL));
-                if (nv_eq_bool(f_isSym_3(l_tokens, l_p, nv_lit(",")), nv_bool(0))) {
+                if (nv_eq_bool(f_isSym_3(l_tokens, l_p, (&nv_lits[45])), nv_bool(0))) {
                     break;
                 }
                 l_p = nv_add_fast(l_p, nv_int(1LL));
             }
         }
-        l_annos = nv_lit("(annos)");
+        l_annos = (&nv_lits[590]);
     }
-    return nv_map_of(2, nv_lit("node"), nv_add_chain(6, l_fields, nv_lit(") "), l_ctor, nv_lit(" "), l_methods, nv_lit(")")), nv_lit("pos"), l_p);
+    return nv_map_of(2, (&nv_lits[39]), nv_add_chain(6, l_fields, (&nv_lits[375]), l_ctor, (&nv_lits[9]), l_methods, (&nv_lits[8])), (&nv_lits[40]), l_p);
     return nv_nil;
 }
 
@@ -7463,92 +12918,92 @@ static nv f_parseClass_3(nv a0, nv a1, nv a2) {
     nv l_tokens = a0;
     long long l_pos = nv_as_int(a1);
     nv l_isAbstract = a2;
-    nv l_p = f_expectIdent_3(l_tokens, nv_int(l_pos), nv_lit("class name"));
+    nv l_p = f_expectIdent_3(l_tokens, nv_int(l_pos), (&nv_lits[602]));
     nv l_name = f_tokVal_1(nv_index(l_tokens, nv_sub_fast(l_p, nv_int(1LL))));
-    if (nv_truthy(f_isSym_3(l_tokens, l_p, nv_lit("(")))) {
+    if (nv_truthy(f_isSym_3(l_tokens, l_p, (&nv_lits[7])))) {
         nv l_ignored = f_parseParams_2(l_tokens, l_p);
-        l_p = nv_parse_int(nv_index(l_ignored, nv_lit("pos")));
+        l_p = nv_parse_int(nv_index(l_ignored, (&nv_lits[40])));
     }
-    nv l_base = nv_lit("-");
-    if (nv_truthy(f_isIdentNamed_3(l_tokens, l_p, nv_lit("based")))) {
-        l_p = f_expectIdent_3(l_tokens, nv_add_fast(l_p, nv_int(1LL)), nv_lit("base name after 'based'"));
+    nv l_base = (&nv_lits[234]);
+    if (nv_truthy(f_isIdentNamed_3(l_tokens, l_p, (&nv_lits[603])))) {
+        l_p = f_expectIdent_3(l_tokens, nv_add_fast(l_p, nv_int(1LL)), (&nv_lits[604]));
         l_base = f_tokVal_1(nv_index(l_tokens, nv_sub_fast(l_p, nv_int(1LL))));
     }
-    l_p = f_expectSym_3(l_tokens, l_p, nv_lit("{"));
+    l_p = f_expectSym_3(l_tokens, l_p, (&nv_lits[230]));
     nv l_members = f_parseMembers_2(l_tokens, l_p);
-    l_p = f_expectSym_3(l_tokens, nv_parse_int(nv_index(l_members, nv_lit("pos"))), nv_lit("}"));
-    nv l_abstractFlag = nv_lit("false");
+    l_p = f_expectSym_3(l_tokens, nv_parse_int(nv_index(l_members, (&nv_lits[40]))), (&nv_lits[157]));
+    nv l_abstractFlag = (&nv_lits[209]);
     if (nv_truthy(l_isAbstract)) {
-        l_abstractFlag = nv_lit("true");
+        l_abstractFlag = (&nv_lits[208]);
     }
-    return nv_map_of(2, nv_lit("node"), nv_add_chain(9, nv_lit("(class "), l_name, nv_lit(" "), l_base, nv_lit(" "), l_abstractFlag, nv_lit(" "), nv_index(l_members, nv_lit("node")), nv_lit(")")), nv_lit("pos"), l_p);
+    return nv_map_of(2, (&nv_lits[39]), nv_add_chain(9, (&nv_lits[605]), l_name, (&nv_lits[9]), l_base, (&nv_lits[9]), l_abstractFlag, (&nv_lits[9]), nv_index(l_members, (&nv_lits[39])), (&nv_lits[8])), (&nv_lits[40]), l_p);
     return nv_nil;
 }
 
 static nv f_parseEnum_2(nv a0, nv a1) {
     nv l_tokens = a0;
     long long l_pos = nv_as_int(a1);
-    nv l_p = f_expectIdent_3(l_tokens, nv_int(l_pos), nv_lit("enum name"));
+    nv l_p = f_expectIdent_3(l_tokens, nv_int(l_pos), (&nv_lits[606]));
     nv l_name = f_tokVal_1(nv_index(l_tokens, nv_sub_fast(l_p, nv_int(1LL))));
-    l_p = f_expectSym_3(l_tokens, l_p, nv_lit("{"));
-    nv l_consts = nv_lit("(consts");
-    while ((nv_truthy(f_isIdent_2(l_tokens, l_p)) && (((nv_truthy(f_isSym_3(l_tokens, nv_add_fast(l_p, nv_int(1LL)), nv_lit(","))) || nv_truthy(f_isSym_3(l_tokens, nv_add_fast(l_p, nv_int(1LL)), nv_lit("(")))) || nv_truthy(f_isSym_3(l_tokens, nv_add_fast(l_p, nv_int(1LL)), nv_lit(";")))) || nv_truthy(f_isSym_3(l_tokens, nv_add_fast(l_p, nv_int(1LL)), nv_lit("}")))))) {
+    l_p = f_expectSym_3(l_tokens, l_p, (&nv_lits[230]));
+    nv l_consts = (&nv_lits[607]);
+    while ((nv_truthy(f_isIdent_2(l_tokens, l_p)) && (((nv_truthy(f_isSym_3(l_tokens, nv_add_fast(l_p, nv_int(1LL)), (&nv_lits[45]))) || nv_truthy(f_isSym_3(l_tokens, nv_add_fast(l_p, nv_int(1LL)), (&nv_lits[7])))) || nv_truthy(f_isSym_3(l_tokens, nv_add_fast(l_p, nv_int(1LL)), (&nv_lits[156])))) || nv_truthy(f_isSym_3(l_tokens, nv_add_fast(l_p, nv_int(1LL)), (&nv_lits[157])))))) {
         nv l_cname = f_tokVal_1(nv_index(l_tokens, l_p));
         l_p = nv_add_fast(l_p, nv_int(1LL));
-        nv l_cargs = nv_lit("");
-        if (nv_truthy(f_isSym_3(l_tokens, l_p, nv_lit("(")))) {
+        nv l_cargs = (&nv_lits[5]);
+        if (nv_truthy(f_isSym_3(l_tokens, l_p, (&nv_lits[7])))) {
             nv l_ar = f_parseArgs_2(l_tokens, nv_add_fast(l_p, nv_int(1LL)));
-            l_cargs = nv_index(l_ar, nv_lit("node"));
-            l_p = nv_parse_int(nv_index(l_ar, nv_lit("pos")));
+            l_cargs = nv_index(l_ar, (&nv_lits[39]));
+            l_p = nv_parse_int(nv_index(l_ar, (&nv_lits[40])));
         }
-        l_consts = nv_add_chain(5, l_consts, nv_lit(" (c "), l_cname, l_cargs, nv_lit(")"));
-        if (nv_truthy(f_isSym_3(l_tokens, l_p, nv_lit(",")))) {
+        l_consts = nv_add_chain(5, l_consts, (&nv_lits[608]), l_cname, l_cargs, (&nv_lits[8]));
+        if (nv_truthy(f_isSym_3(l_tokens, l_p, (&nv_lits[45])))) {
             l_p = nv_add_fast(l_p, nv_int(1LL));
         }
-        if (nv_truthy(f_isSym_3(l_tokens, l_p, nv_lit(";")))) {
+        if (nv_truthy(f_isSym_3(l_tokens, l_p, (&nv_lits[156])))) {
             l_p = nv_add_fast(l_p, nv_int(1LL));
             break;
         }
     }
     nv l_members = f_parseMembers_2(l_tokens, l_p);
-    l_p = f_expectSym_3(l_tokens, nv_parse_int(nv_index(l_members, nv_lit("pos"))), nv_lit("}"));
-    return nv_map_of(2, nv_lit("node"), nv_add_chain(7, nv_lit("(enum "), l_name, nv_lit(" "), l_consts, nv_lit(") "), nv_index(l_members, nv_lit("node")), nv_lit(")")), nv_lit("pos"), l_p);
+    l_p = f_expectSym_3(l_tokens, nv_parse_int(nv_index(l_members, (&nv_lits[40]))), (&nv_lits[157]));
+    return nv_map_of(2, (&nv_lits[39]), nv_add_chain(7, (&nv_lits[609]), l_name, (&nv_lits[9]), l_consts, (&nv_lits[375]), nv_index(l_members, (&nv_lits[39])), (&nv_lits[8])), (&nv_lits[40]), l_p);
     return nv_nil;
 }
 
 static nv f_parseInterface_2(nv a0, nv a1) {
     nv l_tokens = a0;
     long long l_pos = nv_as_int(a1);
-    nv l_p = f_expectIdent_3(l_tokens, nv_int(l_pos), nv_lit("interface name"));
+    nv l_p = f_expectIdent_3(l_tokens, nv_int(l_pos), (&nv_lits[610]));
     nv l_name = f_tokVal_1(nv_index(l_tokens, nv_sub_fast(l_p, nv_int(1LL))));
-    l_p = f_expectSym_3(l_tokens, l_p, nv_lit("{"));
-    nv l_names = nv_lit("(names");
-    while (nv_eq_bool(f_isSym_3(l_tokens, l_p, nv_lit("}")), nv_bool(0))) {
+    l_p = f_expectSym_3(l_tokens, l_p, (&nv_lits[230]));
+    nv l_names = (&nv_lits[611]);
+    while (nv_eq_bool(f_isSym_3(l_tokens, l_p, (&nv_lits[157])), nv_bool(0))) {
         if (nv_truthy(f_atEnd_2(l_tokens, l_p))) {
-            (void)f_fail_2(nv_lit("unterminated interface body"), f_posOf_2(l_tokens, l_p));
+            (void)f_fail_2((&nv_lits[612]), f_posOf_2(l_tokens, l_p));
         }
-        if (nv_truthy(f_isSym_3(l_tokens, l_p, nv_lit("@")))) {
+        if (nv_truthy(f_isSym_3(l_tokens, l_p, (&nv_lits[239])))) {
             nv l_an = f_parseAnnotation_2(l_tokens, l_p);
-            l_p = nv_parse_int(nv_index(l_an, nv_lit("pos")));
+            l_p = nv_parse_int(nv_index(l_an, (&nv_lits[40])));
             continue;
         }
-        if ((nv_truthy(f_isIdent_2(l_tokens, l_p)) && nv_truthy(f_isSym_3(l_tokens, nv_add_fast(l_p, nv_int(1LL)), nv_lit("("))))) {
-            l_names = nv_add_chain(3, l_names, nv_lit(" "), f_tokVal_1(nv_index(l_tokens, l_p)));
+        if ((nv_truthy(f_isIdent_2(l_tokens, l_p)) && nv_truthy(f_isSym_3(l_tokens, nv_add_fast(l_p, nv_int(1LL)), (&nv_lits[7]))))) {
+            l_names = nv_add_chain(3, l_names, (&nv_lits[9]), f_tokVal_1(nv_index(l_tokens, l_p)));
             nv l_pr = f_parseParams_2(l_tokens, nv_add_fast(l_p, nv_int(1LL)));
-            l_p = nv_parse_int(nv_index(l_pr, nv_lit("pos")));
-            if (nv_truthy(f_isSym_3(l_tokens, l_p, nv_lit(":")))) {
+            l_p = nv_parse_int(nv_index(l_pr, (&nv_lits[40])));
+            if (nv_truthy(f_isSym_3(l_tokens, l_p, (&nv_lits[232])))) {
                 nv l_rt = f_parseType_2(l_tokens, nv_add_fast(l_p, nv_int(1LL)));
-                l_p = nv_parse_int(nv_index(l_rt, nv_lit("pos")));
+                l_p = nv_parse_int(nv_index(l_rt, (&nv_lits[40])));
             }
-            if (nv_truthy(f_isSym_3(l_tokens, l_p, nv_lit("{")))) {
+            if (nv_truthy(f_isSym_3(l_tokens, l_p, (&nv_lits[230])))) {
                 nv l_ib = f_parseBlock_2(l_tokens, l_p);
-                l_p = nv_parse_int(nv_index(l_ib, nv_lit("pos")));
+                l_p = nv_parse_int(nv_index(l_ib, (&nv_lits[40])));
             }
             continue;
         }
         l_p = nv_add_fast(l_p, nv_int(1LL));
     }
-    return nv_map_of(2, nv_lit("node"), nv_add_chain(5, nv_lit("(iface "), l_name, nv_lit(" "), l_names, nv_lit("))")), nv_lit("pos"), nv_add_fast(l_p, nv_int(1LL)));
+    return nv_map_of(2, (&nv_lits[39]), nv_add_chain(5, (&nv_lits[613]), l_name, (&nv_lits[9]), l_names, (&nv_lits[298])), (&nv_lits[40]), nv_add_fast(l_p, nv_int(1LL)));
     return nv_nil;
 }
 
@@ -7556,15 +13011,15 @@ static nv f_skipBraced_2(nv a0, nv a1) {
     nv l_tokens = a0;
     long long l_pos = nv_as_int(a1);
     long long l_p = l_pos;
-    while ((nv_eq_bool(f_atEnd_2(l_tokens, nv_int(l_p)), nv_bool(0)) && nv_eq_bool(f_isSym_3(l_tokens, nv_int(l_p), nv_lit("{")), nv_bool(0)))) {
+    while ((nv_eq_bool(f_atEnd_2(l_tokens, nv_int(l_p)), nv_bool(0)) && nv_eq_bool(f_isSym_3(l_tokens, nv_int(l_p), (&nv_lits[230])), nv_bool(0)))) {
         l_p = (l_p + 1LL);
     }
     long long l_depth = 0LL;
     while (nv_eq_bool(f_atEnd_2(l_tokens, nv_int(l_p)), nv_bool(0))) {
-        if (nv_truthy(f_isSym_3(l_tokens, nv_int(l_p), nv_lit("{")))) {
+        if (nv_truthy(f_isSym_3(l_tokens, nv_int(l_p), (&nv_lits[230])))) {
             l_depth = (l_depth + 1LL);
         }
-        if (nv_truthy(f_isSym_3(l_tokens, nv_int(l_p), nv_lit("}")))) {
+        if (nv_truthy(f_isSym_3(l_tokens, nv_int(l_p), (&nv_lits[157])))) {
             l_depth = (l_depth - 1LL);
             if (l_depth == 0LL) {
                 return nv_coerce_int(nv_int((l_p + 1LL)));
@@ -7581,27 +13036,27 @@ static nv f_parseDefine_3(nv a0, nv a1, nv a2) {
     long long l_pos = nv_as_int(a1);
     nv l_decls = a2;
     nv l_what = f_tokVal_1(nv_index(l_tokens, nv_int((l_pos + 1LL))));
-    if ((nv_eq_bool(l_what, nv_lit("class")) || nv_eq_bool(l_what, nv_lit("abstract")))) {
-        nv l_c = f_parseClass_3(l_tokens, nv_int((l_pos + 2LL)), nv_eq(l_what, nv_lit("abstract")));
-        (void)nv_append(l_decls, "append", nv_index(l_c, nv_lit("node")));
-        return nv_coerce_int(nv_parse_int(nv_index(l_c, nv_lit("pos"))));
+    if ((nv_eq_bool(l_what, (&nv_lits[251])) || nv_eq_bool(l_what, (&nv_lits[592])))) {
+        nv l_c = f_parseClass_3(l_tokens, nv_int((l_pos + 2LL)), nv_eq(l_what, (&nv_lits[592])));
+        (void)nv_append(l_decls, "append", nv_index(l_c, (&nv_lits[39])));
+        return nv_coerce_int(nv_parse_int(nv_index(l_c, (&nv_lits[40]))));
     }
-    if (nv_eq_bool(l_what, nv_lit("enum"))) {
+    if (nv_eq_bool(l_what, (&nv_lits[250]))) {
         nv l_en = f_parseEnum_2(l_tokens, nv_int((l_pos + 2LL)));
-        (void)nv_append(l_decls, "append", nv_index(l_en, nv_lit("node")));
-        return nv_coerce_int(nv_parse_int(nv_index(l_en, nv_lit("pos"))));
+        (void)nv_append(l_decls, "append", nv_index(l_en, (&nv_lits[39])));
+        return nv_coerce_int(nv_parse_int(nv_index(l_en, (&nv_lits[40]))));
     }
-    if (nv_eq_bool(l_what, nv_lit("interface"))) {
+    if (nv_eq_bool(l_what, (&nv_lits[614]))) {
         nv l_iface = f_parseInterface_2(l_tokens, nv_int((l_pos + 2LL)));
-        (void)nv_append(l_decls, "append", nv_index(l_iface, nv_lit("node")));
-        return nv_coerce_int(nv_parse_int(nv_index(l_iface, nv_lit("pos"))));
+        (void)nv_append(l_decls, "append", nv_index(l_iface, (&nv_lits[39])));
+        return nv_coerce_int(nv_parse_int(nv_index(l_iface, (&nv_lits[40]))));
     }
-    if (nv_eq_bool(l_what, nv_lit("annotation"))) {
-        nv l_p = f_expectIdent_3(l_tokens, nv_int((l_pos + 2LL)), nv_lit("annotation name"));
-        (void)nv_append(l_decls, "append", nv_add_chain(3, nv_lit("(annodef "), f_tokVal_1(nv_index(l_tokens, nv_sub_fast(l_p, nv_int(1LL)))), nv_lit(")")));
+    if (nv_eq_bool(l_what, (&nv_lits[615]))) {
+        nv l_p = f_expectIdent_3(l_tokens, nv_int((l_pos + 2LL)), (&nv_lits[616]));
+        (void)nv_append(l_decls, "append", nv_add_chain(3, (&nv_lits[617]), f_tokVal_1(nv_index(l_tokens, nv_sub_fast(l_p, nv_int(1LL)))), (&nv_lits[8])));
         return nv_coerce_int(f_skipBraced_2(l_tokens, l_p));
     }
-    (void)f_fail_2(nv_add_chain(3, nv_lit("unknown definition kind '"), l_what, nv_lit("'")), f_tokPos_1(nv_index(l_tokens, nv_int(l_pos))));
+    (void)f_fail_2(nv_add_chain(3, (&nv_lits[618]), l_what, (&nv_lits[21])), f_tokPos_1(nv_index(l_tokens, nv_int(l_pos))));
     return nv_coerce_int(nv_int(l_pos));
     return nv_int(0);
 }
@@ -7611,32 +13066,32 @@ static nv f_parseGlobal_3(nv a0, nv a1, nv a2) {
     long long l_pos = nv_as_int(a1);
     nv l_decls = a2;
     nv l_p = nv_int(l_pos);
-    while ((nv_truthy(f_isKw_3(l_tokens, l_p, nv_lit("private"))) || nv_truthy(f_isKw_3(l_tokens, l_p, nv_lit("final"))))) {
+    while ((nv_truthy(f_isKw_3(l_tokens, l_p, (&nv_lits[200]))) || nv_truthy(f_isKw_3(l_tokens, l_p, (&nv_lits[201]))))) {
         l_p = nv_add_fast(l_p, nv_int(1LL));
     }
-    if (nv_truthy(f_isKw_3(l_tokens, l_p, nv_lit("var")))) {
+    if (nv_truthy(f_isKw_3(l_tokens, l_p, (&nv_lits[196])))) {
         l_p = nv_add_fast(l_p, nv_int(1LL));
     }
-    l_p = f_expectIdent_3(l_tokens, l_p, nv_lit("constant name"));
+    l_p = f_expectIdent_3(l_tokens, l_p, (&nv_lits[619]));
     nv l_gname = f_tokVal_1(nv_index(l_tokens, nv_sub_fast(l_p, nv_int(1LL))));
-    if (nv_truthy(f_isSym_3(l_tokens, l_p, nv_lit(":")))) {
+    if (nv_truthy(f_isSym_3(l_tokens, l_p, (&nv_lits[232])))) {
         nv l_gt = f_parseType_2(l_tokens, nv_add_fast(l_p, nv_int(1LL)));
-        l_p = nv_parse_int(nv_index(l_gt, nv_lit("pos")));
+        l_p = nv_parse_int(nv_index(l_gt, (&nv_lits[40])));
     }
-    l_p = f_expectSym_3(l_tokens, l_p, nv_lit("="));
+    l_p = f_expectSym_3(l_tokens, l_p, (&nv_lits[237]));
     nv l_ge = f_parseExpr_3(l_tokens, l_p, nv_int(0LL));
-    (void)nv_append(l_decls, "append", nv_add_chain(5, nv_lit("(global "), l_gname, nv_lit(" "), nv_index(l_ge, nv_lit("node")), nv_lit(")")));
-    return nv_coerce_int(nv_parse_int(nv_index(l_ge, nv_lit("pos"))));
+    (void)nv_append(l_decls, "append", nv_add_chain(5, (&nv_lits[620]), l_gname, (&nv_lits[9]), nv_index(l_ge, (&nv_lits[39])), (&nv_lits[8])));
+    return nv_coerce_int(nv_parse_int(nv_index(l_ge, (&nv_lits[40]))));
     return nv_int(0);
 }
 
 static nv f_isGlobalStart_2(nv a0, nv a1) {
     nv l_tokens = a0;
     long long l_p = nv_as_int(a1);
-    if (((nv_truthy(f_isKw_3(l_tokens, nv_int(l_p), nv_lit("private"))) || nv_truthy(f_isKw_3(l_tokens, nv_int(l_p), nv_lit("final")))) || nv_truthy(f_isKw_3(l_tokens, nv_int(l_p), nv_lit("var"))))) {
+    if (((nv_truthy(f_isKw_3(l_tokens, nv_int(l_p), (&nv_lits[200]))) || nv_truthy(f_isKw_3(l_tokens, nv_int(l_p), (&nv_lits[201])))) || nv_truthy(f_isKw_3(l_tokens, nv_int(l_p), (&nv_lits[196]))))) {
         return nv_bool(1);
     }
-    return nv_bool(nv_truthy(f_isIdent_2(l_tokens, nv_int(l_p))) && nv_truthy(f_isSym_3(l_tokens, nv_int((l_p + 1LL)), nv_lit("="))));
+    return nv_bool(nv_truthy(f_isIdent_2(l_tokens, nv_int(l_p))) && nv_truthy(f_isSym_3(l_tokens, nv_int((l_p + 1LL)), (&nv_lits[237]))));
     return nv_bool(0);
 }
 
@@ -7646,55 +13101,62 @@ static nv f_parseFile_2(nv a0, nv a1) {
     nv l_tokens = f_lex_2(l_source, l_file);
     nv l_decls = nv_arr();
     nv l_p = nv_int(0LL);
-    nv l_annos = nv_lit("(annos)");
+    nv l_annos = (&nv_lits[590]);
     while (nv_eq_bool(f_atEnd_2(l_tokens, l_p), nv_bool(0))) {
         nv l_t = nv_index(l_tokens, l_p);
-        if (nv_truthy(f_isKw_3(l_tokens, l_p, nv_lit("package")))) {
-            l_p = f_expectIdent_3(l_tokens, nv_add_fast(l_p, nv_int(1LL)), nv_lit("package name"));
+        if (nv_truthy(f_isKw_3(l_tokens, l_p, (&nv_lits[193])))) {
+            l_p = f_expectIdent_3(l_tokens, nv_add_fast(l_p, nv_int(1LL)), (&nv_lits[621]));
             continue;
         }
-        if (nv_truthy(f_isKw_3(l_tokens, l_p, nv_lit("import")))) {
-            if (nv_eq_bool(f_tokKind_1(nv_index(l_tokens, nv_add_fast(l_p, nv_int(1LL)))), nv_lit("STRING"))) {
-                (void)nv_append(l_decls, "append", nv_add_chain(3, nv_lit("(import "), f_sexpStr_1(f_tokVal_1(nv_index(l_tokens, nv_add_fast(l_p, nv_int(1LL))))), nv_lit(")")));
+        if (nv_truthy(f_isKw_3(l_tokens, l_p, (&nv_lits[194])))) {
+            if (nv_eq_bool(f_tokKind_1(nv_index(l_tokens, nv_add_fast(l_p, nv_int(1LL)))), (&nv_lits[540]))) {
+                (void)nv_append(l_decls, "append", nv_add_chain(3, (&nv_lits[622]), f_sexpStr_1(f_tokVal_1(nv_index(l_tokens, nv_add_fast(l_p, nv_int(1LL))))), (&nv_lits[8])));
                 l_p = nv_add_fast(l_p, nv_int(2LL));
                 continue;
             }
-            l_p = f_expectIdent_3(l_tokens, nv_add_fast(l_p, nv_int(1LL)), nv_lit("module name or file path after 'import'"));
-            (void)nv_append(l_decls, "append", nv_add_chain(3, nv_lit("(importmod "), f_tokVal_1(nv_index(l_tokens, nv_sub_fast(l_p, nv_int(1LL)))), nv_lit(")")));
+            l_p = f_expectIdent_3(l_tokens, nv_add_fast(l_p, nv_int(1LL)), (&nv_lits[623]));
+            (void)nv_append(l_decls, "append", nv_add_chain(3, (&nv_lits[624]), f_tokVal_1(nv_index(l_tokens, nv_sub_fast(l_p, nv_int(1LL)))), (&nv_lits[8])));
             continue;
         }
-        if (nv_truthy(f_isSym_3(l_tokens, l_p, nv_lit("@")))) {
+        if (nv_truthy(f_isSym_3(l_tokens, l_p, (&nv_lits[239])))) {
             nv l_an = f_parseAnnotation_2(l_tokens, l_p);
-            l_annos = nv_add_chain(4, nv_invoke2(l_annos, "substring", nv_int(0LL), nv_sub_fast(nv_length_of(l_annos, "length"), nv_int(1LL))), nv_lit(" "), nv_index(l_an, nv_lit("node")), nv_lit(")"));
-            l_p = nv_parse_int(nv_index(l_an, nv_lit("pos")));
+            l_annos = nv_add_chain(4, nv_invoke2(l_annos, "substring", nv_int(0LL), nv_sub_fast(nv_length_of(l_annos, "length"), nv_int(1LL))), (&nv_lits[9]), nv_index(l_an, (&nv_lits[39])), (&nv_lits[8]));
+            l_p = nv_parse_int(nv_index(l_an, (&nv_lits[40])));
             continue;
         }
-        if (nv_truthy(f_isKw_3(l_tokens, l_p, nv_lit("method")))) {
+        if ((nv_truthy(f_isIdentNamed_3(l_tokens, l_p, (&nv_lits[596]))) && nv_truthy(f_isKw_3(l_tokens, nv_add_fast(l_p, nv_int(1LL)), (&nv_lits[195]))))) {
+            nv l_am = f_parseMethodDecl_3(l_tokens, nv_add_fast(l_p, nv_int(1LL)), nv_add_fast(nv_invoke2(l_annos, "substring", nv_int(0LL), nv_sub_fast(nv_length_of(l_annos, "length"), nv_int(1LL))), (&nv_lits[625])));
+            (void)nv_append(l_decls, "append", nv_index(l_am, (&nv_lits[39])));
+            l_annos = (&nv_lits[590]);
+            l_p = nv_parse_int(nv_index(l_am, (&nv_lits[40])));
+            continue;
+        }
+        if (nv_truthy(f_isKw_3(l_tokens, l_p, (&nv_lits[195])))) {
             nv l_m = f_parseMethodDecl_3(l_tokens, l_p, l_annos);
-            (void)nv_append(l_decls, "append", nv_index(l_m, nv_lit("node")));
-            l_annos = nv_lit("(annos)");
-            l_p = nv_parse_int(nv_index(l_m, nv_lit("pos")));
+            (void)nv_append(l_decls, "append", nv_index(l_m, (&nv_lits[39])));
+            l_annos = (&nv_lits[590]);
+            l_p = nv_parse_int(nv_index(l_m, (&nv_lits[40])));
             continue;
         }
-        if (nv_truthy(f_isIdentNamed_3(l_tokens, l_p, nv_lit("define")))) {
+        if (nv_truthy(f_isIdentNamed_3(l_tokens, l_p, (&nv_lits[626])))) {
             l_p = f_parseDefine_3(l_tokens, l_p, l_decls);
-            l_annos = nv_lit("(annos)");
+            l_annos = (&nv_lits[590]);
             continue;
         }
         if (nv_truthy(f_isGlobalStart_2(l_tokens, l_p))) {
             l_p = f_parseGlobal_3(l_tokens, l_p, l_decls);
             continue;
         }
-        if (((nv_truthy(f_isKw_3(l_tokens, l_p, nv_lit("println"))) || nv_truthy(f_isKw_3(l_tokens, l_p, nv_lit("print")))) || nv_truthy(f_isKw_3(l_tokens, l_p, nv_lit("eprintln"))))) {
+        if (((nv_truthy(f_isKw_3(l_tokens, l_p, (&nv_lits[197]))) || nv_truthy(f_isKw_3(l_tokens, l_p, (&nv_lits[198])))) || nv_truthy(f_isKw_3(l_tokens, l_p, (&nv_lits[199]))))) {
             nv l_pe = f_parseExpr_3(l_tokens, nv_add_fast(l_p, nv_int(1LL)), nv_int(0LL));
-            l_p = nv_parse_int(nv_index(l_pe, nv_lit("pos")));
+            l_p = nv_parse_int(nv_index(l_pe, (&nv_lits[40])));
             continue;
         }
-        if (nv_truthy(f_isSym_3(l_tokens, l_p, nv_lit(";")))) {
+        if (nv_truthy(f_isSym_3(l_tokens, l_p, (&nv_lits[156])))) {
             l_p = nv_add_fast(l_p, nv_int(1LL));
             continue;
         }
-        (void)f_fail_2(nv_add_chain(3, nv_lit("unexpected "), f_describe_2(l_tokens, l_p), nv_lit(" at top level")), f_tokPos_1(l_t));
+        (void)f_fail_2(nv_add_chain(3, (&nv_lits[538]), f_describe_2(l_tokens, l_p), (&nv_lits[627])), f_tokPos_1(l_t));
     }
     return l_decls;
     return nv_nil;
@@ -7703,27 +13165,27 @@ static nv f_parseFile_2(nv a0, nv a1) {
 static nv f_dirName_1(nv a0) {
     nv l_path = nv_coerce_string(a0);
     nv l_i = nv_length_of(l_path, "length");
-    while (((nv_gt_bool(l_i, nv_int(0LL)) && nv_ne_bool(nv_invoke1(l_path, "charAt", nv_sub_fast(l_i, nv_int(1LL))), nv_lit("/"))) && nv_ne_bool(nv_invoke1(l_path, "charAt", nv_sub_fast(l_i, nv_int(1LL))), nv_chr(nv_int(92LL))))) {
+    while (((nv_gt_bool(l_i, nv_int(0LL)) && nv_ne_bool(nv_invoke1(l_path, "charAt", nv_sub_fast(l_i, nv_int(1LL))), (&nv_lits[6]))) && nv_ne_bool(nv_invoke1(l_path, "charAt", nv_sub_fast(l_i, nv_int(1LL))), nv_chr(nv_int(92LL))))) {
         l_i = nv_sub_fast(l_i, nv_int(1LL));
     }
     if (nv_eq_bool(l_i, nv_int(0LL))) {
-        return nv_coerce_string(nv_lit("."));
+        return nv_coerce_string((&nv_lits[167]));
     }
     if (nv_gt_bool(l_i, nv_int(1LL))) {
         l_i = nv_sub_fast(l_i, nv_int(1LL));
     }
     return nv_coerce_string(nv_invoke2(l_path, "substring", nv_int(0LL), l_i));
-    return nv_lit("");
+    return (&nv_empty_str_val);
 }
 
 static nv f_baseName_1(nv a0) {
     nv l_path = nv_coerce_string(a0);
     nv l_i = nv_length_of(l_path, "length");
-    while (((nv_gt_bool(l_i, nv_int(0LL)) && nv_ne_bool(nv_invoke1(l_path, "charAt", nv_sub_fast(l_i, nv_int(1LL))), nv_lit("/"))) && nv_ne_bool(nv_invoke1(l_path, "charAt", nv_sub_fast(l_i, nv_int(1LL))), nv_chr(nv_int(92LL))))) {
+    while (((nv_gt_bool(l_i, nv_int(0LL)) && nv_ne_bool(nv_invoke1(l_path, "charAt", nv_sub_fast(l_i, nv_int(1LL))), (&nv_lits[6]))) && nv_ne_bool(nv_invoke1(l_path, "charAt", nv_sub_fast(l_i, nv_int(1LL))), nv_chr(nv_int(92LL))))) {
         l_i = nv_sub_fast(l_i, nv_int(1LL));
     }
     return nv_coerce_string(nv_invoke2(l_path, "substring", l_i, nv_length_of(l_path, "length")));
-    return nv_lit("");
+    return (&nv_empty_str_val);
 }
 
 static nv f_isAbsolutePath_1(nv a0) {
@@ -7731,10 +13193,10 @@ static nv f_isAbsolutePath_1(nv a0) {
     if (nv_eq_bool(nv_length_of(l_p, "length"), nv_int(0LL))) {
         return nv_bool(0);
     }
-    if ((nv_eq_bool(nv_invoke1(l_p, "charAt", nv_int(0LL)), nv_lit("/")) || nv_eq_bool(nv_invoke1(l_p, "charAt", nv_int(0LL)), nv_chr(nv_int(92LL))))) {
+    if ((nv_eq_bool(nv_invoke1(l_p, "charAt", nv_int(0LL)), (&nv_lits[6])) || nv_eq_bool(nv_invoke1(l_p, "charAt", nv_int(0LL)), nv_chr(nv_int(92LL))))) {
         return nv_bool(1);
     }
-    return nv_bool(nv_truthy(nv_gt(nv_length_of(l_p, "length"), nv_int(1LL))) && nv_truthy(nv_eq(nv_invoke1(l_p, "charAt", nv_int(1LL)), nv_lit(":"))));
+    return nv_bool(nv_truthy(nv_gt(nv_length_of(l_p, "length"), nv_int(1LL))) && nv_truthy(nv_eq(nv_invoke1(l_p, "charAt", nv_int(1LL)), (&nv_lits[232]))));
     return nv_bool(0);
 }
 
@@ -7742,8 +13204,8 @@ static nv f_pushSegment_3(nv a0, nv a1, nv a2) {
     nv l_parts = a0;
     nv l_seg = nv_coerce_string(a1);
     nv l_leading = a2;
-    if (nv_eq_bool(l_seg, nv_lit(".."))) {
-        if ((nv_gt_bool(nv_length_of(l_parts, "length"), nv_int(0LL)) && nv_ne_bool(nv_index(l_parts, nv_sub_fast(nv_length_of(l_parts, "length"), nv_int(1LL))), nv_lit("..")))) {
+    if (nv_eq_bool(l_seg, (&nv_lits[628]))) {
+        if ((nv_gt_bool(nv_length_of(l_parts, "length"), nv_int(0LL)) && nv_ne_bool(nv_index(l_parts, nv_sub_fast(nv_length_of(l_parts, "length"), nv_int(1LL))), (&nv_lits[628])))) {
             nv l_trimmed = nv_arr();
             long long l_k = 0LL;
             while (nv_lt_bool(nv_int(l_k), nv_sub_fast(nv_length_of(l_parts, "length"), nv_int(1LL)))) {
@@ -7755,10 +13217,10 @@ static nv f_pushSegment_3(nv a0, nv a1, nv a2) {
         (void)nv_append(l_parts, "append", l_seg);
         return l_parts;
     }
-    if (nv_eq_bool(l_seg, nv_lit("."))) {
+    if (nv_eq_bool(l_seg, (&nv_lits[167]))) {
         return l_parts;
     }
-    if ((nv_eq_bool(l_seg, nv_lit("")) && nv_eq_bool(l_leading, nv_bool(0)))) {
+    if ((nv_eq_bool(l_seg, (&nv_lits[5])) && nv_eq_bool(l_leading, nv_bool(0)))) {
         return l_parts;
     }
     (void)nv_append(l_parts, "append", l_seg);
@@ -7769,37 +13231,37 @@ static nv f_pushSegment_3(nv a0, nv a1, nv a2) {
 static nv f_normalizePath_1(nv a0) {
     nv l_p = nv_coerce_string(a0);
     nv l_parts = nv_arr();
-    nv l_seg = nv_lit("");
+    nv l_seg = (&nv_lits[5]);
     long long l_i = 0LL;
     nv l_n = nv_length_of(l_p, "length");
     while (nv_le_bool(nv_int(l_i), l_n)) {
-        nv l_c = nv_lit("");
+        nv l_c = (&nv_lits[5]);
         if (nv_lt_bool(nv_int(l_i), l_n)) {
             l_c = nv_invoke1(l_p, "charAt", nv_int(l_i));
         }
-        if (((nv_eq_bool(nv_int(l_i), l_n) || nv_eq_bool(l_c, nv_lit("/"))) || nv_eq_bool(l_c, nv_chr(nv_int(92LL))))) {
+        if (((nv_eq_bool(nv_int(l_i), l_n) || nv_eq_bool(l_c, (&nv_lits[6]))) || nv_eq_bool(l_c, nv_chr(nv_int(92LL))))) {
             l_parts = f_pushSegment_3(l_parts, l_seg, nv_eq(nv_int(l_i), nv_int(0LL)));
-            l_seg = nv_lit("");
+            l_seg = (&nv_lits[5]);
             l_i = (l_i + 1LL);
             continue;
         }
         l_seg = nv_add_fast(l_seg, l_c);
         l_i = (l_i + 1LL);
     }
-    nv l_out = nv_lit("");
+    nv l_out = (&nv_lits[5]);
     long long l_j = 0LL;
     while (nv_lt_bool(nv_int(l_j), nv_length_of(l_parts, "length"))) {
         if (l_j > 0LL) {
-            l_out = nv_add_fast(l_out, nv_lit("/"));
+            l_out = nv_add_fast(l_out, (&nv_lits[6]));
         }
         l_out = nv_add_fast(l_out, nv_index(l_parts, nv_int(l_j)));
         l_j = (l_j + 1LL);
     }
-    if (nv_eq_bool(l_out, nv_lit(""))) {
-        return nv_coerce_string(nv_lit("."));
+    if (nv_eq_bool(l_out, (&nv_lits[5]))) {
+        return nv_coerce_string((&nv_lits[167]));
     }
     return nv_coerce_string(l_out);
-    return nv_lit("");
+    return (&nv_empty_str_val);
 }
 
 static nv f_joinPath_2(nv a0, nv a1) {
@@ -7808,43 +13270,43 @@ static nv f_joinPath_2(nv a0, nv a1) {
     if (nv_truthy(f_isAbsolutePath_1(l_rel))) {
         return nv_coerce_string(f_normalizePath_1(l_rel));
     }
-    if ((nv_eq_bool(l_dir, nv_lit(".")) || nv_eq_bool(l_dir, nv_lit("")))) {
+    if ((nv_eq_bool(l_dir, (&nv_lits[167])) || nv_eq_bool(l_dir, (&nv_lits[5])))) {
         return nv_coerce_string(f_normalizePath_1(l_rel));
     }
-    return nv_coerce_string(f_normalizePath_1(nv_add_chain(3, l_dir, nv_lit("/"), l_rel)));
-    return nv_lit("");
+    return nv_coerce_string(f_normalizePath_1(nv_add_chain(3, l_dir, (&nv_lits[6]), l_rel)));
+    return (&nv_empty_str_val);
 }
 
 static nv f_fileLabel_1(nv a0) {
     nv l_path = nv_coerce_string(a0);
-    nv l_out = nv_lit("");
+    nv l_out = (&nv_lits[5]);
     long long l_i = 0LL;
     while (nv_lt_bool(nv_int(l_i), nv_length_of(l_path, "length"))) {
         nv l_c = nv_invoke1(l_path, "charAt", nv_int(l_i));
-        if (nv_eq_bool(l_c, nv_lit(" "))) {
-            l_out = nv_add_fast(l_out, nv_lit("_"));
+        if (nv_eq_bool(l_c, (&nv_lits[9]))) {
+            l_out = nv_add_fast(l_out, (&nv_lits[229]));
         } else {
             l_out = nv_add_fast(l_out, l_c);
         }
         l_i = (l_i + 1LL);
     }
     return nv_coerce_string(l_out);
-    return nv_lit("");
+    return (&nv_empty_str_val);
 }
 
 static nv f_moduleOf_2(nv a0, nv a1) {
     nv l_rel = nv_coerce_string(a0);
     nv l_modules = a1;
-    nv l_best = nv_lit("");
+    nv l_best = (&nv_lits[5]);
     {
         NvArr *it_key = nv_iter(l_modules);
         int n_key = it_key->len;
         for (int i_key = 0; i_key < n_key; i_key++) {
             nv l_key = it_key->items[i_key];
-            if (nv_truthy(nv_invoke1(l_key, "endsWith", nv_lit("/")))) {
+            if (nv_truthy(nv_invoke1(l_key, "endsWith", (&nv_lits[6])))) {
                 continue;
             }
-            if ((nv_eq_bool(l_rel, l_key) || nv_truthy(nv_invoke1(l_rel, "startsWith", nv_add_fast(l_key, nv_lit("/")))))) {
+            if ((nv_eq_bool(l_rel, l_key) || nv_truthy(nv_invoke1(l_rel, "startsWith", nv_add_fast(l_key, (&nv_lits[6])))))) {
                 if (nv_gt_bool(nv_length_of(l_key, "length"), nv_length_of(l_best, "length"))) {
                     l_best = l_key;
                 }
@@ -7852,7 +13314,7 @@ static nv f_moduleOf_2(nv a0, nv a1) {
         }
     }
     return nv_coerce_string(l_best);
-    return nv_lit("");
+    return (&nv_empty_str_val);
 }
 
 static nv f_resolveImport_3(nv a0, nv a1, nv a2) {
@@ -7860,14 +13322,14 @@ static nv f_resolveImport_3(nv a0, nv a1, nv a2) {
     nv l_rel = nv_coerce_string(a1);
     nv l_modules = a2;
     nv l_module = f_moduleOf_2(l_rel, l_modules);
-    if (nv_eq_bool(l_module, nv_lit(""))) {
+    if (nv_eq_bool(l_module, (&nv_lits[5]))) {
         return nv_coerce_string(f_joinPath_2(l_dir, l_rel));
     }
     if (nv_eq_bool(l_rel, l_module)) {
         return nv_coerce_string(nv_index(l_modules, l_module));
     }
-    return nv_coerce_string(f_joinPath_2(nv_index(l_modules, nv_add_fast(l_module, nv_lit("/"))), nv_invoke2(l_rel, "substring", nv_add_fast(nv_length_of(l_module, "length"), nv_int(1LL)), nv_length_of(l_rel, "length"))));
-    return nv_lit("");
+    return nv_coerce_string(f_joinPath_2(nv_index(l_modules, nv_add_fast(l_module, (&nv_lits[6]))), nv_invoke2(l_rel, "substring", nv_add_fast(nv_length_of(l_module, "length"), nv_int(1LL)), nv_length_of(l_rel, "length"))));
+    return (&nv_empty_str_val);
 }
 
 static nv f_loadFile_5(nv a0, nv a1, nv a2, nv a3, nv a4) {
@@ -7880,9 +13342,9 @@ static nv f_loadFile_5(nv a0, nv a1, nv a2, nv a3, nv a4) {
     if (nv_truthy(nv_has_key(l_loaded, "has", l_key))) {
         return nv_coerce_int(nv_int(0LL));
     }
-    nv_index_set(l_loaded, l_key, nv_lit("1"));
+    nv_index_set(l_loaded, l_key, (&nv_lits[245]));
     if (nv_eq_bool(nv_file_exists(l_path), nv_bool(0))) {
-        (void)f_fail_2(nv_add_chain(3, nv_lit("cannot open '"), l_path, nv_lit("'")), l_importedFrom);
+        (void)f_fail_2(nv_add_chain(3, (&nv_lits[629]), l_path, (&nv_lits[21])), l_importedFrom);
     }
     nv l_decls = f_parseFile_2(nv_read_file(l_path), f_fileLabel_1(l_path));
     nv l_dir = f_dirName_1(l_path);
@@ -7904,12 +13366,12 @@ static nv f_addDecls_6(nv a0, nv a1, nv a2, nv a3, nv a4, nv a5) {
         for (int i_d = 0; i_d < n_d; i_d++) {
             nv l_d = it_d->items[i_d];
             nv l_head = f_nodeHead_1(l_d);
-            if (nv_eq_bool(l_head, nv_lit("import"))) {
+            if (nv_eq_bool(l_head, (&nv_lits[194]))) {
                 nv l_rel = f_sexpUnescape_1(f_nodeChild_2(l_d, nv_int(1LL)));
                 (void)f_loadFile_5(f_resolveImport_3(l_dir, l_rel, l_modules), l_from, l_loaded, l_out, l_modules);
                 continue;
             }
-            if (nv_eq_bool(l_head, nv_lit("importmod"))) {
+            if (nv_eq_bool(l_head, (&nv_lits[630]))) {
                 (void)f_loadStdModule_5(f_nodeChild_2(l_d, nv_int(1LL)), l_from, l_loaded, l_out, l_modules);
                 continue;
             }
@@ -7926,34 +13388,34 @@ static nv f_loadStdModule_5(nv a0, nv a1, nv a2, nv a3, nv a4) {
     nv l_loaded = a2;
     nv l_out = a3;
     nv l_modules = a4;
-    nv l_key = nv_add_fast(nv_lit("std:"), l_name);
+    nv l_key = nv_add_fast((&nv_lits[631]), l_name);
     if (nv_truthy(nv_has_key(l_loaded, "has", l_key))) {
         return nv_coerce_int(nv_int(0LL));
     }
-    nv_index_set(l_loaded, l_key, nv_lit("1"));
+    nv_index_set(l_loaded, l_key, (&nv_lits[245]));
     nv l_source = f_stdSource_1(l_name);
-    if (nv_eq_bool(l_source, nv_lit(""))) {
-        (void)f_fail_2(nv_add_chain(5, nv_lit("unknown module '"), l_name, nv_lit("' (standard modules: "), nv_invoke1(f_stdModules_0(), "join", nv_lit(", ")), nv_lit(")")), l_from);
+    if (nv_eq_bool(l_source, (&nv_lits[5]))) {
+        (void)f_fail_2(nv_add_chain(5, (&nv_lits[632]), l_name, (&nv_lits[633]), nv_invoke1(f_stdModules_0(), "join", (&nv_lits[170])), (&nv_lits[8])), l_from);
     }
     nv l_decls = nv_arr();
     {
-        NvArr *it_d = nv_iter(f_parseFile_2(l_source, nv_add_chain(3, nv_lit("std/"), l_name, nv_lit(".nv"))));
+        NvArr *it_d = nv_iter(f_parseFile_2(l_source, nv_add_chain(3, (&nv_lits[634]), l_name, (&nv_lits[635]))));
         int n_d = it_d->len;
         for (int i_d = 0; i_d < n_d; i_d++) {
             nv l_d = it_d->items[i_d];
             nv l_head = f_nodeHead_1(l_d);
-            if (nv_eq_bool(l_head, nv_lit("method"))) {
-                (void)nv_append(l_decls, "append", nv_add_chain(4, nv_lit("(method "), l_name, nv_lit("."), nv_invoke2(l_d, "substring", nv_int(8LL), nv_length_of(l_d, "length"))));
+            if (nv_eq_bool(l_head, (&nv_lits[195]))) {
+                (void)nv_append(l_decls, "append", nv_add_chain(4, (&nv_lits[586]), l_name, (&nv_lits[167]), nv_invoke2(l_d, "substring", nv_int(8LL), nv_length_of(l_d, "length"))));
                 continue;
             }
-            if (nv_eq_bool(l_head, nv_lit("global"))) {
-                (void)nv_append(l_decls, "append", nv_add_chain(4, nv_lit("(global "), l_name, nv_lit("."), nv_invoke2(l_d, "substring", nv_int(8LL), nv_length_of(l_d, "length"))));
+            if (nv_eq_bool(l_head, (&nv_lits[254]))) {
+                (void)nv_append(l_decls, "append", nv_add_chain(4, (&nv_lits[620]), l_name, (&nv_lits[167]), nv_invoke2(l_d, "substring", nv_int(8LL), nv_length_of(l_d, "length"))));
                 continue;
             }
             (void)nv_append(l_decls, "append", l_d);
         }
     }
-    (void)f_addDecls_6(l_decls, nv_lit("std"), nv_add_chain(3, nv_lit("std/"), l_name, nv_lit(".nv")), l_loaded, l_out, l_modules);
+    (void)f_addDecls_6(l_decls, (&nv_lits[636]), nv_add_chain(3, (&nv_lits[634]), l_name, (&nv_lits[635])), l_loaded, l_out, l_modules);
     return nv_coerce_int(nv_int(0LL));
     return nv_int(0);
 }
@@ -7969,7 +13431,7 @@ static nv f_loadProgramWith_2(nv a0, nv a1) {
     nv l_modules = a1;
     nv l_loaded = nv_map();
     nv l_decls = nv_arr();
-    (void)f_loadFile_5(l_mainFile, nv_lit("command line"), l_loaded, l_decls, l_modules);
+    (void)f_loadFile_5(l_mainFile, (&nv_lits[637]), l_loaded, l_decls, l_modules);
     return l_decls;
     return nv_nil;
 }
@@ -7980,12 +13442,12 @@ static nv c_Manifest(nv self, nv *args, int n) {
     (void)n;
     nv_fields(self->o)[0] = l_file;
     nv_fields(self->o)[1] = l_dir;
-    nv_fields(self->o)[2] = nv_lit("");
-    nv_fields(self->o)[3] = nv_lit("");
-    nv_fields(self->o)[4] = nv_lit("main.nv");
-    nv_fields(self->o)[5] = nv_lit("");
-    nv_fields(self->o)[6] = nv_lit("");
-    nv_fields(self->o)[7] = nv_lit("");
+    nv_fields(self->o)[2] = (&nv_lits[5]);
+    nv_fields(self->o)[3] = (&nv_lits[5]);
+    nv_fields(self->o)[4] = (&nv_lits[638]);
+    nv_fields(self->o)[5] = (&nv_lits[5]);
+    nv_fields(self->o)[6] = (&nv_lits[5]);
+    nv_fields(self->o)[7] = (&nv_lits[5]);
     nv_fields(self->o)[8] = nv_arr();
     nv_fields(self->o)[9] = nv_map();
     return nv_nil;
@@ -7993,24 +13455,24 @@ static nv c_Manifest(nv self, nv *args, int n) {
 
 static nv m_Manifest_entryFile_0(nv self, nv *args, int n) {
     (void)n;
-    if (nv_ne_bool(nv_fields(self->o)[5], nv_lit(""))) {
+    if (nv_ne_bool(nv_fields(self->o)[5], (&nv_lits[5]))) {
         return nv_coerce_string(nv_fields(self->o)[5]);
     }
     return nv_coerce_string(nv_fields(self->o)[4]);
-    return nv_lit("");
+    return (&nv_empty_str_val);
 }
 
 static nv m_Manifest_outputName_0(nv self, nv *args, int n) {
     (void)n;
-    if (nv_ne_bool(nv_fields(self->o)[6], nv_lit(""))) {
+    if (nv_ne_bool(nv_fields(self->o)[6], (&nv_lits[5]))) {
         return nv_coerce_string(nv_fields(self->o)[6]);
     }
-    nv l_parts = nv_invoke1(nv_fields(self->o)[2], "split", nv_lit("/"));
-    if ((nv_ne_bool(nv_fields(self->o)[2], nv_lit("")) && nv_ne_bool(nv_index(l_parts, nv_sub_fast(nv_length_of(l_parts, "length"), nv_int(1LL))), nv_lit("")))) {
+    nv l_parts = nv_invoke1(nv_fields(self->o)[2], "split", (&nv_lits[6]));
+    if ((nv_ne_bool(nv_fields(self->o)[2], (&nv_lits[5])) && nv_ne_bool(nv_index(l_parts, nv_sub_fast(nv_length_of(l_parts, "length"), nv_int(1LL))), (&nv_lits[5])))) {
         return nv_coerce_string(nv_index(l_parts, nv_sub_fast(nv_length_of(l_parts, "length"), nv_int(1LL))));
     }
-    return nv_coerce_string(nv_lit("app"));
-    return nv_lit("");
+    return nv_coerce_string((&nv_lits[639]));
+    return (&nv_empty_str_val);
 }
 
 static nv m_Manifest_addRequire_2(nv self, nv *args, int n) {
@@ -8038,16 +13500,16 @@ static nv f_parseManifest_1(nv a0) {
     long long l_p = 0LL;
     while (nv_eq_bool(f_atEnd_2(l_tokens, nv_int(l_p)), nv_bool(0))) {
         nv l_t = nv_index(l_tokens, nv_int(l_p));
-        if (nv_ne_bool(f_tokKind_1(l_t), nv_lit("IDENT"))) {
-            (void)f_fail_2(nv_add_chain(3, nv_lit("expected a setting such as project, version, main, require or replace but found '"), f_tokVal_1(l_t), nv_lit("'")), f_tokPos_1(l_t));
+        if (nv_ne_bool(f_tokKind_1(l_t), (&nv_lits[18]))) {
+            (void)f_fail_2(nv_add_chain(3, (&nv_lits[640]), f_tokVal_1(l_t), (&nv_lits[21])), f_tokPos_1(l_t));
         }
         nv l_key = f_tokVal_1(l_t);
         nv l_line = f_tokPos_1(l_t);
         nv l_values = nv_arr();
         l_p = (l_p + 1LL);
         while ((nv_eq_bool(f_atEnd_2(l_tokens, nv_int(l_p)), nv_bool(0)) && nv_eq_bool(f_tokPos_1(nv_index(l_tokens, nv_int(l_p))), l_line))) {
-            if (nv_ne_bool(f_tokKind_1(nv_index(l_tokens, nv_int(l_p))), nv_lit("STRING"))) {
-                (void)f_fail_2(nv_add_chain(3, nv_lit("values in project.nv must be quoted strings (near '"), f_tokVal_1(nv_index(l_tokens, nv_int(l_p))), nv_lit("')")), l_line);
+            if (nv_ne_bool(f_tokKind_1(nv_index(l_tokens, nv_int(l_p))), (&nv_lits[540]))) {
+                (void)f_fail_2(nv_add_chain(3, (&nv_lits[641]), f_tokVal_1(nv_index(l_tokens, nv_int(l_p))), (&nv_lits[642])), l_line);
             }
             (void)nv_append(l_values, "append", f_tokVal_1(nv_index(l_tokens, nv_int(l_p))));
             l_p = (l_p + 1LL);
@@ -8063,70 +13525,70 @@ static nv f_applySetting_4(nv a0, nv a1, nv a2, nv a3) {
     nv l_key = nv_coerce_string(a1);
     nv l_values = a2;
     nv l_line = nv_coerce_string(a3);
-    if (nv_eq_bool(l_key, nv_lit("require"))) {
+    if (nv_eq_bool(l_key, (&nv_lits[643]))) {
         if ((nv_lt_bool(nv_length_of(l_values, "length"), nv_int(1LL)) || nv_gt_bool(nv_length_of(l_values, "length"), nv_int(2LL)))) {
-            (void)f_fail_2(nv_lit("require needs a module path and an optional version"), l_line);
+            (void)f_fail_2((&nv_lits[644]), l_line);
         }
-        nv l_version = nv_lit("latest");
+        nv l_version = (&nv_lits[645]);
         if (nv_eq_bool(nv_length_of(l_values, "length"), nv_int(2LL))) {
             l_version = nv_index(l_values, nv_int(1LL));
         }
         (void)nv_invoke2(l_m, "addRequire", nv_index(l_values, nv_int(0LL)), l_version);
         return nv_nil;
     }
-    if (nv_eq_bool(l_key, nv_lit("replace"))) {
+    if (nv_eq_bool(l_key, (&nv_lits[646]))) {
         if (nv_ne_bool(nv_length_of(l_values, "length"), nv_int(2LL))) {
-            (void)f_fail_2(nv_lit("replace needs a module path and a local directory"), l_line);
+            (void)f_fail_2((&nv_lits[647]), l_line);
         }
         nv_index_set(nv_invoke0(l_m, "replaces"), nv_index(l_values, nv_int(0LL)), nv_index(l_values, nv_int(1LL)));
         return nv_nil;
     }
     if (nv_ne_bool(nv_length_of(l_values, "length"), nv_int(1LL))) {
-        (void)f_fail_2(nv_add_chain(3, nv_lit("'"), l_key, nv_lit("' takes exactly one value")), l_line);
+        (void)f_fail_2(nv_add_chain(3, (&nv_lits[21]), l_key, (&nv_lits[648])), l_line);
     }
     nv l_value = nv_index(l_values, nv_int(0LL));
-    if (nv_eq_bool(l_key, nv_lit("project"))) {
+    if (nv_eq_bool(l_key, (&nv_lits[649]))) {
         (void)nv_invoke1(l_m, "name", l_value);
         return nv_nil;
     }
-    if (nv_eq_bool(l_key, nv_lit("version"))) {
+    if (nv_eq_bool(l_key, (&nv_lits[650]))) {
         (void)nv_invoke1(l_m, "version", l_value);
         return nv_nil;
     }
-    if (nv_eq_bool(l_key, nv_lit("main"))) {
+    if (nv_eq_bool(l_key, (&nv_lits[651]))) {
         (void)nv_invoke1(l_m, "main", l_value);
         return nv_nil;
     }
-    if (nv_eq_bool(l_key, nv_lit("lib"))) {
+    if (nv_eq_bool(l_key, (&nv_lits[652]))) {
         (void)nv_invoke1(l_m, "lib", l_value);
         return nv_nil;
     }
-    if (nv_eq_bool(l_key, nv_lit("output"))) {
+    if (nv_eq_bool(l_key, (&nv_lits[653]))) {
         (void)nv_invoke1(l_m, "output", l_value);
         return nv_nil;
     }
-    if (nv_eq_bool(l_key, nv_lit("novus"))) {
+    if (nv_eq_bool(l_key, (&nv_lits[654]))) {
         (void)nv_invoke1(l_m, "novus", l_value);
         return nv_nil;
     }
-    (void)f_fail_2(nv_add_chain(3, nv_lit("unknown setting '"), l_key, nv_lit("' (known: project, version, main, lib, output, novus, require, replace)")), l_line);
+    (void)f_fail_2(nv_add_chain(3, (&nv_lits[655]), l_key, (&nv_lits[656])), l_line);
     return nv_nil;
 }
 
 static nv f_dirOf_1(nv a0) {
     nv l_file = nv_coerce_string(a0);
     nv l_i = nv_length_of(l_file, "length");
-    while (((nv_gt_bool(l_i, nv_int(0LL)) && nv_ne_bool(nv_invoke1(l_file, "charAt", nv_sub_fast(l_i, nv_int(1LL))), nv_lit("/"))) && nv_ne_bool(nv_invoke1(l_file, "charAt", nv_sub_fast(l_i, nv_int(1LL))), nv_chr(nv_int(92LL))))) {
+    while (((nv_gt_bool(l_i, nv_int(0LL)) && nv_ne_bool(nv_invoke1(l_file, "charAt", nv_sub_fast(l_i, nv_int(1LL))), (&nv_lits[6]))) && nv_ne_bool(nv_invoke1(l_file, "charAt", nv_sub_fast(l_i, nv_int(1LL))), nv_chr(nv_int(92LL))))) {
         l_i = nv_sub_fast(l_i, nv_int(1LL));
     }
     if (nv_eq_bool(l_i, nv_int(0LL))) {
-        return nv_coerce_string(nv_lit("."));
+        return nv_coerce_string((&nv_lits[167]));
     }
     if (nv_gt_bool(l_i, nv_int(1LL))) {
         l_i = nv_sub_fast(l_i, nv_int(1LL));
     }
     return nv_coerce_string(nv_invoke2(l_file, "substring", nv_int(0LL), l_i));
-    return nv_lit("");
+    return (&nv_empty_str_val);
 }
 
 static nv f_findManifest_1(nv a0) {
@@ -8134,58 +13596,58 @@ static nv f_findManifest_1(nv a0) {
     nv l_current = nv_path_absolute_of(l_dir);
     long long l_guard = 0LL;
     while (l_guard < 64LL) {
-        nv l_candidate = nv_path_join(2, l_current, nv_lit("project.nv"));
+        nv l_candidate = nv_path_join(2, l_current, (&nv_lits[657]));
         if (nv_truthy(nv_file_exists(l_candidate))) {
             return nv_coerce_string(l_candidate);
         }
         nv l_parent = nv_path_dirname(l_current);
-        if (((nv_eq_bool(l_parent, l_current) || nv_eq_bool(l_parent, nv_lit("."))) || nv_eq_bool(l_parent, nv_lit("")))) {
-            return nv_coerce_string(nv_lit(""));
+        if (((nv_eq_bool(l_parent, l_current) || nv_eq_bool(l_parent, (&nv_lits[167]))) || nv_eq_bool(l_parent, (&nv_lits[5])))) {
+            return nv_coerce_string((&nv_lits[5]));
         }
         l_current = l_parent;
         l_guard = (l_guard + 1LL);
     }
-    return nv_coerce_string(nv_lit(""));
-    return nv_lit("");
+    return nv_coerce_string((&nv_lits[5]));
+    return (&nv_empty_str_val);
 }
 
 static nv f_depsCacheDir_0(void) {
-    nv l_configured = nv_env(nv_lit("NOVUS_DEPS"));
-    if (nv_ne_bool(l_configured, nv_lit(""))) {
+    nv l_configured = nv_env((&nv_lits[658]));
+    if (nv_ne_bool(l_configured, (&nv_lits[5]))) {
         return nv_coerce_string(l_configured);
     }
-    return nv_coerce_string(nv_path_join(3, nv_os_home(), nv_lit(".novus"), nv_lit("deps")));
-    return nv_lit("");
+    return nv_coerce_string(nv_path_join(3, nv_os_home(), (&nv_lits[659]), (&nv_lits[660])));
+    return (&nv_empty_str_val);
 }
 
 static nv f_moduleKey_1(nv a0) {
     nv l_module = nv_coerce_string(a0);
     nv l_key = l_module;
-    nv l_at = nv_invoke1(l_key, "indexOf", nv_lit("://"));
+    nv l_at = nv_invoke1(l_key, "indexOf", (&nv_lits[661]));
     if (nv_ge_bool(l_at, nv_int(0LL))) {
         l_key = nv_invoke2(l_key, "substring", nv_add_fast(l_at, nv_int(3LL)), nv_length_of(l_key, "length"));
     }
-    while (nv_truthy(nv_invoke1(l_key, "startsWith", nv_lit("/")))) {
+    while (nv_truthy(nv_invoke1(l_key, "startsWith", (&nv_lits[6])))) {
         l_key = nv_invoke2(l_key, "substring", nv_int(1LL), nv_length_of(l_key, "length"));
     }
     return nv_coerce_string(l_key);
-    return nv_lit("");
+    return (&nv_empty_str_val);
 }
 
 static nv f_moduleUrl_1(nv a0) {
     nv l_module = nv_coerce_string(a0);
-    if (nv_truthy(nv_invoke1(l_module, "contains", nv_lit("://")))) {
+    if (nv_truthy(nv_invoke1(l_module, "contains", (&nv_lits[661])))) {
         return nv_coerce_string(l_module);
     }
-    return nv_coerce_string(nv_add_fast(nv_lit("https://"), l_module));
-    return nv_lit("");
+    return nv_coerce_string(nv_add_fast((&nv_lits[662]), l_module));
+    return (&nv_empty_str_val);
 }
 
 static nv f_dependencyDir_2(nv a0, nv a1) {
     nv l_module = nv_coerce_string(a0);
     nv l_version = nv_coerce_string(a1);
-    return nv_coerce_string(nv_path_join(2, f_depsCacheDir_0(), nv_add_chain(3, f_moduleKey_1(l_module), nv_lit("@"), l_version)));
-    return nv_lit("");
+    return nv_coerce_string(nv_path_join(2, f_depsCacheDir_0(), nv_add_chain(3, f_moduleKey_1(l_module), (&nv_lits[239]), l_version)));
+    return (&nv_empty_str_val);
 }
 
 static nv f_looksLikeCommit_1(nv a0) {
@@ -8196,7 +13658,7 @@ static nv f_looksLikeCommit_1(nv a0) {
     long long l_i = 0LL;
     while (nv_lt_bool(nv_int(l_i), nv_length_of(l_version, "length"))) {
         nv l_c = nv_invoke1(l_version, "charAt", nv_int(l_i));
-        nv l_hex = nv_bool(nv_truthy(nv_bool(nv_truthy(nv_ge(l_c, nv_lit("0"))) && nv_truthy(nv_le(l_c, nv_lit("9"))))) || nv_truthy(nv_bool(nv_truthy(nv_ge(l_c, nv_lit("a"))) && nv_truthy(nv_le(l_c, nv_lit("f"))))));
+        nv l_hex = nv_bool(nv_truthy(nv_bool(nv_truthy(nv_ge(l_c, (&nv_lits[221]))) && nv_truthy(nv_le(l_c, (&nv_lits[222]))))) || nv_truthy(nv_bool(nv_truthy(nv_ge(l_c, (&nv_lits[223]))) && nv_truthy(nv_le(l_c, (&nv_lits[224]))))));
         if (nv_eq_bool(l_hex, nv_bool(0))) {
             return nv_bool(0);
         }
@@ -8208,8 +13670,8 @@ static nv f_looksLikeCommit_1(nv a0) {
 
 static nv f_quoted_1_v0(nv a0) {
     nv l_s = nv_coerce_string(a0);
-    return nv_coerce_string(nv_add_chain(3, nv_lit("\""), l_s, nv_lit("\"")));
-    return nv_lit("");
+    return nv_coerce_string(nv_add_chain(3, (&nv_lits[663]), l_s, (&nv_lits[663])));
+    return (&nv_empty_str_val);
 }
 
 static nv f_quoted_1(nv a0) {
@@ -8229,51 +13691,51 @@ static nv f_fetchDependency_2(nv a0, nv a1) {
     if (nv_truthy(nv_os_is_dir(l_dir))) {
         return nv_coerce_string(l_dir);
     }
-    if (nv_ne_bool(nv_exec(nv_add_chain(3, nv_lit("git --version > "), f_nullDevice_0(), nv_lit(" 2>&1"))), nv_int(0LL))) {
-        nv_eprintln(nv_lit("novusc: git is required to fetch dependencies"));
+    if (nv_ne_bool(nv_exec(nv_add_chain(3, (&nv_lits[664]), f_nullDevice_0(), (&nv_lits[665]))), nv_int(0LL))) {
+        nv_eprintln((&nv_lits[666]));
         (void)nv_exit(nv_int(1LL));
     }
     (void)nv_os_mkdir(nv_path_dirname(l_dir));
-    nv_println(nv_add_chain(4, nv_lit("fetching "), l_module, nv_lit(" @ "), l_version));
-    (void)nv_os_set_env(nv_lit("GIT_TERMINAL_PROMPT"), nv_lit("0"));
-    nv l_git = nv_lit("git -c advice.detachedHead=false");
+    nv_println(nv_add_chain(4, (&nv_lits[667]), l_module, (&nv_lits[668]), l_version));
+    (void)nv_os_set_env((&nv_lits[669]), (&nv_lits[221]));
+    nv l_git = (&nv_lits[670]);
     nv l_url = f_moduleUrl_1(l_module);
-    nv l_command = nv_add_chain(5, l_git, nv_lit(" clone --quiet --depth 1 "), f_quoted_1(l_url), nv_lit(" "), f_quoted_1(l_dir));
-    if ((nv_ne_bool(l_version, nv_lit("latest")) && nv_eq_bool(f_looksLikeCommit_1(l_version), nv_bool(0)))) {
-        l_command = nv_add_chain(7, l_git, nv_lit(" clone --quiet --depth 1 --branch "), f_quoted_1(l_version), nv_lit(" "), f_quoted_1(l_url), nv_lit(" "), f_quoted_1(l_dir));
+    nv l_command = nv_add_chain(5, l_git, (&nv_lits[671]), f_quoted_1(l_url), (&nv_lits[9]), f_quoted_1(l_dir));
+    if ((nv_ne_bool(l_version, (&nv_lits[645])) && nv_eq_bool(f_looksLikeCommit_1(l_version), nv_bool(0)))) {
+        l_command = nv_add_chain(7, l_git, (&nv_lits[672]), f_quoted_1(l_version), (&nv_lits[9]), f_quoted_1(l_url), (&nv_lits[9]), f_quoted_1(l_dir));
     }
     if (nv_truthy(f_looksLikeCommit_1(l_version))) {
-        l_command = nv_add_chain(11, l_git, nv_lit(" clone --quiet "), f_quoted_1(l_url), nv_lit(" "), f_quoted_1(l_dir), nv_lit(" && "), l_git, nv_lit(" -C "), f_quoted_1(l_dir), nv_lit(" checkout --quiet "), l_version);
+        l_command = nv_add_chain(11, l_git, (&nv_lits[673]), f_quoted_1(l_url), (&nv_lits[9]), f_quoted_1(l_dir), (&nv_lits[295]), l_git, (&nv_lits[674]), f_quoted_1(l_dir), (&nv_lits[675]), l_version);
     }
     if (nv_ne_bool(nv_exec(l_command), nv_int(0LL))) {
         (void)nv_os_remove_all(l_dir);
-        nv_eprintln(nv_add_chain(7, nv_lit("novusc: could not fetch "), l_module, nv_lit(" @ "), l_version, nv_lit(" ("), l_url, nv_lit(")")));
+        nv_eprintln(nv_add_chain(7, (&nv_lits[676]), l_module, (&nv_lits[668]), l_version, (&nv_lits[677]), l_url, (&nv_lits[8])));
         (void)nv_exit(nv_int(1LL));
     }
     return nv_coerce_string(l_dir);
-    return nv_lit("");
+    return (&nv_empty_str_val);
 }
 
 static nv f_nullDevice_0(void) {
-    if (nv_eq_bool(nv_platform(), nv_lit("windows"))) {
-        return nv_coerce_string(nv_lit("nul"));
+    if (nv_eq_bool(nv_platform(), (&nv_lits[0]))) {
+        return nv_coerce_string((&nv_lits[678]));
     }
-    return nv_coerce_string(nv_lit("/dev/null"));
-    return nv_lit("");
+    return nv_coerce_string((&nv_lits[679]));
+    return (&nv_empty_str_val);
 }
 
 static nv f_moduleEntry_1(nv a0) {
     nv l_dir = nv_coerce_string(a0);
-    nv l_manifest = nv_path_join(2, l_dir, nv_lit("project.nv"));
+    nv l_manifest = nv_path_join(2, l_dir, (&nv_lits[657]));
     if (nv_truthy(nv_file_exists(l_manifest))) {
         nv l_m = f_parseManifest_1(l_manifest);
         return nv_coerce_string(nv_path_join(2, l_dir, nv_invoke0(l_m, "entryFile")));
     }
-    if (nv_truthy(nv_file_exists(nv_path_join(2, l_dir, nv_lit("lib.nv"))))) {
-        return nv_coerce_string(nv_path_join(2, l_dir, nv_lit("lib.nv")));
+    if (nv_truthy(nv_file_exists(nv_path_join(2, l_dir, (&nv_lits[680]))))) {
+        return nv_coerce_string(nv_path_join(2, l_dir, (&nv_lits[680])));
     }
-    return nv_coerce_string(nv_path_join(2, l_dir, nv_lit("main.nv")));
-    return nv_lit("");
+    return nv_coerce_string(nv_path_join(2, l_dir, (&nv_lits[638])));
+    return (&nv_empty_str_val);
 }
 
 static nv f_resolveModules_2(nv a0, nv a1) {
@@ -8288,20 +13750,20 @@ static nv f_resolveModules_2(nv a0, nv a1) {
             if (nv_truthy(nv_has_key(l_modules, "has", l_key))) {
                 continue;
             }
-            nv l_dir = nv_lit("");
+            nv l_dir = (&nv_lits[5]);
             if (nv_truthy(nv_has_key(nv_invoke0(l_m, "replaces"), "has", nv_invoke0(l_d, "module")))) {
                 l_dir = nv_path_absolute_of(nv_path_join(2, nv_invoke0(l_m, "dir"), nv_index(nv_invoke0(l_m, "replaces"), nv_invoke0(l_d, "module"))));
                 if (nv_eq_bool(nv_os_is_dir(l_dir), nv_bool(0))) {
-                    nv_eprintln(nv_add_chain(4, nv_lit("novusc: replace target for "), nv_invoke0(l_d, "module"), nv_lit(" not found: "), l_dir));
+                    nv_eprintln(nv_add_chain(4, (&nv_lits[681]), nv_invoke0(l_d, "module"), (&nv_lits[682]), l_dir));
                     (void)nv_exit(nv_int(1LL));
                 }
             }
-            if (nv_eq_bool(l_dir, nv_lit(""))) {
+            if (nv_eq_bool(l_dir, (&nv_lits[5]))) {
                 l_dir = f_fetchDependency_2(nv_invoke0(l_d, "module"), nv_invoke0(l_d, "version"));
             }
             nv_index_set(l_modules, l_key, f_moduleEntry_1(l_dir));
-            nv_index_set(l_modules, nv_add_fast(l_key, nv_lit("/")), l_dir);
-            nv l_nested = nv_path_join(2, l_dir, nv_lit("project.nv"));
+            nv_index_set(l_modules, nv_add_fast(l_key, (&nv_lits[6])), l_dir);
+            nv l_nested = nv_path_join(2, l_dir, (&nv_lits[657]));
             if (nv_truthy(nv_file_exists(l_nested))) {
                 (void)f_resolveModules_2(f_parseManifest_1(l_nested), l_modules);
             }
@@ -8313,7 +13775,7 @@ static nv f_resolveModules_2(nv a0, nv a1) {
 static nv f_modulesFor_1(nv a0) {
     nv l_manifestFile = nv_coerce_string(a0);
     nv l_modules = nv_map();
-    if (nv_eq_bool(l_manifestFile, nv_lit(""))) {
+    if (nv_eq_bool(l_manifestFile, (&nv_lits[5]))) {
         return l_modules;
     }
     (void)f_resolveModules_2(f_parseManifest_1(l_manifestFile), l_modules);
@@ -8322,30 +13784,30 @@ static nv f_modulesFor_1(nv a0) {
 }
 
 static nv f_runtimeSource_0(void) {
-    return nv_coerce_string(nv_lit("/*\n * novus_rt.h - the C runtime embedded into every program that novusc emits.\n *\n * Values are dynamically typed (NvVal): integers, floats, bools, strings,\n * arrays, maps, class instances and enum constants all flow through the\n * same variables. Integers up to 62 bits are encoded in the pointer itself\n * (no allocation); everything else is arena allocated and never freed\n * (bootstrap-style runtime).\n *\n * Portable C11 (anonymous unions): builds with gcc, clang, zig cc and\n * mingw on 64-bit Linux, macOS and Windows.\n */\n#ifndef NOVUS_RT_H\n#define NOVUS_RT_H\n\n/* POSIX extensions (popen, setenv, gettimeofday, nanosleep, dirent) */\n#if !defined(_WIN32)\n#ifndef _POSIX_C_SOURCE\n#define _POSIX_C_SOURCE 200809L\n#endif\n#ifndef _DEFAULT_SOURCE\n#define _DEFAULT_SOURCE 1\n#endif\n#ifndef _DARWIN_C_SOURCE\n#define _DARWIN_C_SOURCE 1\n#endif\n#endif\n\n#include <ctype.h>\n#include <math.h>\n#include <stdarg.h>\n#include <stdio.h>\n#include <stdint.h>\n#include <stdlib.h>\n#include <string.h>\n#include <sys/stat.h>\n\n#include <time.h>\n\n#ifdef _WIN32\n#ifndef WIN32_LEAN_AND_MEAN\n#define WIN32_LEAN_AND_MEAN\n#endif\n#ifndef NOMINMAX\n#define NOMINMAX\n#endif\n#include <direct.h>\n#include <fcntl.h>\n#include <io.h>\n#include <process.h>\n#include <windows.h>\n#define NV_GETCWD _getcwd\n#define NV_CHDIR _chdir\n#define NV_RMDIR _rmdir\n#define NV_MKDIR(p) _mkdir(p)\n#define NV_POPEN _popen\n#define NV_PCLOSE _pclose\n#define NV_GETPID _getpid\n#else\n#include <dirent.h>\n#include <sys/time.h>\n#include <sys/wait.h>\n#include <unistd.h>\n#define NV_GETCWD getcwd\n#define NV_CHDIR chdir\n#define NV_RMDIR rmdir\n#define NV_MKDIR(p) mkdir(p, 0755)\n#define NV_POPEN popen\n#define NV_PCLOSE pclose\n#define NV_GETPID getpid\n#endif\n\n#ifdef __GNUC__\n#define NV_UNUSED __attribute__((unused))\n#else\n#define NV_UNUSED\n#endif\n\n/* ------------------------------------------------------------------ */\n/* Values                                                              */\n/* ------------------------------------------------------------------ */\n\nenum { NV_NULL = 0, NV_INT, NV_FLOAT, NV_BOOL, NV_STR, NV_ARR, NV_MAP, NV_OBJ };\n\ntypedef struct NvVal NvVal;\ntypedef NvVal *nv;\n\ntypedef struct NvArr {\n    nv *items;\n    int len;\n    int cap;\n    int heap;  /* items came from malloc: grow with realloc instead of copying */\n} NvArr;\n\ntypedef struct NvEntry {\n    const char *key;\n    nv val;\n} NvEntry;\n\n/* Entries live in insertion order with an open addressing index on top, so\n * lookup and insert are O(1). Iteration (keys, values, for..in, display,\n * json) always sorts first - the compiler depends on that order, and the\n * bootstrap fixpoint depends on the compiler. */\ntypedef struct NvMap {\n    NvEntry *items;\n    int len;\n    int cap;\n    int *index;   /* slot -> position + 1 in items, 0 is empty */\n    int mask;     /* index capacity - 1 (a power of two), 0 when absent */\n    int sorted;   /* whether items are currently in key order */\n} NvMap;\n\ntypedef struct NvClass NvClass;\n\ntypedef struct NvObj {\n    NvClass *cls;\n    const char *name; /* enum constant name, NULL for class instances */\n    /* the field slots follow this header directly - see nv_fields() */\n} NvObj;\n\n/* One slot per field, in class order (see nv_field_index). */\nstatic inline nv *nv_fields(NvObj *o) { return (nv *)(o + 1); }\n\n/* A value is 24 bytes. Small integers (62 bit) are not allocated at all:\n * they are encoded in the pointer itself (lowest bit set) - always go\n * through nv_type_of() / nv_ival() instead of touching the fields. */\nstruct NvVal {\n    int type;\n    int slen; /* NV_STR: length of s in bytes */\n    int scap; /* NV_STR: writable capacity of s (0: read-only / not owned) */\n    union {\n        long long i;   /* NV_INT (heap fallback) and NV_BOOL */\n        double f;      /* NV_FLOAT */\n        const char *s; /* NV_STR: NUL terminated unless a later concatenation\n                          appended into the shared buffer (see nv_cstr) */\n        NvArr *a;\n        NvMap *m;\n        NvObj *o;\n    };\n};\n\n#define NV_TAG_LIMIT ((long long)1 << 61)\n\nstatic int nv_is_tagged(nv v) { return ((uintptr_t)v & 1) != 0; }\n\nstatic int nv_type_of(nv v) { return nv_is_tagged(v) \? NV_INT : v->type; }\n\nstatic long long nv_ival(nv v) { return nv_is_tagged(v) \? (long long)(((intptr_t)v) >> 1) : v->i; }\n\nstatic const char *nv_display(nv v);\n\ntypedef nv (*NvMethodFn)(nv self, nv *args, int n);\n\ntypedef struct NvMethod {\n    const char *name;\n    int arity;\n    NvMethodFn fn;\n} NvMethod;\n\nstruct NvClass {\n    const char *name;\n    const char *base;\n    int isAbstract;\n    int isEnum;\n    const char **fieldNames;\n    const char **fieldTypes;\n    int nfields;\n    int fieldCap;\n    NvMethod *methods;\n    int nmethods;\n    int methodCap;\n    NvMethodFn ctor;\n    NvMethodFn resolvedCtor; /* ctor of this class or the nearest base, cached */\n    int ctorResolved;\n    int ctorArity;\n    NvMap *constants; /* enum constants */\n    NvArr *constantOrder;\n    int *order;       /* field indices sorted by name, built on demand */\n    const char **flatTypes;  /* field types in slot order, built on demand */\n    signed char *flatKinds;  /* 1 integer, 2 float, 3 string, 0 anything else */\n    int totalFields;  /* fields of this class and its bases, -1 until counted */\n    nv *defaults;     /* default value per field, built with totalFields */\n};\n\nstatic int nv_class_field_count(NvClass *c);\nstatic const char *nv_field_name_at(NvClass *c, int index, const char **type);\nstatic int nv_field_index(NvClass *c, const char *name);\nstatic nv *nv_class_defaults(NvClass *c);\n/* Field indices in name order - display and JSON keep the sorted output the\n * language always had (and the golden tests rely on). */\nstatic int *nv_field_order(NvClass *c, int count);\n\n/* ------------------------------------------------------------------ */\n/* Memory                                                              */\n/* ------------------------------------------------------------------ */\n\nstatic char *nv_arena_ptr = 0;\nstatic size_t nv_arena_left = 0;\n\nstatic void *nv_alloc(size_t n) {\n    void *p;\n    n = (n + 7) & ~(size_t)7;   /* every value in the runtime is 8-aligned */\n    if (n > 256 * 1024) {\n        p = malloc(n);\n        if (!p) {\n            fprintf(stderr, \"error: out of memory\\n\");\n            exit(1);\n        }\n        return p;\n    }\n    if (n > nv_arena_left) {\n        size_t chunk = 1024 * 1024;\n        nv_arena_ptr = (char *)malloc(chunk);\n        if (!nv_arena_ptr) {\n            fprintf(stderr, \"error: out of memory\\n\");\n            exit(1);\n        }\n        nv_arena_left = chunk;\n    }\n    p = nv_arena_ptr;\n    nv_arena_ptr += n;\n    nv_arena_left -= n;\n    return p;\n}\n\nstatic char *nv_strndup(const char *s, size_t n) {\n    char *r = (char *)nv_alloc(n + 1);\n    memcpy(r, s, n);\n    r[n] = 0;\n    return r;\n}\n\n/* ------------------------------------------------------------------ */\n/* String builder                                                      */\n/* ------------------------------------------------------------------ */\n\ntypedef struct NvSb {\n    char *buf;\n    int len;\n    int cap;\n} NvSb;\n\nstatic void nv_sb_init(NvSb *sb) {\n    sb->cap = 64;\n    sb->len = 0;\n    sb->buf = (char *)malloc((size_t)sb->cap);\n    sb->buf[0] = 0;\n}\n\nstatic void nv_sb_addn(NvSb *sb, const char *s, int n) {\n    if (sb->len + n + 1 > sb->cap) {\n        while (sb->len + n + 1 > sb->cap) {\n            sb->cap *= 2;\n        }\n        sb->buf = (char *)realloc(sb->buf, (size_t)sb->cap);\n    }\n    memcpy(sb->buf + sb->len, s, (size_t)n);\n    sb->len += n;\n    sb->buf[sb->len] = 0;\n}\n\nstatic void nv_sb_add(NvSb *sb, const char *s) { nv_sb_addn(sb, s, (int)strlen(s)); }\n\nstatic void nv_sb_addc(NvSb *sb, char c) { nv_sb_addn(sb, &c, 1); }\n\nstatic const char *nv_sb_finish(NvSb *sb) {\n    const char *r = nv_strndup(sb->buf, (size_t)sb->len);\n    free(sb->buf);\n    sb->buf = 0;\n    return r;\n}\n\n/* ------------------------------------------------------------------ */\n/* Errors                                                              */\n/* ------------------------------------------------------------------ */\n\nstatic void nv_error(const char *fmt, ...) {\n    va_list ap;\n    fflush(stdout);\n    fprintf(stderr, \"error: \");\n    va_start(ap, fmt);\n    vfprintf(stderr, fmt, ap);\n    va_end(ap);\n    fprintf(stderr, \"\\n\");\n    exit(1);\n}\n\n/* ------------------------------------------------------------------ */\n/* Constructors                                                        */\n/* ------------------------------------------------------------------ */\n\nstatic NvVal nv_nil_val = {NV_NULL, 0, 0, {0}};\nstatic NvVal nv_true_val = {NV_BOOL, 0, 0, {1}};\nstatic NvVal nv_false_val = {NV_BOOL, 0, 0, {0}};\nstatic NvVal nv_empty_str_val = {NV_STR, 0, 0, {0}};\nstatic nv nv_nil = &nv_nil_val;\nstatic nv nv_char_table[256];\n\nstatic nv nv_new(int type) {\n    nv v = (nv)nv_alloc(sizeof(NvVal));\n    memset(v, 0, sizeof(NvVal));\n    v->type = type;\n    return v;\n}\n\nstatic nv nv_int(long long i) {\n    nv v;\n    if (i > -NV_TAG_LIMIT && i < NV_TAG_LIMIT) {\n        return (nv)(uintptr_t)(((uintptr_t)i << 1) | 1u);\n    }\n    v = nv_new(NV_INT);\n    v->i = i;\n    return v;\n}\n\nstatic int nv_exit_code(nv v) { return nv_type_of(v) == NV_INT \? (int)nv_ival(v) : 0; }\n\nstatic nv nv_float(double f) {\n    nv v = nv_new(NV_FLOAT);\n    v->f = f;\n    return v;\n}\n\nstatic nv nv_bool(int b) { return b \? &nv_true_val : &nv_false_val; }\n\nstatic nv nv_strn(const char *s, int n) {\n    nv v;\n    if (n == 1 && nv_char_table[(unsigned char)s[0]]) {\n        return nv_char_table[(unsigned char)s[0]];\n    }\n    v = nv_new(NV_STR);\n    v->s = nv_strndup(s, (size_t)n);\n    v->slen = n;\n    v->scap = n + 1;\n    return v;\n}\n\nstatic nv nv_str(const char *s) { return nv_strn(s, (int)strlen(s)); }\n\n/* String literal from generated code: points at the (immutable) literal. */\nstatic nv nv_lit(const char *s) {\n    nv v = nv_new(NV_STR);\n    v->s = s;\n    v->slen = (int)strlen(s);\n    v->scap = 0;\n    return v;\n}\n\nstatic nv nv_str_own(const char *s, int n) { /* s already arena allocated */\n    nv v = nv_new(NV_STR);\n    v->s = s;\n    v->slen = n;\n    v->scap = n + 1;\n    return v;\n}\n\n/* NUL terminated view of a string value. Strings may share a buffer with\n * a longer string that was appended to in place; the terminator is then\n * gone and a private copy is made. */\nstatic const char *nv_cstr(nv v) {\n    if (nv_type_of(v) != NV_STR) {\n        return nv_display(v);\n    }\n    if (v->s[v->slen] == 0) {\n        return v->s;\n    }\n    return nv_strndup(v->s, (size_t)v->slen);\n}\n\nstatic NvArr *nv_arr_new(void) {\n    NvArr *a = (NvArr *)nv_alloc(sizeof(NvArr));\n    a->len = 0;\n    a->heap = 0;\n    a->cap = 8;\n    a->items = (nv *)nv_alloc(sizeof(nv) * (size_t)a->cap);\n    return a;\n}\n\n/* Growing inside the arena leaves every previous copy behind, which doubles\n * the memory of a large array. Above this size we switch to realloc. */\n#define NV_ARR_HEAP_AT 4096\n\nstatic void nv_arr_grow(NvArr *a) {\n    int cap = a->cap * 2;\n    if (cap >= NV_ARR_HEAP_AT) {\n        if (a->heap) {\n            a->items = (nv *)realloc(a->items, sizeof(nv) * (size_t)cap);\n        } else {\n            nv *items = (nv *)malloc(sizeof(nv) * (size_t)cap);\n            memcpy(items, a->items, sizeof(nv) * (size_t)a->len);\n            a->items = items;\n            a->heap = 1;\n        }\n        if (!a->items) {\n            nv_error(\"out of memory\");\n        }\n    } else {\n        nv *items = (nv *)nv_alloc(sizeof(nv) * (size_t)cap);\n        memcpy(items, a->items, sizeof(nv) * (size_t)a->len);\n        a->items = items;\n    }\n    a->cap = cap;\n}\n\nstatic void nv_arr_push(NvArr *a, nv v) {\n    if (a->len == a->cap) {\n        nv_arr_grow(a);\n    }\n    a->items[a->len++] = v;\n}\n\nstatic nv nv_arr(void) {\n    nv v = nv_new(NV_ARR);\n    v->a = nv_arr_new();\n    return v;\n}\n\nstatic nv nv_arr_of(int count, ...) {\n    nv v = nv_arr();\n    va_list ap;\n    int i;\n    va_start(ap, count);\n    for (i = 0; i < count; i++) {\n        nv_arr_push(v->a, va_arg(ap, nv));\n    }\n    va_end(ap);\n    return v;\n}\n\nstatic unsigned nv_key_hash(const char *key) {\n    unsigned h = 2166136261u;\n    for (; *key; key++) {\n        h = (h ^ (unsigned char)*key) * 16777619u;\n    }\n    return h;\n}\n\nstatic NvMap *nv_map_new_cap(int cap) {\n    NvMap *m = (NvMap *)nv_alloc(sizeof(NvMap));\n    m->len = 0;\n    m->cap = cap < 1 \? 1 : cap;\n    m->items = (NvEntry *)nv_alloc(sizeof(NvEntry) * (size_t)m->cap);\n    m->index = 0;\n    m->mask = 0;\n    m->sorted = 1;\n    return m;\n}\n\nstatic NvMap *nv_map_new(void) { return nv_map_new_cap(4); }\n\n/* (Re)builds the hash index; called when it grows or entries move. */\nstatic void nv_map_reindex(NvMap *m, int slots) {\n    int i;\n    while (slots < (m->len + 1) * 2) {\n        slots *= 2;\n    }\n    m->mask = slots - 1;\n    m->index = (int *)nv_alloc(sizeof(int) * (size_t)slots);\n    memset(m->index, 0, sizeof(int) * (size_t)slots);\n    for (i = 0; i < m->len; i++) {\n        unsigned slot = nv_key_hash(m->items[i].key) & (unsigned)m->mask;\n        while (m->index[slot]) {\n            slot = (slot + 1) & (unsigned)m->mask;\n        }\n        m->index[slot] = i + 1;\n    }\n}\n\n/* Below this size a linear scan beats hashing - and object field maps,\n * which are the bulk of all maps, stay index free (and small). */\n#define NV_MAP_LINEAR 8\n\n/* Position of `key` in items, or -1. */\nstatic int nv_map_find(NvMap *m, const char *key) {\n    unsigned slot;\n    if (m->len == 0) {\n        return -1;\n    }\n    if (!m->index) {\n        int i;\n        if (m->len <= NV_MAP_LINEAR) {\n            for (i = 0; i < m->len; i++) {\n                if (strcmp(m->items[i].key, key) == 0) {\n                    return i;\n                }\n            }\n            return -1;\n        }\n        nv_map_reindex(m, 16);\n    }\n    slot = nv_key_hash(key) & (unsigned)m->mask;\n    while (m->index[slot]) {\n        int at = m->index[slot] - 1;\n        if (strcmp(m->items[at].key, key) == 0) {\n            return at;\n        }\n        slot = (slot + 1) & (unsigned)m->mask;\n    }\n    return -1;\n}\n\nstatic void nv_map_append(NvMap *m, const char *key, nv val) {\n    unsigned slot;\n    if (m->len == m->cap) {\n        NvEntry *items = (NvEntry *)nv_alloc(sizeof(NvEntry) * (size_t)m->cap * 2);\n        memcpy(items, m->items, sizeof(NvEntry) * (size_t)m->len);\n        m->items = items;\n        m->cap *= 2;\n    }\n    m->items[m->len].key = key;\n    m->items[m->len].val = val;\n    m->len++;\n    if (m->sorted && m->len > 1 && strcmp(m->items[m->len - 2].key, key) > 0) {\n        m->sorted = 0;\n    }\n    if (!m->index) {\n        if (m->len <= NV_MAP_LINEAR) {\n            return;                      /* stays index free */\n        }\n        nv_map_reindex(m, 16);\n        return;\n    }\n    if ((m->len + 1) * 2 > m->mask + 1) {\n        nv_map_reindex(m, m->mask + 1);\n        return;\n    }\n    slot = nv_key_hash(key) & (unsigned)m->mask;\n    while (m->index[slot]) {\n        slot = (slot + 1) & (unsigned)m->mask;\n    }\n    m->index[slot] = m->len;\n}\n\n/* `key` must outlive the map (string literal, class table, arena string). */\nstatic void nv_map_set_static(NvMap *m, const char *key, nv val) {\n    int at = nv_map_find(m, key);\n    if (at >= 0) {\n        m->items[at].val = val;\n        return;\n    }\n    nv_map_append(m, key, val);\n}\n\nstatic void nv_map_set(NvMap *m, const char *key, nv val) {\n    int at = nv_map_find(m, key);\n    if (at >= 0) {\n        m->items[at].val = val;\n        return;\n    }\n    nv_map_append(m, nv_strndup(key, strlen(key)), val);\n}\n\nstatic nv nv_map_get(NvMap *m, const char *key) {\n    int at = nv_map_find(m, key);\n    return at >= 0 \? m->items[at].val : 0;\n}\n\nstatic int nv_map_has(NvMap *m, const char *key) { return nv_map_find(m, key) >= 0; }\n\nstatic void nv_map_remove(NvMap *m, const char *key) {\n    int at = nv_map_find(m, key);\n    if (at < 0) {\n        return;\n    }\n    memmove(m->items + at, m->items + at + 1, sizeof(NvEntry) * (size_t)(m->len - at - 1));\n    m->len--;\n    if (m->index) {\n        nv_map_reindex(m, m->mask + 1);\n    }\n}\n\nstatic int nv_entry_cmp(const void *a, const void *b) {\n    return strcmp(((const NvEntry *)a)->key, ((const NvEntry *)b)->key);\n}\n\n/* Every read that exposes the order sorts first. */\nstatic void nv_map_order(NvMap *m) {\n    if (m->sorted) {\n        return;\n    }\n    qsort(m->items, (size_t)m->len, sizeof(NvEntry), nv_entry_cmp);\n    m->sorted = 1;\n    if (m->index) {\n        nv_map_reindex(m, m->mask + 1);\n    }\n}\n\nstatic nv nv_map(void) {\n    nv v = nv_new(NV_MAP);\n    v->m = nv_map_new();\n    return v;\n}\n\nstatic const char *nv_display(nv v);\n\nstatic nv nv_map_of(int pairs, ...) {\n    nv v = nv_map();\n    va_list ap;\n    int i;\n    va_start(ap, pairs);\n    for (i = 0; i < pairs; i++) {\n        nv k = va_arg(ap, nv);\n        nv val = va_arg(ap, nv);\n        nv_map_set(v->m, nv_display(k), val);\n    }\n    va_end(ap);\n    return v;\n}\n\n/* ------------------------------------------------------------------ */\n/* Type names, display                                                 */\n/* ------------------------------------------------------------------ */\n\nstatic const char *nv_type_name(nv v) {\n    switch (nv_type_of(v)) {\n    case NV_INT:\n        return \"integer\";\n    case NV_FLOAT:\n        return \"float\";\n    case NV_BOOL:\n        return \"bool\";\n    case NV_STR:\n        return \"string\";\n    case NV_ARR:\n        return \"array\";\n    case NV_MAP:\n        return \"map\";\n    case NV_OBJ:\n        return v->o->cls->name;\n    default:\n        return \"unknown\";\n    }\n}\n\n/* Digits back to front into a stack buffer, then one arena copy. sprintf()\n * showed up in every profile of code that puts numbers into strings. */\nstatic const char *nv_fmt_int(long long i) {\n    char buf[24];\n    char *end = buf + sizeof(buf);\n    char *p = end;\n    unsigned long long u = i < 0 \? 0ULL - (unsigned long long)i : (unsigned long long)i;\n    char *out;\n    size_t len;\n    *--p = 0;\n    do {\n        *--p = (char)('0' + (int)(u % 10ULL));\n        u /= 10ULL;\n    } while (u);\n    if (i < 0) {\n        *--p = '-';\n    }\n    len = (size_t)(end - p);\n    out = (char *)nv_alloc(len);\n    memcpy(out, p, len);\n    return out;\n}\n\nstatic const char *nv_fmt_float(double f) {\n    char buf[64];\n    sprintf(buf, \"%f\", f);\n    return nv_strndup(buf, strlen(buf));\n}\n\n/* Containers currently being printed/serialized, to cut reference cycles. */\nstatic const void *nv_visit_stack[256];\nstatic int nv_visit_depth = 0;\n\nstatic int nv_visit_enter(const void *container) {\n    int i;\n    for (i = 0; i < nv_visit_depth; i++) {\n        if (nv_visit_stack[i] == container) {\n            return 0;\n        }\n    }\n    if (nv_visit_depth < 256) {\n        nv_visit_stack[nv_visit_depth] = container;\n    }\n    nv_visit_depth++;\n    return 1;\n}\n\nstatic void nv_visit_leave(void) { nv_visit_depth--; }\n\nstatic const void *nv_container_id(nv v) {\n    if (nv_type_of(v) == NV_ARR) {\n        return v->a;\n    }\n    if (nv_type_of(v) == NV_MAP) {\n        return v->m;\n    }\n    if (nv_type_of(v) == NV_OBJ) {\n        return v->o;\n    }\n    return 0;\n}\n\nstatic void nv_display_into(NvSb *sb, nv v) {\n    int i;\n    const void *id = nv_container_id(v);\n    if (id && !nv_visit_enter(id)) {\n        nv_sb_add(sb, \"...\");\n        return;\n    }\n    switch (nv_type_of(v)) {\n    case NV_INT:\n        nv_sb_add(sb, nv_fmt_int(nv_ival(v)));\n        break;\n    case NV_FLOAT:\n        nv_sb_add(sb, nv_fmt_float(v->f));\n        break;\n    case NV_BOOL:\n        nv_sb_add(sb, nv_ival(v) \? \"true\" : \"false\");\n        break;\n    case NV_STR:\n        nv_sb_addn(sb, v->s, v->slen);\n        break;\n    case NV_ARR:\n        nv_sb_addc(sb, '[');\n        for (i = 0; i < v->a->len; i++) {\n            if (i > 0) {\n                nv_sb_add(sb, \", \");\n            }\n            nv_display_into(sb, v->a->items[i]);\n        }\n        nv_sb_addc(sb, ']');\n        break;\n    case NV_MAP:\n        nv_map_order(v->m);\n        nv_sb_addc(sb, '{');\n        for (i = 0; i < v->m->len; i++) {\n            if (i > 0) {\n                nv_sb_add(sb, \", \");\n            }\n            nv_sb_add(sb, v->m->items[i].key);\n            nv_sb_add(sb, \": \");\n            nv_display_into(sb, v->m->items[i].val);\n        }\n        nv_sb_addc(sb, '}');\n        break;\n    case NV_OBJ:\n        if (v->o->name) {\n            nv_sb_add(sb, v->o->name);\n            break;\n        }\n        nv_sb_add(sb, v->o->cls->name);\n        nv_sb_addc(sb, '{');\n        {\n            int count = nv_class_field_count(v->o->cls);\n            int *order = nv_field_order(v->o->cls, count);\n            for (i = 0; i < count; i++) {\n                if (i > 0) {\n                    nv_sb_add(sb, \", \");\n                }\n                nv_sb_add(sb, nv_field_name_at(v->o->cls, order[i], 0));\n                nv_sb_add(sb, \": \");\n                nv_display_into(sb, nv_fields(v->o)[order[i]]);\n            }\n        }\n        nv_sb_addc(sb, '}');\n        break;\n    default:\n        break;\n    }\n    if (id) {\n        nv_visit_leave();\n    }\n}\n\nstatic const char *nv_display(nv v) {\n    NvSb sb;\n    if (nv_type_of(v) == NV_STR) {\n        return nv_cstr(v);\n    }\n    if (nv_type_of(v) == NV_BOOL) {\n        return nv_ival(v) \? \"true\" : \"false\";\n    }\n    if (nv_type_of(v) == NV_INT) {\n        return nv_fmt_int(nv_ival(v));\n    }\n    if (nv_type_of(v) == NV_FLOAT) {\n        return nv_fmt_float(v->f);\n    }\n    nv_sb_init(&sb);\n    nv_display_into(&sb, v);\n    return nv_sb_finish(&sb);\n}\n\n/* The \"data\" of a value: what the interpreter compared strings against. */\nstatic const char *nv_data(nv v) {\n    switch (nv_type_of(v)) {\n    case NV_INT:\n    case NV_FLOAT:\n    case NV_BOOL:\n    case NV_STR:\n        return nv_display(v);\n    case NV_OBJ:\n        return v->o->name \? v->o->name : \"\";\n    default:\n        return \"\";\n    }\n}\n\nstatic nv nv_to_str(nv v) { return nv_type_of(v) == NV_STR \? v : nv_str(nv_display(v)); }\n\n/* ------------------------------------------------------------------ */\n/* Numbers, coercion, truthiness                                       */\n/* ------------------------------------------------------------------ */\n\nstatic int nv_is_num(nv v) { return nv_type_of(v) == NV_INT || nv_type_of(v) == NV_FLOAT; }\n\nstatic double nv_as_double(nv v) {\n    if (nv_type_of(v) == NV_FLOAT) {\n        return v->f;\n    }\n    if (nv_type_of(v) == NV_INT || nv_type_of(v) == NV_BOOL) {\n        return (double)nv_ival(v);\n    }\n    if (nv_type_of(v) == NV_STR) {\n        return atof(nv_cstr(v));\n    }\n    return 0.0;\n}\n\nstatic long long nv_as_int(nv v) {\n    if (nv_type_of(v) == NV_INT || nv_type_of(v) == NV_BOOL) {\n        return nv_ival(v);\n    }\n    if (nv_type_of(v) == NV_FLOAT) {\n        return (long long)v->f;\n    }\n    if (nv_type_of(v) == NV_STR) {\n        return atoll(nv_cstr(v));\n    }\n    return 0;\n}\n\nstatic int nv_truthy(nv v) { return v == &nv_true_val; }\n\nstatic const char *nv_normalize_type(const char *t) {\n    if (strcmp(t, \"str\") == 0) {\n        return \"string\";\n    }\n    if (strcmp(t, \"int\") == 0) {\n        return \"integer\";\n    }\n    if (strcmp(t, \"boolean\") == 0) {\n        return \"bool\";\n    }\n    if (strncmp(t, \"array\", 5) == 0) {\n        return \"array\";\n    }\n    if (strncmp(t, \"map\", 3) == 0) {\n        return \"map\";\n    }\n    return t;\n}\n\nstatic int nv_type_is(nv v, const char *t) {\n    t = nv_normalize_type(t);\n    return strcmp(nv_type_name(v), t) == 0;\n}\n\n/* Implicit conversions applied to parameters, fields and return values. */\nstatic nv nv_coerce(nv v, const char *t) {\n    t = nv_normalize_type(t);\n    if (strcmp(t, \"integer\") == 0) {\n        if (nv_type_of(v) == NV_FLOAT) {\n            return nv_int((long long)v->f);\n        }\n        return v;\n    }\n    if (strcmp(t, \"float\") == 0) {\n        if (nv_type_of(v) == NV_INT) {\n            return nv_float((double)nv_ival(v));\n        }\n        return v;\n    }\n    if (strcmp(t, \"string\") == 0) {\n        if (nv_type_of(v) != NV_STR && nv_type_of(v) != NV_NULL) {\n            return nv_str(nv_data(v));\n        }\n        return v;\n    }\n    return v;\n}\n\nstatic nv nv_coerce_int(nv v) { return nv_type_of(v) == NV_FLOAT \? nv_int((long long)v->f) : v; }\n\nstatic nv nv_coerce_float(nv v) { return nv_is_tagged(v) || nv_type_of(v) == NV_INT \? nv_float((double)nv_ival(v)) : v; }\n\nstatic nv nv_coerce_string(nv v) {\n    int t = nv_type_of(v);\n    return t == NV_STR || t == NV_NULL \? v : nv_str(nv_data(v));\n}\n\nstatic nv nv_default(const char *t) {\n    t = nv_normalize_type(t);\n    if (strcmp(t, \"integer\") == 0) {\n        return nv_int(0);\n    }\n    if (strcmp(t, \"float\") == 0) {\n        return nv_float(0.0);\n    }\n    if (strcmp(t, \"string\") == 0) {\n        return &nv_empty_str_val;\n    }\n    if (strcmp(t, \"bool\") == 0) {\n        return nv_bool(0);\n    }\n    return nv_nil;\n}\n\n/* ------------------------------------------------------------------ */\n/* Operators                                                           */\n/* ------------------------------------------------------------------ */\n\n/* Concatenation. The result gets spare capacity, and when the left\n * operand still owns the end of its buffer the right side is appended in\n * place, so `s = s + x` loops run in amortized linear time. Older values\n * sharing the buffer keep their length; nv_cstr() copies them on demand. */\nstatic nv nv_concat(nv l, nv r) {\n    const char *ls;\n    const char *rs;\n    size_t ll, rl, cap;\n    char *buf;\n    nv v;\n    if (nv_type_of(l) == NV_STR) {\n        ls = l->s;\n        ll = (size_t)l->slen;\n    } else {\n        ls = nv_display(l);\n        ll = strlen(ls);\n    }\n    if (nv_type_of(r) == NV_STR) {\n        rs = r->s;\n        rl = (size_t)r->slen;\n    } else {\n        rs = nv_display(r);\n        rl = strlen(rs);\n    }\n    if (rl == 0 && nv_type_of(l) == NV_STR) {\n        return l;\n    }\n    if (nv_type_of(l) == NV_STR && l->scap > 0 && l->s[l->slen] == 0 && rl > 0 && rs[0] != 0 &&\n        (size_t)l->scap > ll + rl) {\n        buf = (char *)l->s;\n        memmove(buf + ll, rs, rl);\n        buf[ll + rl] = 0;\n        v = nv_new(NV_STR);\n        v->s = buf;\n        v->slen = (int)(ll + rl);\n        v->scap = l->scap;\n        return v;\n    }\n    cap = (ll + rl) * 2 + 16;\n    buf = (char *)nv_alloc(cap);\n    memcpy(buf, ls, ll);\n    memcpy(buf + ll, rs, rl);\n    buf[ll + rl] = 0;\n    v = nv_new(NV_STR);\n    v->s = buf;\n    v->slen = (int)(ll + rl);\n    v->scap = (int)cap;\n    return v;\n}\n\nstatic nv nv_add(nv l, nv r);\n\n/* `a + b + c + ...` as a single call. The chain is left associative, so the\n * operands before the first string are added arithmetically and everything\n * from there on goes into one buffer - instead of one string value, one\n * length walk and one copy per step. */\nstatic nv nv_add_chain(int n, ...) {\n    nv parts[16];\n    const char *strs[16];\n    size_t lens[16];\n    va_list ap;\n    int i, j, first = -1, m = 0;\n    nv acc;\n    size_t total = 0, at, cap;\n    char *buf;\n    nv v;\n    va_start(ap, n);\n    for (i = 0; i < n; i++) {\n        parts[i] = va_arg(ap, nv);\n    }\n    va_end(ap);\n    for (i = 0; i < n; i++) {\n        if (nv_type_of(parts[i]) == NV_STR) {\n            first = i;\n            break;\n        }\n    }\n    acc = parts[0];\n    if (first < 0) {\n        for (i = 1; i < n; i++) {\n            acc = nv_add(acc, parts[i]);\n        }\n        return acc;\n    }\n    for (i = 1; i <= first; i++) {\n        acc = nv_add(acc, parts[i]);\n    }\n    if (nv_type_of(acc) != NV_STR) {\n        for (i = first + 1; i < n; i++) {\n            acc = nv_add(acc, parts[i]);\n        }\n        return acc;\n    }\n    for (i = first + 1; i < n; i++) {\n        if (nv_type_of(parts[i]) == NV_STR) {\n            strs[m] = parts[i]->s;\n            lens[m] = (size_t)parts[i]->slen;\n        } else {\n            strs[m] = nv_display(parts[i]);\n            lens[m] = strlen(strs[m]);\n        }\n        total += lens[m];\n        m++;\n    }\n    if (total == 0) {\n        return acc;\n    }\n    at = (size_t)acc->slen;\n    if (acc->scap > 0 && acc->s[acc->slen] == 0 && (size_t)acc->scap > at + total) {\n        buf = (char *)acc->s;             /* still owns the end of its buffer */\n        cap = (size_t)acc->scap;\n    } else {\n        cap = (at + total) * 2 + 16;\n        buf = (char *)nv_alloc(cap);\n        memcpy(buf, acc->s, at);\n    }\n    for (j = 0; j < m; j++) {\n        memmove(buf + at, strs[j], lens[j]);   /* a part may live in buf */\n        at += lens[j];\n    }\n    buf[at] = 0;\n    v = nv_new(NV_STR);\n    v->s = buf;\n    v->slen = (int)at;\n    v->scap = (int)cap;\n    return v;\n}\n\nstatic void nv_arith_check(nv l, nv r, const char *op) {\n    if (!nv_is_num(l) || !nv_is_num(r)) {\n        nv_error(\"cannot apply '%s' to %s and %s\", op, nv_type_name(l), nv_type_name(r));\n    }\n}\n\nstatic nv nv_add(nv l, nv r) {\n    if (nv_is_tagged(l) && nv_is_tagged(r)) {\n        return nv_int(nv_ival(l) + nv_ival(r));\n    }\n    if (nv_type_of(l) == NV_STR || nv_type_of(r) == NV_STR) {\n        return nv_concat(l, r);\n    }\n    nv_arith_check(l, r, \"+\");\n    if (nv_type_of(l) == NV_FLOAT || nv_type_of(r) == NV_FLOAT) {\n        return nv_float(nv_as_double(l) + nv_as_double(r));\n    }\n    return nv_int(nv_ival(l) + nv_ival(r));\n}\n\nstatic nv nv_sub(nv l, nv r) {\n    if (nv_is_tagged(l) && nv_is_tagged(r)) {\n        return nv_int(nv_ival(l) - nv_ival(r));\n    }\n    nv_arith_check(l, r, \"-\");\n    if (nv_type_of(l) == NV_FLOAT || nv_type_of(r) == NV_FLOAT) {\n        return nv_float(nv_as_double(l) - nv_as_double(r));\n    }\n    return nv_int(nv_ival(l) - nv_ival(r));\n}\n\nstatic nv nv_mul(nv l, nv r) {\n    if (nv_is_tagged(l) && nv_is_tagged(r)) {\n        return nv_int(nv_ival(l) * nv_ival(r));\n    }\n    nv_arith_check(l, r, \"*\");\n    if (nv_type_of(l) == NV_FLOAT || nv_type_of(r) == NV_FLOAT) {\n        return nv_float(nv_as_double(l) * nv_as_double(r));\n    }\n    return nv_int(nv_ival(l) * nv_ival(r));\n}\n\nstatic nv nv_div(nv l, nv r) {\n    nv_arith_check(l, r, \"/\");\n    if (nv_type_of(l) == NV_FLOAT || nv_type_of(r) == NV_FLOAT) {\n        double d = nv_as_double(r);\n        return nv_float(d != 0.0 \? nv_as_double(l) / d : 0.0);\n    }\n    return nv_int(nv_ival(r) != 0 \? nv_ival(l) / nv_ival(r) : 0);\n}\n\nstatic nv nv_mod(nv l, nv r) {\n    nv_arith_check(l, r, \"%\");\n    if (nv_type_of(l) == NV_FLOAT || nv_type_of(r) == NV_FLOAT) {\n        return nv_float(fmod(nv_as_double(l), nv_as_double(r)));\n    }\n    return nv_int(nv_ival(r) != 0 \? nv_ival(l) % nv_ival(r) : 0);\n}\n\nstatic nv nv_neg(nv v) {\n    if (nv_type_of(v) == NV_FLOAT) {\n        return nv_float(-v->f);\n    }\n    if (nv_type_of(v) == NV_INT) {\n        return nv_int(-nv_ival(v));\n    }\n    nv_error(\"cannot negate %s\", nv_type_name(v));\n    return nv_nil;\n}\n\nstatic nv nv_not(nv v) { return nv_bool(!nv_truthy(v)); }\n\nstatic int nv_equals(nv l, nv r) {\n    if (nv_is_tagged(l) && nv_is_tagged(r)) {\n        return l == r;\n    }\n    if (nv_type_of(l) == NV_STR || nv_type_of(r) == NV_STR) {\n        return strcmp(nv_data(l), nv_data(r)) == 0;\n    }\n    if (nv_type_of(l) == NV_BOOL || nv_type_of(r) == NV_BOOL) {\n        return strcmp(nv_data(l), nv_data(r)) == 0;\n    }\n    if (nv_is_num(l) && nv_is_num(r)) {\n        return nv_as_double(l) == nv_as_double(r);\n    }\n    if (nv_type_of(l) == NV_OBJ && nv_type_of(r) == NV_OBJ) {\n        if (l->o->name && r->o->name) {\n            return strcmp(l->o->name, r->o->name) == 0 && l->o->cls == r->o->cls;\n        }\n        return l->o == r->o;\n    }\n    if (nv_type_of(l) != nv_type_of(r)) {\n        return 0;\n    }\n    if (nv_type_of(l) == NV_ARR) {\n        return l->a == r->a;\n    }\n    if (nv_type_of(l) == NV_MAP) {\n        return l->m == r->m;\n    }\n    return 1; /* nil == nil */\n}\n\nstatic int nv_compare(nv l, nv r, const char *op) {\n    if (nv_is_tagged(l) && nv_is_tagged(r)) {\n        long long a = nv_ival(l), b = nv_ival(r);\n        return a < b \? -1 : (a > b \? 1 : 0);\n    }\n    if (nv_type_of(l) == NV_STR || nv_type_of(r) == NV_STR) {\n        return strcmp(nv_data(l), nv_data(r));\n    }\n    if (nv_is_num(l) && nv_is_num(r)) {\n        double a = nv_as_double(l), b = nv_as_double(r);\n        return a < b \? -1 : (a > b \? 1 : 0);\n    }\n    nv_error(\"cannot compare %s and %s with '%s'\", nv_type_name(l), nv_type_name(r), op);\n    return 0;\n}\n\n/* ---------------------------------------------------------------- */\n/* Fast paths: small-integer arithmetic and comparisons without a call */\n/* ---------------------------------------------------------------- */\n\nstatic inline nv nv_tag(long long v) {\n    if (v > -NV_TAG_LIMIT && v < NV_TAG_LIMIT) {\n        return (nv)(uintptr_t)(((uintptr_t)v << 1) | 1u);\n    }\n    return nv_int(v);\n}\n\nstatic inline int nv_both_tagged(nv l, nv r) { return ((uintptr_t)l & (uintptr_t)r & 1u) != 0; }\n\n/* Unboxed float helpers: division by zero is 0.0 in Novus, not infinity. */\nstatic inline double nv_fdiv(double a, double b) { return b != 0.0 \? a / b : 0.0; }\nstatic inline double nv_fmod_(double a, double b) { return b != 0.0 \? fmod(a, b) : 0.0; }\n\n/* Unboxed integer helpers: division by zero is 0 in Novus, not a trap. */\nstatic inline long long nv_idiv(long long a, long long b) { return b \? a / b : 0; }\nstatic inline long long nv_imod(long long a, long long b) { return b \? a % b : 0; }\n\nstatic inline nv nv_add_fast(nv l, nv r) {\n    if (nv_both_tagged(l, r)) {\n        return nv_tag(nv_ival(l) + nv_ival(r));\n    }\n    return nv_add(l, r);\n}\n\nstatic inline nv nv_sub_fast(nv l, nv r) {\n    if (nv_both_tagged(l, r)) {\n        return nv_tag(nv_ival(l) - nv_ival(r));\n    }\n    return nv_sub(l, r);\n}\n\nstatic inline nv nv_mul_fast(nv l, nv r) {\n    if (nv_both_tagged(l, r)) {\n        long long a = nv_ival(l), b = nv_ival(r);\n        if (a > -0x40000000LL && a < 0x40000000LL && b > -0x40000000LL && b < 0x40000000LL) {\n            return nv_tag(a * b);\n        }\n    }\n    return nv_mul(l, r);\n}\n\n/* Conditions want a C int, not a boxed bool - these skip the boxing. */\nstatic inline int nv_lt_bool(nv l, nv r) {\n    if (nv_both_tagged(l, r)) return nv_ival(l) < nv_ival(r);\n    return nv_compare(l, r, \"<\") < 0;\n}\nstatic inline int nv_gt_bool(nv l, nv r) {\n    if (nv_both_tagged(l, r)) return nv_ival(l) > nv_ival(r);\n    return nv_compare(l, r, \">\") > 0;\n}\nstatic inline int nv_le_bool(nv l, nv r) {\n    if (nv_both_tagged(l, r)) return nv_ival(l) <= nv_ival(r);\n    return nv_compare(l, r, \"<=\") <= 0;\n}\nstatic inline int nv_ge_bool(nv l, nv r) {\n    if (nv_both_tagged(l, r)) return nv_ival(l) >= nv_ival(r);\n    return nv_compare(l, r, \">=\") >= 0;\n}\nstatic inline int nv_eq_bool(nv l, nv r) {\n    if (nv_both_tagged(l, r)) return l == r;\n    return nv_equals(l, r);\n}\nstatic inline int nv_ne_bool(nv l, nv r) { return !nv_eq_bool(l, r); }\n\nstatic nv nv_eq(nv l, nv r) { return nv_bool(nv_equals(l, r)); }\nstatic nv nv_ne(nv l, nv r) { return nv_bool(!nv_equals(l, r)); }\nstatic nv nv_lt(nv l, nv r) { return nv_bool(nv_compare(l, r, \"<\") < 0); }\nstatic nv nv_gt(nv l, nv r) { return nv_bool(nv_compare(l, r, \">\") > 0); }\nstatic nv nv_le(nv l, nv r) { return nv_bool(nv_compare(l, r, \"<=\") <= 0); }\nstatic nv nv_ge(nv l, nv r) { return nv_bool(nv_compare(l, r, \">=\") >= 0); }\n\n/* ------------------------------------------------------------------ */\n/* Indexing and members                                                */\n/* ------------------------------------------------------------------ */\n\nstatic nv nv_index(nv t, nv k) {\n    if (nv_type_of(t) == NV_MAP) {\n        const char *key = nv_display(k);\n        nv v = nv_map_get(t->m, key);\n        if (!v) {\n            nv_error(\"key '%s' not found in map\", key);\n        }\n        return v;\n    }\n    if (nv_type_of(t) == NV_ARR) {\n        long long i = nv_as_int(k);\n        if (i < 0 || i >= t->a->len) {\n            nv_error(\"array index %lld out of bounds (size %d)\", i, t->a->len);\n        }\n        return t->a->items[i];\n    }\n    if (nv_type_of(t) == NV_STR) {\n        long long i = nv_as_int(k);\n        if (i < 0 || i >= t->slen) {\n            nv_error(\"string index %lld out of bounds (length %d)\", i, t->slen);\n        }\n        return nv_strn(t->s + i, 1);\n    }\n    nv_error(\"cannot index into a value of type %s\", nv_type_name(t));\n    return nv_nil;\n}\n\nstatic void nv_index_set(nv t, nv k, nv v) {\n    if (nv_type_of(t) == NV_MAP) {\n        nv_map_set(t->m, nv_display(k), v);\n        return;\n    }\n    if (nv_type_of(t) == NV_ARR) {\n        long long i = nv_as_int(k);\n        if (i < 0 || i >= t->a->len) {\n            nv_error(\"array index %lld out of bounds (size %d)\", i, t->a->len);\n        }\n        t->a->items[i] = v;\n        return;\n    }\n    nv_error(\"cannot assign by index into a value of type %s\", nv_type_name(t));\n}\n\nstatic nv nv_get_member(nv t, const char *name) {\n    nv v = 0;\n    if (nv_type_of(t) == NV_OBJ) {\n        int at = nv_field_index(t->o->cls, name);\n        if (at < 0) {\n            nv_error(\"no property '%s' on value of type %s\", name, t->o->cls->name);\n        }\n        return nv_fields(t->o)[at];\n    }\n    if (nv_type_of(t) == NV_MAP) {\n        v = nv_map_get(t->m, name);\n        if (!v) {\n            nv_error(\"no property '%s' in map\", name);\n        }\n        return v;\n    }\n    nv_error(\"no property '%s' on value of type %s\", name, nv_type_name(t));\n    return nv_nil;\n}\n\nstatic void nv_set_member(nv t, const char *name, nv v) {\n    if (nv_type_of(t) == NV_OBJ) {\n        int at = nv_field_index(t->o->cls, name);\n        if (at < 0) {\n            nv_error(\"no field '%s' on %s\", name, t->o->cls->name);\n        }\n        nv_fields(t->o)[at] = v;\n        return;\n    }\n    if (nv_type_of(t) == NV_MAP) {\n        nv_map_set(t->m, name, v);\n        return;\n    }\n    nv_error(\"cannot set property '%s' on value of type %s\", name, nv_type_name(t));\n}\n\n/* ------------------------------------------------------------------ */\n/* Classes, objects, enums                                             */\n/* ------------------------------------------------------------------ */\n\nstatic NvClass **nv_classes = 0;\nstatic int nv_nclasses = 0;\nstatic int nv_class_cap = 0;\n\nstatic NvClass *nv_find_class(const char *name) {\n    int i;\n    for (i = 0; i < nv_nclasses; i++) {\n        if (strcmp(nv_classes[i]->name, name) == 0) {\n            return nv_classes[i];\n        }\n    }\n    return 0;\n}\n\nstatic NvClass *nv_class_define(const char *name, const char *base, int isAbstract, int isEnum) {\n    NvClass *c = (NvClass *)nv_alloc(sizeof(NvClass));\n    memset(c, 0, sizeof(NvClass));\n    c->totalFields = -1;\n    c->name = name;\n    c->base = base && base[0] \? base : 0;\n    c->isAbstract = isAbstract;\n    c->isEnum = isEnum;\n    c->fieldCap = 8;\n    c->fieldNames = (const char **)nv_alloc(sizeof(char *) * 8);\n    c->fieldTypes = (const char **)nv_alloc(sizeof(char *) * 8);\n    c->methodCap = 8;\n    c->methods = (NvMethod *)nv_alloc(sizeof(NvMethod) * 8);\n    c->constants = nv_map_new();\n    c->constantOrder = nv_arr_new();\n    if (nv_nclasses == nv_class_cap) {\n        NvClass **grown;\n        nv_class_cap = nv_class_cap \? nv_class_cap * 2 : 16;\n        grown = (NvClass **)nv_alloc(sizeof(NvClass *) * (size_t)nv_class_cap);\n        if (nv_nclasses) {\n            memcpy(grown, nv_classes, sizeof(NvClass *) * (size_t)nv_nclasses);\n        }\n        nv_classes = grown;\n    }\n    nv_classes[nv_nclasses++] = c;\n    return c;\n}\n\nstatic void nv_class_field(NvClass *c, const char *name, const char *type) {\n    if (c->nfields == c->fieldCap) {\n        const char **names = (const char **)nv_alloc(sizeof(char *) * (size_t)c->fieldCap * 2);\n        const char **types = (const char **)nv_alloc(sizeof(char *) * (size_t)c->fieldCap * 2);\n        memcpy(names, c->fieldNames, sizeof(char *) * (size_t)c->nfields);\n        memcpy(types, c->fieldTypes, sizeof(char *) * (size_t)c->nfields);\n        c->fieldNames = names;\n        c->fieldTypes = types;\n        c->fieldCap *= 2;\n    }\n    c->fieldNames[c->nfields] = name;\n    c->fieldTypes[c->nfields] = type;\n    c->nfields++;\n}\n\nstatic void nv_class_method(NvClass *c, const char *name, int arity, NvMethodFn fn) {\n    if (c->nmethods == c->methodCap) {\n        NvMethod *grown = (NvMethod *)nv_alloc(sizeof(NvMethod) * (size_t)c->methodCap * 2);\n        memcpy(grown, c->methods, sizeof(NvMethod) * (size_t)c->nmethods);\n        c->methods = grown;\n        c->methodCap *= 2;\n    }\n    c->methods[c->nmethods].name = name;\n    c->methods[c->nmethods].arity = arity;\n    c->methods[c->nmethods].fn = fn;\n    c->nmethods++;\n}\n\nstatic void nv_class_ctor(NvClass *c, int arity, NvMethodFn fn) {\n    c->ctor = fn;\n    c->ctorArity = arity;\n}\n\nstatic NvClass *nv_class_base(NvClass *c) { return c->base \? nv_find_class(c->base) : 0; }\n\n/* field type if `name` is a field somewhere in the class chain */\nstatic const char *nv_class_field_type(NvClass *c, const char *name) {\n    int guard = 0;\n    while (c && guard++ < 64) {\n        int i;\n        for (i = 0; i < c->nfields; i++) {\n            if (strcmp(c->fieldNames[i], name) == 0) {\n                return c->fieldTypes[i];\n            }\n        }\n        c = nv_class_base(c);\n    }\n    return 0;\n}\n\nstatic NvMethod *nv_class_find_method(NvClass *c, const char *name, int arity) {\n    NvMethod *byName = 0;\n    int guard = 0;\n    while (c && guard++ < 64) {\n        int i;\n        for (i = 0; i < c->nmethods; i++) {\n            if (strcmp(c->methods[i].name, name) == 0) {\n                if (c->methods[i].arity == arity) {\n                    return &c->methods[i];\n                }\n                if (!byName) {\n                    byName = &c->methods[i];\n                }\n            }\n        }\n        if (byName) {\n            return byName; /* most derived definition wins */\n        }\n        c = nv_class_base(c);\n    }\n    return byName;\n}\n\n/* Fields are laid out base class first, then the class itself. */\nstatic int nv_class_field_count(NvClass *c);\n\nstatic int nv_field_index(NvClass *c, const char *name) {\n    NvClass *base = nv_class_base(c);\n    int offset = base \? nv_class_field_count(base) : 0;\n    int i;\n    for (i = 0; i < c->nfields; i++) {\n        if (strcmp(c->fieldNames[i], name) == 0) {\n            return offset + i;\n        }\n    }\n    return base \? nv_field_index(base, name) : -1;\n}\n\n/* Name and declared type of the field at `index`. */\nstatic const char *nv_field_name_at(NvClass *c, int index, const char **type) {\n    NvClass *base = nv_class_base(c);\n    int offset = base \? nv_class_field_count(base) : 0;\n    if (index >= offset) {\n        if (type) {\n            *type = c->fieldTypes[index - offset];\n        }\n        return c->fieldNames[index - offset];\n    }\n    return base \? nv_field_name_at(base, index, type) : 0;\n}\n\nstatic int *nv_field_order(NvClass *c, int count) {\n    int i, j;\n    if (c->order) {\n        return c->order;\n    }\n    c->order = (int *)nv_alloc(sizeof(int) * (size_t)(count < 1 \? 1 : count));\n    for (i = 0; i < count; i++) {\n        /* insertion sort: field counts are tiny */\n        const char *name = nv_field_name_at(c, i, 0);\n        for (j = i; j > 0 && strcmp(nv_field_name_at(c, c->order[j - 1], 0), name) > 0; j--) {\n            c->order[j] = c->order[j - 1];\n        }\n        c->order[j] = i;\n    }\n    return c->order;\n}\n\n\n\nstatic void nv_init_fields(NvClass *c, nv *fields) {\n    int count = nv_class_field_count(c);\n    if (count > 0) {\n        memcpy(fields, nv_class_defaults(c), sizeof(nv) * (size_t)count);\n    }\n}\n\nstatic int nv_class_field_count(NvClass *c) {\n    int n = 0, guard = 0;\n    NvClass *walk = c;\n    if (c->totalFields >= 0) {\n        return c->totalFields;\n    }\n    while (walk && guard++ < 64) {\n        n += walk->nfields;\n        walk = nv_class_base(walk);\n    }\n    c->totalFields = n;\n    return n;\n}\n\n/* Default value per field slot, computed once per class. */\nstatic nv *nv_class_defaults(NvClass *c) {\n    int count, i;\n    if (c->defaults) {\n        return c->defaults;\n    }\n    count = nv_class_field_count(c);\n    c->defaults = (nv *)nv_alloc(sizeof(nv) * (size_t)(count < 1 \? 1 : count));\n    for (i = 0; i < count; i++) {\n        const char *type = 0;\n        nv_field_name_at(c, i, &type);\n        c->defaults[i] = type \? nv_default(type) : nv_nil;\n    }\n    return c->defaults;\n}\n\n/* Coercion by type name costs a normalize plus up to three strcmp. The kind\n * is the same for every object of a class, so it is computed once. */\nstatic signed char nv_type_kind(const char *t) {\n    t = nv_normalize_type(t);\n    if (strcmp(t, \"integer\") == 0) {\n        return 1;\n    }\n    if (strcmp(t, \"float\") == 0) {\n        return 2;\n    }\n    if (strcmp(t, \"string\") == 0) {\n        return 3;\n    }\n    return 0;\n}\n\nstatic inline nv nv_coerce_kind(nv v, signed char kind, const char *type) {\n    if (kind == 0) {\n        return v;\n    }\n    if (kind == 1 && nv_type_of(v) != NV_FLOAT) {\n        return v;\n    }\n    if (kind == 3 && nv_type_of(v) == NV_STR) {\n        return v;\n    }\n    return nv_coerce(v, type);\n}\n\n/* Field types and kinds in slot order (base class first). */\nstatic void nv_class_layout(NvClass *c) {\n    int count, i;\n    if (c->flatKinds) {\n        return;\n    }\n    count = nv_class_field_count(c);\n    if (count < 1) {\n        count = 1;\n    }\n    c->flatTypes = (const char **)nv_alloc(sizeof(const char *) * (size_t)count);\n    c->flatKinds = (signed char *)nv_alloc(sizeof(signed char) * (size_t)count);\n    for (i = 0; i < nv_class_field_count(c); i++) {\n        const char *type = 0;\n        nv_field_name_at(c, i, &type);\n        c->flatTypes[i] = type;\n        c->flatKinds[i] = type \? nv_type_kind(type) : 0;\n    }\n}\n\n/* Value, object header and field slots live in one arena block. */\ntypedef struct NvObjBlock {\n    NvVal val;\n    NvObj obj;\n} NvObjBlock;\n\nstatic nv nv_new_object_of(NvClass *c);\n\n/* Class pointer cached per call site: the name lookup happens once. */\nstatic nv nv_new_object_cached(NvClass **cache, const char *className) {\n    if (!*cache) {\n        *cache = nv_find_class(className);\n        if (!*cache) {\n            nv_error(\"unknown class '%s'\", className);\n        }\n    }\n    return nv_new_object_of(*cache);\n}\n\nstatic nv nv_new_object(const char *className) {\n    NvClass *c = nv_find_class(className);\n    if (!c) {\n        nv_error(\"unknown class '%s'\", className);\n    }\n    return nv_new_object_of(c);\n}\n\nstatic nv nv_new_object_of(NvClass *c) {\n    NvObjBlock *b;\n    int nfields;\n    if (c->isAbstract) {\n        nv_error(\"cannot instantiate abstract class '%s'\", c->name);\n    }\n    nfields = nv_class_field_count(c);\n    b = (NvObjBlock *)nv_alloc(sizeof(NvObjBlock) + sizeof(nv) * (size_t)(nfields < 1 \? 1 : nfields));\n    b->val.type = NV_OBJ;\n    b->val.slen = 0;\n    b->val.scap = 0;\n    b->val.o = &b->obj;\n    b->obj.cls = c;\n    b->obj.name = 0;\n    nv_init_fields(c, nv_fields(&b->obj));\n    return &b->val;\n}\n\nstatic nv nv_construct_obj(nv obj, nv *args, int n) {\n    NvClass *c = obj->o->cls;\n    if (!c->ctorResolved) {\n        NvClass *walk = c;\n        int guard = 0;\n        while (walk && guard++ < 64) {\n            if (walk->ctor) {\n                c->resolvedCtor = walk->ctor;\n                break;\n            }\n            walk = nv_class_base(walk);\n        }\n        c->ctorResolved = 1;\n    }\n    if (c->resolvedCtor) {\n        c->resolvedCtor(obj, args, n);\n        return obj;\n    }\n    /* no constructor: positional field initialization (base fields first) */\n    {\n        int count = nv_class_field_count(c);\n        nv *slots = nv_fields(obj->o);\n        int k;\n        nv_class_layout(c);\n        for (k = 0; k < n && k < count; k++) {\n            slots[k] = nv_coerce_kind(args[k], c->flatKinds[k], c->flatTypes[k]);\n        }\n    }\n    return obj;\n}\n\nstatic nv nv_construct_args(const char *className, nv *args, int n) {\n    return nv_construct_obj(nv_new_object(className), args, n);\n}\n\nstatic nv nv_construct(const char *className, int n, ...) {\n    nv args[64];\n    va_list ap;\n    int i;\n    va_start(ap, n);\n    for (i = 0; i < n && i < 64; i++) {\n        args[i] = va_arg(ap, nv);\n    }\n    va_end(ap);\n    return nv_construct_args(className, args, n);\n}\n\n/* The common arities without va_list - object construction is hot. */\nstatic inline nv nv_construct0(NvClass **cache, const char *className) {\n    return nv_construct_obj(nv_new_object_cached(cache, className), 0, 0);\n}\n\nstatic inline nv nv_construct1(NvClass **cache, const char *className, nv a0) {\n    nv args[1];\n    args[0] = a0;\n    return nv_construct_obj(nv_new_object_cached(cache, className), args, 1);\n}\n\nstatic inline nv nv_construct2(NvClass **cache, const char *className, nv a0, nv a1) {\n    nv args[2];\n    args[0] = a0;\n    args[1] = a1;\n    return nv_construct_obj(nv_new_object_cached(cache, className), args, 2);\n}\n\nstatic inline nv nv_construct3(NvClass **cache, const char *className, nv a0, nv a1, nv a2) {\n    nv args[3];\n    args[0] = a0;\n    args[1] = a1;\n    args[2] = a2;\n    return nv_construct_obj(nv_new_object_cached(cache, className), args, 3);\n}\n\n/* Same, with the class pointer cached in a static at the call site. */\nstatic nv nv_construct_cached(NvClass **cache, const char *className, int n, ...) {\n    nv args[64];\n    va_list ap;\n    int i;\n    va_start(ap, n);\n    for (i = 0; i < n && i < 64; i++) {\n        args[i] = va_arg(ap, nv);\n    }\n    va_end(ap);\n    return nv_construct_obj(nv_new_object_cached(cache, className), args, n);\n}\n\n/* Object literal: Name{field=value, ...} - no constructor is run. */\nstatic nv nv_new_object_fields_cached(NvClass **cache, const char *className, int n, ...) {\n    nv obj = nv_new_object_cached(cache, className);\n    va_list ap;\n    int i;\n    va_start(ap, n);\n    for (i = 0; i < n; i++) {\n        const char *name = va_arg(ap, const char *);\n        nv val = va_arg(ap, nv);\n        int at = nv_field_index(obj->o->cls, name);\n        if (at < 0) {\n            nv_error(\"no field '%s' on %s\", name, obj->o->cls->name);\n        }\n        nv_fields(obj->o)[at] = val;\n    }\n    va_end(ap);\n    return obj;\n}\n\nstatic nv nv_new_object_fields(const char *className, int n, ...) {\n    nv obj = nv_new_object(className);\n    va_list ap;\n    int i;\n    va_start(ap, n);\n    for (i = 0; i < n; i++) {\n        const char *name = va_arg(ap, const char *);\n        nv val = va_arg(ap, nv);\n        int at = nv_field_index(obj->o->cls, name);\n        if (at < 0) {\n            nv_error(\"no field '%s' on %s\", name, obj->o->cls->name);\n        }\n        nv_fields(obj->o)[at] = val;\n    }\n    va_end(ap);\n    return obj;\n}\n\nstatic void nv_enum_add(const char *enumName, const char *constName, nv obj) {\n    NvClass *c = nv_find_class(enumName);\n    obj->o->name = constName;\n    nv_map_set(c->constants, constName, obj);\n    nv_arr_push(c->constantOrder, obj);\n}\n\nstatic nv nv_enum_get(const char *enumName, const char *constName) {\n    NvClass *c = nv_find_class(enumName);\n    nv v = c \? nv_map_get(c->constants, constName) : 0;\n    if (!v) {\n        nv_error(\"no constant '%s' in enum %s\", constName, enumName);\n    }\n    return v;\n}\n\nstatic nv nv_enum_values(const char *enumName) {\n    NvClass *c = nv_find_class(enumName);\n    nv v = nv_arr();\n    int i;\n    if (c) {\n        for (i = 0; i < c->constantOrder->len; i++) {\n            nv_arr_push(v->a, c->constantOrder->items[i]);\n        }\n    }\n    return v;\n}\n\nstatic int nv_deprecated_warned_dummy NV_UNUSED = 0;\n\nstatic void nv_warn_deprecated(int *flag, const char *method, const char *since, const char *text) {\n    if (*flag) {\n        return;\n    }\n    *flag = 1;\n    printf(\"[warning] Method '%s' is deprecated\", method);\n    if (since[0]) {\n        printf(\" (since %s)\", since);\n    }\n    if (text[0]) {\n        printf(\": %s\", text);\n    }\n    printf(\"\\n\");\n}\n\n/* ------------------------------------------------------------------ */\n/* Strings helpers                                                     */\n/* ------------------------------------------------------------------ */\n\nstatic nv nv_substr(nv s, long long start, long long end) {\n    long long n = s->slen;\n    if (start < 0) {\n        start = 0;\n    }\n    if (end > n) {\n        end = n;\n    }\n    if (start > end) {\n        start = end;\n    }\n    return nv_strn(s->s + start, (int)(end - start));\n}\n\nstatic long long nv_str_index_of(nv s, nv needle, long long from) {\n    const char *ns = nv_display(needle);\n    const char *hs = nv_cstr(s);\n    const char *p;\n    if (from < 0) {\n        from = 0;\n    }\n    if (from > s->slen) {\n        return -1;\n    }\n    p = strstr(hs + from, ns);\n    return p \? (long long)(p - hs) : -1;\n}\n\nstatic nv nv_str_split(nv s, nv sep) {\n    nv out = nv_arr();\n    const char *sp = nv_display(sep);\n    size_t sl = strlen(sp);\n    const char *cur = nv_cstr(s);\n    const char *p;\n    if (sl == 0) {\n        int i;\n        for (i = 0; i < s->slen; i++) {\n            nv_arr_push(out->a, nv_strn(s->s + i, 1));\n        }\n        return out;\n    }\n    while ((p = strstr(cur, sp)) != 0) {\n        nv_arr_push(out->a, nv_strn(cur, (int)(p - cur)));\n        cur = p + sl;\n    }\n    nv_arr_push(out->a, nv_str(cur));\n    return out;\n}\n\n/* Splits on runs of whitespace - the hot path of most text processing. */\nstatic nv nv_str_words(nv s) {\n    nv out = nv_arr();\n    const char *text = nv_cstr(s);\n    int i = 0, start;\n    while (text[i]) {\n        while (text[i] && isspace((unsigned char)text[i])) {\n            i++;\n        }\n        if (!text[i]) {\n            break;\n        }\n        start = i;\n        while (text[i] && !isspace((unsigned char)text[i])) {\n            i++;\n        }\n        nv_arr_push(out->a, nv_strn(text + start, i - start));\n    }\n    return out;\n}\n\nstatic nv nv_str_replace(nv s, nv from, nv to) {\n    NvSb sb;\n    const char *f = nv_display(from);\n    const char *t = nv_display(to);\n    size_t fl = strlen(f);\n    const char *cur = nv_cstr(s);\n    const char *p;\n    if (fl == 0) {\n        return s;\n    }\n    nv_sb_init(&sb);\n    while ((p = strstr(cur, f)) != 0) {\n        nv_sb_addn(&sb, cur, (int)(p - cur));\n        nv_sb_add(&sb, t);\n        cur = p + fl;\n    }\n    nv_sb_add(&sb, cur);\n    {\n        int len = sb.len;\n        return nv_str_own(nv_sb_finish(&sb), len);\n    }\n}\n\nstatic nv nv_str_trim(nv s) {\n    int a = 0, b = s->slen;\n    while (a < b && isspace((unsigned char)s->s[a])) {\n        a++;\n    }\n    while (b > a && isspace((unsigned char)s->s[b - 1])) {\n        b--;\n    }\n    return nv_strn(s->s + a, b - a);\n}\n\nstatic nv nv_str_case(nv s, int upper) {\n    char *buf = nv_strndup(s->s, (size_t)s->slen);\n    int i;\n    for (i = 0; i < s->slen; i++) {\n        buf[i] = (char)(upper \? toupper((unsigned char)buf[i]) : tolower((unsigned char)buf[i]));\n    }\n    return nv_str_own(buf, s->slen);\n}\n\nstatic nv nv_arr_join(nv a, nv sep) {\n    NvSb sb;\n    const char *sp = nv_display(sep);\n    int i, len;\n    nv_sb_init(&sb);\n    for (i = 0; i < a->a->len; i++) {\n        if (i > 0) {\n            nv_sb_add(&sb, sp);\n        }\n        nv_display_into(&sb, a->a->items[i]);\n    }\n    len = sb.len;\n    return nv_str_own(nv_sb_finish(&sb), len);\n}\n\nstatic long long nv_arr_index_of(nv a, nv v) {\n    int i;\n    for (i = 0; i < a->a->len; i++) {\n        if (nv_equals(a->a->items[i], v)) {\n            return i;\n        }\n    }\n    return -1;\n}\n\n/* ------------------------------------------------------------------ */\n/* Method calls on any value                                           */\n/* ------------------------------------------------------------------ */\n\n/* Resolving a member means walking field names and method names with strcmp,\n * and the same (class, name) pair is asked for over and over. This cache is\n * keyed on the *pointers*: every name comes from a string literal in the\n * generated C, so a hit costs two compares and no string work. Classes are\n * fully registered before the first call runs, so entries never go stale. */\n#define NV_MCACHE 2048\ntypedef struct NvMember {\n    NvClass *cls;\n    const char *name;\n    int arity;\n    int slot;          /* >= 0: field slot, -1: method */\n    const char *ftype; /* declared field type, for setter coercion */\n    signed char kind;  /* nv_type_kind of ftype */\n    NvMethodFn fn;\n} NvMember;\nstatic NvMember nv_mcache[NV_MCACHE];\n\n/* The resolved member, or 0 when the class has neither field nor method. */\nstatic NvMember *nv_resolve_member(NvClass *c, const char *name, int arity) {\n    size_t h = (((size_t)(uintptr_t)c >> 4) ^ ((size_t)(uintptr_t)name >> 2)\n                ^ (size_t)(arity * 31)) & (size_t)(NV_MCACHE - 1);\n    NvMember *e = &nv_mcache[h];\n    NvMethod *m;\n    int at;\n    if (e->cls == c && e->name == name && e->arity == arity) {\n        return e;\n    }\n    at = nv_field_index(c, name);\n    if (at >= 0) {\n        const char *ftype = 0;\n        nv_field_name_at(c, at, &ftype);\n        e->cls = c;\n        e->name = name;\n        e->arity = arity;\n        e->slot = at;\n        e->ftype = ftype;\n        e->kind = ftype \? nv_type_kind(ftype) : 0;\n        e->fn = 0;\n        return e;\n    }\n    m = nv_class_find_method(c, name, arity);\n    if (!m) {\n        return 0;\n    }\n    e->cls = c;\n    e->name = name;\n    e->arity = arity;\n    e->slot = -1;\n    e->ftype = 0;\n    e->fn = m->fn;\n    return e;\n}\n\nstatic nv nv_invoke_args(nv t, const char *name, nv *args, int n) {\n    if (nv_type_of(t) == NV_OBJ) {\n        NvMember *e = nv_resolve_member(t->o->cls, name, n);\n        if (e) {\n            if (e->slot < 0) {\n                return e->fn(t, args, n);\n            }\n            if (n == 0) {\n                return nv_fields(t->o)[e->slot];   /* getter */\n            }\n            nv_fields(t->o)[e->slot] = nv_coerce_kind(args[0], e->kind, e->ftype);\n            return nv_nil;                         /* setter */\n        }\n        nv_error(\"unknown member '%s' on %s\", name, t->o->cls->name);\n    }\n    if (strcmp(name, \"length\") == 0) {\n        if (nv_type_of(t) == NV_ARR) {\n            return nv_int(t->a->len);\n        }\n        if (nv_type_of(t) == NV_MAP) {\n            return nv_int(t->m->len);\n        }\n        if (nv_type_of(t) == NV_STR) {\n            return nv_int(t->slen);\n        }\n        nv_error(\"'%s' has no length\", nv_type_name(t));\n    }\n    if (nv_type_of(t) == NV_ARR) {\n        if (strcmp(name, \"append\") == 0 || strcmp(name, \"push\") == 0) {\n            int i;\n            for (i = 0; i < n; i++) {\n                nv_arr_push(t->a, args[i]);\n            }\n            return nv_nil;\n        }\n        if (strcmp(name, \"pop\") == 0) {\n            if (t->a->len == 0) {\n                nv_error(\"pop() on empty array\");\n            }\n            return t->a->items[--t->a->len];\n        }\n        if (strcmp(name, \"contains\") == 0) {\n            return nv_bool(n > 0 && nv_arr_index_of(t, args[0]) >= 0);\n        }\n        if (strcmp(name, \"indexOf\") == 0) {\n            return nv_int(n > 0 \? nv_arr_index_of(t, args[0]) : -1);\n        }\n        if (strcmp(name, \"join\") == 0) {\n            return nv_arr_join(t, n > 0 \? args[0] : nv_str(\"\"));\n        }\n        if (strcmp(name, \"clear\") == 0) {\n            t->a->len = 0;\n            return nv_nil;\n        }\n        if (strcmp(name, \"insert\") == 0 && n == 2) {\n            long long at = nv_as_int(args[0]);\n            int i;\n            if (at < 0 || at > t->a->len) {\n                nv_error(\"insert index %lld out of bounds (size %d)\", at, t->a->len);\n            }\n            nv_arr_push(t->a, nv_nil);\n            for (i = t->a->len - 1; i > at; i--) {\n                t->a->items[i] = t->a->items[i - 1];\n            }\n            t->a->items[at] = args[1];\n            return nv_nil;\n        }\n        if (strcmp(name, \"remove\") == 0 && n == 1) {\n            long long at = nv_as_int(args[0]);\n            int i;\n            if (at < 0 || at >= t->a->len) {\n                nv_error(\"remove index %lld out of bounds (size %d)\", at, t->a->len);\n            }\n            for (i = (int)at; i < t->a->len - 1; i++) {\n                t->a->items[i] = t->a->items[i + 1];\n            }\n            t->a->len--;\n            return nv_nil;\n        }\n    }\n    if (nv_type_of(t) == NV_MAP) {\n        if (strcmp(name, \"has\") == 0) {\n            return nv_bool(n > 0 && nv_map_has(t->m, nv_display(args[0])));\n        }\n        if (strcmp(name, \"keys\") == 0) {\n            nv out = nv_arr();\n            int i;\n            nv_map_order(t->m);\n            for (i = 0; i < t->m->len; i++) {\n                nv_arr_push(out->a, nv_str(t->m->items[i].key));\n            }\n            return out;\n        }\n        if (strcmp(name, \"values\") == 0) {\n            nv out = nv_arr();\n            int i;\n            nv_map_order(t->m);\n            for (i = 0; i < t->m->len; i++) {\n                nv_arr_push(out->a, t->m->items[i].val);\n            }\n            return out;\n        }\n        if (strcmp(name, \"remove\") == 0) {\n            if (n > 0) {\n                nv_map_remove(t->m, nv_display(args[0]));\n            }\n            return nv_nil;\n        }\n        if (strcmp(name, \"get\") == 0 && n == 2) {\n            nv v = nv_map_get(t->m, nv_display(args[0]));\n            return v \? v : args[1];\n        }\n    }\n    if (nv_type_of(t) == NV_STR) {\n        if (strcmp(name, \"charAt\") == 0) {\n            long long i = n > 0 \? nv_as_int(args[0]) : 0;\n            if (i < 0 || i >= t->slen) {\n                nv_error(\"charAt index %lld out of bounds (length %d)\", i, t->slen);\n            }\n            return nv_strn(t->s + i, 1);\n        }\n        if (strcmp(name, \"substring\") == 0) {\n            long long start = n > 0 \? nv_as_int(args[0]) : 0;\n            long long end = n > 1 \? nv_as_int(args[1]) : t->slen;\n            return nv_substr(t, start, end);\n        }\n        if (strcmp(name, \"indexOf\") == 0) {\n            return nv_int(n > 0 \? nv_str_index_of(t, args[0], n > 1 \? nv_as_int(args[1]) : 0) : -1);\n        }\n        if (strcmp(name, \"contains\") == 0) {\n            return nv_bool(n > 0 && nv_str_index_of(t, args[0], 0) >= 0);\n        }\n        if (strcmp(name, \"startsWith\") == 0) {\n            const char *p = n > 0 \? nv_display(args[0]) : \"\";\n            size_t pl = strlen(p);\n            return nv_bool(pl <= (size_t)t->slen && memcmp(t->s, p, pl) == 0);\n        }\n        if (strcmp(name, \"endsWith\") == 0) {\n            const char *p = n > 0 \? nv_display(args[0]) : \"\";\n            size_t pl = strlen(p);\n            return nv_bool(pl <= (size_t)t->slen && memcmp(t->s + t->slen - pl, p, pl) == 0);\n        }\n        if (strcmp(name, \"split\") == 0) {\n            return nv_str_split(t, n > 0 \? args[0] : nv_str(\"\"));\n        }\n        if (strcmp(name, \"replace\") == 0 && n == 2) {\n            return nv_str_replace(t, args[0], args[1]);\n        }\n        if (strcmp(name, \"trim\") == 0) {\n            return nv_str_trim(t);\n        }\n        if (strcmp(name, \"toUpper\") == 0) {\n            return nv_str_case(t, 1);\n        }\n        if (strcmp(name, \"toLower\") == 0) {\n            return nv_str_case(t, 0);\n        }\n    }\n    nv_error(\"unknown method '%s()' on '%s'\", name, nv_type_name(t));\n    return nv_nil;\n}\n\n/* `obj.field()` and `obj.method()` without building an argument array. */\nstatic inline nv nv_invoke0(nv t, const char *name) {\n    if (nv_type_of(t) == NV_OBJ) {\n        NvMember *e = nv_resolve_member(t->o->cls, name, 0);\n        if (e) {\n            return e->slot >= 0 \? nv_fields(t->o)[e->slot] : e->fn(t, 0, 0);\n        }\n    }\n    return nv_invoke_args(t, name, 0, 0);\n}\n\n/* Calls with a known small arity skip the va_list: the arguments go into a\n * stack array directly. `nv_invoke` stays for the variadic cases. */\nstatic inline nv nv_invoke1(nv t, const char *name, nv a) {\n    nv args[1];\n    args[0] = a;\n    return nv_invoke_args(t, name, args, 1);\n}\n\nstatic inline nv nv_invoke2(nv t, const char *name, nv a, nv b) {\n    nv args[2];\n    args[0] = a;\n    args[1] = b;\n    return nv_invoke_args(t, name, args, 2);\n}\n\nstatic inline nv nv_invoke3(nv t, const char *name, nv a, nv b, nv c) {\n    nv args[3];\n    args[0] = a;\n    args[1] = b;\n    args[2] = c;\n    return nv_invoke_args(t, name, args, 3);\n}\n\n/* `x.length()` and `x.has(k)` are, after append, the most frequent dynamic\n * calls; going straight to the collection skips the dispatch chain. */\nstatic inline nv nv_length_of(nv t, const char *name) {\n    int type = nv_type_of(t);\n    if (type == NV_ARR) {\n        return nv_int(t->a->len);\n    }\n    if (type == NV_MAP) {\n        return nv_int(t->m->len);\n    }\n    if (type == NV_STR) {\n        return nv_int(t->slen);\n    }\n    return nv_invoke0(t, name);\n}\n\nstatic inline nv nv_has_key(nv t, const char *name, nv key) {\n    if (nv_type_of(t) == NV_MAP) {\n        return nv_bool(nv_map_has(t->m, nv_display(key)));\n    }\n    return nv_invoke1(t, name, key);\n}\n\n/* `x.append(v)` is the hottest dynamic call there is: on an array it is a\n * push, everything else takes the general path. */\nstatic inline nv nv_append(nv t, const char *name, nv v) {\n    if (nv_type_of(t) == NV_ARR) {\n        nv_arr_push(t->a, v);\n        return nv_nil;\n    }\n    return nv_invoke1(t, name, v);\n}\n\nstatic nv nv_invoke(nv t, const char *name, int n, ...) {\n    nv args[64];\n    va_list ap;\n    int i;\n    va_start(ap, n);\n    for (i = 0; i < n && i < 64; i++) {\n        args[i] = va_arg(ap, nv);\n    }\n    va_end(ap);\n    return nv_invoke_args(t, name, args, n);\n}\n\n/* ------------------------------------------------------------------ */\n/* Iteration                                                           */\n/* ------------------------------------------------------------------ */\n\n/* Iteration walks a snapshot, so the body may change the collection while\n * looping. The snapshot is allocated at its final size instead of growing. */\nstatic NvArr *nv_arr_with_capacity(int cap) {\n    NvArr *a = (NvArr *)nv_alloc(sizeof(NvArr));\n    a->len = 0;\n    a->heap = 0;\n    a->cap = cap < 1 \? 1 : cap;\n    if (a->cap >= NV_ARR_HEAP_AT) {\n        a->items = (nv *)malloc(sizeof(nv) * (size_t)a->cap);\n        if (!a->items) {\n            nv_error(\"out of memory\");\n        }\n        a->heap = 1;\n    } else {\n        a->items = (nv *)nv_alloc(sizeof(nv) * (size_t)a->cap);\n    }\n    return a;\n}\n\nstatic NvArr *nv_iter(nv v);\n\n/* `for (x in xs)` walks a snapshot so the collection can be modified inside\n * the loop. When the body cannot call anything, nothing can modify it and\n * the array itself is walked - no copy of up to millions of slots. */\nstatic NvArr *nv_iter_live(nv v) {\n    if (nv_type_of(v) == NV_ARR) {\n        return v->a;\n    }\n    return nv_iter(v);\n}\n\nstatic NvArr *nv_iter(nv v) {\n    NvArr *out;\n    int i;\n    if (nv_type_of(v) == NV_ARR) {\n        out = nv_arr_with_capacity(v->a->len);\n        memcpy(out->items, v->a->items, sizeof(nv) * (size_t)v->a->len);\n        out->len = v->a->len;\n        return out;\n    }\n    out = nv_arr_new();\n    if (nv_type_of(v) == NV_MAP) {\n        nv_map_order(v->m);\n        for (i = 0; i < v->m->len; i++) {\n            nv_arr_push(out, nv_str(v->m->items[i].key));\n        }\n        return out;\n    }\n    if (nv_type_of(v) == NV_STR) {\n        for (i = 0; i < v->slen; i++) {\n            nv_arr_push(out, nv_strn(v->s + i, 1));\n        }\n        return out;\n    }\n    nv_error(\"cannot iterate over a value of type %s\", nv_type_name(v));\n    return out;\n}\n\n/* ------------------------------------------------------------------ */\n/* I/O and builtins                                                    */\n/* ------------------------------------------------------------------ */\n\nstatic void nv_print(nv v) { fputs(nv_display(v), stdout); }\n\nstatic void nv_println(nv v) {\n    fputs(nv_display(v), stdout);\n    fputc('\\n', stdout);\n}\n\nstatic void nv_eprintln(nv v) {\n    fflush(stdout);\n    fputs(nv_display(v), stderr);\n    fputc('\\n', stderr);\n}\n\nstatic nv nv_args_global = 0;\n\nstatic void nv_init_args(int argc, char **argv) {\n    int i;\n#ifdef _WIN32\n    /* LF line endings on every platform (no CRLF translation) */\n    _setmode(_fileno(stdout), _O_BINARY);\n    _setmode(_fileno(stderr), _O_BINARY);\n#endif\n    for (i = 0; i < 256; i++) {\n        char c = (char)i;\n        nv v = nv_new(NV_STR);\n        v->s = nv_strndup(&c, 1);\n        v->slen = 1;\n        v->scap = 0;\n        nv_char_table[i] = v;\n    }\n    nv_empty_str_val.s = \"\";\n    nv_args_global = nv_arr();\n    for (i = 1; i < argc; i++) {\n        nv_arr_push(nv_args_global->a, nv_str(argv[i]));\n    }\n}\n\nstatic nv nv_args(void) { return nv_args_global \? nv_args_global : nv_arr(); }\n\nstatic nv nv_read_file(nv path) {\n    FILE *f = fopen(nv_display(path), \"rb\");\n    long n;\n    char *buf;\n    size_t rd;\n    if (!f) {\n        return nv_str(\"\");\n    }\n    fseek(f, 0, SEEK_END);\n    n = ftell(f);\n    fseek(f, 0, SEEK_SET);\n    buf = (char *)nv_alloc((size_t)n + 1);\n    rd = fread(buf, 1, (size_t)n, f);\n    buf[rd] = 0;\n    fclose(f);\n    return nv_str_own(buf, (int)rd);\n}\n\nstatic nv nv_write_file(nv path, nv content) {\n    FILE *f = fopen(nv_display(path), \"wb\");\n    const char *s;\n    if (!f) {\n        nv_error(\"cannot write file '%s'\", nv_display(path));\n    }\n    s = nv_display(content);\n    fwrite(s, 1, strlen(s), f);\n    fclose(f);\n    return nv_nil;\n}\n\nstatic nv nv_remove_file(nv path) {\n    return nv_bool(remove(nv_display(path)) == 0);\n}\n\nstatic int nv_path_exists_c(const char *p) {\n    struct stat st;\n    return stat(p, &st) == 0;\n}\n\nstatic nv nv_file_exists(nv path) { return nv_bool(nv_path_exists_c(nv_display(path))); }\n\nstatic nv nv_read_line(void) {\n    NvSb sb;\n    int c;\n    int len;\n    nv_sb_init(&sb);\n    while ((c = fgetc(stdin)) != EOF && c != '\\n') {\n        if (c != '\\r') {\n            nv_sb_addc(&sb, (char)c);\n        }\n    }\n    len = sb.len;\n    return nv_str_own(nv_sb_finish(&sb), len);\n}\n\nstatic nv nv_parse_int(nv v) {\n    if (nv_type_of(v) == NV_INT) {\n        return v;\n    }\n    if (nv_type_of(v) == NV_FLOAT) {\n        return nv_int((long long)v->f);\n    }\n    return nv_int(atoll(nv_display(v)));\n}\n\nstatic nv nv_parse_float(nv v) {\n    if (nv_type_of(v) == NV_FLOAT) {\n        return v;\n    }\n    return nv_float(nv_as_double(v));\n}\n\nstatic nv nv_chr(nv code) {\n    char c = (char)nv_as_int(code);\n    return nv_strn(&c, 1);\n}\n\nstatic nv nv_ord(nv s) {\n    const char *p = nv_display(s);\n    return nv_int(p[0] \? (unsigned char)p[0] : 0);\n}\n\nstatic nv nv_typeof_builtin(nv v) { return nv_str(nv_type_name(v)); }\n\n/* cmd.exe strips the outer quotes of `\"prog\" \"arg\"`; one more pair of\n * quotes around the whole line keeps them intact. */\nstatic const char *nv_shell_line(const char *cmd) {\n#ifdef _WIN32\n    size_t n = strlen(cmd);\n    char *buf = (char *)nv_alloc(n + 3);\n    buf[0] = '\"';\n    memcpy(buf + 1, cmd, n);\n    buf[n + 1] = '\"';\n    buf[n + 2] = 0;\n    return buf;\n#else\n    return cmd;\n#endif\n}\n\nstatic int nv_exit_status(int rc) {\n#ifdef _WIN32\n    return rc;\n#else\n    if (rc == -1) {\n        return -1;\n    }\n    if (WIFEXITED(rc)) {\n        return WEXITSTATUS(rc);\n    }\n    return -1;\n#endif\n}\n\nstatic nv nv_exec(nv cmd) {\n    int rc;\n    fflush(stdout);\n    fflush(stderr);\n    rc = system(nv_shell_line(nv_display(cmd)));\n    return nv_int(nv_exit_status(rc));\n}\n\nstatic nv nv_env(nv name) {\n    const char *v = getenv(nv_display(name));\n    return nv_str(v \? v : \"\");\n}\n\nstatic nv nv_exit(nv code) {\n    fflush(stdout);\n    exit((int)nv_as_int(code));\n    return nv_nil;\n}\n\nstatic nv nv_platform(void) {\n#if defined(_WIN32)\n    return nv_str(\"windows\");\n#elif defined(__APPLE__)\n    return nv_str(\"macos\");\n#elif defined(__linux__)\n    return nv_str(\"linux\");\n#else\n    return nv_str(\"unix\");\n#endif\n}\n\n/* ------------------------------------------------------------------ */\n/* path module                                                         */\n/* ------------------------------------------------------------------ */\n\nstatic nv nv_path_join_args(nv *args, int n) {\n    NvSb sb;\n    int i, len;\n    nv_sb_init(&sb);\n    for (i = 0; i < n; i++) {\n        const char *p = nv_display(args[i]);\n        if (p[0] == 0) {\n            continue;\n        }\n        if (sb.len > 0 && sb.buf[sb.len - 1] != '/' && sb.buf[sb.len - 1] != '\\\\') {\n            nv_sb_addc(&sb, '/');\n        }\n        nv_sb_add(&sb, p);\n    }\n    len = sb.len;\n    return nv_str_own(nv_sb_finish(&sb), len);\n}\n\nstatic nv nv_path_join(int n, ...) {\n    nv args[64];\n    va_list ap;\n    int i;\n    va_start(ap, n);\n    for (i = 0; i < n && i < 64; i++) {\n        args[i] = va_arg(ap, nv);\n    }\n    va_end(ap);\n    return nv_path_join_args(args, n);\n}\n\n/* Paths reported by the runtime use forward slashes on every platform. */\nstatic nv nv_path_slashes(const char *s) {\n#ifdef _WIN32\n    char *buf = nv_strndup(s, strlen(s));\n    char *p;\n    for (p = buf; *p; p++) {\n        if (*p == '\\\\') {\n            *p = '/';\n        }\n    }\n    return nv_str_own(buf, (int)strlen(buf));\n#else\n    return nv_str(s);\n#endif\n}\n\nstatic nv nv_path_absolute(void) {\n    char buf[4096];\n    if (!NV_GETCWD(buf, sizeof(buf))) {\n        return nv_str(\".\");\n    }\n    return nv_path_slashes(buf);\n}\n\nstatic nv nv_path_exists(nv p) { return nv_bool(nv_path_exists_c(nv_display(p))); }\n\nstatic nv nv_path_dirname(nv p) {\n    const char *s = nv_display(p);\n    int n = (int)strlen(s);\n    while (n > 0 && s[n - 1] != '/' && s[n - 1] != '\\\\') {\n        n--;\n    }\n    if (n == 0) {\n        return nv_str(\".\");\n    }\n    if (n > 1) {\n        n--; /* drop the separator itself */\n    }\n    return nv_strn(s, n);\n}\n\nstatic nv nv_path_basename(nv p) {\n    const char *s = nv_display(p);\n    int n = (int)strlen(s);\n    int i = n;\n    while (i > 0 && s[i - 1] != '/' && s[i - 1] != '\\\\') {\n        i--;\n    }\n    return nv_str(s + i);\n}\n\nstatic nv nv_path_stem(nv p) {\n    nv base = nv_path_basename(p);\n    int i = base->slen;\n    while (i > 0 && base->s[i - 1] != '.') {\n        i--;\n    }\n    if (i <= 1) {\n        return base;\n    }\n    return nv_strn(base->s, i - 1);\n}\n\nstatic nv nv_path_temp(void) {\n    const char *t = getenv(\"TMPDIR\");\n    if (!t || !t[0]) {\n        t = getenv(\"TEMP\");\n    }\n    if (!t || !t[0]) {\n        t = getenv(\"TMP\");\n    }\n    if (!t || !t[0]) {\n        t = \"/tmp\";\n    }\n    return nv_path_slashes(t);\n}\n\nstatic nv nv_path_extension(nv p) {\n    nv base = nv_path_basename(p);\n    int i = base->slen;\n    while (i > 0 && base->s[i - 1] != '.') {\n        i--;\n    }\n    if (i <= 1) {\n        return nv_str(\"\");\n    }\n    return nv_strn(base->s + i - 1, base->slen - i + 1);\n}\n\nstatic nv nv_path_is_absolute(nv p) {\n    const char *s = nv_display(p);\n    if (s[0] == '/' || s[0] == '\\\\') {\n        return nv_bool(1);\n    }\n    return nv_bool(isalpha((unsigned char)s[0]) && s[1] == ':');\n}\n\nstatic nv nv_path_separator(void) {\n#ifdef _WIN32\n    return nv_str(\"\\\\\");\n#else\n    return nv_str(\"/\");\n#endif\n}\n\n/* Collapses \".\" and \"..\" segments and duplicate separators. */\nstatic nv nv_path_normalize(nv p) {\n    const char *s = nv_display(p);\n    const char *segs[1024];\n    int lens[1024];\n    int n = 0, i = 0, len = (int)strlen(s), k;\n    NvSb sb;\n    int rooted = 0, out;\n    char drive[3] = {0, 0, 0};\n    if (isalpha((unsigned char)s[0]) && s[1] == ':') {\n        drive[0] = s[0];\n        drive[1] = ':';\n        i = 2;\n    }\n    if (s[i] == '/' || s[i] == '\\\\') {\n        rooted = 1;\n    }\n    while (i < len) {\n        int start;\n        while (i < len && (s[i] == '/' || s[i] == '\\\\')) {\n            i++;\n        }\n        start = i;\n        while (i < len && s[i] != '/' && s[i] != '\\\\') {\n            i++;\n        }\n        if (i == start) {\n            continue;\n        }\n        if (i - start == 1 && s[start] == '.') {\n            continue;\n        }\n        if (i - start == 2 && s[start] == '.' && s[start + 1] == '.') {\n            if (n > 0 && !(lens[n - 1] == 2 && segs[n - 1][0] == '.' && segs[n - 1][1] == '.')) {\n                n--;\n                continue;\n            }\n            if (rooted) {\n                continue;\n            }\n        }\n        if (n < 1024) {\n            segs[n] = s + start;\n            lens[n] = i - start;\n            n++;\n        }\n    }\n    nv_sb_init(&sb);\n    if (drive[0]) {\n        nv_sb_add(&sb, drive);\n    }\n    if (rooted) {\n        nv_sb_addc(&sb, '/');\n    }\n    for (k = 0; k < n; k++) {\n        if (k > 0) {\n            nv_sb_addc(&sb, '/');\n        }\n        nv_sb_addn(&sb, segs[k], lens[k]);\n    }\n    if (sb.len == 0) {\n        nv_sb_addc(&sb, '.');\n    }\n    out = sb.len;\n    return nv_str_own(nv_sb_finish(&sb), out);\n}\n\nstatic nv nv_path_absolute_of(nv p) {\n    if (nv_truthy(nv_path_is_absolute(p))) {\n        return nv_path_normalize(p);\n    }\n    return nv_path_normalize(nv_path_join(2, nv_path_absolute(), p));\n}\n\n/* Path of `target` relative to directory `base` (both made absolute). */\nstatic nv nv_path_relative(nv base, nv target) {\n    nv b = nv_path_absolute_of(base);\n    nv t = nv_path_absolute_of(target);\n    nv bparts = nv_str_split(b, nv_str(\"/\"));\n    nv tparts = nv_str_split(t, nv_str(\"/\"));\n    int common = 0, i;\n    nv out = nv_arr();\n    while (common < bparts->a->len && common < tparts->a->len &&\n           strcmp(nv_cstr(bparts->a->items[common]), nv_cstr(tparts->a->items[common])) == 0) {\n        common++;\n    }\n    for (i = common; i < bparts->a->len; i++) {\n        if (bparts->a->items[i]->slen > 0) {\n            nv_arr_push(out->a, nv_str(\"..\"));\n        }\n    }\n    for (i = common; i < tparts->a->len; i++) {\n        if (tparts->a->items[i]->slen > 0) {\n            nv_arr_push(out->a, tparts->a->items[i]);\n        }\n    }\n    if (out->a->len == 0) {\n        return nv_str(\".\");\n    }\n    return nv_arr_join(out, nv_str(\"/\"));\n}\n\n/* ------------------------------------------------------------------ */\n/* os module                                                           */\n/* ------------------------------------------------------------------ */\n\nstatic int nv_stat_mode(const char *p, int *isdir) {\n    struct stat st;\n    if (stat(p, &st) != 0) {\n        return 0;\n    }\n#ifdef S_ISDIR\n    *isdir = S_ISDIR(st.st_mode);\n#else\n    *isdir = (st.st_mode & S_IFMT) == S_IFDIR;\n#endif\n    return 1;\n}\n\nstatic nv nv_os_is_dir(nv p) {\n    int isdir = 0;\n    return nv_bool(nv_stat_mode(nv_display(p), &isdir) && isdir);\n}\n\nstatic nv nv_os_is_file(nv p) {\n    int isdir = 0;\n    return nv_bool(nv_stat_mode(nv_display(p), &isdir) && !isdir);\n}\n\n/* mkdir -p */\nstatic nv nv_os_mkdir(nv p) {\n    const char *s = nv_display(p);\n    size_t n = strlen(s), i;\n    char *buf = nv_strndup(s, n);\n    int isdir = 0;\n    for (i = 1; i < n; i++) {\n        if (buf[i] == '/' || buf[i] == '\\\\') {\n            char saved = buf[i];\n            buf[i] = 0;\n            if (!(buf[i - 1] == ':' && i == 2)) {\n                NV_MKDIR(buf);\n            }\n            buf[i] = saved;\n        }\n    }\n    NV_MKDIR(buf);\n    return nv_bool(nv_stat_mode(buf, &isdir) && isdir);\n}\n\nstatic nv nv_os_rmdir(nv p) { return nv_bool(NV_RMDIR(nv_display(p)) == 0); }\n\nstatic int nv_name_cmp(const void *a, const void *b) {\n    return strcmp(nv_cstr(*(const nv *)a), nv_cstr(*(const nv *)b));\n}\n\n/* Entries of a directory (without . and ..), sorted. */\nstatic nv nv_os_list_dir(nv p) {\n    nv out = nv_arr();\n    const char *dir = nv_display(p);\n#ifdef _WIN32\n    WIN32_FIND_DATAA data;\n    HANDLE h;\n    char *pattern = (char *)nv_alloc(strlen(dir) + 3);\n    strcpy(pattern, dir);\n    strcat(pattern, \"/*\");\n    h = FindFirstFileA(pattern, &data);\n    if (h == INVALID_HANDLE_VALUE) {\n        nv_error(\"cannot list directory '%s'\", dir);\n    }\n    do {\n        if (strcmp(data.cFileName, \".\") != 0 && strcmp(data.cFileName, \"..\") != 0) {\n            nv_arr_push(out->a, nv_str(data.cFileName));\n        }\n    } while (FindNextFileA(h, &data));\n    FindClose(h);\n#else\n    DIR *d = opendir(dir);\n    struct dirent *e;\n    if (!d) {\n        nv_error(\"cannot list directory '%s'\", dir);\n    }\n    while ((e = readdir(d)) != 0) {\n        if (strcmp(e->d_name, \".\") != 0 && strcmp(e->d_name, \"..\") != 0) {\n            nv_arr_push(out->a, nv_str(e->d_name));\n        }\n    }\n    closedir(d);\n#endif\n    if (out->a->len > 1) {\n        qsort(out->a->items, (size_t)out->a->len, sizeof(nv), nv_name_cmp);\n    }\n    return out;\n}\n\n/* rm -rf */\nstatic nv nv_os_remove_all(nv p) {\n    int isdir = 0;\n    const char *s = nv_display(p);\n    if (!nv_stat_mode(s, &isdir)) {\n        return nv_bool(0);\n    }\n    if (isdir) {\n        nv entries = nv_os_list_dir(p);\n        int i;\n        for (i = 0; i < entries->a->len; i++) {\n            nv_os_remove_all(nv_path_join(2, p, entries->a->items[i]));\n        }\n        return nv_bool(NV_RMDIR(s) == 0);\n    }\n    return nv_bool(remove(s) == 0);\n}\n\nstatic nv nv_os_rename(nv from, nv to) { return nv_bool(rename(nv_display(from), nv_display(to)) == 0); }\n\nstatic nv nv_os_copy(nv from, nv to) {\n    FILE *in = fopen(nv_display(from), \"rb\");\n    FILE *out;\n    char buf[65536];\n    size_t n;\n    if (!in) {\n        return nv_bool(0);\n    }\n    out = fopen(nv_display(to), \"wb\");\n    if (!out) {\n        fclose(in);\n        return nv_bool(0);\n    }\n    while ((n = fread(buf, 1, sizeof(buf), in)) > 0) {\n        fwrite(buf, 1, n, out);\n    }\n    fclose(in);\n    fclose(out);\n    return nv_bool(1);\n}\n\nstatic nv nv_os_chdir(nv p) { return nv_bool(NV_CHDIR(nv_display(p)) == 0); }\n\nstatic nv nv_os_file_size(nv p) {\n    struct stat st;\n    if (stat(nv_display(p), &st) != 0) {\n        return nv_int(-1);\n    }\n    return nv_int((long long)st.st_size);\n}\n\nstatic nv nv_os_modified(nv p) {\n    struct stat st;\n    if (stat(nv_display(p), &st) != 0) {\n        return nv_int(-1);\n    }\n    return nv_int((long long)st.st_mtime);\n}\n\nstatic nv nv_append_file(nv path, nv content) {\n    FILE *f = fopen(nv_display(path), \"ab\");\n    const char *s;\n    if (!f) {\n        nv_error(\"cannot write file '%s'\", nv_display(path));\n    }\n    s = nv_display(content);\n    fwrite(s, 1, strlen(s), f);\n    fclose(f);\n    return nv_nil;\n}\n\n/* Runs a command and returns what it printed to stdout. */\nstatic nv nv_os_output(nv cmd) {\n    FILE *p;\n    NvSb sb;\n    char buf[4096];\n    size_t n;\n    int len;\n    fflush(stdout);\n    fflush(stderr);\n    p = NV_POPEN(nv_shell_line(nv_display(cmd)), \"r\");\n    if (!p) {\n        nv_error(\"cannot run '%s'\", nv_display(cmd));\n    }\n    nv_sb_init(&sb);\n    while ((n = fread(buf, 1, sizeof(buf), p)) > 0) {\n        nv_sb_addn(&sb, buf, (int)n);\n    }\n    NV_PCLOSE(p);\n    len = sb.len;\n    return nv_str_own(nv_sb_finish(&sb), len);\n}\n\nstatic nv nv_os_set_env(nv name, nv value) {\n#ifdef _WIN32\n    return nv_bool(_putenv_s(nv_display(name), nv_display(value)) == 0);\n#else\n    return nv_bool(setenv(nv_display(name), nv_display(value), 1) == 0);\n#endif\n}\n\nstatic nv nv_os_time(void) { return nv_int((long long)time(0)); }\n\nstatic nv nv_os_clock(void) {\n#ifdef _WIN32\n    FILETIME ft;\n    unsigned long long t;\n    GetSystemTimeAsFileTime(&ft);\n    t = ((unsigned long long)ft.dwHighDateTime << 32) | ft.dwLowDateTime;\n    return nv_float((double)(t - 116444736000000000ULL) / 10000000.0);\n#else\n    struct timeval tv;\n    gettimeofday(&tv, 0);\n    return nv_float((double)tv.tv_sec + (double)tv.tv_usec / 1000000.0);\n#endif\n}\n\nstatic nv nv_os_sleep(nv ms) {\n    long long m = nv_as_int(ms);\n#ifdef _WIN32\n    Sleep((DWORD)m);\n#else\n    struct timespec ts;\n    ts.tv_sec = (time_t)(m / 1000);\n    ts.tv_nsec = (long)(m % 1000) * 1000000L;\n    nanosleep(&ts, 0);\n#endif\n    return nv_nil;\n}\n\nstatic nv nv_os_home(void) {\n    const char *h = getenv(\"HOME\");\n    if (!h || !h[0]) {\n        h = getenv(\"USERPROFILE\");\n    }\n    return nv_path_slashes(h \? h : \"\");\n}\n\nstatic nv nv_os_pid(void) { return nv_int((long long)NV_GETPID()); }\n\n/* ------------------------------------------------------------------ */\n/* std natives: math, time, random, fmt, hash, io, arrays              */\n/* ------------------------------------------------------------------ */\n\nstatic nv nv_math_sqrt(nv x) { return nv_float(sqrt(nv_as_double(x))); }\nstatic nv nv_math_pow(nv b, nv e) { return nv_float(pow(nv_as_double(b), nv_as_double(e))); }\nstatic nv nv_math_floor(nv x) { return nv_int((long long)floor(nv_as_double(x))); }\nstatic nv nv_math_ceil(nv x) { return nv_int((long long)ceil(nv_as_double(x))); }\nstatic nv nv_math_round(nv x) { return nv_int((long long)floor(nv_as_double(x) + 0.5)); }\nstatic nv nv_math_sin(nv x) { return nv_float(sin(nv_as_double(x))); }\nstatic nv nv_math_cos(nv x) { return nv_float(cos(nv_as_double(x))); }\nstatic nv nv_math_tan(nv x) { return nv_float(tan(nv_as_double(x))); }\nstatic nv nv_math_atan2(nv y, nv x) { return nv_float(atan2(nv_as_double(y), nv_as_double(x))); }\nstatic nv nv_math_log(nv x) { return nv_float(log(nv_as_double(x))); }\nstatic nv nv_math_exp(nv x) { return nv_float(exp(nv_as_double(x))); }\n\nstatic struct tm *nv_gmtime(nv unixSeconds, struct tm *out) {\n    time_t t = (time_t)nv_as_int(unixSeconds);\n    struct tm *g = gmtime(&t);\n    if (g) {\n        *out = *g;\n    } else {\n        memset(out, 0, sizeof(*out));\n    }\n    return out;\n}\n\nstatic nv nv_time_format(nv unixSeconds, nv layout) {\n    char buf[256];\n    struct tm tm;\n    nv_gmtime(unixSeconds, &tm);\n    if (strftime(buf, sizeof(buf), nv_display(layout), &tm) == 0) {\n        buf[0] = 0;\n    }\n    return nv_str(buf);\n}\n\nstatic nv nv_time_iso(nv unixSeconds) { return nv_time_format(unixSeconds, nv_str(\"%Y-%m-%dT%H:%M:%SZ\")); }\n\nstatic nv nv_time_parts(nv unixSeconds) {\n    struct tm tm;\n    nv m = nv_map();\n    nv_gmtime(unixSeconds, &tm);\n    nv_map_set_static(m->m, \"year\", nv_int(tm.tm_year + 1900));\n    nv_map_set_static(m->m, \"month\", nv_int(tm.tm_mon + 1));\n    nv_map_set_static(m->m, \"day\", nv_int(tm.tm_mday));\n    nv_map_set_static(m->m, \"hour\", nv_int(tm.tm_hour));\n    nv_map_set_static(m->m, \"minute\", nv_int(tm.tm_min));\n    nv_map_set_static(m->m, \"second\", nv_int(tm.tm_sec));\n    nv_map_set_static(m->m, \"weekday\", nv_int(tm.tm_wday));\n    nv_map_set_static(m->m, \"yearday\", nv_int(tm.tm_yday + 1));\n    return m;\n}\n\nstatic unsigned long long nv_rng_state = 0;\n\nstatic nv nv_random_seed(nv value) {\n    nv_rng_state = (unsigned long long)nv_as_int(value) * 2654435761ULL + 88172645463325252ULL;\n    return nv_nil;\n}\n\nstatic nv nv_random_next(void) {\n    unsigned long long x;\n    if (nv_rng_state == 0) {\n        nv_random_seed(nv_int((long long)time(0) ^ (long long)NV_GETPID()));\n    }\n    x = nv_rng_state;\n    x ^= x << 13;\n    x ^= x >> 7;\n    x ^= x << 17;\n    nv_rng_state = x;\n    return nv_int((long long)(x >> 2));\n}\n\nstatic nv nv_fmt_fixed(nv x, nv decimals) {\n    char buf[64];\n    int d = (int)nv_as_int(decimals);\n    if (d < 0) {\n        d = 0;\n    }\n    if (d > 20) {\n        d = 20;\n    }\n    sprintf(buf, \"%.*f\", d, nv_as_double(x));\n    return nv_str(buf);\n}\n\nstatic nv nv_hash_fnv1a(nv text) {\n    const unsigned char *p = (const unsigned char *)nv_display(text);\n    unsigned long long h = 14695981039346656037ULL;\n    for (; *p; p++) {\n        h ^= *p;\n        h *= 1099511628211ULL;\n    }\n    return nv_int((long long)(h >> 2));\n}\n\nstatic nv nv_hash_crc32(nv text) {\n    const unsigned char *p = (const unsigned char *)nv_display(text);\n    unsigned int crc = 0xFFFFFFFFu;\n    for (; *p; p++) {\n        int k;\n        crc ^= *p;\n        for (k = 0; k < 8; k++) {\n            crc = (crc >> 1) ^ (0xEDB88320u & (0u - (crc & 1u)));\n        }\n    }\n    return nv_int((long long)(crc ^ 0xFFFFFFFFu));\n}\n\nstatic nv nv_read_all(void) {\n    NvSb sb;\n    char buf[4096];\n    size_t n;\n    int len;\n    nv_sb_init(&sb);\n    while ((n = fread(buf, 1, sizeof(buf), stdin)) > 0) {\n        nv_sb_addn(&sb, buf, (int)n);\n    }\n    len = sb.len;\n    return nv_str_own(nv_sb_finish(&sb), len);\n}\n\nstatic nv nv_io_write(nv text) {\n    fputs(nv_display(text), stdout);\n    return nv_nil;\n}\n\nstatic nv nv_io_write_err(nv text) {\n    fputs(nv_display(text), stderr);\n    return nv_nil;\n}\n\nstatic nv nv_io_flush(void) {\n    fflush(stdout);\n    fflush(stderr);\n    return nv_nil;\n}\n\nstatic int nv_sort_cmp(const void *a, const void *b) {\n    nv l = *(const nv *)a;\n    nv r = *(const nv *)b;\n    if (nv_is_num(l) && nv_is_num(r)) {\n        double x = nv_as_double(l), y = nv_as_double(r);\n        return x < y \? -1 : (x > y \? 1 : 0);\n    }\n    return strcmp(nv_data(l), nv_data(r));\n}\n\n/* Specialised comparators: no type dispatch and no string materialisation\n * per comparison, which is most of the work when sorting a large array. */\nstatic int nv_sort_cmp_tagged(const void *a, const void *b) {\n    long long x = nv_ival(*(const nv *)a);\n    long long y = nv_ival(*(const nv *)b);\n    return x < y \? -1 : (x > y \? 1 : 0);\n}\n\nstatic int nv_sort_cmp_text(const void *a, const void *b) {\n    return strcmp(nv_cstr(*(const nv *)a), nv_cstr(*(const nv *)b));\n}\n\n/* Introsort over raw 64-bit values: no indirect call per comparison, which\n * is what makes the generic qsort path slow for large integer arrays. */\nstatic void nv_sort_ll(long long *values, int left, int right) {\n    while (right - left > 12) {\n        long long pivot, tmp;\n        int i = left, j = right, middle = left + (right - left) / 2;\n        if (values[middle] < values[left]) {\n            tmp = values[middle]; values[middle] = values[left]; values[left] = tmp;\n        }\n        if (values[right] < values[left]) {\n            tmp = values[right]; values[right] = values[left]; values[left] = tmp;\n        }\n        if (values[right] < values[middle]) {\n            tmp = values[right]; values[right] = values[middle]; values[middle] = tmp;\n        }\n        pivot = values[middle];\n        while (i <= j) {\n            while (values[i] < pivot) {\n                i++;\n            }\n            while (values[j] > pivot) {\n                j--;\n            }\n            if (i <= j) {\n                tmp = values[i]; values[i] = values[j]; values[j] = tmp;\n                i++; j--;\n            }\n        }\n        /* recurse into the smaller side, loop on the larger one */\n        if (j - left < right - i) {\n            nv_sort_ll(values, left, j);\n            left = i;\n        } else {\n            nv_sort_ll(values, i, right);\n            right = j;\n        }\n    }\n    {\n        int i;\n        for (i = left + 1; i <= right; i++) {\n            long long value = values[i];\n            int j = i - 1;\n            while (j >= left && values[j] > value) {\n                values[j + 1] = values[j];\n                j--;\n            }\n            values[j + 1] = value;\n        }\n    }\n}\n\n/* A sorted copy (numbers numerically, everything else by text). */\nstatic nv nv_arr_sorted(nv a) {\n    nv out;\n    int i, tagged = 1, text = 1;\n    if (nv_type_of(a) != NV_ARR) {\n        nv_error(\"sort() needs an array\");\n    }\n    out = nv_new(NV_ARR);\n    out->a = nv_arr_with_capacity(a->a->len);\n    memcpy(out->a->items, a->a->items, sizeof(nv) * (size_t)a->a->len);\n    out->a->len = a->a->len;\n    for (i = 0; i < out->a->len; i++) {\n        nv value = out->a->items[i];\n        if (!nv_is_tagged(value)) {\n            tagged = 0;\n            if (nv_type_of(value) != NV_STR) {\n                text = 0;\n            }\n        } else {\n            text = 0;\n        }\n        if (!tagged && !text) {\n            break;\n        }\n    }\n    if (out->a->len > 1) {\n        if (tagged) {\n            /* unbox, sort as plain integers, tag again */\n            long long *values = (long long *)malloc(sizeof(long long) * (size_t)out->a->len);\n            if (!values) {\n                nv_error(\"out of memory\");\n            }\n            for (i = 0; i < out->a->len; i++) {\n                values[i] = nv_ival(out->a->items[i]);\n            }\n            nv_sort_ll(values, 0, out->a->len - 1);\n            for (i = 0; i < out->a->len; i++) {\n                out->a->items[i] = nv_int(values[i]);\n            }\n            free(values);\n            return out;\n        }\n        qsort(out->a->items, (size_t)out->a->len, sizeof(nv), text \? nv_sort_cmp_text : nv_sort_cmp);\n    }\n    return out;\n}\n\n/* ------------------------------------------------------------------ */\n/* http module - driven by the curl command line tool                  */\n/* ------------------------------------------------------------------ */\n\nstatic nv nv_json_stringify(nv v);\n\nstatic const char *nv_shell_quote(const char *s) {\n    NvSb sb;\n    nv_sb_init(&sb);\n#ifdef _WIN32\n    nv_sb_addc(&sb, '\"');\n    for (; *s; s++) {\n        if (*s == '\"') {\n            nv_sb_add(&sb, \"\\\\\\\"\");\n        } else {\n            nv_sb_addc(&sb, *s);\n        }\n    }\n    nv_sb_addc(&sb, '\"');\n#else\n    nv_sb_addc(&sb, '\\'');\n    for (; *s; s++) {\n        if (*s == '\\'') {\n            nv_sb_add(&sb, \"'\\\\''\");\n        } else {\n            nv_sb_addc(&sb, *s);\n        }\n    }\n    nv_sb_addc(&sb, '\\'');\n#endif\n    return nv_sb_finish(&sb);\n}\n\nstatic int nv_http_counter = 0;\n\nstatic nv nv_http_temp_name(const char *what) {\n    char buf[64];\n    sprintf(buf, \"novus-http-%lld-%d-%s\", (long long)NV_GETPID(), nv_http_counter++, what);\n    return nv_path_join(2, nv_path_temp(), nv_str(buf));\n}\n\n/* Parses \"Key: value\" lines of a dumped header block into a map. */\nstatic nv nv_http_parse_headers(nv text) {\n    nv lines = nv_str_split(text, nv_str(\"\\n\"));\n    nv out = nv_map();\n    int i;\n    for (i = 0; i < lines->a->len; i++) {\n        nv line = nv_str_trim(lines->a->items[i]);\n        const char *s = nv_cstr(line);\n        const char *colon = strchr(s, ':');\n        if (!colon || strncmp(s, \"HTTP/\", 5) == 0) {\n            continue;\n        }\n        {\n            nv key = nv_str_trim(nv_strn(s, (int)(colon - s)));\n            nv val = nv_str_trim(nv_str(colon + 1));\n            nv_map_set(out->m, nv_cstr(nv_str_case(key, 0)), val);\n        }\n    }\n    return out;\n}\n\n/* {status, ok, body, headers, error} - never aborts on transport errors. */\nstatic nv nv_http_request(nv method, nv url, nv body, nv headers) {\n    nv outFile = nv_http_temp_name(\"body\");\n    nv hdrFile = nv_http_temp_name(\"headers\");\n    nv errFile = nv_http_temp_name(\"stderr\");\n    nv bodyFile = 0;\n    nv result = nv_map();\n    nv statusText;\n    NvSb cmd;\n    int hasContentType = 0, i;\n    nv_sb_init(&cmd);\n    nv_sb_add(&cmd, \"curl -s -S -L --max-redirs 10 -X \");\n    nv_sb_add(&cmd, nv_shell_quote(nv_cstr(nv_str_case(nv_to_str(method), 1))));\n    nv_sb_add(&cmd, \" --output \");\n    nv_sb_add(&cmd, nv_shell_quote(nv_cstr(outFile)));\n    nv_sb_add(&cmd, \" --dump-header \");\n    nv_sb_add(&cmd, nv_shell_quote(nv_cstr(hdrFile)));\n    nv_sb_add(&cmd, \" --stderr \");\n    nv_sb_add(&cmd, nv_shell_quote(nv_cstr(errFile)));\n    nv_sb_add(&cmd, \" --write-out \");\n    nv_sb_add(&cmd, nv_shell_quote(\"%{http_code}\"));\n    if (headers && nv_type_of(headers) == NV_MAP) {\n        nv_map_order(headers->m);\n        for (i = 0; i < headers->m->len; i++) {\n            nv line = nv_concat(nv_concat(nv_str(headers->m->items[i].key), nv_str(\": \")), headers->m->items[i].val);\n            if (strcmp(nv_cstr(nv_str_case(nv_str(headers->m->items[i].key), 0)), \"content-type\") == 0) {\n                hasContentType = 1;\n            }\n            nv_sb_add(&cmd, \" -H \");\n            nv_sb_add(&cmd, nv_shell_quote(nv_cstr(line)));\n        }\n    }\n    if (body && nv_type_of(body) != NV_NULL && !(nv_type_of(body) == NV_STR && body->slen == 0)) {\n        nv text = body;\n        if (nv_type_of(body) == NV_MAP || nv_type_of(body) == NV_ARR || nv_type_of(body) == NV_OBJ) {\n            text = nv_json_stringify(body);\n            if (!hasContentType) {\n                nv_sb_add(&cmd, \" -H \");\n                nv_sb_add(&cmd, nv_shell_quote(\"Content-Type: application/json\"));\n            }\n        }\n        bodyFile = nv_http_temp_name(\"request\");\n        nv_write_file(bodyFile, text);\n        nv_sb_add(&cmd, \" --data-binary @\");\n        nv_sb_add(&cmd, nv_shell_quote(nv_cstr(bodyFile)));\n    }\n    nv_sb_add(&cmd, \" \");\n    nv_sb_add(&cmd, nv_shell_quote(nv_display(url)));\n    {\n        int len = cmd.len;\n        nv command = nv_str_own(nv_sb_finish(&cmd), len);\n        statusText = nv_str_trim(nv_os_output(command));\n    }\n    {\n        long long status = atoll(nv_cstr(statusText));\n        nv error = nv_str_trim(nv_read_file(errFile));\n        if (statusText->slen == 0) {\n            error = nv_str(\"http: could not run curl (is it installed and in PATH\?)\");\n        }\n        nv_map_set(result->m, \"status\", nv_int(status));\n        nv_map_set(result->m, \"ok\", nv_bool(status >= 200 && status < 300));\n        nv_map_set(result->m, \"body\", nv_read_file(outFile));\n        nv_map_set(result->m, \"headers\", nv_http_parse_headers(nv_read_file(hdrFile)));\n        nv_map_set(result->m, \"error\", status == 0 \? (error->slen \? error : nv_str(\"http: request failed\")) : nv_str(\"\"));\n    }\n    remove(nv_cstr(outFile));\n    remove(nv_cstr(hdrFile));\n    remove(nv_cstr(errFile));\n    if (bodyFile) {\n        remove(nv_cstr(bodyFile));\n    }\n    return result;\n}\n\nstatic nv nv_http_simple(const char *method, nv url, nv body) {\n    nv r = nv_http_request(nv_str(method), url, body, nv_map());\n    nv error = nv_map_get(r->m, \"error\");\n    if (error->slen) {\n        nv_error(\"%s (%s %s)\", nv_cstr(error), method, nv_display(url));\n    }\n    return nv_map_get(r->m, \"body\");\n}\n\nstatic nv nv_http_get(nv url) { return nv_http_simple(\"GET\", url, nv_nil); }\nstatic nv nv_http_post(nv url, nv body) { return nv_http_simple(\"POST\", url, body); }\nstatic nv nv_http_put(nv url, nv body) { return nv_http_simple(\"PUT\", url, body); }\nstatic nv nv_http_delete(nv url) { return nv_http_simple(\"DELETE\", url, nv_nil); }\n\nstatic nv nv_http_download(nv url, nv file) {\n    nv r = nv_http_request(nv_str(\"GET\"), url, nv_nil, nv_map());\n    if (!nv_truthy(nv_map_get(r->m, \"ok\"))) {\n        return nv_bool(0);\n    }\n    nv_write_file(file, nv_map_get(r->m, \"body\"));\n    return nv_bool(1);\n}\n\n/* ------------------------------------------------------------------ */\n/* json module                                                         */\n/* ------------------------------------------------------------------ */\n\nstatic void nv_json_string(NvSb *sb, const char *s) {\n    nv_sb_addc(sb, '\"');\n    for (; *s; s++) {\n        unsigned char c = (unsigned char)*s;\n        switch (c) {\n        case '\"':\n            nv_sb_add(sb, \"\\\\\\\"\");\n            break;\n        case '\\\\':\n            nv_sb_add(sb, \"\\\\\\\\\");\n            break;\n        case '\\n':\n            nv_sb_add(sb, \"\\\\n\");\n            break;\n        case '\\r':\n            nv_sb_add(sb, \"\\\\r\");\n            break;\n        case '\\t':\n            nv_sb_add(sb, \"\\\\t\");\n            break;\n        case '\\b':\n            nv_sb_add(sb, \"\\\\b\");\n            break;\n        case '\\f':\n            nv_sb_add(sb, \"\\\\f\");\n            break;\n        default:\n            if (c < 0x20) {\n                char buf[8];\n                sprintf(buf, \"\\\\u%04x\", c);\n                nv_sb_add(sb, buf);\n            } else {\n                nv_sb_addc(sb, (char)c);\n            }\n        }\n    }\n    nv_sb_addc(sb, '\"');\n}\n\nstatic void nv_json_float(NvSb *sb, double f) {\n    char buf[64];\n    int prec;\n    for (prec = 15; prec <= 17; prec++) {\n        sprintf(buf, \"%.*g\", prec, f);\n        if (atof(buf) == f) {\n            break;\n        }\n    }\n    if (!strchr(buf, '.') && !strchr(buf, 'e') && !strchr(buf, 'n') && !strchr(buf, 'i')) {\n        strcat(buf, \".0\");\n    }\n    nv_sb_add(sb, buf);\n}\n\nstatic void nv_json_indent(NvSb *sb, int indent, int depth) {\n    int i;\n    if (indent <= 0) {\n        return;\n    }\n    nv_sb_addc(sb, '\\n');\n    for (i = 0; i < indent * depth; i++) {\n        nv_sb_addc(sb, ' ');\n    }\n}\n\nstatic void nv_json_write(NvSb *sb, nv v, int indent, int depth) {\n    int i;\n    const void *id = nv_container_id(v);\n    if (id && !nv_visit_enter(id)) {\n        nv_sb_add(sb, \"null\"); /* reference cycle */\n        return;\n    }\n    switch (nv_type_of(v)) {\n    case NV_INT:\n        nv_sb_add(sb, nv_fmt_int(nv_ival(v)));\n        break;\n    case NV_FLOAT:\n        nv_json_float(sb, v->f);\n        break;\n    case NV_BOOL:\n        nv_sb_add(sb, nv_ival(v) \? \"true\" : \"false\");\n        break;\n    case NV_STR:\n        nv_json_string(sb, nv_cstr(v));\n        break;\n    case NV_ARR:\n        if (v->a->len == 0) {\n            nv_sb_add(sb, \"[]\");\n            break;\n        }\n        nv_sb_addc(sb, '[');\n        for (i = 0; i < v->a->len; i++) {\n            if (i > 0) {\n                nv_sb_addc(sb, ',');\n            }\n            nv_json_indent(sb, indent, depth + 1);\n            nv_json_write(sb, v->a->items[i], indent, depth + 1);\n        }\n        nv_json_indent(sb, indent, depth);\n        nv_sb_addc(sb, ']');\n        break;\n    case NV_OBJ: {\n        int count = nv_class_field_count(v->o->cls);\n        int *order = nv_field_order(v->o->cls, count);\n        if (v->o->name && count == 0) {\n            nv_json_string(sb, v->o->name);\n            break;\n        }\n        if (count == 0) {\n            nv_sb_add(sb, \"{}\");\n            break;\n        }\n        nv_sb_addc(sb, '{');\n        for (i = 0; i < count; i++) {\n            if (i > 0) {\n                nv_sb_addc(sb, ',');\n            }\n            nv_json_indent(sb, indent, depth + 1);\n            nv_json_string(sb, nv_field_name_at(v->o->cls, order[i], 0));\n            nv_sb_add(sb, indent > 0 \? \": \" : \":\");\n            nv_json_write(sb, nv_fields(v->o)[order[i]], indent, depth + 1);\n        }\n        nv_json_indent(sb, indent, depth);\n        nv_sb_addc(sb, '}');\n        break;\n    }\n    case NV_MAP: {\n        NvMap *m = v->m;\n        nv_map_order(m);\n        if (m->len == 0) {\n            nv_sb_add(sb, \"{}\");\n            break;\n        }\n        nv_sb_addc(sb, '{');\n        for (i = 0; i < m->len; i++) {\n            if (i > 0) {\n                nv_sb_addc(sb, ',');\n            }\n            nv_json_indent(sb, indent, depth + 1);\n            nv_json_string(sb, m->items[i].key);\n            nv_sb_add(sb, indent > 0 \? \": \" : \":\");\n            nv_json_write(sb, m->items[i].val, indent, depth + 1);\n        }\n        nv_json_indent(sb, indent, depth);\n        nv_sb_addc(sb, '}');\n        break;\n    }\n    default:\n        nv_sb_add(sb, \"null\");\n    }\n    if (id) {\n        nv_visit_leave();\n    }\n}\n\nstatic nv nv_json_dump(nv v, int indent) {\n    NvSb sb;\n    int len;\n    nv_sb_init(&sb);\n    nv_json_write(&sb, v, indent, 0);\n    len = sb.len;\n    return nv_str_own(nv_sb_finish(&sb), len);\n}\n\nstatic nv nv_json_stringify(nv v) { return nv_json_dump(v, 0); }\n\nstatic nv nv_json_pretty(nv v) { return nv_json_dump(v, 2); }\n\ntypedef struct NvJsonP {\n    const char *s;\n    int pos;\n} NvJsonP;\n\nstatic void nv_json_ws(NvJsonP *p) {\n    while (p->s[p->pos] && isspace((unsigned char)p->s[p->pos])) {\n        p->pos++;\n    }\n}\n\nstatic void nv_json_fail(NvJsonP *p, const char *what) {\n    nv_error(\"json parse error at position %d: %s\", p->pos, what);\n}\n\nstatic void nv_json_utf8(NvSb *sb, unsigned int cp) {\n    if (cp < 0x80) {\n        nv_sb_addc(sb, (char)cp);\n    } else if (cp < 0x800) {\n        nv_sb_addc(sb, (char)(0xC0 | (cp >> 6)));\n        nv_sb_addc(sb, (char)(0x80 | (cp & 0x3F)));\n    } else if (cp < 0x10000) {\n        nv_sb_addc(sb, (char)(0xE0 | (cp >> 12)));\n        nv_sb_addc(sb, (char)(0x80 | ((cp >> 6) & 0x3F)));\n        nv_sb_addc(sb, (char)(0x80 | (cp & 0x3F)));\n    } else {\n        nv_sb_addc(sb, (char)(0xF0 | (cp >> 18)));\n        nv_sb_addc(sb, (char)(0x80 | ((cp >> 12) & 0x3F)));\n        nv_sb_addc(sb, (char)(0x80 | ((cp >> 6) & 0x3F)));\n        nv_sb_addc(sb, (char)(0x80 | (cp & 0x3F)));\n    }\n}\n\nstatic nv nv_json_parse_string(NvJsonP *p) {\n    NvSb sb;\n    int len;\n    nv_sb_init(&sb);\n    p->pos++; /* opening quote */\n    while (p->s[p->pos] && p->s[p->pos] != '\"') {\n        char c = p->s[p->pos];\n        if (c == '\\\\') {\n            char e = p->s[++p->pos];\n            switch (e) {\n            case 'n':\n                nv_sb_addc(&sb, '\\n');\n                break;\n            case 't':\n                nv_sb_addc(&sb, '\\t');\n                break;\n            case 'r':\n                nv_sb_addc(&sb, '\\r');\n                break;\n            case 'b':\n                nv_sb_addc(&sb, '\\b');\n                break;\n            case 'f':\n                nv_sb_addc(&sb, '\\f');\n                break;\n            case 'u': {\n                unsigned int cp = 0;\n                int k;\n                for (k = 0; k < 4; k++) {\n                    char h = p->s[++p->pos];\n                    cp <<= 4;\n                    if (h >= '0' && h <= '9') {\n                        cp |= (unsigned int)(h - '0');\n                    } else if (h >= 'a' && h <= 'f') {\n                        cp |= (unsigned int)(h - 'a' + 10);\n                    } else if (h >= 'A' && h <= 'F') {\n                        cp |= (unsigned int)(h - 'A' + 10);\n                    } else {\n                        nv_json_fail(p, \"bad unicode escape\");\n                    }\n                }\n                nv_json_utf8(&sb, cp);\n                break;\n            }\n            default:\n                nv_sb_addc(&sb, e);\n            }\n            p->pos++;\n        } else {\n            nv_sb_addc(&sb, c);\n            p->pos++;\n        }\n    }\n    if (p->s[p->pos] != '\"') {\n        nv_json_fail(p, \"unterminated string\");\n    }\n    p->pos++;\n    len = sb.len;\n    return nv_str_own(nv_sb_finish(&sb), len);\n}\n\nstatic nv nv_json_parse_value(NvJsonP *p) {\n    char c;\n    nv_json_ws(p);\n    c = p->s[p->pos];\n    if (c == '{') {\n        nv m = nv_map();\n        p->pos++;\n        nv_json_ws(p);\n        if (p->s[p->pos] == '}') {\n            p->pos++;\n            return m;\n        }\n        for (;;) {\n            nv key, val;\n            nv_json_ws(p);\n            if (p->s[p->pos] != '\"') {\n                nv_json_fail(p, \"expected object key\");\n            }\n            key = nv_json_parse_string(p);\n            nv_json_ws(p);\n            if (p->s[p->pos] != ':') {\n                nv_json_fail(p, \"expected ':'\");\n            }\n            p->pos++;\n            val = nv_json_parse_value(p);\n            nv_map_set_static(m->m, nv_cstr(key), val); /* arena string, never extended */\n            nv_json_ws(p);\n            if (p->s[p->pos] == ',') {\n                p->pos++;\n                continue;\n            }\n            if (p->s[p->pos] == '}') {\n                p->pos++;\n                return m;\n            }\n            nv_json_fail(p, \"expected ',' or '}'\");\n        }\n    }\n    if (c == '[') {\n        nv a = nv_arr();\n        p->pos++;\n        nv_json_ws(p);\n        if (p->s[p->pos] == ']') {\n            p->pos++;\n            return a;\n        }\n        for (;;) {\n            nv_arr_push(a->a, nv_json_parse_value(p));\n            nv_json_ws(p);\n            if (p->s[p->pos] == ',') {\n                p->pos++;\n                continue;\n            }\n            if (p->s[p->pos] == ']') {\n                p->pos++;\n                return a;\n            }\n            nv_json_fail(p, \"expected ',' or ']'\");\n        }\n    }\n    if (c == '\"') {\n        return nv_json_parse_string(p);\n    }\n    if (strncmp(p->s + p->pos, \"true\", 4) == 0) {\n        p->pos += 4;\n        return nv_bool(1);\n    }\n    if (strncmp(p->s + p->pos, \"false\", 5) == 0) {\n        p->pos += 5;\n        return nv_bool(0);\n    }\n    if (strncmp(p->s + p->pos, \"null\", 4) == 0) {\n        p->pos += 4;\n        return nv_nil;\n    }\n    if (c == '-' || (c >= '0' && c <= '9')) {\n        int start = p->pos;\n        int isFloat = 0;\n        char *tmp;\n        nv out;\n        if (c == '-') {\n            p->pos++;\n        }\n        while (isdigit((unsigned char)p->s[p->pos])) {\n            p->pos++;\n        }\n        if (p->s[p->pos] == '.') {\n            isFloat = 1;\n            p->pos++;\n            while (isdigit((unsigned char)p->s[p->pos])) {\n                p->pos++;\n            }\n        }\n        if (p->s[p->pos] == 'e' || p->s[p->pos] == 'E') {\n            isFloat = 1;\n            p->pos++;\n            if (p->s[p->pos] == '+' || p->s[p->pos] == '-') {\n                p->pos++;\n            }\n            while (isdigit((unsigned char)p->s[p->pos])) {\n                p->pos++;\n            }\n        }\n        tmp = nv_strndup(p->s + start, (size_t)(p->pos - start));\n        out = isFloat \? nv_float(atof(tmp)) : nv_int(atoll(tmp));\n        return out;\n    }\n    if (c == 0) {\n        nv_json_fail(p, \"unexpected end of input\");\n    }\n    nv_json_fail(p, \"unexpected character\");\n    return nv_nil;\n}\n\nstatic nv nv_json_parse(nv text) {\n    NvJsonP p;\n    nv v;\n    if (nv_type_of(text) != NV_STR) {\n        /* already structured data: convert (objects become maps) */\n        text = nv_json_stringify(text);\n    }\n    p.s = nv_display(text);\n    p.pos = 0;\n    nv_json_ws(&p);\n    if (p.s[p.pos] == 0) {\n        nv_json_fail(&p, \"attempting to parse an empty input\");\n    }\n    v = nv_json_parse_value(&p);\n    nv_json_ws(&p);\n    if (p.s[p.pos] != 0) {\n        nv_json_fail(&p, \"trailing characters\");\n    }\n    return v;\n}\n\nstatic nv nv_json_save(nv v, nv dir, nv file) {\n    nv target = nv_path_join(2, dir, file);\n    nv_os_mkdir(nv_path_dirname(target));\n    return nv_write_file(target, nv_json_pretty(v));\n}\n\nstatic nv nv_json_load(nv file) {\n    if (!nv_path_exists_c(nv_display(file))) {\n        nv_error(\"json.load: cannot open '%s'\", nv_display(file));\n    }\n    return nv_json_parse(nv_read_file(file));\n}\n\nstatic int nv_json_scan(NvJsonP *p);\n\nstatic int nv_json_scan_string(NvJsonP *p) {\n    p->pos++;\n    while (p->s[p->pos] && p->s[p->pos] != '\"') {\n        if (p->s[p->pos] == '\\\\') {\n            p->pos++;\n            if (!p->s[p->pos]) {\n                return 0;\n            }\n        }\n        p->pos++;\n    }\n    if (p->s[p->pos] != '\"') {\n        return 0;\n    }\n    p->pos++;\n    return 1;\n}\n\n/* Validates without aborting. */\nstatic int nv_json_scan(NvJsonP *p) {\n    char c;\n    nv_json_ws(p);\n    c = p->s[p->pos];\n    if (c == '{' || c == '[') {\n        char close = c == '{' \? '}' : ']';\n        p->pos++;\n        nv_json_ws(p);\n        if (p->s[p->pos] == close) {\n            p->pos++;\n            return 1;\n        }\n        for (;;) {\n            nv_json_ws(p);\n            if (close == '}') {\n                if (p->s[p->pos] != '\"' || !nv_json_scan_string(p)) {\n                    return 0;\n                }\n                nv_json_ws(p);\n                if (p->s[p->pos] != ':') {\n                    return 0;\n                }\n                p->pos++;\n            }\n            if (!nv_json_scan(p)) {\n                return 0;\n            }\n            nv_json_ws(p);\n            if (p->s[p->pos] == ',') {\n                p->pos++;\n                continue;\n            }\n            if (p->s[p->pos] == close) {\n                p->pos++;\n                return 1;\n            }\n            return 0;\n        }\n    }\n    if (c == '\"') {\n        return nv_json_scan_string(p);\n    }\n    if (strncmp(p->s + p->pos, \"true\", 4) == 0) {\n        p->pos += 4;\n        return 1;\n    }\n    if (strncmp(p->s + p->pos, \"false\", 5) == 0) {\n        p->pos += 5;\n        return 1;\n    }\n    if (strncmp(p->s + p->pos, \"null\", 4) == 0) {\n        p->pos += 4;\n        return 1;\n    }\n    if (c == '-' || isdigit((unsigned char)c)) {\n        int start = p->pos;\n        if (c == '-') {\n            p->pos++;\n        }\n        while (isdigit((unsigned char)p->s[p->pos]) || p->s[p->pos] == '.' || p->s[p->pos] == 'e' ||\n               p->s[p->pos] == 'E' || p->s[p->pos] == '+' || p->s[p->pos] == '-') {\n            p->pos++;\n        }\n        return p->pos > start + (c == '-' \? 1 : 0);\n    }\n    return 0;\n}\n\nstatic nv nv_json_is_valid(nv text) {\n    NvJsonP p;\n    p.s = nv_display(text);\n    p.pos = 0;\n    if (!nv_json_scan(&p)) {\n        return nv_bool(0);\n    }\n    nv_json_ws(&p);\n    return nv_bool(p.s[p.pos] == 0);\n}\n\n#endif /* NOVUS_RT_H */\n"));
-    return nv_lit("");
+    return nv_coerce_string((&nv_lits[683]));
+    return (&nv_empty_str_val);
 }
 
 static nv f_generate_2(nv a0, nv a1) {
     nv l_source = nv_coerce_string(a0);
     nv l_mode = nv_coerce_string(a1);
     if (nv_eq_bool(nv_file_exists(l_source), nv_bool(0))) {
-        nv_eprintln(nv_add_chain(3, nv_lit("novusc: cannot open '"), l_source, nv_lit("'")));
+        nv_eprintln(nv_add_chain(3, (&nv_lits[684]), l_source, (&nv_lits[21])));
         (void)nv_exit(nv_int(1LL));
     }
     nv l_modules = f_modulesFor_1(f_findManifest_1(nv_path_dirname(l_source)));
     nv l_decls = f_loadProgramWith_2(l_source, l_modules);
-    if (nv_eq_bool(l_mode, nv_lit("include"))) {
-        return nv_coerce_string(f_generateProgram_2(l_decls, nv_lit("")));
+    if (nv_eq_bool(l_mode, (&nv_lits[685]))) {
+        return nv_coerce_string(f_generateProgram_2(l_decls, (&nv_lits[5])));
     }
     return nv_coerce_string(f_generateProgram_2(l_decls, f_runtimeSource_0()));
-    return nv_lit("");
+    return (&nv_empty_str_val);
 }
 
 static nv f_currentProject_0(void) {
-    nv l_file = f_findManifest_1(nv_lit("."));
-    if (nv_eq_bool(l_file, nv_lit(""))) {
-        nv_eprintln(nv_lit("novusc: no project.nv found here - pass a source file or run 'novusc init'"));
+    nv l_file = f_findManifest_1((&nv_lits[167]));
+    if (nv_eq_bool(l_file, (&nv_lits[5]))) {
+        nv_eprintln((&nv_lits[686]));
         (void)nv_exit(nv_int(1LL));
     }
     return f_parseManifest_1(l_file);
@@ -8354,17 +13816,17 @@ static nv f_currentProject_0(void) {
 
 static nv f_sourceFor_1(nv a0) {
     nv l_arguments = a0;
-    if ((nv_ge_bool(nv_length_of(l_arguments, "length"), nv_int(2LL)) && nv_truthy(nv_invoke1(nv_index(l_arguments, nv_int(1LL)), "endsWith", nv_lit(".nv"))))) {
+    if ((nv_ge_bool(nv_length_of(l_arguments, "length"), nv_int(2LL)) && nv_truthy(nv_invoke1(nv_index(l_arguments, nv_int(1LL)), "endsWith", (&nv_lits[635]))))) {
         return nv_coerce_string(nv_index(l_arguments, nv_int(1LL)));
     }
     nv l_m = f_currentProject_0();
     return nv_coerce_string(nv_path_join(2, nv_invoke0(l_m, "dir"), nv_invoke0(l_m, "main")));
-    return nv_lit("");
+    return (&nv_empty_str_val);
 }
 
 static nv f_optionStart_1(nv a0) {
     nv l_arguments = a0;
-    if ((nv_ge_bool(nv_length_of(l_arguments, "length"), nv_int(2LL)) && nv_truthy(nv_invoke1(nv_index(l_arguments, nv_int(1LL)), "endsWith", nv_lit(".nv"))))) {
+    if ((nv_ge_bool(nv_length_of(l_arguments, "length"), nv_int(2LL)) && nv_truthy(nv_invoke1(nv_index(l_arguments, nv_int(1LL)), "endsWith", (&nv_lits[635]))))) {
         return nv_coerce_int(nv_int(2LL));
     }
     return nv_coerce_int(nv_int(1LL));
@@ -8373,19 +13835,19 @@ static nv f_optionStart_1(nv a0) {
 
 static nv f_initProject_1(nv a0) {
     nv l_arguments = a0;
-    if (nv_truthy(nv_file_exists(nv_lit("project.nv")))) {
-        nv_eprintln(nv_lit("novusc: project.nv already exists"));
+    if (nv_truthy(nv_file_exists((&nv_lits[657])))) {
+        nv_eprintln((&nv_lits[687]));
         return nv_coerce_int(nv_int(1LL));
     }
     nv l_name = nv_path_basename(nv_path_absolute());
     if (nv_ge_bool(nv_length_of(l_arguments, "length"), nv_int(2LL))) {
         l_name = nv_index(l_arguments, nv_int(1LL));
     }
-    (void)nv_write_file(nv_lit("project.nv"), nv_add_chain(3, nv_lit("project \""), l_name, nv_lit("\"\nversion \"0.1.0\"\nmain \"main.nv\"\n\n// require \"github.com/user/library\" \"v1.0.0\"\n")));
-    if (nv_eq_bool(nv_file_exists(nv_lit("main.nv")), nv_bool(0))) {
-        (void)nv_write_file(nv_lit("main.nv"), nv_add_chain(3, nv_lit("package main\n\nmethod main {\n    println \"Hello from "), l_name, nv_lit("!\"\n}\n")));
+    (void)nv_write_file((&nv_lits[657]), nv_add_chain(3, (&nv_lits[688]), l_name, (&nv_lits[689])));
+    if (nv_eq_bool(nv_file_exists((&nv_lits[638])), nv_bool(0))) {
+        (void)nv_write_file((&nv_lits[638]), nv_add_chain(3, (&nv_lits[690]), l_name, (&nv_lits[691])));
     }
-    nv_println(nv_add_chain(3, nv_lit("created project.nv (project \""), l_name, nv_lit("\") - next: novusc run")));
+    nv_println(nv_add_chain(3, (&nv_lits[692]), l_name, (&nv_lits[693])));
     return nv_coerce_int(nv_int(0LL));
     return nv_int(0);
 }
@@ -8393,20 +13855,20 @@ static nv f_initProject_1(nv a0) {
 static nv f_depsCommand_1(nv a0) {
     nv l_arguments = a0;
     nv l_m = f_currentProject_0();
-    if ((nv_ge_bool(nv_length_of(l_arguments, "length"), nv_int(2LL)) && nv_eq_bool(nv_index(l_arguments, nv_int(1LL)), nv_lit("add")))) {
+    if ((nv_ge_bool(nv_length_of(l_arguments, "length"), nv_int(2LL)) && nv_eq_bool(nv_index(l_arguments, nv_int(1LL)), (&nv_lits[694])))) {
         if (nv_lt_bool(nv_length_of(l_arguments, "length"), nv_int(3LL))) {
-            nv_eprintln(nv_lit("usage: novusc deps add <module> [version]"));
+            nv_eprintln((&nv_lits[695]));
             return nv_coerce_int(nv_int(1LL));
         }
-        nv l_version = nv_lit("latest");
+        nv l_version = (&nv_lits[645]);
         if (nv_ge_bool(nv_length_of(l_arguments, "length"), nv_int(4LL))) {
             l_version = nv_index(l_arguments, nv_int(3LL));
         }
-        (void)nv_append_file(nv_invoke0(l_m, "file"), nv_add_chain(5, nv_lit("require \""), nv_index(l_arguments, nv_int(2LL)), nv_lit("\" \""), l_version, nv_lit("\"\n")));
-        nv_println(nv_add_chain(6, nv_lit("added require \""), nv_index(l_arguments, nv_int(2LL)), nv_lit("\" \""), l_version, nv_lit("\" to "), nv_invoke0(l_m, "file")));
+        (void)nv_append_file(nv_invoke0(l_m, "file"), nv_add_chain(5, (&nv_lits[696]), nv_index(l_arguments, nv_int(2LL)), (&nv_lits[697]), l_version, (&nv_lits[698])));
+        nv_println(nv_add_chain(6, (&nv_lits[699]), nv_index(l_arguments, nv_int(2LL)), (&nv_lits[697]), l_version, (&nv_lits[700]), nv_invoke0(l_m, "file")));
         l_m = f_parseManifest_1(nv_invoke0(l_m, "file"));
     }
-    if ((nv_ge_bool(nv_length_of(l_arguments, "length"), nv_int(2LL)) && nv_eq_bool(nv_index(l_arguments, nv_int(1LL)), nv_lit("update")))) {
+    if ((nv_ge_bool(nv_length_of(l_arguments, "length"), nv_int(2LL)) && nv_eq_bool(nv_index(l_arguments, nv_int(1LL)), (&nv_lits[701])))) {
         {
             NvArr *it_d = nv_iter(nv_invoke0(l_m, "requires"));
             int n_d = it_d->len;
@@ -8421,7 +13883,7 @@ static nv f_depsCommand_1(nv a0) {
     nv l_modules = nv_map();
     (void)f_resolveModules_2(l_m, l_modules);
     if (nv_eq_bool(nv_length_of(nv_invoke0(l_m, "requires"), "length"), nv_int(0LL))) {
-        nv_println(nv_lit("no dependencies (add one with: novusc deps add <module> [version])"));
+        nv_println((&nv_lits[702]));
         return nv_coerce_int(nv_int(0LL));
     }
     {
@@ -8429,8 +13891,8 @@ static nv f_depsCommand_1(nv a0) {
         int n_key = it_key->len;
         for (int i_key = 0; i_key < n_key; i_key++) {
             nv l_key = it_key->items[i_key];
-            if (nv_eq_bool(nv_invoke1(l_key, "endsWith", nv_lit("/")), nv_bool(0))) {
-                nv_println(nv_add_chain(4, nv_lit(""), l_key, nv_lit(" -> "), nv_index(l_modules, l_key)));
+            if (nv_eq_bool(nv_invoke1(l_key, "endsWith", (&nv_lits[6])), nv_bool(0))) {
+                nv_println(nv_add_chain(4, (&nv_lits[5]), l_key, (&nv_lits[703]), nv_index(l_modules, l_key)));
             }
         }
     }
@@ -8441,15 +13903,15 @@ static nv f_depsCommand_1(nv a0) {
 static nv f_emitCommand_2(nv a0, nv a1) {
     nv l_source = nv_coerce_string(a0);
     nv l_options = a1;
-    nv l_mode = nv_lit("embed");
-    if (nv_truthy(nv_has_key(l_options, "has", nv_lit("--no-runtime")))) {
-        l_mode = nv_lit("include");
+    nv l_mode = (&nv_lits[704]);
+    if (nv_truthy(nv_has_key(l_options, "has", (&nv_lits[705])))) {
+        l_mode = (&nv_lits[685]);
     }
     nv l_code = f_generate_2(l_source, l_mode);
-    if (nv_truthy(nv_has_key(l_options, "has", nv_lit("-o")))) {
-        nv l_target = nv_index(l_options, nv_lit("-o"));
+    if (nv_truthy(nv_has_key(l_options, "has", (&nv_lits[706])))) {
+        nv l_target = nv_index(l_options, (&nv_lits[706]));
         (void)nv_write_file(l_target, l_code);
-        nv_println(nv_add_fast(nv_lit("wrote "), l_target));
+        nv_println(nv_add_fast((&nv_lits[707]), l_target));
     } else {
         nv_print(l_code);
     }
@@ -8459,58 +13921,58 @@ static nv f_emitCommand_2(nv a0, nv a1) {
 
 static nv f_quoted_1_v1(nv a0) {
     nv l_s = nv_coerce_string(a0);
-    return nv_coerce_string(nv_add_chain(3, nv_lit("\""), l_s, nv_lit("\"")));
-    return nv_lit("");
+    return nv_coerce_string(nv_add_chain(3, (&nv_lits[663]), l_s, (&nv_lits[663])));
+    return (&nv_empty_str_val);
 }
 
 static nv f_isWindows_1(nv a0) {
     nv l_options = a0;
-    if (nv_truthy(nv_has_key(l_options, "has", nv_lit("--target")))) {
-        return nv_invoke1(nv_index(l_options, nv_lit("--target")), "contains", nv_lit("windows"));
+    if (nv_truthy(nv_has_key(l_options, "has", (&nv_lits[708])))) {
+        return nv_invoke1(nv_index(l_options, (&nv_lits[708])), "contains", (&nv_lits[0]));
     }
-    return nv_eq(nv_platform(), nv_lit("windows"));
+    return nv_eq(nv_platform(), (&nv_lits[0]));
     return nv_bool(0);
 }
 
 static nv f_cCompiler_1(nv a0) {
     nv l_options = a0;
-    if (nv_truthy(nv_has_key(l_options, "has", nv_lit("--target")))) {
-        nv l_zig = nv_env(nv_lit("NOVUS_ZIG"));
-        if (nv_eq_bool(l_zig, nv_lit(""))) {
-            l_zig = nv_lit("zig");
+    if (nv_truthy(nv_has_key(l_options, "has", (&nv_lits[708])))) {
+        nv l_zig = nv_env((&nv_lits[709]));
+        if (nv_eq_bool(l_zig, (&nv_lits[5]))) {
+            l_zig = (&nv_lits[710]);
         }
-        if (nv_truthy(nv_has_key(l_options, "has", nv_lit("--cc")))) {
-            l_zig = nv_index(l_options, nv_lit("--cc"));
+        if (nv_truthy(nv_has_key(l_options, "has", (&nv_lits[711])))) {
+            l_zig = nv_index(l_options, (&nv_lits[711]));
         }
-        return nv_coerce_string(nv_add_chain(3, l_zig, nv_lit(" cc -target "), nv_index(l_options, nv_lit("--target"))));
+        return nv_coerce_string(nv_add_chain(3, l_zig, (&nv_lits[712]), nv_index(l_options, (&nv_lits[708]))));
     }
-    if (nv_truthy(nv_has_key(l_options, "has", nv_lit("--cc")))) {
-        return nv_coerce_string(nv_index(l_options, nv_lit("--cc")));
+    if (nv_truthy(nv_has_key(l_options, "has", (&nv_lits[711])))) {
+        return nv_coerce_string(nv_index(l_options, (&nv_lits[711])));
     }
-    if (nv_ne_bool(nv_env(nv_lit("NOVUS_CC")), nv_lit(""))) {
-        return nv_coerce_string(nv_env(nv_lit("NOVUS_CC")));
+    if (nv_ne_bool(nv_env((&nv_lits[713])), (&nv_lits[5]))) {
+        return nv_coerce_string(nv_env((&nv_lits[713])));
     }
-    if (nv_eq_bool(nv_platform(), nv_lit("windows"))) {
-        return nv_coerce_string(nv_lit("gcc"));
+    if (nv_eq_bool(nv_platform(), (&nv_lits[0]))) {
+        return nv_coerce_string((&nv_lits[714]));
     }
-    if (nv_truthy(f_os__hasCommand_1(nv_lit("gcc")))) {
-        return nv_coerce_string(nv_lit("gcc"));
+    if (nv_truthy(f_os__hasCommand_1((&nv_lits[714])))) {
+        return nv_coerce_string((&nv_lits[714]));
     }
-    return nv_coerce_string(nv_lit("cc"));
-    return nv_lit("");
+    return nv_coerce_string((&nv_lits[715]));
+    return (&nv_empty_str_val);
 }
 
 static nv f_cFlags_1(nv a0) {
     nv l_options = a0;
-    nv l_flags = nv_lit("-O2");
-    if (nv_ne_bool(nv_env(nv_lit("NOVUS_CFLAGS")), nv_lit(""))) {
-        l_flags = nv_add_chain(3, l_flags, nv_lit(" "), nv_env(nv_lit("NOVUS_CFLAGS")));
+    nv l_flags = (&nv_lits[716]);
+    if (nv_ne_bool(nv_env((&nv_lits[717])), (&nv_lits[5]))) {
+        l_flags = nv_add_chain(3, l_flags, (&nv_lits[9]), nv_env((&nv_lits[717])));
     }
-    if (nv_truthy(nv_has_key(l_options, "has", nv_lit("--cflags")))) {
-        l_flags = nv_add_chain(3, l_flags, nv_lit(" "), nv_index(l_options, nv_lit("--cflags")));
+    if (nv_truthy(nv_has_key(l_options, "has", (&nv_lits[718])))) {
+        l_flags = nv_add_chain(3, l_flags, (&nv_lits[9]), nv_index(l_options, (&nv_lits[718])));
     }
     return nv_coerce_string(l_flags);
-    return nv_lit("");
+    return (&nv_empty_str_val);
 }
 
 static nv f_defaultOutput_2(nv a0, nv a1) {
@@ -8518,45 +13980,51 @@ static nv f_defaultOutput_2(nv a0, nv a1) {
     nv l_options = a1;
     nv l_out = nv_path_stem(l_source);
     nv l_manifest = f_findManifest_1(nv_path_dirname(l_source));
-    if (nv_ne_bool(l_manifest, nv_lit(""))) {
+    if (nv_ne_bool(l_manifest, (&nv_lits[5]))) {
         l_out = nv_invoke0(f_parseManifest_1(l_manifest), "outputName");
     }
-    if (nv_truthy(nv_has_key(l_options, "has", nv_lit("-o")))) {
-        l_out = nv_index(l_options, nv_lit("-o"));
+    if (nv_truthy(nv_has_key(l_options, "has", (&nv_lits[706])))) {
+        l_out = nv_index(l_options, (&nv_lits[706]));
     }
-    if ((nv_truthy(f_isWindows_1(l_options)) && nv_eq_bool(nv_invoke1(l_out, "endsWith", nv_lit(".exe")), nv_bool(0)))) {
-        l_out = nv_add_fast(l_out, nv_lit(".exe"));
+    if ((nv_truthy(f_isWindows_1(l_options)) && nv_eq_bool(nv_invoke1(l_out, "endsWith", (&nv_lits[719])), nv_bool(0)))) {
+        l_out = nv_add_fast(l_out, (&nv_lits[719]));
     }
     return nv_coerce_string(l_out);
-    return nv_lit("");
+    return (&nv_empty_str_val);
 }
 
 static nv f_buildBinary_2(nv a0, nv a1) {
     nv l_source = nv_coerce_string(a0);
     nv l_options = a1;
-    nv l_mode = nv_lit("embed");
-    if (nv_truthy(nv_has_key(l_options, "has", nv_lit("--no-runtime")))) {
-        l_mode = nv_lit("include");
+    nv l_mode = (&nv_lits[704]);
+    if (nv_truthy(nv_has_key(l_options, "has", (&nv_lits[705])))) {
+        l_mode = (&nv_lits[685]);
     }
     nv l_code = f_generate_2(l_source, l_mode);
     nv l_output = f_defaultOutput_2(l_source, l_options);
-    nv l_cFile = nv_add_fast(l_output, nv_lit(".c"));
-    if (nv_truthy(nv_invoke1(l_output, "endsWith", nv_lit(".exe")))) {
-        l_cFile = nv_add_fast(nv_invoke2(l_output, "substring", nv_int(0LL), nv_sub_fast(nv_length_of(l_output, "length"), nv_int(4LL))), nv_lit(".c"));
+    nv l_cFile = nv_add_fast(l_output, (&nv_lits[720]));
+    if (nv_truthy(nv_invoke1(l_output, "endsWith", (&nv_lits[719])))) {
+        l_cFile = nv_add_fast(nv_invoke2(l_output, "substring", nv_int(0LL), nv_sub_fast(nv_length_of(l_output, "length"), nv_int(4LL))), (&nv_lits[720]));
     }
     (void)nv_write_file(l_cFile, l_code);
-    nv l_command = nv_add_chain(8, f_cCompiler_1(l_options), nv_lit(" "), f_cFlags_1(l_options), nv_lit(" "), f_quoted_1(l_cFile), nv_lit(" -o "), f_quoted_1(l_output), nv_lit(" -lm"));
+    nv l_libraries = (&nv_lits[721]);
+    if (nv_truthy(f_isWindows_1(l_options))) {
+        l_libraries = nv_add_fast(l_libraries, (&nv_lits[722]));
+    } else {
+        l_libraries = nv_add_fast(l_libraries, (&nv_lits[723]));
+    }
+    nv l_command = nv_add_chain(8, f_cCompiler_1(l_options), (&nv_lits[9]), f_cFlags_1(l_options), (&nv_lits[9]), f_quoted_1(l_cFile), (&nv_lits[724]), f_quoted_1(l_output), l_libraries);
     nv l_rc = nv_exec(l_command);
     if (nv_ne_bool(l_rc, nv_int(0LL))) {
-        nv_eprintln(nv_add_chain(3, nv_lit("novusc: C compilation failed (generated file kept at "), l_cFile, nv_lit(")")));
-        nv_eprintln(nv_add_fast(nv_lit("  command: "), l_command));
+        nv_eprintln(nv_add_chain(3, (&nv_lits[725]), l_cFile, (&nv_lits[8])));
+        nv_eprintln(nv_add_fast((&nv_lits[726]), l_command));
         (void)nv_exit(nv_int(1LL));
     }
-    if (nv_eq_bool(nv_has_key(l_options, "has", nv_lit("--keep-c")), nv_bool(0))) {
+    if (nv_eq_bool(nv_has_key(l_options, "has", (&nv_lits[727])), nv_bool(0))) {
         (void)nv_remove_file(l_cFile);
     }
     return nv_coerce_string(l_output);
-    return nv_lit("");
+    return (&nv_empty_str_val);
 }
 
 static nv f_pathHash_1(nv a0) {
@@ -8575,13 +14043,13 @@ static nv f_runCommand_2(nv a0, nv a1) {
     nv l_source = nv_coerce_string(a0);
     nv l_arguments = a1;
     nv l_options = nv_map();
-    nv l_temp = nv_path_join(2, nv_path_temp(), nv_add_chain(4, nv_lit("novusc-"), nv_path_stem(l_source), nv_lit("-"), f_pathHash_1(nv_add_chain(3, nv_path_absolute(), nv_lit("/"), l_source))));
-    nv_index_set(l_options, nv_lit("-o"), l_temp);
+    nv l_temp = nv_path_join(2, nv_path_temp(), nv_add_chain(4, (&nv_lits[728]), nv_path_stem(l_source), (&nv_lits[234]), f_pathHash_1(nv_add_chain(3, nv_path_absolute(), (&nv_lits[6]), l_source))));
+    nv_index_set(l_options, (&nv_lits[706]), l_temp);
     nv l_exe = f_buildBinary_2(l_source, l_options);
     nv l_command = f_quoted_1(l_exe);
     nv l_i = f_optionStart_1(l_arguments);
     while (nv_lt_bool(l_i, nv_length_of(l_arguments, "length"))) {
-        l_command = nv_add_chain(3, l_command, nv_lit(" "), f_quoted_1(nv_index(l_arguments, l_i)));
+        l_command = nv_add_chain(3, l_command, (&nv_lits[9]), f_quoted_1(nv_index(l_arguments, l_i)));
         l_i = nv_add_fast(l_i, nv_int(1LL));
     }
     nv l_rc = nv_exec(l_command);
@@ -8591,29 +14059,29 @@ static nv f_runCommand_2(nv a0, nv a1) {
 }
 
 static nv f_printUsage_0(void) {
-    nv_println(nv_add_chain(3, nv_lit("novusc "), g_VERSION, nv_lit(" - the Novus compiler")));
-    nv_println(nv_lit(""));
-    nv_println(nv_lit("usage:"));
-    nv_println(nv_lit("  novusc run [file.nv] [args...]     compile and run"));
-    nv_println(nv_lit("  novusc build [file.nv] [options]   compile to a native executable"));
-    nv_println(nv_lit("  novusc emit [file.nv] [-o out.c]   write the generated C"));
-    nv_println(nv_lit("  novusc check [file.nv]             parse and analyze only"));
-    nv_println(nv_lit("  novusc init [module-path]          create project.nv + main.nv here"));
-    nv_println(nv_lit("  novusc deps                        fetch the dependencies of project.nv"));
-    nv_println(nv_lit("  novusc deps add <module> [version] add a dependency (git tag/branch/commit)"));
-    nv_println(nv_lit("  novusc deps update                 re-fetch all dependencies"));
-    nv_println(nv_lit("  novusc version"));
-    nv_println(nv_lit(""));
-    nv_println(nv_lit("Without a file the commands use the project.nv of the current directory."));
-    nv_println(nv_lit("Dependencies are cached in $NOVUS_DEPS (default ~/.novus/deps)."));
-    nv_println(nv_lit(""));
-    nv_println(nv_lit("build options:"));
-    nv_println(nv_lit("  -o <path>         output path (default: source file stem)"));
-    nv_println(nv_lit("  --cc <compiler>   C compiler (default: $NOVUS_CC, then cc / gcc)"));
-    nv_println(nv_lit("  --cflags <flags>  extra C compiler flags (also $NOVUS_CFLAGS)"));
-    nv_println(nv_lit("  --target <triple> cross compile via 'zig cc -target <triple>'"));
-    nv_println(nv_lit("  --keep-c          keep the generated .c file"));
-    nv_println(nv_lit("  --no-runtime      #include \"novus_rt.h\" instead of embedding it"));
+    nv_println(nv_add_chain(3, (&nv_lits[730]), g_VERSION, (&nv_lits[731])));
+    nv_println((&nv_lits[5]));
+    nv_println((&nv_lits[732]));
+    nv_println((&nv_lits[733]));
+    nv_println((&nv_lits[734]));
+    nv_println((&nv_lits[735]));
+    nv_println((&nv_lits[736]));
+    nv_println((&nv_lits[737]));
+    nv_println((&nv_lits[738]));
+    nv_println((&nv_lits[739]));
+    nv_println((&nv_lits[740]));
+    nv_println((&nv_lits[741]));
+    nv_println((&nv_lits[5]));
+    nv_println((&nv_lits[742]));
+    nv_println((&nv_lits[743]));
+    nv_println((&nv_lits[5]));
+    nv_println((&nv_lits[744]));
+    nv_println((&nv_lits[745]));
+    nv_println((&nv_lits[746]));
+    nv_println((&nv_lits[747]));
+    nv_println((&nv_lits[748]));
+    nv_println((&nv_lits[749]));
+    nv_println((&nv_lits[750]));
     return nv_nil;
 }
 
@@ -8624,21 +14092,21 @@ static nv f_optionsFrom_2(nv a0, nv a1) {
     long long l_i = l_from;
     while (nv_lt_bool(nv_int(l_i), nv_length_of(l_arguments, "length"))) {
         nv l_a = nv_index(l_arguments, nv_int(l_i));
-        if ((((nv_eq_bool(l_a, nv_lit("-o")) || nv_eq_bool(l_a, nv_lit("--cc"))) || nv_eq_bool(l_a, nv_lit("--cflags"))) || nv_eq_bool(l_a, nv_lit("--target")))) {
+        if ((((nv_eq_bool(l_a, (&nv_lits[706])) || nv_eq_bool(l_a, (&nv_lits[711]))) || nv_eq_bool(l_a, (&nv_lits[718]))) || nv_eq_bool(l_a, (&nv_lits[708])))) {
             if (nv_ge_bool(nv_int((l_i + 1LL)), nv_length_of(l_arguments, "length"))) {
-                nv_eprintln(nv_add_chain(3, nv_lit("novusc: option "), l_a, nv_lit(" needs a value")));
+                nv_eprintln(nv_add_chain(3, (&nv_lits[751]), l_a, (&nv_lits[752])));
                 (void)nv_exit(nv_int(1LL));
             }
             nv_index_set(l_options, l_a, nv_index(l_arguments, nv_int((l_i + 1LL))));
             l_i = (l_i + 2LL);
             continue;
         }
-        if ((nv_eq_bool(l_a, nv_lit("--keep-c")) || nv_eq_bool(l_a, nv_lit("--no-runtime")))) {
-            nv_index_set(l_options, l_a, nv_lit("true"));
+        if ((nv_eq_bool(l_a, (&nv_lits[727])) || nv_eq_bool(l_a, (&nv_lits[705])))) {
+            nv_index_set(l_options, l_a, (&nv_lits[208]));
             l_i = (l_i + 1LL);
             continue;
         }
-        nv_eprintln(nv_add_chain(3, nv_lit("novusc: unknown option '"), l_a, nv_lit("'")));
+        nv_eprintln(nv_add_chain(3, (&nv_lits[753]), l_a, (&nv_lits[21])));
         (void)nv_exit(nv_int(1LL));
     }
     return l_options;
@@ -8652,38 +14120,38 @@ static nv f_main_1(nv a0) {
         return nv_int(1LL);
     }
     nv l_command = nv_index(l_arguments, nv_int(0LL));
-    if (((nv_eq_bool(l_command, nv_lit("version")) || nv_eq_bool(l_command, nv_lit("--version"))) || nv_eq_bool(l_command, nv_lit("-v")))) {
-        nv_println(nv_add_fast(nv_lit("novusc "), g_VERSION));
+    if (((nv_eq_bool(l_command, (&nv_lits[650])) || nv_eq_bool(l_command, (&nv_lits[755]))) || nv_eq_bool(l_command, (&nv_lits[754])))) {
+        nv_println(nv_add_fast((&nv_lits[730]), g_VERSION));
         return nv_int(0LL);
     }
-    if (((nv_eq_bool(l_command, nv_lit("help")) || nv_eq_bool(l_command, nv_lit("--help"))) || nv_eq_bool(l_command, nv_lit("-h")))) {
+    if (((nv_eq_bool(l_command, (&nv_lits[758])) || nv_eq_bool(l_command, (&nv_lits[757]))) || nv_eq_bool(l_command, (&nv_lits[756])))) {
         (void)f_printUsage_0();
         return nv_int(0LL);
     }
-    if (nv_eq_bool(l_command, nv_lit("init"))) {
+    if (nv_eq_bool(l_command, (&nv_lits[759]))) {
         return f_initProject_1(l_arguments);
     }
-    if (nv_eq_bool(l_command, nv_lit("deps"))) {
+    if (nv_eq_bool(l_command, (&nv_lits[660]))) {
         return f_depsCommand_1(l_arguments);
     }
-    if (nv_eq_bool(l_command, nv_lit("emit"))) {
+    if (nv_eq_bool(l_command, (&nv_lits[760]))) {
         return f_emitCommand_2(f_sourceFor_1(l_arguments), f_optionsFrom_2(l_arguments, f_optionStart_1(l_arguments)));
     }
-    if (nv_eq_bool(l_command, nv_lit("check"))) {
+    if (nv_eq_bool(l_command, (&nv_lits[761]))) {
         nv l_source = f_sourceFor_1(l_arguments);
-        (void)f_generate_2(l_source, nv_lit(""));
-        nv_println(nv_add_fast(nv_lit("ok: "), l_source));
+        (void)f_generate_2(l_source, (&nv_lits[5]));
+        nv_println(nv_add_fast((&nv_lits[762]), l_source));
         return nv_int(0LL);
     }
-    if (nv_eq_bool(l_command, nv_lit("build"))) {
+    if (nv_eq_bool(l_command, (&nv_lits[763]))) {
         nv l_output = f_buildBinary_2(f_sourceFor_1(l_arguments), f_optionsFrom_2(l_arguments, f_optionStart_1(l_arguments)));
-        nv_println(nv_add_fast(nv_lit("built "), l_output));
+        nv_println(nv_add_fast((&nv_lits[764]), l_output));
         return nv_int(0LL);
     }
-    if (nv_eq_bool(l_command, nv_lit("run"))) {
+    if (nv_eq_bool(l_command, (&nv_lits[765]))) {
         return f_runCommand_2(f_sourceFor_1(l_arguments), l_arguments);
     }
-    nv_eprintln(nv_add_chain(3, nv_lit("novusc: unknown command '"), l_command, nv_lit("'")));
+    nv_eprintln(nv_add_chain(3, (&nv_lits[766]), l_command, (&nv_lits[21])));
     (void)f_printUsage_0();
     return nv_int(1LL);
     return nv_nil;
@@ -8691,6 +14159,7 @@ static nv f_main_1(nv a0) {
 
 int main(int argc, char **argv) {
     nv result = nv_nil;
+    nv_init_literals(nv_lits, nv_lit_text, 767);
     nv_init_args(argc, argv);
     nv_register_classes();
     nv_init_globals();

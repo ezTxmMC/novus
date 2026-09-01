@@ -1,0 +1,243 @@
+package main
+
+import thread
+
+// Threads, virtual threads, await, sync, channels, counters and groups.
+// Every result is aggregated before it is printed, so the output does not
+// depend on which thread got there first.
+
+define class Adder {
+    private final integer base: get
+
+    method plus(integer n): integer {
+        return base + n
+    }
+}
+
+var shared = 0
+var lock = 0
+var chan = 0
+
+method work(integer n): integer {
+    return n * 3
+}
+
+method blocking(integer n): integer {
+    thread.sleep(5)
+    return n
+}
+
+// break and continue have to give back the locks the loop took
+method scan(integer limit): integer {
+    var seen = 0
+    var i = 0
+    while (i < limit) {
+        sync (lock) {
+            shared = shared + 1
+            if (i % 2 == 0) {
+                i = i + 1
+                continue
+            }
+            if (i > 6) {
+                break
+            }
+            seen = seen + i
+        }
+        i = i + 1
+    }
+    return seen
+}
+
+// a sync block inside a loop inside another sync block, left every way
+// there is: an unboxed integer local is written inside it too
+method nested_loop(array<integer> xs): integer {
+    var acc = 0
+    sync (lock) {
+        shared = shared + 1
+        for (x in xs) {
+            sync {
+                if (x == 3) {
+                    continue
+                }
+                if (x == 7) {
+                    break
+                }
+                acc = acc + x
+            }
+        }
+        if (acc > 100) {
+            return 0 - 1
+        }
+    }
+    return acc
+}
+
+// nested sync blocks on the same lock: it is re-entrant
+method nested(): integer {
+    sync (lock) {
+        sync (lock) {
+            sync {
+                return 7
+            }
+        }
+    }
+    return 0
+}
+
+method produce(integer count) {
+    var i = 1
+    while (i <= count) {
+        thread.send(chan, i)
+        i = i + 1
+    }
+    thread.close(chan)
+}
+
+method drain(): integer {
+    var sum = 0
+    while (true) {
+        var v = thread.recv(chan)
+        if (thread.received() == false) {
+            break
+        }
+        sum = sum + v
+    }
+    return sum
+}
+
+method bump(integer counter, integer times) {
+    var i = 0
+    while (i < times) {
+        thread.add(counter, 1)
+        i = i + 1
+    }
+}
+
+method finish(integer group) {
+    thread.groupDone(group)
+}
+
+method main {
+    lock = thread.mutex()
+
+    // virtual threads, awaited one by one
+    var tasks = []
+    var i = 1
+    while (i <= 20) {
+        tasks.append(virtual work(i))
+        i = i + 1
+    }
+    var total = 0
+    for (t in tasks) {
+        total = total + await t
+    }
+    println "virtual: ${total}"
+
+    // operating system threads
+    var os1 = thread work(5)
+    var os2 = thread work(6)
+    var osSum = await os1 + await os2
+    println "os: ${osSum}"
+
+    // spawning a method call on an object
+    var adder = Adder(100)
+    println "method call: ${await virtual adder.plus(11)}"
+
+    // awaiting something that is not a task is that value
+    var word = "text"
+    println "plain: ${await 42} ${await word}"
+
+    // joinAll keeps the order of the tasks
+    var slow = []
+    var k = 5
+    while (k > 0) {
+        slow.append(virtual blocking(k))
+        k = k - 1
+    }
+    println "joinAll: ${thread.joinAll(slow)}"
+
+    // done() without waiting
+    var settled = virtual work(1)
+    await settled
+    println "done: ${thread.done(settled)}"
+
+    // sync with break and continue inside
+    shared = 0
+    var seen = scan(10)
+    println "scan: ${seen} shared: ${shared}"
+    println "nested: ${nested()}"
+    shared = 0
+    var deep = nested_loop([1, 2, 3, 4, 7, 9])
+    println "nested loop: ${deep} shared: ${shared}"
+
+    // sync from several threads at once
+    shared = 0
+    var writers = []
+    var w = 0
+    while (w < 4) {
+        writers.append(virtual scan(10))
+        w = w + 1
+    }
+    thread.joinAll(writers)
+    println "shared: ${shared}"
+
+    // a lock nobody else holds can be taken - it would not be free if any
+    // way out of a sync block had failed to give it back
+    println "tryLock: ${thread.tryLock(lock)}"
+    thread.unlock(lock)
+
+    // an unbuffered channel
+    chan = thread.channel(0)
+    var writer = virtual produce(10)
+    var readerA = virtual drain()
+    var readerB = virtual drain()
+    await writer
+    var received = await readerA + await readerB
+    println "channel: ${received}"
+    println "closed: ${thread.closed(chan)} left: ${thread.length(chan)}"
+
+    // nothing waiting means nothing received
+    var empty = thread.channel(2)
+    thread.tryRecv(empty)
+    println "tryRecv empty: ${thread.received()}"
+    thread.send(empty, "hello")
+    var taken = thread.tryRecv(empty)
+    var got = thread.received()
+    println "tryRecv full: ${taken} ${got}"
+
+    // counters
+    var counter = thread.counter(10)
+    var bumpers = []
+    var b = 0
+    while (b < 5) {
+        bumpers.append(virtual bump(counter, 200))
+        b = b + 1
+    }
+    thread.joinAll(bumpers)
+    println "counter: ${thread.get(counter)}"
+    thread.set(counter, 3)
+    var swapped = thread.compareAndSet(counter, 3, 9)
+    var again = thread.compareAndSet(counter, 3, 9)
+    println "cas: ${swapped} ${again} ${thread.get(counter)}"
+    var up = thread.increment(counter)
+    var down = thread.decrement(counter)
+    println "inc/dec: ${up} ${down}"
+
+    // groups, for work whose tasks nobody kept
+    var group = thread.group()
+    thread.groupAdd(group, 6)
+    var g = 0
+    while (g < 6) {
+        virtual finish(group)
+        g = g + 1
+    }
+    thread.groupWait(group)
+    println "group done"
+
+    // the pool
+    var haveCpus = thread.cpus() > 0
+    var haveCarriers = thread.parallelism() > 0
+    println "cpus: ${haveCpus} parallelism: ${haveCarriers}"
+    println "on a virtual thread here: ${thread.isVirtual()}"
+    println "id is stable: ${thread.id() == thread.id()}"
+}

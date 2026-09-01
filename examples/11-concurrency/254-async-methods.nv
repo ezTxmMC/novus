@@ -1,0 +1,19 @@
+package main
+
+// An `async method` starts on a virtual thread whenever it is called, so the
+// call hands back a task instead of a value and `await` turns it into one.
+// The method itself is written exactly like any other.
+
+async method load(string name): string {
+    return "contents of ${name}"
+}
+
+method main {
+    // both start right away and run at the same time
+    var first = load("a.txt")
+    var second = load("b.txt")
+    println await second
+    println await first
+    // awaiting the call directly reads like an ordinary one
+    println await load("c.txt")
+}

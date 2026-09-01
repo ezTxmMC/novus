@@ -1,0 +1,63 @@
+package bits
+
+// Bit operations that have no operator.
+//
+// The operators &, |, ^, << and >> are part of the language and work on 64
+// bit integers; >> keeps the sign. What is left over lives here.
+
+// Logical right shift - zeros are shifted in, unlike >>.
+method ushr(integer value, integer count): integer native "nv_bits_ushr"
+
+// The complement of every bit.
+method not(integer value): integer native "nv_bits_not"
+
+method rotateLeft(integer value, integer count): integer native "nv_bits_rotl"
+method rotateRight(integer value, integer count): integer native "nv_bits_rotr"
+
+// The low `count` bits of `value`.
+method mask(integer value, integer count): integer native "nv_bits_mask"
+
+// Arithmetic that wraps at 64 bits rather than overflowing. Signed overflow
+// is undefined in C, which the generated code is, so an algorithm that relies
+// on wrapping - a random number generator reproducing another language's, for
+// instance - has to say so explicitly.
+method wrappingAdd(integer a, integer b): integer native "nv_bits_wrapping_add"
+method wrappingSub(integer a, integer b): integer native "nv_bits_wrapping_sub"
+method wrappingMul(integer a, integer b): integer native "nv_bits_wrapping_mul"
+
+// The low 32 bits, read as a signed 32 bit number.
+method toI32(integer value): integer native "nv_bits_to_i32"
+
+// An unsigned 64 bit value as a float. A plain conversion reads the top bit
+// as a sign; this one does not.
+method toUnsignedFloat(integer value): float native "nv_bits_to_unsigned_float"
+
+// How many bits are set.
+method countOnes(integer value): integer native "nv_bits_count_ones"
+
+// The position of the highest set bit, -1 when `value` is zero. The number
+// of bits it takes to store a value is one more than this.
+method highestBit(integer value): integer native "nv_bits_highest"
+
+// Whether bit `index` is set.
+method isSet(integer value, integer index): bool {
+    return ushr(value, index) & 1 == 1
+}
+
+// `value` with bit `index` set.
+method set(integer value, integer index): integer {
+    return value | (1 << index)
+}
+
+// `value` with bit `index` cleared.
+method clear(integer value, integer index): integer {
+    return value & not(1 << index)
+}
+
+// The number of bits needed to represent values 0..count-1, at least 1.
+method bitsFor(integer count): integer {
+    if (count <= 1) {
+        return 1
+    }
+    return highestBit(count - 1) + 1
+}

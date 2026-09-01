@@ -1,0 +1,22 @@
+virtual: 630
+os: 33
+method call: 111
+plain: 42 text
+joinAll: [5, 4, 3, 2, 1]
+done: true
+scan: 9 shared: 8
+nested: 7
+nested loop: 7 shared: 1
+shared: 32
+tryLock: true
+channel: 55
+closed: true left: 0
+tryRecv empty: false
+tryRecv full: hello true
+counter: 1010
+cas: true false 9
+inc/dec: 10 9
+group done
+cpus: true parallelism: true
+on a virtual thread here: false
+id is stable: true

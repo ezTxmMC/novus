@@ -4,3 +4,8 @@
 *.vsix binary
 *.png binary
 *.jar binary
+
+# GitHub language statistics: generated files do not count
+bootstrap/novusc.c linguist-generated=true
+compiler/runtime/runtime.nv linguist-generated=true
+vscode-novus/package-lock.json linguist-generated=true

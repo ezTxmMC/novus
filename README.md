@@ -135,6 +135,12 @@ sources. The only rule: the snapshot must be able to compile the sources, so
 when you add a builtin, regenerate the snapshot before the compiler sources
 start using it (see [BOOTSTRAP.md](BOOTSTRAP.md)).
 
+## Repository statistics
+
+`make stats` (`novusc run tools/langstats.nv [dir] [--all] [--lines]`) prints
+which languages make up the tree, GitHub-style - Novus included, generated
+files and data/prose listed separately.
+
 ## Tests
 
 ```sh

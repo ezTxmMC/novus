@@ -1,0 +1,249 @@
+package main
+
+import os
+import path
+
+// langstats - which languages make up a source tree (like the language bar
+// on GitHub), Novus included.
+//
+//   novusc run tools/langstats.nv [directory] [--all] [--lines]
+//
+// Percentages are computed over programming languages by bytes (GitHub's
+// rule); data, prose and generated files are listed separately. --all counts
+// every file type, --lines ranks by lines instead of bytes.
+
+private final SKIP_DIRS = { ".git": true, "build": true, "dist": true, "node_modules": true, "out": true, "mccloud-data": true }
+private final GENERATED = { "bootstrap/novusc.c": true, "compiler/runtime/runtime.nv": true, "vscode-novus/package-lock.json": true }
+private final BAR_WIDTH = 30
+
+define class Stat {
+    private final string language: get
+    private final string kind: get
+    private integer files: get, set
+    private integer lines: get, set
+    private integer bytes: get, set
+}
+
+method main(array<string> arguments) {
+    var root = "."
+    var all = false
+    var byLines = false
+    for (a in arguments) {
+        if (a == "--all") {
+            all = true
+            continue
+        }
+        if (a == "--lines") {
+            byLines = true
+            continue
+        }
+        root = a
+    }
+    if (os.isDir(root) == false) {
+        eprintln "langstats: '${root}' is not a directory"
+        return 1
+    }
+    var stats = {}
+    var generated = []
+    scan(root, "", stats, generated)
+    report(stats, generated, all, byLines)
+    return 0
+}
+
+// Walks the tree; `rel` is the path relative to the root.
+method scan(string dir, string rel, map<string, Stat> stats, array<string> generated) {
+    for (entry in os.listDir(dir)) {
+        var full = path.join(dir, entry)
+        var relPath = entry
+        if (rel != "") {
+            relPath = rel + "/" + entry
+        }
+        if (os.isDir(full)) {
+            if (SKIP_DIRS.has(entry) || entry.startsWith(".")) {
+                continue
+            }
+            scan(full, relPath, stats, generated)
+            continue
+        }
+        if (isGenerated(relPath)) {
+            generated.append(relPath + " (" + formatBytes(os.fileSize(full)) + ")")
+            continue
+        }
+        var language = languageOf(entry)
+        if (language == "") {
+            continue
+        }
+        if (stats.has(language) == false) {
+            stats[language] = Stat(language, kindOf(language), 0, 0, 0)
+        }
+        var s = stats[language]
+        s.files(s.files() + 1)
+        s.lines(s.lines() + countLines(full))
+        s.bytes(s.bytes() + os.fileSize(full))
+    }
+}
+
+// Matches by suffix so scanning a subdirectory still recognizes the files.
+method isGenerated(string relPath): bool {
+    for (g in GENERATED) {
+        if (relPath == g || relPath.endsWith("/" + g) || g.endsWith("/" + relPath)) {
+            return true
+        }
+    }
+    return false
+}
+
+method languageOf(string name): string {
+    var byName = { "Makefile": "Makefile", "Dockerfile": "Dockerfile", "CMakeLists.txt": "CMake" }
+    if (byName.has(name)) {
+        return byName[name]
+    }
+    var byExt = { ".nv": "Novus", ".c": "C", ".h": "C", ".cpp": "C++", ".hpp": "C++", ".ts": "TypeScript",
+        ".js": "JavaScript", ".py": "Python", ".sh": "Shell", ".ps1": "PowerShell", ".cmd": "Batchfile",
+        ".bat": "Batchfile", ".java": "Java", ".rs": "Rust", ".go": "Go", ".zig": "Zig",
+        ".json": "JSON", ".yml": "YAML", ".yaml": "YAML", ".toml": "TOML", ".md": "Markdown", ".txt": "Text",
+        ".html": "HTML", ".css": "CSS", ".svg": "SVG", ".golden": "Test data", ".args": "Test data",
+        ".rc": "Test data", ".gitattributes": "Config", ".gitignore": "Config", ".vscodeignore": "Config" }
+    var ext = path.extension(name)
+    if (ext == "" && name.startsWith(".")) {
+        ext = name
+    }
+    if (byExt.has(ext)) {
+        return byExt[ext]
+    }
+    return ""
+}
+
+// programming | markup | data | prose  (GitHub counts programming, markup)
+method kindOf(string language): string {
+    var kinds = { "JSON": "data", "YAML": "data", "TOML": "data", "Test data": "data", "Config": "data",
+        "Markdown": "prose", "Text": "prose", "HTML": "markup", "CSS": "markup", "SVG": "markup" }
+    if (kinds.has(language)) {
+        return kinds[language]
+    }
+    return "programming"
+}
+
+method countLines(string file): integer {
+    var text = readFile(file)
+    if (text.length() == 0) {
+        return 0
+    }
+    var count = text.split("\n").length()
+    if (text.endsWith("\n")) {
+        count = count - 1
+    }
+    return count
+}
+
+method report(map<string, Stat> stats, array<string> generated, bool all, bool byLines) {
+    var counted = []
+    var others = []
+    var total = 0
+    for (name in stats) {
+        var s = stats[name]
+        var included = all || s.kind() == "programming" || s.kind() == "markup"
+        if (included) {
+            counted.append(s)
+            total = total + weight(s, byLines)
+            continue
+        }
+        others.append(s)
+    }
+    counted = sortByWeight(counted, byLines)
+    var unit = "bytes"
+    if (byLines) {
+        unit = "lines"
+    }
+    println "Language        Files    Lines      Bytes   Share (by ${unit})"
+    for (s in counted) {
+        var share = percent(weight(s, byLines), total)
+        println padRight(s.language(), 15) + padLeft("" + s.files(), 6) + padLeft("" + s.lines(), 9) + padLeft(formatBytes(s.bytes()), 11) + "  " + padLeft(share, 5) + "%  " + bar(weight(s, byLines), total)
+    }
+    if (others.length() > 0) {
+        println ""
+        println "not counted (data / prose; use --all to include):"
+        for (s in sortByWeight(others, byLines)) {
+            println "  " + padRight(s.language(), 15) + padLeft("" + s.files(), 6) + padLeft("" + s.lines(), 9) + padLeft(formatBytes(s.bytes()), 11)
+        }
+    }
+    if (generated.length() > 0) {
+        println ""
+        println "generated (excluded): " + generated.join(", ")
+    }
+}
+
+method weight(Stat s, bool byLines): integer {
+    if (byLines) {
+        return s.lines()
+    }
+    return s.bytes()
+}
+
+// Descending insertion sort (stable) - small inputs.
+method sortByWeight(array<Stat> items, bool byLines): array<Stat> {
+    var sorted = []
+    for (s in items) {
+        var at = 0
+        while (at < sorted.length() && weight(sorted[at], byLines) >= weight(s, byLines)) {
+            at = at + 1
+        }
+        sorted.insert(at, s)
+    }
+    return sorted
+}
+
+// "12.3" with one decimal, integer arithmetic only.
+method percent(integer part, integer total): string {
+    if (total == 0) {
+        return "0.0"
+    }
+    var tenths = (part * 1000 + total / 2) / total
+    return "${tenths / 10}.${tenths % 10}"
+}
+
+method bar(integer part, integer total): string {
+    var filled = 0
+    if (total > 0) {
+        filled = (part * BAR_WIDTH + total / 2) / total
+    }
+    var out = ""
+    var i = 0
+    while (i < BAR_WIDTH) {
+        if (i < filled) {
+            out = out + "#"
+            i = i + 1
+            continue
+        }
+        out = out + "."
+        i = i + 1
+    }
+    return out
+}
+
+method formatBytes(integer bytes): string {
+    if (bytes < 1024) {
+        return "${bytes} B"
+    }
+    if (bytes < 1024 * 1024) {
+        return "${(bytes * 10 / 1024) / 10}.${(bytes * 10 / 1024) % 10} KB"
+    }
+    var tenths = bytes * 10 / (1024 * 1024)
+    return "${tenths / 10}.${tenths % 10} MB"
+}
+
+method padRight(string s, integer width): string {
+    var out = s
+    while (out.length() < width) {
+        out = out + " "
+    }
+    return out
+}
+
+method padLeft(string s, integer width): string {
+    var out = s
+    while (out.length() < width) {
+        out = " " + out
+    }
+    return out
+}

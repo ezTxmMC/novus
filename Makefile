@@ -4,10 +4,11 @@
 #   make test       golden tests + self-hosting fixpoint check
 #   make snapshot   regenerate bootstrap/novusc.c after compiler changes
 #   make cross      cross compile for all platforms (needs zig)
+#   make stats      language statistics of the repository (like GitHub's bar)
 #   make install    copy build/novusc to $(PREFIX)/bin
 PREFIX ?= /usr/local
 
-.PHONY: all test snapshot cross install clean
+.PHONY: all test snapshot cross stats install clean
 
 all: build/novusc
 
@@ -23,6 +24,9 @@ snapshot: build/novusc
 
 cross: build/novusc
 	scripts/cross.sh
+
+stats: build/novusc
+	build/novusc run tools/langstats.nv
 
 install: build/novusc
 	install -d $(DESTDIR)$(PREFIX)/bin

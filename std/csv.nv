@@ -1,0 +1,86 @@
+package csv
+
+// Comma separated values with quoting ("" inside quoted fields).
+
+method parse(string text): array<object> {
+    return parseWith(text, ",")
+}
+
+method parseWith(string text, string separator): array<object> {
+    var rows = []
+    var row = []
+    var field = ""
+    var quoted = false
+    var i = 0
+    var n = text.length()
+    while (i < n) {
+        var c = text.charAt(i)
+        if (quoted) {
+            if (c == "\"" && i + 1 < n && text.charAt(i + 1) == "\"") {
+                field = field + "\""
+                i = i + 2
+                continue
+            }
+            if (c == "\"") {
+                quoted = false
+                i = i + 1
+                continue
+            }
+            field = field + c
+            i = i + 1
+            continue
+        }
+        if (c == "\"") {
+            quoted = true
+            i = i + 1
+            continue
+        }
+        if (c == separator) {
+            row.append(field)
+            field = ""
+            i = i + 1
+            continue
+        }
+        if (c == "\n" || c == "\r") {
+            if (c == "\r" && i + 1 < n && text.charAt(i + 1) == "\n") {
+                i = i + 1
+            }
+            row.append(field)
+            rows.append(row)
+            row = []
+            field = ""
+            i = i + 1
+            continue
+        }
+        field = field + c
+        i = i + 1
+    }
+    if (field != "" || row.length() > 0) {
+        row.append(field)
+        rows.append(row)
+    }
+    return rows
+}
+
+method stringify(array<object> rows): string {
+    return stringifyWith(rows, ",")
+}
+
+method stringifyWith(array<object> rows, string separator): string {
+    var lines = []
+    for (row in rows) {
+        var fields = []
+        for (value in row) {
+            fields.append(quote("" + value, separator))
+        }
+        lines.append(fields.join(separator))
+    }
+    return lines.join("\n")
+}
+
+method quote(string value, string separator): string {
+    if (value.contains(separator) || value.contains("\"") || value.contains("\n")) {
+        return "\"" + value.replace("\"", "\"\"") + "\""
+    }
+    return value
+}

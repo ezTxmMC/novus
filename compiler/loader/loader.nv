@@ -3,6 +3,7 @@ package loader
 import "../ast/sexp.nv"
 import "../parser/declarations.nv"
 import "../parser/errors.nv"
+import "../std/stdlib.nv"
 import "paths.nv"
 
 // Loads a program and resolves `import "file.nv"` declarations.
@@ -49,14 +50,54 @@ method loadFile(string path, string importedFrom, map<string, string> loaded, ar
     }
     var decls = parseFile(readFile(path), fileLabel(path))
     var dir = dirName(path)
+    addDecls(decls, dir, fileLabel(path), loaded, out, modules)
+    return 0
+}
+
+// Appends declarations, following file and module imports.
+method addDecls(array<string> decls, string dir, string from, map<string, string> loaded, array<string> out, map<string, string> modules): integer {
     for (d in decls) {
-        if (nodeHead(d) == "import") {
+        var head = nodeHead(d)
+        if (head == "import") {
             var rel = sexpUnescape(nodeChild(d, 1))
-            loadFile(resolveImport(dir, rel, modules), fileLabel(path), loaded, out, modules)
-        } else {
-            out.append(d)
+            loadFile(resolveImport(dir, rel, modules), from, loaded, out, modules)
+            continue
         }
+        if (head == "importmod") {
+            loadStdModule(nodeChild(d, 1), from, loaded, out, modules)
+            continue
+        }
+        out.append(d)
     }
+    return 0
+}
+
+// Loads an embedded standard library module (`import os`). Its methods and
+// globals are namespaced: `(method os.mkdir ...)`, used as os.mkdir(...).
+method loadStdModule(string name, string from, map<string, string> loaded, array<string> out, map<string, string> modules): integer {
+    var key = "std:" + name
+    if (loaded.has(key)) {
+        return 0
+    }
+    loaded[key] = "1"
+    var source = stdSource(name)
+    if (source == "") {
+        fail("unknown module '" + name + "' (standard modules: " + stdModules().join(", ") + ")", from)
+    }
+    var decls = []
+    for (d in parseFile(source, "std/" + name + ".nv")) {
+        var head = nodeHead(d)
+        if (head == "method") {
+            decls.append("(method " + name + "." + d.substring(8, d.length()))
+            continue
+        }
+        if (head == "global") {
+            decls.append("(global " + name + "." + d.substring(8, d.length()))
+            continue
+        }
+        decls.append(d)
+    }
+    addDecls(decls, "std", "std/" + name + ".nv", loaded, out, modules)
     return 0
 }
 

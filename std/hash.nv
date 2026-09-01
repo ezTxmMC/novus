@@ -1,0 +1,26 @@
+package hash
+
+// Non-cryptographic hashes.
+
+method fnv1a(string text): integer native "nv_hash_fnv1a"   // 64-bit FNV-1a, always >= 0
+method crc32(string text): integer native "nv_hash_crc32"
+
+// Stable small hash for bucketing: 0 .. buckets-1
+method bucket(string text, integer buckets): integer {
+    return fnv1a(text) % buckets
+}
+
+// Hex string of a hash value.
+method hex(integer value): string {
+    var digits = "0123456789abcdef"
+    var out = ""
+    var v = value
+    if (v == 0) {
+        return "0"
+    }
+    while (v > 0) {
+        out = digits.charAt(v % 16) + out
+        v = v / 16
+    }
+    return out
+}

@@ -68,6 +68,8 @@ export interface MethodDecl extends DeclBase {
   params: Param[];
   returnType?: TypeRef;
   body?: Block;
+  /** `native "c_function" [variadic]` - implemented by the runtime (std modules). */
+  isNative?: boolean;
   isConstructor: boolean;
   /** Whether the declaration used the `method` keyword (interface members may omit it). */
   hasKeyword: boolean;

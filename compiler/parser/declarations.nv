@@ -198,6 +198,7 @@ method parseFile(string source, string file): array<string> {
                 continue
             }
             p = expectIdent(tokens, p + 1, "module name or file path after 'import'")
+            decls.append("(importmod " + tokVal(tokens[p - 1]) + ")")
             continue
         }
         if (isSym(tokens, p, "@")) {

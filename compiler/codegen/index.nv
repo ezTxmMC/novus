@@ -22,6 +22,14 @@ method indexProgram(array<string> decls, map<string, string> prog): integer {
             prog["fnode:" + key + "/" + count] = d
             prog["func:" + key] = intToStr(count + 1)
             prog["hasfunc:" + name] = "1"
+            if (packageOf(name) != "") {
+                prog["pkg:" + packageOf(name)] = "1"
+            }
+            if (isNativeMethod(d) && nodeCount(nodeChild(d, 5)) > 2) {
+                // variadic native: callable with any number of arguments
+                prog["fnode:" + name + "/*/0"] = d
+                prog["func:" + name + "/*"] = "1"
+            }
             continue
         }
         if (head == "class" || head == "enum") {
@@ -33,6 +41,9 @@ method indexProgram(array<string> decls, map<string, string> prog): integer {
         }
         if (head == "iface" || head == "annodef" || head == "global") {
             prog[head + ":" + name] = d
+            if (head == "global" && packageOf(name) != "") {
+                prog["pkg:" + packageOf(name)] = "1"
+            }
         }
     }
     return 0

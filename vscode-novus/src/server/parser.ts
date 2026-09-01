@@ -461,8 +461,17 @@ export class Parser {
     }
 
     let body: ast.Block | undefined;
+    let isNative = false;
     if (this.isPunct('{')) {
       body = this.parseBlock();
+    } else if (this.cur.kind === TokenKind.Identifier && this.cur.value === 'native' && !this.cur.newlineBefore) {
+      this.advance();
+      const cname = this.cur as Token;
+      if (cname.kind === TokenKind.String) this.advance();
+      else this.error("Expected the C function name after 'native'");
+      const variadic = this.cur as Token;
+      if (variadic.kind === TokenKind.Identifier && variadic.value === 'variadic' && !variadic.newlineBefore) this.advance();
+      isNative = true;
     }
 
     return {
@@ -472,6 +481,7 @@ export class Parser {
       params,
       returnType,
       body,
+      isNative,
       annotations,
       modifiers,
       doc: this.docFor(declStart),

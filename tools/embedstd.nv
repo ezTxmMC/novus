@@ -1,0 +1,81 @@
+package main
+
+import os
+import path
+
+// Embeds the standard library (std/*.nv) into the compiler:
+//   novusc run tools/embedstd.nv std > compiler/std/stdlib.nv
+// The generated module exposes stdSource(name) and stdModules().
+
+method main(array<string> arguments) {
+    var dir = "std"
+    if (arguments.length() >= 1) {
+        dir = arguments[0]
+    }
+    if (os.isDir(dir) == false) {
+        eprintln "usage: embedstd <std-directory>"
+        return 1
+    }
+    var names = []
+    for (entry in os.listDir(dir)) {
+        if (entry.endsWith(".nv")) {
+            names.append(entry.substring(0, entry.length() - 3))
+        }
+    }
+    println "package stdlib"
+    println ""
+    println "// GENERATED from " + dir + "/*.nv by tools/embedstd.nv - do not edit."
+    println "// The standard library modules embedded into novusc (see std/)."
+    println ""
+    println "method stdModules(): array<string> {"
+    var quotedNames = []
+    for (n in names) {
+        quotedNames.append("\"" + n + "\"")
+    }
+    println "    return [" + quotedNames.join(", ") + "]"
+    println "}"
+    println ""
+    println "method stdSource(string name): string {"
+    for (n in names) {
+        println "    if (name == \"" + n + "\") {"
+        println "        return \"" + escapeNovus(readFile(path.join(dir, n + ".nv"))) + "\""
+        println "    }"
+    }
+    println "    return \"\""
+    println "}"
+    return 0
+}
+
+method escapeChar(string c): string {
+    if (c == "\\") {
+        return "\\\\"
+    }
+    if (c == "\"") {
+        return "\\\""
+    }
+    if (c == "\n") {
+        return "\\n"
+    }
+    if (c == "\t") {
+        return "\\t"
+    }
+    if (c == "\r") {
+        return "\\r"
+    }
+    if (c == "$") {
+        // keeps "${" out of the literal: close the string, splice the character
+        return "\" + chr(36) + \""
+    }
+    return c
+}
+
+method escapeNovus(string text): string {
+    var out = ""
+    var i = 0
+    var n = text.length()
+    while (i < n) {
+        out = out + escapeChar(text.charAt(i))
+        i = i + 1
+    }
+    return out
+}

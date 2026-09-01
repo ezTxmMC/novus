@@ -1,0 +1,36 @@
+package path
+
+// File system paths (pure string handling, forward slashes everywhere).
+
+method join(string parts): string native "nv_path_join" variadic
+method absolute(): string native "nv_path_absolute"             // the working directory
+method absolute(string path): string native "nv_path_absolute_of"
+method normalize(string path): string native "nv_path_normalize"
+method relative(string base, string target): string native "nv_path_relative"
+method dirname(string path): string native "nv_path_dirname"
+method basename(string path): string native "nv_path_basename"
+method stem(string path): string native "nv_path_stem"            // basename without extension
+method extension(string path): string native "nv_path_extension"  // ".txt", "" when none
+method isAbsolute(string path): bool native "nv_path_is_absolute"
+method exists(string path): bool native "nv_path_exists"
+method isDir(string path): bool native "nv_os_is_dir"
+method isFile(string path): bool native "nv_os_is_file"
+method temp(): string native "nv_path_temp"
+method separator(): string native "nv_path_separator"
+
+// "a/b/c.txt" with a new extension: withExtension("a/b/c.txt", ".md")
+method withExtension(string p, string ext): string {
+    var current = extension(p)
+    return p.substring(0, p.length() - current.length()) + ext
+}
+
+// The path segments: "a/b/c" -> [a, b, c]
+method segments(string p): array<string> {
+    var out = []
+    for (s in normalize(p).split("/")) {
+        if (s != "") {
+            out.append(s)
+        }
+    }
+    return out
+}

@@ -61,6 +61,19 @@ method parseMethodDecl(array<string> tokens, integer pos, string annos): map<str
         ret = rt["node"]
         p = parseInt(rt["pos"])
     }
+    // native "c_function" [variadic]: implemented by the C runtime (stdlib)
+    if (isIdentNamed(tokens, p, "native")) {
+        if (tokKind(tokens[p + 1]) != "STRING") {
+            fail("expected the C function name after 'native'", posOf(tokens, p))
+        }
+        var body = "(native " + sexpStr(tokVal(tokens[p + 1]))
+        p = p + 2
+        if (isIdentNamed(tokens, p, "variadic")) {
+            body = body + " variadic"
+            p = p + 1
+        }
+        return { "node": "(method " + name + " " + ret + " " + params + " " + annos + " " + body + "))", "pos": p }
+    }
     var b = parseBlock(tokens, p)
     var node = "(method " + name + " " + ret + " " + params + " " + annos + " " + b["node"] + ")"
     return { "node": node, "pos": parseInt(b["pos"]) }

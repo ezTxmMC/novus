@@ -1,0 +1,58 @@
+ababab
+  7|7  |
+desserts
+[the, quick, brown, fox]
+2
+3
+Novus
+true false
+hello...
+1.2.3
+[a, b, c]
+[1, 2, 3]
+[apple, fig, pear]
+[2.500000, 1.500000, 0.500000]
+[1, 2, 3]
+[0, 1, 2, 3, 4]
+[2, 3]
+6 2 8
+[[1, 2], [3, 4], [5]]
+{a: 3, b: 2}
+{1: x, 2: y}
+{a: 2, b: 1}
+[[k, v]]
+4.000000 1024.000000 2 3 3
+3 3 9 10
+6 12 81 true
+3.140000
+3.142
+1,234,567 -999 12
+1.5 KB 5 B 3.0 MB
+25.6%
+name     novus
+version  0.1
+aGVsbG8gd29ybGQ=
+hello world
+Novus!
+true
+true
+907060870
+ff
+true
+[build, extra]
+{level: 3, out: app, verbose: true, x: true}
+app true n/a
+[[name, age], [Doe, John, 42], [x, say "hi"]]
+name,age
+"Doe, John",42
+x,"say ""hi"""
+1970-01-01T00:00:00Z
+1971-01-01
+1970
+1h 2m
+true
+5
+3
+8
+2 passed, 0 failed
+0

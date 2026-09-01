@@ -1,0 +1,72 @@
+package fmt
+
+import math
+import strings
+
+// Human friendly formatting of numbers and sizes.
+
+method fixed(float x, integer decimals): string native "nv_fmt_fixed"   // "3.14"
+
+// 1234567 -> "1,234,567"
+method thousands(integer n): string {
+    var digits = "" + math.abs(n)
+    var out = ""
+    var i = digits.length()
+    while (i > 0) {
+        var start = i - 3
+        if (start < 0) {
+            start = 0
+        }
+        var group = digits.substring(start, i)
+        if (out == "") {
+            out = group
+        }
+        if (out != group) {
+            out = group + "," + out
+        }
+        i = start
+    }
+    if (n < 0) {
+        return "-" + out
+    }
+    return out
+}
+
+// 1536 -> "1.5 KB"
+method bytes(integer n): string {
+    if (n < 1024) {
+        return "${n} B"
+    }
+    var units = ["KB", "MB", "GB", "TB"]
+    var value = math.toFloat(n)
+    var unit = ""
+    for (u in units) {
+        value = value / 1024.0
+        unit = u
+        if (value < 1024.0) {
+            break
+        }
+    }
+    return fixed(value, 1) + " " + unit
+}
+
+// 0.256 -> "25.6%"
+method percent(float ratio, integer decimals): string {
+    return fixed(ratio * 100.0, decimals) + "%"
+}
+
+// Two-column table: rows of [label, value].
+method table(array<object> rows): string {
+    var width = 0
+    for (row in rows) {
+        var label = "" + row[0]
+        if (label.length() > width) {
+            width = label.length()
+        }
+    }
+    var lines = []
+    for (row in rows) {
+        lines.append(strings.padRight("" + row[0], width) + "  " + row[1])
+    }
+    return lines.join("\n")
+}

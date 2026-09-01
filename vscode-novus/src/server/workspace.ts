@@ -67,11 +67,19 @@ export class Workspace {
     this.analyses.delete(uri);
   }
 
+  /** std/<module>.nv files: their functions are only reachable as module.name(). */
+  private isStdModuleFile(uri: string, analysis: Analysis): boolean {
+    const file = uri.slice(uri.lastIndexOf('/') + 1);
+    const dir = uri.slice(0, uri.lastIndexOf('/'));
+    return !!analysis.packageName && file === analysis.packageName + '.nv' && dir.endsWith('/std') && !!this.builtinModule(analysis.packageName);
+  }
+
   /** Top-level symbols of other files (imported or not). */
   globalLookup(name: string, excludeUri: string): NSymbol[] {
     const out: NSymbol[] = [];
     for (const [uri, analysis] of this.analyses) {
       if (uri === excludeUri) continue;
+      if (this.isStdModuleFile(uri, analysis)) continue;
       const found = analysis.moduleScope.symbols.get(name);
       if (found) for (const s of found) if (s.kind !== 'module') out.push(s);
     }

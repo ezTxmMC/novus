@@ -1,0 +1,33 @@
+package test
+
+// Minimal test helpers: assertions count failures, report() prints a
+// summary and returns the exit code.
+
+var passed = 0
+var failed = 0
+
+method assert(bool condition, string name) {
+    if (condition) {
+        passed = passed + 1
+        return
+    }
+    failed = failed + 1
+    eprintln "FAIL " + name
+}
+
+method assertEqual(object actual, object expected, string name) {
+    if (actual == expected) {
+        passed = passed + 1
+        return
+    }
+    failed = failed + 1
+    eprintln "FAIL " + name + ": expected " + expected + " but got " + actual
+}
+
+method report(): integer {
+    println "${passed} passed, ${failed} failed"
+    if (failed > 0) {
+        return 1
+    }
+    return 0
+}

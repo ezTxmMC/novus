@@ -1,0 +1,131 @@
+package arrays
+
+// Array helpers beyond the builtin methods (length, append, pop, insert,
+// remove, contains, indexOf, join, clear).
+
+method sort(array<object> items): array<object> native "nv_arr_sorted"   // ascending, numbers or strings
+method sortDesc(array<object> items): array<object> {
+    return reverse(sort(items))
+}
+
+method reverse(array<object> items): array<object> {
+    var out = []
+    var i = items.length()
+    while (i > 0) {
+        out.append(items[i - 1])
+        i = i - 1
+    }
+    return out
+}
+
+method unique(array<object> items): array<object> {
+    var out = []
+    for (x in items) {
+        if (out.contains(x) == false) {
+            out.append(x)
+        }
+    }
+    return out
+}
+
+// [from, to) as integers
+method range(integer from, integer to): array<integer> {
+    var out = []
+    var i = from
+    while (i < to) {
+        out.append(i)
+        i = i + 1
+    }
+    return out
+}
+
+method slice(array<object> items, integer from, integer to): array<object> {
+    var out = []
+    var i = from
+    if (i < 0) {
+        i = 0
+    }
+    while (i < to && i < items.length()) {
+        out.append(items[i])
+        i = i + 1
+    }
+    return out
+}
+
+method concat(array<object> a, array<object> b): array<object> {
+    var out = []
+    for (x in a) {
+        out.append(x)
+    }
+    for (x in b) {
+        out.append(x)
+    }
+    return out
+}
+
+method sum(array<object> numbers): object {
+    var total = 0
+    for (x in numbers) {
+        total = total + x
+    }
+    return total
+}
+
+method min(array<object> items): object {
+    var best = items[0]
+    for (x in items) {
+        if (x < best) {
+            best = x
+        }
+    }
+    return best
+}
+
+method max(array<object> items): object {
+    var best = items[0]
+    for (x in items) {
+        if (x > best) {
+            best = x
+        }
+    }
+    return best
+}
+
+method first(array<object> items): object {
+    return items[0]
+}
+
+method last(array<object> items): object {
+    return items[items.length() - 1]
+}
+
+method isEmpty(array<object> items): bool {
+    return items.length() == 0
+}
+
+// Number of elements equal to `value`.
+method countOf(array<object> items, object value): integer {
+    var n = 0
+    for (x in items) {
+        if (x == value) {
+            n = n + 1
+        }
+    }
+    return n
+}
+
+// Copies the array (shallow).
+method copy(array<object> items): array<object> {
+    return slice(items, 0, items.length())
+}
+
+// Splits into chunks of `size` elements.
+method chunk(array<object> items, integer size): array<object> {
+    var out = []
+    var i = 0
+    while (i < items.length()) {
+        out.append(slice(items, i, i + size))
+        i = i + size
+    }
+    return out
+}

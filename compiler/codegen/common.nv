@@ -83,6 +83,24 @@ method methodRet(string m): string {
     return nodeChild(m, 2)
 }
 
+// C identifier for a (possibly package qualified) Novus name: os.mkdir -> os__mkdir
+method cName(string name): string {
+    return name.replace(".", "__")
+}
+
+// Package part of a qualified name ("os" for "os.mkdir"), "" when plain.
+method packageOf(string name): string {
+    var dot = name.indexOf(".")
+    if (dot < 0) {
+        return ""
+    }
+    return name.substring(0, dot)
+}
+
+method isNativeMethod(string m): bool {
+    return nodeHead(nodeChild(m, 5)) == "native"
+}
+
 method intToStr(integer i): string {
     return "" + i
 }

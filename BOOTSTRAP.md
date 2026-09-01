@@ -40,8 +40,9 @@ up to date. `scripts/snapshot.sh` regenerates `compiler/runtime/runtime.nv` and
    do it in two steps: add the feature, regenerate the snapshot, *then* use
    the feature in the compiler sources and regenerate again.
 3. `compiler/runtime/runtime.nv` is generated from `runtime/novus_rt.h` by
-   `tools/embed.nv` (`snapshot.sh` does this). Edit the header, not the
-   embedding.
+   `tools/embed.nv` and `compiler/std/stdlib.nv` from `std/*.nv` by
+   `tools/embedstd.nv` (`snapshot.sh` does both). Edit the header and the
+   std sources, never the embeddings.
 4. Keep the fixpoint: `test/selfhost.sh` must pass. Non-determinism in the
    generator (e.g. depending on memory addresses or unordered iteration)
    would break it - maps iterate in key order, which is deterministic.
@@ -60,6 +61,12 @@ what they use with `import "file.nv"` (relative to the importing file).
   (`checks.nv`) and emits C against `runtime/novus_rt.h` - expressions,
   statements, methods, whole program; `modules.nv` maps `json`/`path`/`os`/
   `http` calls to runtime functions.
+- `std/` (repository root) holds the standard library; `import os` makes the
+  loader parse the embedded copy of `std/os.nv` and prefix its methods and
+  globals with the module name (`(method os.mkdir ...)`), which is why they
+  are called as `os.mkdir(...)`. A method body `(native "nv_os_mkdir")`
+  makes the code generator call that C function directly (`variadic`
+  natives receive the argument count first).
 - `project/` parses `project.nv` manifests and fetches `require`d modules
   with git into the cache; the loader resolves module imports through the
   resulting module table.
@@ -70,7 +77,7 @@ what they use with `import "file.nv"` (relative to the importing file).
 
 ```
 (method name ret (params (p type name)...) (annos (anno Name (a key "v")...)...) body)
-    body: (block (at file:line stmt)...) or (abstract)
+    body: (block (at file:line stmt)...), (abstract) or (native "c_function" [variadic])
 (class Name Base|- true|false (fields (f type name)...) ctor (methods method...))
     ctor: (ctor (params ...) (block ...)) or (noctor)
 (enum Name (consts (c NAME arg...)...) (fields ...) ctor (methods ...))

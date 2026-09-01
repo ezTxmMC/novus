@@ -1,0 +1,55 @@
+package random
+
+import arrays
+import math
+
+// Pseudo random numbers (xorshift, seeded from the clock unless seed() is called).
+
+method seed(integer value) native "nv_random_seed"
+method next(): integer native "nv_random_next"     // 0 .. 2^62-1
+
+// Integer in [low, high].
+method int(integer low, integer high): integer {
+    if (high <= low) {
+        return low
+    }
+    return low + next() % (high - low + 1)
+}
+
+// Float in [0, 1).
+method float(): float {
+    return math.toFloat(next() % 1000000000) / 1000000000.0
+}
+
+method bool(): bool {
+    return next() % 2 == 0
+}
+
+method pick(array<object> items): object {
+    return items[int(0, items.length() - 1)]
+}
+
+// A shuffled copy (Fisher-Yates).
+method shuffle(array<object> items): array<object> {
+    var out = arrays.copy(items)
+    var i = out.length() - 1
+    while (i > 0) {
+        var j = int(0, i)
+        var t = out[i]
+        out[i] = out[j]
+        out[j] = t
+        i = i - 1
+    }
+    return out
+}
+
+// Random string of `length` characters from `alphabet`.
+method string(integer length, string alphabet): string {
+    var out = ""
+    var i = 0
+    while (i < length) {
+        out = out + alphabet.charAt(int(0, alphabet.length() - 1))
+        i = i + 1
+    }
+    return out
+}

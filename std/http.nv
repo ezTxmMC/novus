@@ -1,0 +1,24 @@
+package http
+
+import json
+
+// HTTP client driven by the curl command line tool (https included).
+// get/post/put/delete return the body and abort on transport errors;
+// request never aborts and returns {status, ok, body, headers, error}.
+
+method get(string url): string native "nv_http_get"
+method post(string url, object body): string native "nv_http_post"     // maps/arrays are sent as JSON
+method put(string url, object body): string native "nv_http_put"
+method delete(string url): string native "nv_http_delete"
+method request(string verb, string url, object body, map<string, string> headers): map<string, object> native "nv_http_request"
+method download(string url, string file): bool native "nv_http_download"
+
+// GET that parses the response as JSON.
+method getJson(string url): object {
+    return json.parse(get(url))
+}
+
+// POST with a JSON body, parsing the JSON response.
+method postJson(string url, object body): object {
+    return json.parse(post(url, body))
+}

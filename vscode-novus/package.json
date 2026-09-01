@@ -2,7 +2,7 @@
   "name": "novus-language",
   "displayName": "Novus Language",
   "description": "Full language support for the self-hosting Novus programming language (.nv): syntax highlighting, IntelliSense, diagnostics, navigation, and run/build commands via novusc.",
-  "version": "0.1.0-pre.alpha.2",
+  "version": "0.1.0-pre.alpha.3",
   "publisher": "eztxmmc",
   "author": "ezTxmMC",
   "repository": {
@@ -168,11 +168,12 @@
     }
   },
   "scripts": {
-    "vscode:prepublish": "npm run compile",
+    "vscode:prepublish": "npm run copy-std && npm run compile",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "test": "npm run compile && node ./out/test/run.js",
-    "package": "vsce package"
+    "package": "npm run copy-std && vsce package",
+    "copy-std": "node scripts/copy-std.js"
   },
   "dependencies": {
     "vscode-languageclient": "^10.1.0",

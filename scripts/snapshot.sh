@@ -17,6 +17,9 @@ cd "$ROOT"
 echo "embedding runtime/novus_rt.h into compiler/runtime/runtime.nv"
 "$NOVUSC" run tools/embed.nv runtime/novus_rt.h > "$WORK/runtime.nv"
 mv "$WORK/runtime.nv" compiler/runtime/runtime.nv
+echo "embedding std/*.nv into compiler/std/stdlib.nv"
+"$NOVUSC" run tools/embedstd.nv std > "$WORK/stdlib.nv"
+mv "$WORK/stdlib.nv" compiler/std/stdlib.nv
 
 echo "stage A: current sources compiled by $NOVUSC"
 "$NOVUSC" build compiler/main.nv -o "$WORK/novuscA" > /dev/null

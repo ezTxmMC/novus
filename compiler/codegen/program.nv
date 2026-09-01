@@ -62,7 +62,7 @@ method genClassCode(string node, map<string, string> prog, array<string> protos,
 method genEnumInit(string node, map<string, string> prog): string {
     var name = nodeChild(node, 1)
     var consts = nodeChild(node, 2)
-    var ctx = {"class": "", "func": "", "ret": "void", "pos": "enum " + name}
+    var ctx = {"class": "", "pkg": "", "func": "", "ret": "void", "pos": "enum " + name}
     var locals = {}
     var out = ""
     var i = 1
@@ -124,6 +124,9 @@ method generateProgram(array<string> decls, string runtime): string {
 
     for (d in decls) {
         var head = nodeHead(d)
+        if (head == "method" && isNativeMethod(d)) {
+            continue
+        }
         if (head == "method") {
             var name = methodName(d)
             var arity = arityOf(d)
@@ -152,10 +155,10 @@ method generateProgram(array<string> decls, string runtime): string {
         }
         if (head == "global") {
             var gname = nodeChild(d, 1)
-            var gctx = {"class": "", "func": "", "ret": "void", "pos": "constant " + gname}
+            var gctx = {"class": "", "pkg": packageOf(gname), "func": "", "ret": "void", "pos": "constant " + gname}
             var glocals = {}
-            protos.append("static nv g_" + gname + ";" + nl())
-            globalsInit.append("    g_" + gname + " = " + genExpr(nodeChild(d, 2), prog, gctx, glocals) + ";" + nl())
+            protos.append("static nv g_" + cName(gname) + ";" + nl())
+            globalsInit.append("    g_" + cName(gname) + " = " + genExpr(nodeChild(d, 2), prog, gctx, glocals) + ";" + nl())
         }
     }
 

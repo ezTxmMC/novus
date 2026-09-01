@@ -1,0 +1,27 @@
+package io
+
+// Standard input and output.
+
+method readLine(): string native "nv_read_line"
+method readAll(): string native "nv_read_all"          // everything from stdin
+method write(string text) native "nv_io_write"          // stdout without newline
+method writeErr(string text) native "nv_io_write_err"   // stderr without newline
+method flush() native "nv_io_flush"
+
+method readLines(): array<string> {
+    var out = []
+    for (line in readAll().replace("\r\n", "\n").split("\n")) {
+        out.append(line)
+    }
+    if (out.length() > 0 && out[out.length() - 1] == "") {
+        out.pop()
+    }
+    return out
+}
+
+// Asks a question on stdout and reads the answer.
+method prompt(string question): string {
+    write(question)
+    flush()
+    return readLine()
+}

@@ -1,0 +1,52 @@
+package log
+
+import strings
+import time
+
+// Leveled logging to stderr: debug < info < warn < error.
+
+var minimumLevel = 1
+var showTime = true
+
+method setLevel(string level) {
+    minimumLevel = levelValue(level)
+}
+
+method setTimestamps(bool enabled) {
+    showTime = enabled
+}
+
+method debug(string message) {
+    write(0, "DEBUG", message)
+}
+
+method info(string message) {
+    write(1, "INFO", message)
+}
+
+method warn(string message) {
+    write(2, "WARN", message)
+}
+
+method error(string message) {
+    write(3, "ERROR", message)
+}
+
+method levelValue(string level): integer {
+    var levels = { "debug": 0, "info": 1, "warn": 2, "error": 3 }
+    if (levels.has(level.toLower())) {
+        return levels[level.toLower()]
+    }
+    return 1
+}
+
+method write(integer level, string name, string message) {
+    if (level < minimumLevel) {
+        return
+    }
+    var prefix = ""
+    if (showTime) {
+        prefix = time.nowIso() + " "
+    }
+    eprintln prefix + strings.padRight(name, 5) + " " + message
+}

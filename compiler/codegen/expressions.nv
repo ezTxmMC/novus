@@ -3,10 +3,10 @@ package codegen
 import "../ast/sexp.nv"
 import "../lexer/chars.nv"
 import "../parser/errors.nv"
+import "../std/stdlib.nv"
 import "calls.nv"
 import "common.nv"
 import "index.nv"
-import "modules.nv"
 
 // Expressions -> C.
 //
@@ -50,10 +50,24 @@ method resolveVar(string name, map<string, string> prog, map<string, string> ctx
         }
         return ""
     }
+    if (ctx["pkg"] != "" && prog.has("global:" + ctx["pkg"] + "." + name)) {
+        return "g_" + cName(ctx["pkg"] + "." + name)
+    }
     if (prog.has("global:" + name)) {
-        return "g_" + name
+        return "g_" + cName(name)
     }
     return ""
+}
+
+// Error for an identifier that names a module but is used like a value.
+method failModuleUse(string name, map<string, string> prog, map<string, string> ctx): integer {
+    if (prog.has("pkg:" + name)) {
+        fail("'" + name + "' is a module - call one of its functions, e.g. " + name + ".x()", ctx["pos"])
+    }
+    if (stdModules().contains(name)) {
+        fail("module '" + name + "' is not imported - add 'import " + name + "'", ctx["pos"])
+    }
+    return 0
 }
 
 method genExpr(string node, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
@@ -83,6 +97,7 @@ method genExpr(string node, map<string, string> prog, map<string, string> ctx, m
         if (node == "this") {
             fail("'this' is only available inside classes", ctx["pos"])
         }
+        failModuleUse(node, prog, ctx)
         fail("unknown variable '" + node + "'", ctx["pos"])
     }
     var head = nodeHead(node)
@@ -146,15 +161,17 @@ method genExpr(string node, map<string, string> prog, map<string, string> ctx, m
             if (prog.has("enum:" + target)) {
                 return "nv_enum_get(" + cstr(target) + ", " + cstr(member) + ")"
             }
-            if (target == "path" && member == "absolute") {
-                return "nv_path_absolute()"
-            }
-            if (isModuleName(target)) {
-                fail("'" + target + "." + member + "' is a function - call it with ()", ctx["pos"])
+            if (prog.has("pkg:" + target)) {
+                // module.name without parentheses: a global or a parameterless function
+                if (prog.has("global:" + target + "." + member)) {
+                    return "g_" + cName(target + "." + member)
+                }
+                return genQualifiedCall(target, member, node, 3, prog, ctx, locals)
             }
             if (isClassLike(prog, target)) {
                 fail("'" + target + "' is a type, not a value", ctx["pos"])
             }
+            failModuleUse(target, prog, ctx)
             fail("unknown variable '" + target + "'", ctx["pos"])
         }
         return "nv_get_member(" + genExpr(target, prog, ctx, locals) + ", " + cstr(member) + ")"
@@ -164,8 +181,8 @@ method genExpr(string node, map<string, string> prog, map<string, string> ctx, m
         var mname = nodeChild(node, 2)
         var nargs = nodeCount(node) - 3
         if (isIdentAtom(mtarget) && resolveVar(mtarget, prog, ctx, locals) == "" && isImplicitField(mtarget, prog, ctx, locals) == false) {
-            if (isModuleName(mtarget)) {
-                return genModuleCall(mtarget, mname, node, prog, ctx, locals)
+            if (prog.has("pkg:" + mtarget)) {
+                return genQualifiedCall(mtarget, mname, node, 3, prog, ctx, locals)
             }
             if (prog.has("enum:" + mtarget)) {
                 if (mname == "values") {
@@ -176,6 +193,7 @@ method genExpr(string node, map<string, string> prog, map<string, string> ctx, m
             if (isClassLike(prog, mtarget)) {
                 fail("'" + mtarget + "' is a type, not a value", ctx["pos"])
             }
+            failModuleUse(mtarget, prog, ctx)
             fail("unknown variable '" + mtarget + "'", ctx["pos"])
         }
         var call = "nv_invoke(" + genExpr(mtarget, prog, ctx, locals) + ", " + cstr(mname) + ", " + nargs

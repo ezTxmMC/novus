@@ -1,0 +1,175 @@
+package strings
+
+// String helpers beyond the builtin methods (length, charAt, substring,
+// indexOf, contains, startsWith, endsWith, split, replace, trim, toUpper,
+// toLower).
+
+method repeat(string s, integer times): string {
+    var out = ""
+    var i = 0
+    while (i < times) {
+        out = out + s
+        i = i + 1
+    }
+    return out
+}
+
+method padLeft(string s, integer width): string {
+    return padLeftWith(s, width, " ")
+}
+
+method padRight(string s, integer width): string {
+    return padRightWith(s, width, " ")
+}
+
+method padLeftWith(string s, integer width, string fill): string {
+    var out = s
+    while (out.length() < width) {
+        out = fill + out
+    }
+    return out
+}
+
+method padRightWith(string s, integer width, string fill): string {
+    var out = s
+    while (out.length() < width) {
+        out = out + fill
+    }
+    return out
+}
+
+method reverse(string s): string {
+    var out = ""
+    var i = s.length()
+    while (i > 0) {
+        out = out + s.charAt(i - 1)
+        i = i - 1
+    }
+    return out
+}
+
+method lines(string s): array<string> {
+    return s.replace("\r\n", "\n").split("\n")
+}
+
+// Words separated by any run of whitespace.
+method words(string s): array<string> {
+    var out = []
+    var current = ""
+    for (c in s) {
+        if (isSpace(c)) {
+            if (current != "") {
+                out.append(current)
+            }
+            current = ""
+            continue
+        }
+        current = current + c
+    }
+    if (current != "") {
+        out.append(current)
+    }
+    return out
+}
+
+method count(string s, string sub): integer {
+    if (sub == "") {
+        return 0
+    }
+    var n = 0
+    var at = s.indexOf(sub)
+    while (at >= 0) {
+        n = n + 1
+        at = s.indexOf(sub, at + sub.length())
+    }
+    return n
+}
+
+method lastIndexOf(string s, string sub): integer {
+    var last = -1
+    var at = s.indexOf(sub)
+    while (at >= 0) {
+        last = at
+        at = s.indexOf(sub, at + 1)
+    }
+    return last
+}
+
+method capitalize(string s): string {
+    if (s == "") {
+        return s
+    }
+    return s.charAt(0).toUpper() + s.substring(1, s.length())
+}
+
+method isDigit(string c): bool {
+    return c >= "0" && c <= "9"
+}
+
+method isAlpha(string c): bool {
+    return (c >= "a" && c <= "z") || (c >= "A" && c <= "Z")
+}
+
+method isSpace(string c): bool {
+    return c == " " || c == "\t" || c == "\n" || c == "\r"
+}
+
+method isNumeric(string s): bool {
+    if (s == "") {
+        return false
+    }
+    var i = 0
+    if (s.charAt(0) == "-") {
+        i = 1
+    }
+    if (i >= s.length()) {
+        return false
+    }
+    while (i < s.length()) {
+        if (isDigit(s.charAt(i)) == false) {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+method chars(string s): array<string> {
+    return s.split("")
+}
+
+// Removes `prefix` when present.
+method stripPrefix(string s, string prefix): string {
+    if (s.startsWith(prefix)) {
+        return s.substring(prefix.length(), s.length())
+    }
+    return s
+}
+
+method stripSuffix(string s, string suffix): string {
+    if (suffix != "" && s.endsWith(suffix)) {
+        return s.substring(0, s.length() - suffix.length())
+    }
+    return s
+}
+
+// Shortens to `width` characters, ending with "..." when cut.
+method truncate(string s, integer width): string {
+    if (s.length() <= width) {
+        return s
+    }
+    if (width <= 3) {
+        return s.substring(0, width)
+    }
+    return s.substring(0, width - 3) + "..."
+}
+
+method compare(string a, string b): integer {
+    if (a < b) {
+        return -1
+    }
+    if (a > b) {
+        return 1
+    }
+    return 0
+}

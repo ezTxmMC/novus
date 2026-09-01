@@ -682,7 +682,7 @@ export class Analysis {
     this.walkType(decl.returnType, scope);
     if (decl.body) {
       for (const stmt of decl.body.statements) this.walkStmt(stmt, methodScope);
-    } else if (sym && scope.kind !== 'class') {
+    } else if (sym && scope.kind !== 'class' && !decl.isNative) {
       this.diagnostics.push({ span: decl.nameSpan, message: `Method '${decl.name}' has no body`, severity: 'error' });
     } else if (sym && scope.kind === 'class' && scope.owner && scope.owner.kind === 'class' && !decl.modifiers.some(m => m.name === 'abstract')) {
       this.diagnostics.push({ span: decl.nameSpan, message: `Method '${decl.name}' has no body – add '{ }' or mark it 'abstract'`, severity: 'error' });

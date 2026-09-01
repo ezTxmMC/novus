@@ -2,7 +2,9 @@
  * Built-in knowledge about Novus: keywords, primitive types, annotations and
  * the concept standard library used in test/syntax.nv.
  */
-import { NSymbol, mkParam, mkType, newSymbol } from './symbols';
+import * as fs from 'fs';
+import * as path from 'path';
+import { NSymbol, mkParam, mkType, newSymbol, typeToString } from './symbols';
 
 export interface KeywordDoc {
   name: string;
@@ -139,9 +141,63 @@ function module(name: string, doc: string, build: (m: NSymbol) => NSymbol[], not
 
 let cachedModules: NSymbol[] | undefined;
 
-/** Standard library modules: json, path, os and http. */
+/** Directory of the bundled standard library sources (std/*.nv), if present. */
+export function stdDirectory(): string | undefined {
+  const candidates = [
+    process.env.NOVUS_STD,
+    path.resolve(__dirname, '..', '..', 'std'),       // bundled with the extension
+    path.resolve(__dirname, '..', '..', '..', 'std'), // repository checkout
+  ];
+  for (const c of candidates) {
+    if (c && fs.existsSync(path.join(c, 'os.nv'))) return c;
+  }
+  return undefined;
+}
+
+/** Builds module symbols from the real std/*.nv files (functions namespaced by module). */
+function modulesFromStd(dir: string): NSymbol[] {
+  // parser is required lazily: it must not become a static import cycle
+  const { parse } = require('./parser') as typeof import('./parser');
+  const out: NSymbol[] = [];
+  for (const file of fs.readdirSync(dir).filter(f => f.endsWith('.nv')).sort()) {
+    const name = file.slice(0, -3);
+    let text: string;
+    try {
+      text = fs.readFileSync(path.join(dir, file), 'utf8');
+    } catch {
+      continue;
+    }
+    const program = parse(text).program;
+    const header = text.split('\n').slice(1, 12).filter(l => l.startsWith('//')).map(l => l.replace(/^\/\/\s?/, '').trim()).filter(Boolean);
+    const m = newSymbol({ kind: 'module', name, uri: '', builtin: true, doc: (header.join(' ') || `Standard module \`${name}\``) + IMPLEMENTED_NOTE });
+    m.members = [];
+    for (const item of program.items) {
+      if (item.kind !== 'Method') continue;
+      const params: [string, string][] = item.params.map(p => [p.type ? typeToString(p.type) : 'object', p.name]);
+      const ret = item.returnType ? typeToString(item.returnType) : undefined;
+      const doc = item.doc ?? (item.isNative ? 'Implemented by the C runtime.' : `\`${name}.${item.name}\` from std/${file}`);
+      m.members.push(method(m, item.name, params, ret, doc, IMPLEMENTED_NOTE));
+    }
+    out.push(m);
+  }
+  return out;
+}
+
+/** Standard library modules - read from std/*.nv when available, else the built-in table. */
 export function builtinModules(): NSymbol[] {
   if (cachedModules) return cachedModules;
+  const dir = stdDirectory();
+  if (dir) {
+    try {
+      const fromStd = modulesFromStd(dir);
+      if (fromStd.length) {
+        cachedModules = fromStd;
+        return cachedModules;
+      }
+    } catch {
+      // fall through to the static table
+    }
+  }
   cachedModules = [
     module('http', 'HTTP client (uses the curl command line tool; https works).', m => [
       method(m, 'get', [['string', 'url']], 'string', 'Performs a GET request and returns the response body (aborts on transport errors).', IMPLEMENTED_NOTE),

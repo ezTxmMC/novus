@@ -12,7 +12,7 @@ PREFIX ?= /usr/local
 
 all: build/novusc
 
-build/novusc: bootstrap/novusc.c $(wildcard compiler/*.nv compiler/*/*.nv)
+build/novusc: bootstrap/novusc.c $(wildcard compiler/*.nv compiler/*/*.nv std/*.nv)
 	scripts/bootstrap.sh
 
 test: build/novusc

@@ -1,0 +1,113 @@
+package math
+
+// Numbers: integer and float helpers plus the usual functions.
+
+method sqrt(float x): float native "nv_math_sqrt"
+method pow(float base, float exponent): float native "nv_math_pow"
+method floor(float x): integer native "nv_math_floor"
+method ceil(float x): integer native "nv_math_ceil"
+method round(float x): integer native "nv_math_round"
+method sin(float x): float native "nv_math_sin"
+method cos(float x): float native "nv_math_cos"
+method tan(float x): float native "nv_math_tan"
+method atan2(float y, float x): float native "nv_math_atan2"
+method log(float x): float native "nv_math_log"
+method exp(float x): float native "nv_math_exp"
+method toFloat(object x): float native "nv_parse_float"
+method toInt(object x): integer native "nv_parse_int"
+
+method pi(): float {
+    return 3.141592653589793
+}
+
+method abs(object x): object {
+    if (x < 0) {
+        return 0 - x
+    }
+    return x
+}
+
+method min(object a, object b): object {
+    if (a < b) {
+        return a
+    }
+    return b
+}
+
+method max(object a, object b): object {
+    if (a > b) {
+        return a
+    }
+    return b
+}
+
+method clamp(object x, object low, object high): object {
+    return max(low, min(x, high))
+}
+
+method sign(object x): integer {
+    if (x < 0) {
+        return -1
+    }
+    if (x > 0) {
+        return 1
+    }
+    return 0
+}
+
+method isEven(integer n): bool {
+    return n % 2 == 0
+}
+
+method isOdd(integer n): bool {
+    return n % 2 != 0
+}
+
+method gcd(integer a, integer b): integer {
+    var x = abs(a)
+    var y = abs(b)
+    while (y != 0) {
+        var t = y
+        y = x % y
+        x = t
+    }
+    return x
+}
+
+method lcm(integer a, integer b): integer {
+    if (a == 0 || b == 0) {
+        return 0
+    }
+    return abs(a * b) / gcd(a, b)
+}
+
+// Integer power (exponent >= 0).
+method powInt(integer base, integer exponent): integer {
+    var result = 1
+    var i = 0
+    while (i < exponent) {
+        result = result * base
+        i = i + 1
+    }
+    return result
+}
+
+method isPrime(integer n): bool {
+    if (n < 2) {
+        return false
+    }
+    var i = 2
+    while (i * i <= n) {
+        if (n % i == 0) {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+// Rounds a float to `decimals` places.
+method roundTo(float x, integer decimals): float {
+    var factor = pow(10.0, toFloat(decimals))
+    return toFloat(round(x * factor)) / factor
+}

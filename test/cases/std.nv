@@ -1,0 +1,80 @@
+package main
+
+import arrays
+import base64
+import cli
+import csv
+import fmt
+import hash
+import maps
+import math
+import random
+import strings
+import test
+import time
+
+// The pure-Novus standard library modules.
+
+method main {
+    println strings.repeat("ab", 3)
+    println strings.padLeft("7", 3) + "|" + strings.padRight("7", 3) + "|"
+    println strings.reverse("stressed")
+    println strings.words("  the quick  brown\tfox ")
+    println strings.count("banana", "an")
+    println strings.lastIndexOf("banana", "an")
+    println strings.capitalize("novus")
+    println strings.isNumeric("-42") + " " + strings.isNumeric("4x")
+    println strings.truncate("hello world", 8)
+    println strings.stripPrefix("v1.2.3", "v")
+    println strings.lines("a\r\nb\nc")
+    println arrays.sort([3, 1, 2])
+    println arrays.sort(["pear", "apple", "fig"])
+    println arrays.sortDesc([1.5, 0.5, 2.5])
+    println arrays.unique([1, 2, 1, 3, 2])
+    println arrays.range(0, 5)
+    println arrays.slice([1, 2, 3, 4], 1, 3)
+    println arrays.sum([1, 2, 3]) + " " + arrays.min([4, 2, 8]) + " " + arrays.max([4, 2, 8])
+    println arrays.chunk([1, 2, 3, 4, 5], 2)
+    println maps.merge({ "a": 1 }, { "b": 2, "a": 3 })
+    println maps.invert({ "x": 1, "y": 2 })
+    println maps.countValues(["a", "b", "a"])
+    println maps.entries({ "k": "v" })
+    println math.sqrt(16.0) + " " + math.pow(2.0, 10.0) + " " + math.floor(2.7) + " " + math.ceil(2.1) + " " + math.round(2.5)
+    println math.abs(-3) + " " + math.min(3, 9) + " " + math.max(3, 9) + " " + math.clamp(15, 0, 10)
+    println math.gcd(12, 18) + " " + math.lcm(4, 6) + " " + math.powInt(3, 4) + " " + math.isPrime(97)
+    println math.roundTo(3.14159, 2)
+    println fmt.fixed(3.14159, 3)
+    println fmt.thousands(1234567) + " " + fmt.thousands(-999) + " " + fmt.thousands(12)
+    println fmt.bytes(1536) + " " + fmt.bytes(5) + " " + fmt.bytes(3 * 1024 * 1024)
+    println fmt.percent(0.256, 1)
+    println fmt.table([["name", "novus"], ["version", "0.1"]])
+    println base64.encode("hello world")
+    println base64.decode("aGVsbG8gd29ybGQ=")
+    println base64.decode(base64.encode("Novus!"))
+    println hash.fnv1a("novus") == hash.fnv1a("novus")
+    println hash.fnv1a("a") != hash.fnv1a("b")
+    println hash.crc32("hello")
+    println hash.hex(255)
+    println hash.bucket("key", 4) < 4
+    var parsed = cli.parse(["build", "--out", "app", "--verbose", "-x", "--level=3", "extra"])
+    println parsed["args"]
+    println parsed["opts"]
+    println cli.option(parsed, "out", "none") + " " + cli.flag(parsed, "verbose") + " " + cli.argument(parsed, 5, "n/a")
+    var rows = csv.parse("name,age\n\"Doe, John\",42\nx,\"say \"\"hi\"\"\"\n")
+    println rows
+    println csv.stringify(rows)
+    println time.iso(0)
+    println time.format(86400 * 365, "%Y-%m-%d")
+    println time.parts(0)["year"]
+    println time.duration(3725)
+    random.seed(42)
+    var a = random.int(1, 6)
+    random.seed(42)
+    println a == random.int(1, 6)
+    println random.int(5, 5)
+    println random.shuffle([1, 2, 3]).length()
+    println random.string(8, "ab").length()
+    test.assertEqual(1 + 1, 2, "arithmetic")
+    test.assert(strings.isDigit("5"), "digit")
+    println test.report()
+}

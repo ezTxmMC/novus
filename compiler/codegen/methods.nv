@@ -71,7 +71,7 @@ method cParamList(string m): string {
 }
 
 method funcCName(string name, integer arity, integer variant, integer variants): string {
-    var base = "f_" + name + "_" + arity
+    var base = "f_" + cName(name) + "_" + arity
     if (variants > 1) {
         return base + "_v" + variant
     }
@@ -93,7 +93,7 @@ method argNames(integer arity): string {
 
 method genFreeMethod(string m, string cname, map<string, string> prog): string {
     var name = methodName(m)
-    var ctx = {"class": "", "func": name, "ret": methodRet(m), "pos": "method " + name}
+    var ctx = {"class": "", "pkg": packageOf(name), "func": name, "ret": methodRet(m), "pos": "method " + name}
     var locals = {}
     var params = paramsNode(m)
     var out = "static nv " + cname + "(" + cParamList(m) + ") {" + nl()
@@ -148,7 +148,7 @@ method methodCName(string cls, string m, integer variant): string {
 }
 
 method genClassMethod(string cls, string m, string cname, map<string, string> prog): string {
-    var ctx = {"class": cls, "func": methodName(m), "ret": methodRet(m), "pos": "method " + cls + "." + methodName(m)}
+    var ctx = {"class": cls, "pkg": "", "func": methodName(m), "ret": methodRet(m), "pos": "method " + cls + "." + methodName(m)}
     var locals = {}
     var out = "static nv " + cname + "(nv self, nv *args, int n) {" + nl()
     out = out + bindArrayParams(m, "    ", locals)
@@ -162,7 +162,7 @@ method genClassMethod(string cls, string m, string cname, map<string, string> pr
 }
 
 method genCtor(string cls, string ctor, map<string, string> prog): string {
-    var ctx = {"class": cls, "func": "construct", "ret": "void", "pos": "constructor of " + cls}
+    var ctx = {"class": cls, "pkg": "", "func": "construct", "ret": "void", "pos": "constructor of " + cls}
     var locals = {}
     var out = "static nv c_" + cls + "(nv self, nv *args, int n) {" + nl()
     var params = nodeChild(ctor, 1)

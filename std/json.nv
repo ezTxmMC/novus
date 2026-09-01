@@ -1,0 +1,18 @@
+package json
+
+// JSON: text <-> maps, arrays, primitives (objects serialize their fields).
+
+method stringify(object value): string native "nv_json_stringify"
+method pretty(object value): string native "nv_json_pretty"          // 2-space indented
+method parse(string text): object native "nv_json_parse"             // aborts on invalid input
+method isValid(string text): bool native "nv_json_is_valid"
+method load(string file): object native "nv_json_load"
+method save(object value, string dir, string file) native "nv_json_save"  // creates dir, pretty printed
+
+// Parses text, or returns `fallback` when it is not valid JSON.
+method parseOr(string text, object fallback): object {
+    if (isValid(text)) {
+        return parse(text)
+    }
+    return fallback
+}

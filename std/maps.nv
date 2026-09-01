@@ -1,0 +1,65 @@
+package maps
+
+// Map helpers beyond the builtin methods (length, has, keys, values, remove, get).
+
+// Copies `b` over `a` into a new map.
+method merge(map<string, object> a, map<string, object> b): map<string, object> {
+    var out = {}
+    for (k in a) {
+        out[k] = a[k]
+    }
+    for (k in b) {
+        out[k] = b[k]
+    }
+    return out
+}
+
+method fromPairs(array<string> keys, array<object> values): map<string, object> {
+    var out = {}
+    var i = 0
+    while (i < keys.length() && i < values.length()) {
+        out[keys[i]] = values[i]
+        i = i + 1
+    }
+    return out
+}
+
+// Swaps keys and values (values become string keys).
+method invert(map<string, object> m): map<string, string> {
+    var out = {}
+    for (k in m) {
+        out["" + m[k]] = k
+    }
+    return out
+}
+
+method copy(map<string, object> m): map<string, object> {
+    return merge({}, m)
+}
+
+method isEmpty(map<string, object> m): bool {
+    return m.length() == 0
+}
+
+// Entries as [key, value] pairs in key order.
+method entries(map<string, object> m): array<object> {
+    var out = []
+    for (k in m) {
+        out.append([k, m[k]])
+    }
+    return out
+}
+
+// Counts how often each element occurs.
+method countValues(array<object> items): map<string, integer> {
+    var out = {}
+    for (x in items) {
+        var key = "" + x
+        if (out.has(key)) {
+            out[key] = out[key] + 1
+            continue
+        }
+        out[key] = 1
+    }
+    return out
+}

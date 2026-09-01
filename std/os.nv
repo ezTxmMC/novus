@@ -1,0 +1,53 @@
+package os
+
+// Operating system: files, directories, processes, environment, time.
+// Functions marked `native` are implemented by the C runtime.
+
+method mkdir(string path): bool native "nv_os_mkdir"           // creates missing parents
+method rmdir(string path): bool native "nv_os_rmdir"           // removes an empty directory
+method remove(string path): bool native "nv_remove_file"       // deletes a file
+method removeAll(string path): bool native "nv_os_remove_all"  // deletes a file or directory tree
+method listDir(string path): array<string> native "nv_os_list_dir"
+method exists(string path): bool native "nv_path_exists"
+method isDir(string path): bool native "nv_os_is_dir"
+method isFile(string path): bool native "nv_os_is_file"
+method rename(string from, string to): bool native "nv_os_rename"
+method copy(string from, string to): bool native "nv_os_copy"
+method fileSize(string path): integer native "nv_os_file_size"   // -1 when missing
+method modified(string path): integer native "nv_os_modified"    // unix seconds, -1 when missing
+method readFile(string path): string native "nv_read_file"
+method writeFile(string path, string content) native "nv_write_file"
+method appendFile(string path, string content) native "nv_append_file"
+method cwd(): string native "nv_path_absolute"
+method chdir(string path): bool native "nv_os_chdir"
+method temp(): string native "nv_path_temp"
+method home(): string native "nv_os_home"
+method exec(string command): integer native "nv_exec"           // exit code
+method output(string command): string native "nv_os_output"     // captured stdout
+method env(string name): string native "nv_env"
+method setEnv(string name, string value): bool native "nv_os_set_env"
+method exit(integer code) native "nv_exit"
+method platform(): string native "nv_platform"                  // linux | macos | windows | unix
+method args(): array<string> native "nv_args"
+method pid(): integer native "nv_os_pid"
+method time(): integer native "nv_os_time"                      // unix seconds
+method clock(): float native "nv_os_clock"                      // seconds, sub-second precision
+method sleep(integer milliseconds) native "nv_os_sleep"
+method readLine(): string native "nv_read_line"
+
+// Whether a command is available on this system.
+method hasCommand(string name): bool {
+    if (platform() == "windows") {
+        return exec("where " + name + " > nul 2>&1") == 0
+    }
+    return exec("command -v " + name + " > /dev/null 2>&1") == 0
+}
+
+// Environment variable or a fallback when unset.
+method envOr(string name, string fallback): string {
+    var value = env(name)
+    if (value == "") {
+        return fallback
+    }
+    return value
+}

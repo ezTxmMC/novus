@@ -115,23 +115,45 @@ constant memory and millions of objects cost ~100 bytes each. Missing
 interface/abstract implementations and unknown names are compile-time
 errors.
 
-Builtins: `readFile`, `writeFile`, `fileExists`, `removeFile`, `readLine`,
-`args`, `parseInt`, `parseFloat`, `chr`, `ord`, `typeOf`, `exec`, `env`,
-`exit`, `platform`; statements `println`, `print`, `eprintln`.
+Statements `println`, `print`, `eprintln`.
 Strings: `length`, `charAt`, `substring`, `indexOf`, `contains`,
 `startsWith`, `endsWith`, `split`, `replace`, `trim`, `toUpper`, `toLower`.
 Arrays: `length`, `append`, `pop`, `insert`, `remove`, `contains`,
 `indexOf`, `join`, `clear`. Maps: `length`, `has`, `keys`, `values`,
 `remove`, `get`.
 
-Stdlib modules (`import os` etc.):
+## Standard library
 
-| Module | Functions |
-| ------ | --------- |
-| `os`   | `mkdir` (with parents), `rmdir`, `remove`, `removeAll`, `listDir`, `exists`, `isDir`, `isFile`, `rename`, `copy`, `fileSize`, `modified`, `readFile`, `writeFile`, `appendFile`, `cwd`, `chdir`, `temp`, `home`, `exec`, `output`, `env`, `setEnv`, `exit`, `platform`, `args`, `pid`, `time`, `clock`, `sleep`, `readLine` |
-| `path` | `join`, `absolute` (cwd) / `absolute(p)`, `normalize`, `relative`, `dirname`, `basename`, `stem`, `extension`, `isAbsolute`, `exists`, `isDir`, `isFile`, `temp`, `separator` |
-| `json` | `stringify`, `pretty`, `parse` (text or already structured data), `isValid`, `load(file)`, `save(value, dir, file)` (creates the directory) |
-| `http` | `get`, `post`, `put`, `delete` (return the body, abort on transport errors), `request(method, url, body, headers)` -> `{status, ok, body, headers, error}`, `download(url, file)`. Maps/arrays are sent as JSON. Backed by the `curl` command line tool (ships with Windows 10+, macOS and most Linux distributions), so https just works. |
+The standard library lives in [std/](std/) - one Novus file per module,
+embedded into `novusc`. A module is used through its name after
+`import <module>`; its functions are namespaced (`strings.repeat(...)`),
+so they never clash with your own. Functions marked `native "..."` are
+implemented by the C runtime, everything else is plain Novus you can read.
+
+| Module | What |
+| ------ | ---- |
+| [os](std/os.nv) | files and directories (`mkdir`, `listDir`, `removeAll`, `copy`, ...), processes (`exec`, `output`), environment, `time`/`clock`/`sleep`, `hasCommand`, `envOr` |
+| [path](std/path.nv) | `join`, `absolute`, `normalize`, `relative`, `dirname`/`basename`/`stem`/`extension`, `withExtension`, `segments`, `exists`/`isDir`/`isFile` |
+| [json](std/json.nv) | `stringify`, `pretty`, `parse`, `parseOr`, `isValid`, `load`, `save` |
+| [http](std/http.nv) | `get`/`post`/`put`/`delete`, `request` -> `{status, ok, body, headers, error}`, `download`, `getJson`, `postJson` (driven by `curl`, https included) |
+| [strings](std/strings.nv) | `repeat`, `padLeft`/`padRight`, `reverse`, `lines`, `words`, `count`, `lastIndexOf`, `capitalize`, `isDigit`/`isAlpha`/`isSpace`/`isNumeric`, `chars`, `stripPrefix`/`stripSuffix`, `truncate`, `compare` |
+| [arrays](std/arrays.nv) | `sort`/`sortDesc`, `reverse`, `unique`, `range`, `slice`, `concat`, `sum`/`min`/`max`, `first`/`last`, `countOf`, `copy`, `chunk` |
+| [maps](std/maps.nv) | `merge`, `fromPairs`, `invert`, `copy`, `entries`, `countValues` |
+| [math](std/math.nv) | `sqrt`, `pow`, `floor`/`ceil`/`round`, trigonometry, `log`/`exp`, `abs`/`min`/`max`/`clamp`/`sign`, `gcd`/`lcm`, `powInt`, `isPrime`, `roundTo`, `toInt`/`toFloat` |
+| [time](std/time.nv) | `now`, `clock`, `sleep`, `iso`, `format` (strftime), `parts`, `elapsedMs`, `duration` |
+| [random](std/random.nv) | `seed`, `next`, `int`, `float`, `bool`, `pick`, `shuffle`, `string` |
+| [fmt](std/fmt.nv) | `fixed`, `thousands`, `bytes`, `percent`, `table` |
+| [log](std/log.nv) | `debug`/`info`/`warn`/`error` to stderr with levels and timestamps |
+| [cli](std/cli.nv) | `parse(args)` -> positional arguments and `--options`, `option`, `flag`, `argument` |
+| [base64](std/base64.nv) | `encode`, `decode` |
+| [hash](std/hash.nv) | `fnv1a`, `crc32`, `bucket`, `hex` |
+| [csv](std/csv.nv) | `parse`/`parseWith`, `stringify`/`stringifyWith` |
+| [io](std/io.nv) | `readLine`, `readAll`, `readLines`, `write`, `writeErr`, `flush`, `prompt` |
+| [test](std/test.nv) | `assert`, `assertEqual`, `report` |
+
+Free builtins need no import: `readFile`, `writeFile`, `fileExists`,
+`removeFile`, `readLine`, `args`, `parseInt`, `parseFloat`, `chr`, `ord`,
+`typeOf`, `exec`, `env`, `exit`, `platform`.
 
 ## Architecture
 
@@ -144,6 +166,8 @@ Stdlib modules (`import os` etc.):
 | `compiler/loader/`     | Program loading and `import "file.nv"` resolution (`paths.nv`, `loader.nv`)  |
 | `compiler/codegen/`    | Novus -> C: `index`, `checks`, `modules`, `builtins`, `calls`, `expressions`, `statements`, `methods`, `program` |
 | `compiler/runtime/`    | `runtime.nv`: `runtime/novus_rt.h` embedded as a string (generated by `tools/embed.nv`) |
+| `compiler/std/`        | `stdlib.nv`: the `std/` modules embedded as strings (generated by `tools/embedstd.nv`) |
+| `std/`                 | The standard library, one Novus module per file                              |
 | `compiler/project/`    | `project.nv` manifests (`manifest.nv`) and git dependencies (`deps.nv`)      |
 | `compiler/driver/`     | The `novusc` command line (`cli.nv`) and build/run steps (`build.nv`)         |
 | `compiler/main.nv`     | Entry point                                                                   |
@@ -165,8 +189,9 @@ change:
    (stage 2 == stage 3), and that C is what is checked in as the snapshot
 
 After changing anything under `compiler/` or `runtime/`, run
-`make snapshot` (`scripts/snapshot.sh`): it re-embeds the runtime into
-`compiler/runtime/runtime.nv`, rebuilds through the ladder, checks the fixpoint and
+`make snapshot` (`scripts/snapshot.sh`): it re-embeds the runtime and the
+standard library into `compiler/runtime/runtime.nv` and
+`compiler/std/stdlib.nv`, rebuilds through the ladder, checks the fixpoint and
 writes the new `bootstrap/novusc.c`. Commit the snapshot together with the
 sources. The only rule: the snapshot must be able to compile the sources, so
 when you add a builtin, regenerate the snapshot before the compiler sources

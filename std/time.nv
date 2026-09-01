@@ -1,0 +1,35 @@
+package time
+
+import math
+
+// Time: unix seconds, wall clock, formatting.
+
+method now(): integer native "nv_os_time"          // unix seconds
+method clock(): float native "nv_os_clock"         // seconds with sub-second precision
+method sleep(integer milliseconds) native "nv_os_sleep"
+method iso(integer unixSeconds): string native "nv_time_iso"        // 2026-09-01T12:34:56Z (UTC)
+method format(integer unixSeconds, string layout): string native "nv_time_format"  // strftime layout, UTC
+method parts(integer unixSeconds): map<string, integer> native "nv_time_parts"     // year, month, day, hour, minute, second, weekday, yearday (UTC)
+
+method nowIso(): string {
+    return iso(now())
+}
+
+// Milliseconds since `startClock` (from clock()).
+method elapsedMs(float startClock): integer {
+    return math.round((clock() - startClock) * 1000.0)
+}
+
+// "1h 2m 3s" style duration for a number of seconds.
+method duration(integer seconds): string {
+    if (seconds < 60) {
+        return "${seconds}s"
+    }
+    if (seconds < 3600) {
+        return "${seconds / 60}m ${seconds % 60}s"
+    }
+    if (seconds < 86400) {
+        return "${seconds / 3600}h ${(seconds % 3600) / 60}m"
+    }
+    return "${seconds / 86400}d ${(seconds % 86400) / 3600}h"
+}

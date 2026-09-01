@@ -2,6 +2,7 @@ package codegen
 
 import "../ast/sexp.nv"
 import "../parser/errors.nv"
+import "../std/stdlib.nv"
 import "builtins.nv"
 import "common.nv"
 import "expressions.nv"
@@ -25,10 +26,54 @@ method genArgs(string node, integer from, map<string, string> prog, map<string, 
     return out
 }
 
+// The C call for a resolved user method `func:<name>/<nargs>` (native or generated).
+method genResolvedCall(string name, integer nargs, string args, map<string, string> prog): string {
+    var m = ""
+    if (prog.has("func:" + name + "/" + nargs)) {
+        m = prog["fnode:" + name + "/" + nargs + "/0"]
+    }
+    if (m == "") {
+        m = prog["fnode:" + name + "/*/0"]
+    }
+    if (isNativeMethod(m)) {
+        var body = nodeChild(m, 5)
+        var cfn = sexpUnescape(nodeChild(body, 1))
+        if (nodeCount(body) > 2) {
+            if (nargs == 0) {
+                return cfn + "(0)"
+            }
+            return cfn + "(" + nargs + ", " + args + ")"
+        }
+        return cfn + "(" + args + ")"
+    }
+    return "f_" + cName(name) + "_" + nargs + "(" + args + ")"
+}
+
+// module.function(args): functions of imported modules are namespaced.
+method genQualifiedCall(string module, string fname, string node, integer from, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    var nargs = nodeCount(node) - from
+    var name = module + "." + fname
+    if (prog.has("func:" + name + "/" + nargs) || prog.has("func:" + name + "/*")) {
+        return genResolvedCall(name, nargs, genArgs(node, from, prog, ctx, locals), prog)
+    }
+    if (prog.has("hasfunc:" + name)) {
+        fail("no overload of " + name + "() takes " + nargs + " argument(s)", ctx["pos"])
+    }
+    if (prog.has("pkg:" + module)) {
+        fail("module '" + module + "' has no function '" + fname + "'", ctx["pos"])
+    }
+    fail("module '" + module + "' is not imported - add 'import " + module + "'", ctx["pos"])
+    return ""
+}
+
 method genCall(string node, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
     var name = nodeChild(node, 1)
     var nargs = nodeCount(node) - 2
     var key = name + "/" + nargs
+    // inside a module, its own functions come first
+    if (ctx["pkg"] != "" && (prog.has("func:" + ctx["pkg"] + "." + name + "/" + nargs) || prog.has("func:" + ctx["pkg"] + "." + name + "/*"))) {
+        return genResolvedCall(ctx["pkg"] + "." + name, nargs, genArgs(node, 2, prog, ctx, locals), prog)
+    }
     if (ctx["class"] != "" && findMethod(prog, ctx["class"], name) != "") {
         // inside a class a bare call means this.name(...); own methods win
         var call = "nv_invoke(self, " + cstr(name) + ", " + nargs
@@ -56,7 +101,7 @@ method genCall(string node, map<string, string> prog, map<string, string> ctx, m
         fail("'" + name + "' is an enum and cannot be constructed", ctx["pos"])
     }
     if (prog.has("func:" + key)) {
-        return "f_" + name + "_" + nargs + "(" + genArgs(node, 2, prog, ctx, locals) + ")"
+        return genResolvedCall(name, nargs, genArgs(node, 2, prog, ctx, locals), prog)
     }
     if (prog.has("hasfunc:" + name)) {
         fail("no overload of '" + name + "' takes " + nargs + " argument(s)", ctx["pos"])

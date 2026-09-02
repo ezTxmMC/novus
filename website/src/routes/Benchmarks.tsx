@@ -6,7 +6,7 @@ import raw from '../generated/benchmarks.json';
 type Run = { ms: number; mb: number; output: string; agrees: boolean };
 type Workload = { name: string; title: string; description: string };
 type Benchmarks = {
-  languages: Record<string, { label: string; version: string }>;
+  languages: Record<string, { label: string; version: string; previous?: boolean }>;
   workloads: Workload[];
   runs: Record<string, Record<string, Run>>;
   sources: Record<string, Record<string, string>>;
@@ -32,10 +32,22 @@ const SHIKI_LANG: Record<string, string> = {
 };
 
 // Preferred order; a language whose toolchain was missing when the suite ran
-// is not in the results at all, so only the measured ones are shown.
-const ORDER = ['novus', 'cpp', 'rust', 'go', 'crystal', 'java', 'node', 'python'].filter(
+// is not in the results at all, so only the measured ones are shown. Older
+// Novus releases measured alongside ("novus@alpha5") follow the current one.
+const PREVIOUS = Object.keys(data.languages).filter((name) => data.languages[name].previous);
+const ORDER = ['novus', ...PREVIOUS, 'cpp', 'rust', 'go', 'crystal', 'java', 'node', 'python'].filter(
   (name) => name in data.languages,
 );
+// the current languages: what the wins are counted over
+const CURRENT = ORDER.filter((name) => !data.languages[name].previous);
+
+function colorOf(name: string): string {
+  return COLORS[name] ?? (data.languages[name]?.previous ? '#86efac' : '#64748b');
+}
+
+function shikiLangOf(name: string): string {
+  return SHIKI_LANG[name] ?? (data.languages[name]?.previous ? 'novus' : 'text');
+}
 
 function format(value: number, metric: 'ms' | 'mb'): string {
   if (metric === 'ms') return value < 10 ? `${value.toFixed(1)} ms` : `${Math.round(value)} ms`;
@@ -56,11 +68,11 @@ function Chart({ title, runs, metric }: { title: string; runs: Record<string, Ru
           const inside = width > 55;
           return (
             <div key={name} className="flex items-center gap-3">
-              <div className="w-16 shrink-0 font-mono text-xs text-slate-500">{data.languages[name].label}</div>
+              <div className="w-20 shrink-0 font-mono text-xs text-slate-500">{data.languages[name].label}</div>
               <div className="relative h-6 flex-1 rounded bg-slate-100 dark:bg-white/5">
                 <div
                   className="absolute inset-y-0 left-0 rounded"
-                  style={{ width: `${width}%`, backgroundColor: COLORS[name] ?? '#64748b' }}
+                  style={{ width: `${width}%`, backgroundColor: colorOf(name) }}
                 />
                 <span
                   className={`absolute inset-y-0 flex items-center font-mono text-[11px] ${
@@ -125,7 +137,7 @@ function WorkloadSection({ workload }: { workload: Workload }) {
                 </button>
               ))}
             </div>
-            {source && <Code code={source.trimEnd()} lang={SHIKI_LANG[language]} />}
+            {source && <Code code={source.trimEnd()} lang={shikiLangOf(language)} />}
           </div>
         )}
       </div>
@@ -136,12 +148,15 @@ function WorkloadSection({ workload }: { workload: Workload }) {
 export default function Benchmarks() {
   const [metric, setMetric] = useState<'ms' | 'mb'>('ms');
 
-  // how often each language is fastest / leanest across all workloads
+  // how often each language is fastest / leanest across all workloads -
+  // older Novus releases are shown for comparison, not counted
   const wins = useMemo(() => {
     const counts: Record<string, number> = {};
     for (const workload of data.workloads) {
       const runs = data.runs[workload.name];
-      const best = Object.entries(runs).sort((a, b) => a[1][metric] - b[1][metric])[0];
+      const best = Object.entries(runs)
+        .filter(([name]) => CURRENT.includes(name))
+        .sort((a, b) => a[1][metric] - b[1][metric])[0];
       if (best) counts[best[0]] = (counts[best[0]] ?? 0) + 1;
     }
     return counts;
@@ -151,15 +166,22 @@ export default function Benchmarks() {
     <Layout wide>
       <h1 className="font-mono text-3xl font-semibold tracking-tight text-slate-900 dark:text-white">Benchmarks</h1>
       <p className="mt-3 max-w-3xl text-slate-500">
-        Ten workloads, implemented once in each of eight languages, run on the same machine. Every implementation
-        prints the same output - the runner refuses to compare results that disagree. Times are the best of five runs
-        and include process start, memory is the peak RSS of the child process.
+        {data.workloads.length} workloads, implemented once in each language, run on the same machine. Every
+        implementation prints the same output - the runner refuses to compare results that disagree. Times are the
+        best of five runs and include process start, memory is the peak RSS of the child process.
+        {PREVIOUS.length > 0 && (
+          <>
+            {' '}
+            The previous Novus release ({PREVIOUS.map((name) => data.languages[name].version).join(', ')}) was
+            measured in the same run, so the two columns are directly comparable.
+          </>
+        )}
       </p>
 
       <div className="mt-6 flex flex-wrap gap-x-6 gap-y-1 text-xs text-slate-500">
         {ORDER.map((name) => (
           <span key={name} className="flex items-center gap-2">
-            <span className="size-2.5 rounded-full" style={{ backgroundColor: COLORS[name] }} />
+            <span className="size-2.5 rounded-full" style={{ backgroundColor: colorOf(name) }} />
             <span className="font-mono">{data.languages[name].version}</span>
           </span>
         ))}
@@ -168,7 +190,7 @@ export default function Benchmarks() {
       <div className="mt-8 rounded-xl border border-slate-200 p-5 dark:border-white/10">
         <div className="flex flex-wrap items-center gap-3">
           <span className="font-mono text-[11px] font-semibold tracking-widest text-slate-400 uppercase">
-            Wins across all ten workloads
+            Wins across all {data.workloads.length} workloads
           </span>
           <div className="ml-auto flex gap-1">
             {(['ms', 'mb'] as const).map((option) => (
@@ -188,9 +210,9 @@ export default function Benchmarks() {
           </div>
         </div>
         <div className="mt-4 flex flex-wrap gap-6">
-          {ORDER.filter((name) => wins[name]).map((name) => (
+          {CURRENT.filter((name) => wins[name]).map((name) => (
             <div key={name}>
-              <div className="font-mono text-2xl font-semibold" style={{ color: COLORS[name] }}>
+              <div className="font-mono text-2xl font-semibold" style={{ color: colorOf(name) }}>
                 {wins[name]}
               </div>
               <div className="text-xs text-slate-500">{data.languages[name].label}</div>
@@ -214,7 +236,7 @@ export default function Benchmarks() {
           <tbody>
             {data.workloads.map((workload) => {
               const runs = data.runs[workload.name];
-              const best = Math.min(...ORDER.filter((n) => runs[n]).map((n) => runs[n][metric]));
+              const best = Math.min(...CURRENT.filter((n) => runs[n]).map((n) => runs[n][metric]));
               return (
                 <tr key={workload.name} className="border-b border-slate-100 last:border-0 dark:border-white/5">
                   <td className="px-4 py-2">

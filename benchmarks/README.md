@@ -1,12 +1,20 @@
 # Benchmarks
 
-Ten workloads, implemented once per language, measured on one machine.
+Twelve workloads, implemented once per language, measured on one machine.
 
 ```sh
 python3 run.py                 # everything, writes results.json
 python3 run.py --only primes   # a single workload
 python3 run.py --langs novus,rust,cpp
+python3 run.py --previous alpha5=/path/to/old/novusc
+                               # an older novusc as one more column
 ```
+
+`--previous` measures an older Novus release in the same run, with the same
+sources, so two releases can be compared on equal terms (the results carry it
+as `novus@<name>`, the site shows it next to the current one and keeps it out
+of the wins). An older `novusc` is one `cc bootstrap/novusc.c` of the
+corresponding commit away.
 
 `make bench` from the repository root does the same. The results are rendered
 on [the website](../website/src/routes/Benchmarks.tsx).
@@ -38,7 +46,10 @@ machine, the CPU governor and the library versions.
 
 Where Novus does well: unboxed integer and float arithmetic (the compiler
 proves which locals are numbers and generates plain C), and memory, because
-values are tagged pointers and objects are one flat block.
+values are tagged pointers, objects are one flat block and the garbage
+collector keeps the heap at about twice the live data - `nbody` and
+`spectral` allocate a boxed float per operation and stay within a few
+megabytes.
 
 Where it does not: sorting and allocation-heavy code, where every element is
 still a boxed value behind a pointer, and hash maps, which store more per

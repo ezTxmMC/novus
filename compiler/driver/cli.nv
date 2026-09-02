@@ -2,7 +2,7 @@ package driver
 
 // Command line: usage text and option parsing.
 
-private final VERSION = "0.1.0-pre.alpha.5"
+private final VERSION = "0.1.0-pre.alpha.6"
 
 method printUsage() {
     println "novusc ${VERSION} - the Novus compiler"

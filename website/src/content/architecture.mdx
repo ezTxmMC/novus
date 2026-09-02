@@ -49,18 +49,28 @@ printed and diffed. `ast/sexp.nv` provides the accessors.
 ## The runtime
 
 Compiled programs embed
-[runtime/novus_rt.h](https://github.com/ezTxmMC/novus/blob/master/runtime/novus_rt.h):
-values, arrays, maps, classes, the standard library natives and the memory
-arena.
+[runtime/novus_rt.h](https://github.com/ezTxmMC/novus/blob/master/runtime/novus_rt.h),
+which includes one part per subsystem (`nv_values.h`, `nv_memory.h`,
+`nv_classes.h`, `nv_threads.h`, `nv_json.h`, ...): values, arrays, maps,
+classes, the standard library natives and the garbage collector.
 
-A value is 24 bytes. Small integers are **tagged pointers** - the value lives
+A value is 16 bytes. Small integers are **tagged pointers** - the value lives
 in the pointer itself with the lowest bit set, so integer arithmetic never
-allocates. An object is one arena block: value, header and one slot per field,
+allocates. An object is one heap block: value, header and one slot per field,
 addressed by index (the field names live in the class), which puts a
-one-field instance at 48 bytes. Maps store entries in insertion order behind a
+one-field instance at 32 bytes. Maps store entries in insertion order behind a
 hash index and sort lazily, so lookups are O(1) while iteration stays in key
-order. Memory is arena allocated and never freed, which is exactly right for a
-compiler process and fine for most tools.
+order.
+
+Memory is reclaimed by a mark-sweep collector (`nv_memory.h`). The heap is
+made of 256 KB regions of equal sized cells; every thread hands out cells
+from its own region with a pointer increment, without a lock. A collection
+runs once as much has been allocated as was live after the previous one (at
+least 8 MB): it stops the other threads, scans their stacks and the parked
+virtual thread stacks conservatively, marks what they reach, sweeps the
+bitmaps and returns regions that came up empty to the operating system. The
+result is a footprint that follows the live data - roughly twice it - rather
+than everything the program ever allocated.
 
 ```c
 struct NvVal {

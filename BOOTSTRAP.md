@@ -40,9 +40,10 @@ up to date. `scripts/snapshot.sh` regenerates `compiler/runtime/runtime.nv` and
    do it in two steps: add the feature, regenerate the snapshot, *then* use
    the feature in the compiler sources and regenerate again.
 3. `compiler/runtime/runtime.nv` is generated from `runtime/novus_rt.h` by
-   `tools/embed.nv` and `compiler/std/stdlib.nv` from `std/*.nv` by
-   `tools/embedstd.nv` (`snapshot.sh` does both). Edit the header and the
-   std sources, never the embeddings.
+   `tools/embed.nv` - which inlines the `#include "nv_*.h"` parts the header
+   is split into, each once, in include order - and `compiler/std/stdlib.nv`
+   from `std/*.nv` by `tools/embedstd.nv` (`snapshot.sh` does both). Edit
+   the headers and the std sources, never the embeddings.
 4. Keep the fixpoint: `test/selfhost.sh` must pass. Non-determinism in the
    generator (e.g. depending on memory addresses or unordered iteration)
    would break it - maps iterate in key order, which is deterministic.
@@ -98,9 +99,12 @@ expressions: atoms 123 1.5 true false name, (str "escaped"), (neg e), (! e),
 
 Every value is an `nv` (`NvVal*`, 24 bytes; small integers are tagged
 pointers with the lowest bit set, so `nv_type_of()`/`nv_ival()` must be used
-instead of dereferencing). Objects are one arena block: value, header and one
+instead of dereferencing). Objects are one heap block: value, header and one
 slot per field, addressed by index (`nv_field_index`) - the names live in the
-class. Maps keep entries in insertion order with a hash index and sort on
+class. The heap is garbage collected (`runtime/nv_memory.h`); the only thing
+the generator has to do for it is register each global as a root
+(`nv_gc_root(&g_name)`) before initializing it, since the collector finds
+its roots on the stacks, in the runtime's own tables and nowhere else. Maps keep entries in insertion order with a hash index and sort on
 demand, so iteration stays in key order (the fixpoint depends on it).
 Arithmetic and comparisons go through the inline `*_fast` / `*_bool` wrappers,
 conditions never box a bool.

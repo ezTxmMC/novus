@@ -133,15 +133,17 @@ if (existsSync(benchFile)) {
   const JAVA_CLASS: Record<string, string> = {
     fib: 'Fib', loop: 'Loop', primes: 'Primes', mandelbrot: 'Mandelbrot',
     array: 'Arr', sort: 'Sort', strings: 'Str', map: 'MapB',
-    objects: 'Obj', wordfreq: 'WordFreq',
+    objects: 'Obj', wordfreq: 'WordFreq', nbody: 'NBody', spectral: 'SpectralNorm',
   };
-  // the sources are shown next to the numbers, so nobody has to trust them
+  // the sources are shown next to the numbers, so nobody has to trust them;
+  // an older Novus release ("novus@alpha5") ran the same novus/ sources
   results.sources = {};
   for (const workload of results.workloads) {
     results.sources[workload.name] = {};
     for (const language of Object.keys(results.languages)) {
+      const dir = language.startsWith('novus@') ? 'novus' : language;
       const base = language === 'java' ? JAVA_CLASS[workload.name] : workload.name;
-      const file = join(root, 'benchmarks', language, `${base}.${EXTENSION[language]}`);
+      const file = join(root, 'benchmarks', dir, `${base}.${EXTENSION[dir]}`);
       if (existsSync(file)) results.sources[workload.name][language] = readFileSync(file, 'utf8');
     }
   }
@@ -168,7 +170,9 @@ writeFileSync(
     stdModules: modules.length,
     stdFunctions: modules.reduce((n, m) => n + m.functions.length, 0),
     compilerLines: compilerFiles.reduce((n, f) => n + countLines(f), 0),
-    runtimeLines: countLines(join(root, 'runtime', 'novus_rt.h')),
+    runtimeLines: readdirSync(join(root, 'runtime'))
+      .filter((name) => name.endsWith('.h'))
+      .reduce((sum, name) => sum + countLines(join(root, 'runtime', name)), 0),
     snapshotLines: countLines(join(root, 'bootstrap', 'novusc.c')),
     version: /VERSION = "([^"]+)"/.exec(
       readFileSync(join(root, 'compiler', 'driver', 'cli.nv'), 'utf8'),

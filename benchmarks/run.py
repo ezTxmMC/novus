@@ -13,6 +13,9 @@ REPEATS times and the best run counts.
   python3 run.py                 # everything
   python3 run.py --only primes   # one workload
   python3 run.py --langs novus,rust
+  python3 run.py --previous alpha5=/path/to/old/novusc
+                                 # an older novusc as one more column, for
+                                 # comparing releases on the same machine
 """
 import argparse
 import json
@@ -39,6 +42,8 @@ WORKLOADS = [
     ("map", "Hash map", "300,000 string keys inserted and read back"),
     ("objects", "Object allocation", "one million small objects, then a field read"),
     ("wordfreq", "Word frequency", "read a file, count words, rank them"),
+    ("nbody", "n-body", "five planets, one million integration steps - floating point on objects"),
+    ("spectral", "Spectral norm", "ten power iterations over an implicit 500x500 matrix"),
 ]
 
 # name -> (extension, how to build, how to run)
@@ -56,8 +61,14 @@ LANGUAGES = {
 JAVA_CLASS = {
     "fib": "Fib", "loop": "Loop", "primes": "Primes", "mandelbrot": "Mandelbrot",
     "array": "Arr", "sort": "Sort", "strings": "Str", "map": "MapB",
-    "objects": "Obj", "wordfreq": "WordFreq",
+    "objects": "Obj", "wordfreq": "WordFreq", "nbody": "NBody", "spectral": "SpectralNorm",
 }
+
+# Older Novus compilers measured next to the current one: name -> novusc path.
+# Filled from --previous; the results carry them as "novus@<name>" with the
+# same sources as "novus", marked `previous` so the site keeps them out of
+# the wins and the colours.
+PREVIOUS = {}
 
 
 def tool(*candidates):
@@ -74,6 +85,8 @@ NOVUSC = os.environ.get("NOVUSC", str(REPO / "build" / "novusc"))
 
 def version_of(language):
     try:
+        if language.startswith("novus@"):
+            return version_of_command([PREVIOUS[language[6:]], "version"])
         commands = {
             "novus": [NOVUSC, "version"],
             "cpp": ["g++", "--version"],
@@ -84,23 +97,35 @@ def version_of(language):
             "node": ["node", "--version"],
             "python": ["python3", "--version"],
         }[language]
-        out = subprocess.run(commands, capture_output=True, text=True)
-        text = (out.stdout + out.stderr).strip().split("\n")[0]
-        return text
+        return version_of_command(commands)
     except Exception:
         return "unknown"
+
+
+def version_of_command(commands):
+    out = subprocess.run(commands, capture_output=True, text=True)
+    return (out.stdout + out.stderr).strip().split("\n")[0]
+
+
+def language_dir(language):
+    """The source directory: previous Novus versions share novus/."""
+    return "novus" if language.startswith("novus@") else language
 
 
 def build(language, workload):
     """Returns the command to run, or None when the language is unavailable."""
     name = JAVA_CLASS[workload] if language == "java" else workload
-    source = ROOT / language / f"{name}.{LANGUAGES[language]['ext']}"
+    source = ROOT / language_dir(language) / f"{name}.{LANGUAGES[language_dir(language)]['ext']}"
     if not source.exists():
         return None
-    out = BUILD / language
+    out = BUILD / language.replace("@", "_")
     out.mkdir(parents=True, exist_ok=True)
     binary = out / workload
 
+    if language.startswith("novus@"):
+        subprocess.run([PREVIOUS[language[6:]], "build", str(source), "-o", str(binary)],
+                       check=True, capture_output=True)
+        return [str(binary)]
     if language == "novus":
         subprocess.run([NOVUSC, "build", str(source), "-o", str(binary)],
                        check=True, capture_output=True)
@@ -153,13 +178,23 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--only", help="run a single workload")
     parser.add_argument("--langs", help="comma separated subset of languages")
+    parser.add_argument("--previous", action="append", default=[],
+                        help="NAME=PATH: an older novusc to measure as one more column (repeatable)")
     args = parser.parse_args()
+    for spec in args.previous:
+        name, _, path = spec.partition("=")
+        if not name or not path:
+            parser.error("--previous expects NAME=PATH")
+        PREVIOUS[name] = path
 
     BUILD.mkdir(parents=True, exist_ok=True)
     subprocess.run(["cc", "-O2", str(ROOT / "measure.c"), "-o", str(MEASURE)], check=True)
 
     workloads = [w for w in WORKLOADS if not args.only or w[0] == args.only]
     languages = args.langs.split(",") if args.langs else list(LANGUAGES)
+    # an older compiler goes right after the current one
+    for name in PREVIOUS:
+        languages.insert(languages.index("novus") + 1 if "novus" in languages else len(languages), f"novus@{name}")
 
     # the word frequency benchmark needs an input file - build it deterministically
     words = ["alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta"]
@@ -168,6 +203,13 @@ def main():
 
     results = {"languages": {}, "workloads": [], "runs": {}}
     for language in languages:
+        if language.startswith("novus@"):
+            results["languages"][language] = {
+                "label": f"Novus {language[6:]}",
+                "version": version_of(language),
+                "previous": True,
+            }
+            continue
         results["languages"][language] = {
             "label": LANGUAGES[language]["label"],
             "version": version_of(language),

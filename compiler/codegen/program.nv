@@ -166,6 +166,8 @@ method generateProgram(array<string> decls, string runtime): string {
             var gctx = {"class": "", "pkg": packageOf(gname), "func": "", "ret": "void", "pos": "constant " + gname}
             var glocals = {}
             protos.append("static nv g_" + cName(gname) + ";" + nl())
+            // the collector cannot see statics on its own: each global is a root
+            globalsInit.append("    nv_gc_root(&g_" + cName(gname) + ");" + nl())
             globalsInit.append("    g_" + cName(gname) + " = " + genExpr(nodeChild(d, 2), prog, gctx, glocals) + ";" + nl())
         }
     }

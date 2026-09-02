@@ -1,0 +1,72 @@
+package main
+
+import fmt
+import math
+
+// spectral-norm: ten power iterations over an implicit 500x500 matrix.
+
+method a(integer i, integer j): float {
+    return 1.0 / ((i + j) * (i + j + 1) / 2 + i + 1)
+}
+
+method mulAv(integer n, array<float> v, array<float> out) {
+    var i = 0
+    while (i < n) {
+        var s = 0.0
+        var j = 0
+        while (j < n) {
+            s = s + a(i, j) * v[j]
+            j = j + 1
+        }
+        out[i] = s
+        i = i + 1
+    }
+}
+
+method mulAtv(integer n, array<float> v, array<float> out) {
+    var i = 0
+    while (i < n) {
+        var s = 0.0
+        var j = 0
+        while (j < n) {
+            s = s + a(j, i) * v[j]
+            j = j + 1
+        }
+        out[i] = s
+        i = i + 1
+    }
+}
+
+method mulAtAv(integer n, array<float> v, array<float> out, array<float> tmp) {
+    mulAv(n, v, tmp)
+    mulAtv(n, tmp, out)
+}
+
+method main {
+    var n = 500
+    var u = []
+    var v = []
+    var tmp = []
+    var i = 0
+    while (i < n) {
+        u.append(1.0)
+        v.append(0.0)
+        tmp.append(0.0)
+        i = i + 1
+    }
+    i = 0
+    while (i < 10) {
+        mulAtAv(n, u, v, tmp)
+        mulAtAv(n, v, u, tmp)
+        i = i + 1
+    }
+    var vBv = 0.0
+    var vv = 0.0
+    i = 0
+    while (i < n) {
+        vBv = vBv + u[i] * v[i]
+        vv = vv + v[i] * v[i]
+        i = i + 1
+    }
+    println fmt.fixed(math.sqrt(vBv / vv), 9)
+}

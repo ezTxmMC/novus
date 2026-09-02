@@ -1,16 +1,24 @@
 package main
 
-// Embeds a text file into a Novus source file as a string constant:
+import path
+
+// Embeds a C header into a Novus source file as a string constant:
 //   novusc run tools/embed.nv runtime/novus_rt.h > compiler/runtime/runtime.nv
 // The generated module exposes `runtimeSource()`, which novusc pastes at
 // the top of every generated C file.
+//
+// The runtime is split into parts that novus_rt.h pulls in with quoted
+// includes (`#include "nv_values.h"`); those are inlined here, each part
+// once, in the order they are included, so the embedded runtime is the
+// same single translation unit a C compiler would see.
 
 method main(array<string> arguments) {
     if (arguments.length() < 1) {
         eprintln "usage: embed <file>"
         return 1
     }
-    var text = readFile(arguments[0])
+    var seen = {}
+    var text = inlineIncludes(arguments[0], seen)
     if (text == "") {
         eprintln "cannot read " + arguments[0]
         return 1
@@ -58,4 +66,59 @@ method escapeNovus(string text): string {
         i = i + 1
     }
     return out
+}
+
+// The text of `file` with every `#include "name"` line replaced by the text
+// of that file (relative to the including file), recursively. A part that
+// was already inlined is dropped, as its include guard would drop it.
+method inlineIncludes(string file, map<string, string> seen): string {
+    var text = readFile(file)
+    if (text == "") {
+        return ""
+    }
+    var dir = path.dirname(file)
+    var out = ""
+    var lines = text.split("\n")
+    var i = 0
+    var n = lines.length()
+    while (i < n) {
+        var line = lines[i]
+        var name = quotedInclude(line)
+        if (name == "") {
+            out = out + line
+            if (i < n - 1) {
+                out = out + "\n"
+            }
+        } else {
+            var target = path.join(dir, name)
+            if (seen.has(target) == false) {
+                seen[target] = "1"
+                var part = inlineIncludes(target, seen)
+                if (part == "") {
+                    eprintln "cannot read " + target + " (included from " + file + ")"
+                    exit(1)
+                }
+                out = out + part
+                if (part.endsWith("\n") == false) {
+                    out = out + "\n"
+                }
+            }
+        }
+        i = i + 1
+    }
+    return out
+}
+
+// The file name of an `#include "name"` line, "" for any other line.
+method quotedInclude(string line): string {
+    var s = line.trim()
+    if (s.startsWith("#include \"") == false) {
+        return ""
+    }
+    var rest = s.substring(10, s.length())
+    var close = rest.indexOf("\"")
+    if (close < 0) {
+        return ""
+    }
+    return rest.substring(0, close)
 }

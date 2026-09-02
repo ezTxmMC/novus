@@ -66,3 +66,4 @@ Thumbs.db
 benchmarks/.build/
 benchmarks/input.txt
 benchmarks/java/*.class
+!benchmarks/*.c

@@ -2,7 +2,7 @@
   "languages": {
     "novus": {
       "label": "Novus",
-      "version": "novusc 0.1.0-pre.alpha.3"
+      "version": "novusc 0.1.0-pre.alpha.5"
     },
     "cpp": {
       "label": "C++",
@@ -84,8 +84,8 @@
   "runs": {
     "fib": {
       "novus": {
-        "ms": 3.2,
-        "mb": 1.6,
+        "ms": 3.5,
+        "mb": 2.2,
         "output": "832040",
         "agrees": true
       },
@@ -96,31 +96,31 @@
         "agrees": true
       },
       "go": {
-        "ms": 2.9,
-        "mb": 5.6,
+        "ms": 2.8,
+        "mb": 3.5,
         "output": "832040",
         "agrees": true
       },
       "crystal": {
-        "ms": 3.2,
-        "mb": 3.1,
+        "ms": 3.0,
+        "mb": 3.2,
         "output": "832040",
         "agrees": true
       },
       "java": {
-        "ms": 10.8,
-        "mb": 50.5,
+        "ms": 10.5,
+        "mb": 44.5,
         "output": "832040",
         "agrees": true
       },
       "node": {
-        "ms": 19.5,
+        "ms": 17.1,
         "mb": 59.8,
         "output": "832040",
         "agrees": true
       },
       "python": {
-        "ms": 51.7,
+        "ms": 50.4,
         "mb": 11.2,
         "output": "832040",
         "agrees": true
@@ -129,7 +129,7 @@
     "loop": {
       "novus": {
         "ms": 5.3,
-        "mb": 2.0,
+        "mb": 2.2,
         "output": "29999994",
         "agrees": true
       },
@@ -140,32 +140,32 @@
         "agrees": true
       },
       "go": {
-        "ms": 5.0,
-        "mb": 5.5,
+        "ms": 4.9,
+        "mb": 3.5,
         "output": "29999994",
         "agrees": true
       },
       "crystal": {
-        "ms": 6.1,
-        "mb": 3.1,
+        "ms": 5.9,
+        "mb": 3.0,
         "output": "29999994",
         "agrees": true
       },
       "java": {
-        "ms": 15.5,
-        "mb": 49.4,
+        "ms": 14.7,
+        "mb": 45.1,
         "output": "29999994",
         "agrees": true
       },
       "node": {
-        "ms": 24.7,
-        "mb": 58.1,
+        "ms": 22.5,
+        "mb": 58.7,
         "output": "29999994",
         "agrees": true
       },
       "python": {
-        "ms": 452.6,
-        "mb": 10.9,
+        "ms": 434.0,
+        "mb": 11.2,
         "output": "29999994",
         "agrees": true
       }
@@ -173,7 +173,7 @@
     "primes": {
       "novus": {
         "ms": 9.9,
-        "mb": 1.8,
+        "mb": 2.1,
         "output": "17984",
         "agrees": true
       },
@@ -184,340 +184,340 @@
         "agrees": true
       },
       "go": {
-        "ms": 10.2,
+        "ms": 10.1,
         "mb": 3.2,
         "output": "17984",
         "agrees": true
       },
       "crystal": {
-        "ms": 10.4,
+        "ms": 10.3,
         "mb": 3.2,
         "output": "17984",
         "agrees": true
       },
       "java": {
-        "ms": 20.2,
-        "mb": 51.2,
+        "ms": 19.2,
+        "mb": 45.3,
         "output": "17984",
         "agrees": true
       },
       "node": {
-        "ms": 22.7,
-        "mb": 60.0,
+        "ms": 21.9,
+        "mb": 59.7,
         "output": "17984",
         "agrees": true
       },
       "python": {
-        "ms": 190.6,
-        "mb": 10.2,
+        "ms": 182.9,
+        "mb": 11.2,
         "output": "17984",
         "agrees": true
       }
     },
     "mandelbrot": {
       "novus": {
-        "ms": 4.7,
-        "mb": 1.9,
+        "ms": 4.6,
+        "mb": 2.2,
         "output": "42461",
         "agrees": true
       },
       "cpp": {
-        "ms": 5.0,
+        "ms": 4.9,
         "mb": 3.9,
         "output": "42461",
         "agrees": true
       },
       "go": {
         "ms": 4.9,
-        "mb": 3.5,
+        "mb": 5.6,
         "output": "42461",
         "agrees": true
       },
       "crystal": {
-        "ms": 5.1,
-        "mb": 2.9,
+        "ms": 5.0,
+        "mb": 3.1,
         "output": "42461",
         "agrees": true
       },
       "java": {
-        "ms": 15.5,
-        "mb": 50.6,
+        "ms": 14.7,
+        "mb": 45.3,
         "output": "42461",
         "agrees": true
       },
       "node": {
-        "ms": 24.0,
-        "mb": 61.4,
+        "ms": 21.0,
+        "mb": 61.5,
         "output": "42461",
         "agrees": true
       },
       "python": {
-        "ms": 489.6,
-        "mb": 10.9,
+        "ms": 465.3,
+        "mb": 11.3,
         "output": "42461",
         "agrees": true
       }
     },
     "array": {
       "novus": {
-        "ms": 5.9,
-        "mb": 17.7,
+        "ms": 5.7,
+        "mb": 17.5,
         "output": "1999999000000",
         "agrees": true
       },
       "cpp": {
-        "ms": 3.2,
-        "mb": 19.5,
+        "ms": 2.7,
+        "mb": 19.8,
         "output": "1999999000000",
         "agrees": true
       },
       "go": {
-        "ms": 6.8,
-        "mb": 39.1,
+        "ms": 6.6,
+        "mb": 43.9,
         "output": "1999999000000",
         "agrees": true
       },
       "crystal": {
-        "ms": 7.6,
-        "mb": 51.5,
+        "ms": 6.1,
+        "mb": 52.8,
         "output": "1999999000000",
         "agrees": true
       },
       "java": {
-        "ms": 52.0,
-        "mb": 166.5,
+        "ms": 50.2,
+        "mb": 161.6,
         "output": "1999999000000",
         "agrees": true
       },
       "node": {
-        "ms": 50.6,
-        "mb": 145.8,
+        "ms": 46.9,
+        "mb": 147.0,
         "output": "1999999000000",
         "agrees": true
       },
       "python": {
-        "ms": 89.9,
-        "mb": 86.7,
+        "ms": 86.4,
+        "mb": 87.9,
         "output": "1999999000000",
         "agrees": true
       }
     },
     "sort": {
       "novus": {
-        "ms": 15.5,
+        "ms": 15.1,
         "mb": 8.9,
         "output": "23 500454 999999",
         "agrees": true
       },
       "cpp": {
-        "ms": 14.4,
-        "mb": 8.8,
+        "ms": 13.7,
+        "mb": 7.8,
         "output": "23 500454 999999",
         "agrees": true
       },
       "go": {
-        "ms": 26.9,
-        "mb": 15.8,
+        "ms": 26.4,
+        "mb": 12.4,
         "output": "23 500454 999999",
         "agrees": true
       },
       "crystal": {
-        "ms": 15.2,
-        "mb": 10.0,
+        "ms": 14.8,
+        "mb": 10.9,
         "output": "23 500454 999999",
         "agrees": true
       },
       "java": {
-        "ms": 39.5,
-        "mb": 54.1,
+        "ms": 36.7,
+        "mb": 52.1,
         "output": "23 500454 999999",
         "agrees": true
       },
       "node": {
-        "ms": 82.8,
-        "mb": 76.3,
+        "ms": 78.0,
+        "mb": 77.1,
         "output": "23 500454 999999",
         "agrees": true
       },
       "python": {
-        "ms": 77.0,
-        "mb": 23.3,
+        "ms": 72.2,
+        "mb": 24.2,
         "output": "23 500454 999999",
         "agrees": true
       }
     },
     "strings": {
       "novus": {
-        "ms": 11.0,
-        "mb": 30.4,
+        "ms": 8.2,
+        "mb": 19.4,
         "output": "1199999 200000 1199999",
         "agrees": true
       },
       "cpp": {
-        "ms": 6.4,
-        "mb": 15.6,
+        "ms": 6.3,
+        "mb": 15.7,
         "output": "1199999 200000 1199999",
         "agrees": true
       },
       "go": {
         "ms": 3.9,
-        "mb": 13.1,
+        "mb": 12.1,
         "output": "1199999 200000 1199999",
         "agrees": true
       },
       "crystal": {
-        "ms": 7.5,
-        "mb": 13.9,
+        "ms": 7.6,
+        "mb": 16.7,
         "output": "1199999 200000 1199999",
         "agrees": true
       },
       "java": {
-        "ms": 41.8,
-        "mb": 77.5,
+        "ms": 37.9,
+        "mb": 70.4,
         "output": "1199999 200000 1199999",
         "agrees": true
       },
       "node": {
-        "ms": 47.9,
-        "mb": 87.2,
+        "ms": 41.5,
+        "mb": 87.6,
         "output": "1199999 200000 1199999",
         "agrees": true
       },
       "python": {
-        "ms": 37.2,
-        "mb": 34.2,
+        "ms": 36.3,
+        "mb": 35.0,
         "output": "1199999 200000 1199999",
         "agrees": true
       }
     },
     "map": {
       "novus": {
-        "ms": 50.1,
-        "mb": 80.2,
+        "ms": 37.9,
+        "mb": 35.8,
         "output": "300000 44999850000",
         "agrees": true
       },
       "cpp": {
-        "ms": 61.3,
-        "mb": 24.4,
+        "ms": 47.2,
+        "mb": 24.9,
         "output": "300000 44999850000",
         "agrees": true
       },
       "go": {
-        "ms": 58.6,
-        "mb": 29.8,
+        "ms": 45.1,
+        "mb": 30.3,
         "output": "300000 44999850000",
         "agrees": true
       },
       "crystal": {
-        "ms": 47.5,
-        "mb": 40.1,
+        "ms": 46.3,
+        "mb": 41.5,
         "output": "300000 44999850000",
         "agrees": true
       },
       "java": {
-        "ms": 69.7,
-        "mb": 127.9,
+        "ms": 64.0,
+        "mb": 120.0,
         "output": "300000 44999850000",
         "agrees": true
       },
       "node": {
-        "ms": 114.2,
-        "mb": 103.2,
+        "ms": 93.3,
+        "mb": 103.8,
         "output": "300000 44999850000",
         "agrees": true
       },
       "python": {
-        "ms": 110.4,
-        "mb": 44.6,
+        "ms": 104.8,
+        "mb": 46.2,
         "output": "300000 44999850000",
         "agrees": true
       }
     },
     "objects": {
       "novus": {
-        "ms": 17.9,
-        "mb": 70.5,
+        "ms": 14.4,
+        "mb": 55.9,
         "output": "1499998500000",
         "agrees": true
       },
       "cpp": {
-        "ms": 19.3,
-        "mb": 41.9,
+        "ms": 17.1,
+        "mb": 41.6,
         "output": "1499998500000",
         "agrees": true
       },
       "go": {
-        "ms": 24.3,
-        "mb": 46.1,
+        "ms": 25.4,
+        "mb": 44.3,
         "output": "1499998500000",
         "agrees": true
       },
       "crystal": {
-        "ms": 16.9,
-        "mb": 58.6,
+        "ms": 13.9,
+        "mb": 58.9,
         "output": "1499998500000",
         "agrees": true
       },
       "java": {
-        "ms": 32.1,
-        "mb": 103.9,
+        "ms": 28.0,
+        "mb": 99.0,
         "output": "1499998500000",
         "agrees": true
       },
       "node": {
-        "ms": 99.9,
-        "mb": 216.2,
+        "ms": 87.6,
+        "mb": 210.3,
         "output": "1499998500000",
         "agrees": true
       },
       "python": {
-        "ms": 321.9,
-        "mb": 124.9,
+        "ms": 301.9,
+        "mb": 125.9,
         "output": "1499998500000",
         "agrees": true
       }
     },
     "wordfreq": {
       "novus": {
-        "ms": 17.4,
-        "mb": 22.1,
+        "ms": 15.2,
+        "mb": 19.4,
         "output": "66668 epsilon\n66667 gamma\n66666 eta\n8 unique",
         "agrees": true
       },
       "cpp": {
-        "ms": 9.6,
-        "mb": 11.4,
+        "ms": 9.1,
+        "mb": 11.6,
         "output": "66668 epsilon\n66667 gamma\n66666 eta\n8 unique",
         "agrees": true
       },
       "go": {
-        "ms": 7.2,
-        "mb": 17.9,
+        "ms": 7.0,
+        "mb": 19.7,
         "output": "66668 epsilon\n66667 gamma\n66666 eta\n8 unique",
         "agrees": true
       },
       "crystal": {
-        "ms": 11.0,
-        "mb": 7.2,
+        "ms": 10.4,
+        "mb": 6.9,
         "output": "66668 epsilon\n66667 gamma\n66666 eta\n8 unique",
         "agrees": true
       },
       "java": {
-        "ms": 78.6,
-        "mb": 119.3,
+        "ms": 76.4,
+        "mb": 110.5,
         "output": "66668 epsilon\n66667 gamma\n66666 eta\n8 unique",
         "agrees": true
       },
       "node": {
-        "ms": 65.5,
-        "mb": 104.7,
+        "ms": 62.9,
+        "mb": 106.2,
         "output": "66668 epsilon\n66667 gamma\n66666 eta\n8 unique",
         "agrees": true
       },
       "python": {
-        "ms": 44.6,
-        "mb": 37.6,
+        "ms": 43.2,
+        "mb": 37.8,
         "output": "66668 epsilon\n66667 gamma\n66666 eta\n8 unique",
         "agrees": true
       }

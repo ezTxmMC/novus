@@ -9,6 +9,11 @@
 static nv nv_math_sqrt(nv x) { return nv_float(sqrt(nv_as_double(x))); }
 static nv nv_math_pow(nv b, nv e) { return nv_float(pow(nv_as_double(b), nv_as_double(e))); }
 static nv nv_math_floor(nv x) { return nv_int((long long)floor(nv_as_double(x))); }
+/* The nearest value a 32 bit float can hold. A program that has to agree
+ * with one written in a language whose floats are 32 bit - a file format, a
+ * protocol, another implementation of the same arithmetic - needs the
+ * narrowing to happen where that program has it. */
+static nv nv_math_to_float32(nv x) { return nv_float((double)(float)nv_as_double(x)); }
 static nv nv_math_ceil(nv x) { return nv_int((long long)ceil(nv_as_double(x))); }
 static nv nv_math_round(nv x) { return nv_int((long long)floor(nv_as_double(x) + 0.5)); }
 static nv nv_math_sin(nv x) { return nv_float(sin(nv_as_double(x))); }

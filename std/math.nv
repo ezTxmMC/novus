@@ -5,6 +5,11 @@ package math
 method sqrt(float x): float native "nv_math_sqrt"
 method pow(float base, float exponent): float native "nv_math_pow"
 method floor(float x): integer native "nv_math_floor"
+
+// The nearest value a 32 bit float holds. Novus numbers are 64 bit; this is
+// for arithmetic that has to come out the way a 32 bit one would - a wire
+// format, or another implementation whose floats are single precision.
+method toFloat32(float x): float native "nv_math_to_float32"
 method ceil(float x): integer native "nv_math_ceil"
 method round(float x): integer native "nv_math_round"
 method sin(float x): float native "nv_math_sin"

@@ -61,8 +61,11 @@
  *
  * Pacing. The next collection runs once as many bytes have been claimed as
  * were live after the last one (NOVUS_GC_GROWTH percent of it, default
- * 100), never sooner than every NOVUS_GC_MIN megabytes (default 8). The
- * heap therefore stays within about twice the live data. NOVUS_GC=off
+ * 100), never sooner than every NOVUS_GC_MIN megabytes (default 8) per
+ * registered thread: every thread that allocates gets that much between
+ * collections, so a program on thirty-two threads is not stopped thirty-two
+ * times as often as the same program on one. The heap therefore stays
+ * within about twice the live data, or the threads' allowance. NOVUS_GC=off
  * turns collection off; NOVUS_GC_STATS=1 prints a summary at exit,
  * NOVUS_GC_STATS=2 a line per collection as well and NOVUS_GC_STATS=3 what
  * survived the last one, per size class.
@@ -972,6 +975,16 @@ static void nv_gc_sweep(void) {
 /* --- a collection -------------------------------------------------- */
 
 /* Called with the heap lock held. */
+/* How many threads are registered. Called with nv_gc_thread_lock held. */
+static int nv_gc_thread_count(void) {
+    NvThread *t;
+    int count = 0;
+    for (t = nv_gc_threads; t; t = t->next) {
+        count++;
+    }
+    return count < 1 ? 1 : count;
+}
+
 static void nv_gc_collect_locked(void) {
     NvThread *self = nv_cur_thread;
     long long t0;
@@ -986,8 +999,12 @@ static void nv_gc_collect_locked(void) {
     nv_gc_drain();
     nv_gc_sweep();
     nv_gc_threshold = nv_gc_live / 100 * nv_gc_growth;
-    if (nv_gc_threshold < nv_gc_min_bytes) {
-        nv_gc_threshold = nv_gc_min_bytes;
+    {
+        /* the floor is per thread: with the thread list held, count them */
+        size_t floor = nv_gc_min_bytes * (size_t)nv_gc_thread_count();
+        if (nv_gc_threshold < floor) {
+            nv_gc_threshold = floor;
+        }
     }
     /* the reserve is sized by the new threshold: trim what no longer fits */
     while (nv_gc_spare && nv_gc_spare_bytes > nv_gc_threshold) {
@@ -1125,6 +1142,7 @@ static void nv_gc_init(char *top) {
 static void *nv_gc_alloc_large(size_t n, int kind) {
     NvRegion *r;
     void *base;
+    void *cells;
     size_t size, mapped;
     n = (n + 7) & ~(size_t)7;
     size = (NV_GC_HEADER + n + NV_GC_REGION - 1) & ~(NV_GC_REGION - 1);
@@ -1155,8 +1173,14 @@ static void *nv_gc_alloc_large(size_t n, int kind) {
     }
     r->next = nv_gc_regions;
     nv_gc_regions = r;
+    /* The block's address has to be in this thread's hands before the lock
+     * goes: another thread may collect the moment it does, and the only
+     * thing that keeps a block nobody has seen yet alive is this pointer on
+     * this stack. Read through the header afterwards and the collection
+     * may have unmapped it. */
+    cells = r->cells;
     NV_MUTEX_UNLOCK(&nv_gc_lock);
-    return r->cells;
+    return cells;
 }
 
 static NV_NOINLINE void *nv_alloc_slow(size_t n, int kind) {

@@ -130,7 +130,8 @@ buffer, a collection runs once as much has been allocated as was live after
 the previous one (at least 8 MB), stacks are scanned conservatively, and
 regions that come up empty go back to the operating system - so a program's
 memory tracks what it is actually using instead of growing with everything
-it ever allocated. `NOVUS_GC_MIN=<MB>` and `NOVUS_GC_GROWTH=<percent>` tune
+it ever allocated. `NOVUS_GC_MIN=<MB>` (per thread that is running, so
+that more threads do not mean more pauses) and `NOVUS_GC_GROWTH=<percent>` tune
 the pacing, `NOVUS_GC_STATS=1` prints a summary at exit and `NOVUS_GC=off`
 disables collection.
 

@@ -11,6 +11,9 @@ import bytes
 // 20 raw bytes.
 method sha1(string data): string native "nv_crypto_sha1"
 
+// SHA-256, as 32 raw bytes.
+method sha256(string data): string native "nv_crypto_sha256"
+
 // 16 raw bytes.
 method md5(string data): string native "nv_crypto_md5"
 

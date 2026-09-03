@@ -75,12 +75,24 @@ static nv nv_new(int type) {
     return v;
 }
 
+/* A value whose payload is a number and nothing else. It holds no pointer,
+ * and no value ever changes its type after it is made, so the collector can
+ * be told never to look inside it: an ATOMIC cell is swept like any other
+ * but is not walked when marking. Numbers are what a program allocates most
+ * of, so this is most of the marking work. */
+static nv nv_new_number(int type) {
+    nv v = (nv)nv_alloc_atomic(sizeof(NvVal));
+    memset(v, 0, sizeof(NvVal));
+    v->type = (unsigned char)type;
+    return v;
+}
+
 static nv nv_int(long long i) {
     nv v;
     if (i > -NV_TAG_LIMIT && i < NV_TAG_LIMIT) {
         return (nv)(uintptr_t)(((uintptr_t)i << 1) | 1u);
     }
-    v = nv_new(NV_INT);
+    v = nv_new_number(NV_INT);
     v->i = i;
     return v;
 }
@@ -88,7 +100,7 @@ static nv nv_int(long long i) {
 static int nv_exit_code(nv v) { return nv_type_of(v) == NV_INT ? (int)nv_ival(v) : 0; }
 
 static nv nv_float(double f) {
-    nv v = nv_new(NV_FLOAT);
+    nv v = nv_new_number(NV_FLOAT);
     v->f = f;
     return v;
 }

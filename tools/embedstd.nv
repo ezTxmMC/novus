@@ -22,7 +22,7 @@ method main(array<string> arguments) {
             names.append(entry.substring(0, entry.length() - 3))
         }
     }
-    println "package stdlib"
+    println "package std"
     println ""
     println "// GENERATED from " + dir + "/*.nv by tools/embedstd.nv - do not edit."
     println "// The standard library modules embedded into novusc (see std/)."

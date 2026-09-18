@@ -1,0 +1,11 @@
+package draw
+
+final UNIT = "px"
+
+method area(integer w, integer h): integer {
+    return w * h
+}
+
+method describe(): string {
+    return "draw in " + UNIT + ", " + corner()
+}

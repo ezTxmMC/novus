@@ -1,0 +1,23 @@
+<?nv
+prop string label = "Count"
+prop integer start = 0
+ref integer count = 0
+
+method mount() {
+    count = start
+}
+
+method change(integer by) {
+    count = count + by
+    emit("change", count)
+}
+?>
+<div class="counter">
+    <button @click="change(-1)" disabled={count <= 0}>−</button>
+    <span class:high={count >= 10}>{label}: <b>{count}</b></span>
+    <button @click="change(1)">+</button>
+</div>
+<style>
+.counter { display: flex; align-items: center; gap: .6rem; margin: .4rem 0 }
+.counter span.high b { color: #c0392b }
+</style>

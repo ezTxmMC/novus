@@ -1,7 +1,6 @@
 package parser
 
-import "../lexer/tokens.nv"
-import "errors.nv"
+import lexer
 
 // Token predicates and expectations used by all parser files.
 //

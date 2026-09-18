@@ -1,6 +1,6 @@
-package mathlib
+package lib
 
-import "vec.nv"
+import @lib/vec
 
 final PI = 3.14159
 

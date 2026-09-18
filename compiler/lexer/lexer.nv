@@ -1,7 +1,5 @@
 package lexer
 
-import "chars.nv"
-
 // The Novus lexer: source text -> tokens.
 //
 // NOTE: this file is part of the bootstrap chain: it must stay compilable

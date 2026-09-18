@@ -1,9 +1,7 @@
 package codegen
 
-import "../ast/sexp.nv"
-import "../parser/errors.nv"
-import "common.nv"
-import "index.nv"
+import ast
+import parser
 
 // Semantic checks: base types, interfaces, abstract methods.
 //

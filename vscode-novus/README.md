@@ -1,6 +1,8 @@
 # Novus Language for VS Code
 
-Full editor support for the [Novus](../README.md) programming language (`.nv` files).
+Full editor support for the [Novus](../README.md) programming language (`.nv` files), plus
+highlighting for its web components (`.nvh`: HTML with `<?nv ?>` blocks, `{expressions}`, `{#if}`/`{#for}`
+blocks and `@event`/`bind=`/`class:` directives) and Run/Build for them.
 
 ## Features
 

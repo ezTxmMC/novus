@@ -1,0 +1,8 @@
+<?nv
+prop string title = "x"
+ref integer count = 0
+?>
+<div>
+    <h1>{title}</h1>
+    <input bind="title">
+</div>

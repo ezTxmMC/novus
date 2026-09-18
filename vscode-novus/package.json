@@ -1,8 +1,8 @@
 {
   "name": "novus-language",
   "displayName": "Novus Language",
-  "description": "Full language support for the self-hosting Novus programming language (.nv): syntax highlighting, IntelliSense, diagnostics, navigation, and run/build commands via novusc.",
-  "version": "0.1.0",
+  "description": "Full language support for the self-hosting Novus programming language (.nv) and its server rendered components (.nvh): syntax highlighting, IntelliSense, diagnostics, navigation, and run/build commands via novusc.",
+  "version": "0.1.2",
   "publisher": "NovusLang",
   "author": "ezTxmMC",
   "repository": {
@@ -22,11 +22,13 @@
     "novus",
     "nv",
     "language server",
-    "lsp"
+    "lsp",
+    "nvh"
   ],
   "main": "./out/extension.js",
   "activationEvents": [
     "onLanguage:novus",
+    "onLanguage:novus-html",
     "workspaceContains:**/*.nv"
   ],
   "contributes": {
@@ -45,6 +47,21 @@
           "light": "./icons/novus-light.svg",
           "dark": "./icons/novus-dark.svg"
         }
+      },
+      {
+        "id": "novus-html",
+        "aliases": [
+          "Novus HTML",
+          "nvh"
+        ],
+        "extensions": [
+          ".nvh"
+        ],
+        "configuration": "./language-configuration-nvh.json",
+        "icon": {
+          "light": "./icons/novus-light.svg",
+          "dark": "./icons/novus-dark.svg"
+        }
       }
     ],
     "grammars": [
@@ -52,6 +69,16 @@
         "language": "novus",
         "scopeName": "source.novus",
         "path": "./syntaxes/novus.tmLanguage.json"
+      },
+      {
+        "language": "novus-html",
+        "scopeName": "text.html.novus",
+        "path": "./syntaxes/nvh.tmLanguage.json",
+        "embeddedLanguages": {
+          "source.novus": "novus",
+          "source.css": "css",
+          "source.js": "javascript"
+        }
       }
     ],
     "snippets": [
@@ -82,18 +109,18 @@
       "editor/title/run": [
         {
           "command": "novus.runFile",
-          "when": "resourceLangId == novus",
+          "when": "resourceLangId == novus || resourceLangId == novus-html",
           "group": "navigation"
         }
       ],
       "commandPalette": [
         {
           "command": "novus.runFile",
-          "when": "resourceLangId == novus"
+          "when": "resourceLangId == novus || resourceLangId == novus-html"
         },
         {
           "command": "novus.buildFile",
-          "when": "resourceLangId == novus"
+          "when": "resourceLangId == novus || resourceLangId == novus-html"
         }
       ]
     },
@@ -102,7 +129,7 @@
         "command": "novus.runFile",
         "key": "ctrl+alt+n",
         "mac": "cmd+alt+n",
-        "when": "editorLangId == novus"
+        "when": "editorLangId == novus || editorLangId == novus-html"
       }
     ],
     "configuration": {

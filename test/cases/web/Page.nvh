@@ -1,0 +1,56 @@
+<?nv
+import strings
+
+define class Entry {
+    private string name: get
+    private integer id: get
+}
+
+prop string who = "world"
+ref array<object> entries = [Entry{name="a", id=1}, Entry{name="b", id=2}, Entry{name="c", id=3}]
+ref bool agree = false
+ref string color = "red"
+ref string notes = ""
+var last = "-"
+var markup = "<em>raw</em>"
+
+method dropFirst() {
+    entries.remove(0)
+}
+
+method hit(string label) {
+    last = label
+}
+
+method shout(string text) {
+    last = strings.repeat(text, 2)
+}
+?>
+<!doctype html>
+<html>
+<head>
+    <title>Hello {who}</title>
+</head>
+<body>
+<article>
+    <Card title="Card for {who}">
+        <p>slotted, last hit: {last}</p>
+    </Card>
+    <ul>
+    {#for e in entries}
+        <Item label={e.name()} key={e.id()} @hit="hit($value)" />
+    {/for}
+    </ul>
+    <?nv var total = 0 ?>
+    <?nv for (e in entries) { total = total + e.id() } ?>
+    <p>ids: <?= total ?> &amp; {@html markup} \{literal\}</p>
+    <input type="checkbox" bind="agree"> <select bind="color"><option>red</option><option>blue</option></select>
+    <textarea bind="notes"></textarea>
+    <input @input="shout($value)" @keydown.enter.prevent={last = $value + "!"}>
+    <dl><Pair /></dl>
+    <Fragile />
+    <button @click="dropFirst">drop</button>
+    <a href="/x" @click.prevent={navigate("/elsewhere")}>go</a>
+</article>
+</body>
+</html>

@@ -46,8 +46,20 @@ static const char *nv_sb_finish(NvSb *sb) {
 /* Errors                                                              */
 /* ------------------------------------------------------------------ */
 
+/* Set by nv_try_run(): a runtime error unwinds to it instead of ending the
+ * program, so a server can answer one failed request and go on. */
+static NV_TLS jmp_buf *nv_trap = 0;
+static NV_TLS char nv_trap_message[512];
+static NV_TLS int nv_trap_failed = 0;
+
 static void nv_error(const char *fmt, ...) {
     va_list ap;
+    if (nv_trap) {
+        va_start(ap, fmt);
+        vsnprintf(nv_trap_message, sizeof(nv_trap_message), fmt, ap);
+        va_end(ap);
+        longjmp(*nv_trap, 1);
+    }
     fflush(stdout);
     fprintf(stderr, "error: ");
     va_start(ap, fmt);

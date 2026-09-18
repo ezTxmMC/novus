@@ -1,0 +1,1284 @@
+package web
+
+import bytes
+import crypto
+import io
+import json
+import math
+import net
+import os
+import path
+
+// Server rendered, live web components: the runtime behind .nvh files
+// (pages, the HTTP server, views, patches and the browser script).
+
+// A .nvh file is HTML with Novus in it - like PHP - and at the same time a
+// component, the way a .vue or .svelte file is one. The compiler turns
+// `Counter.nvh` into a class Counter based NvhComponent; this module renders
+// such components on the server, answers the browser and keeps them live:
+//
+//     import web
+//     import "pages/Home.nvh"
+//
+//     method main {
+//         web.page("/", Home())            // a prototype: every visit gets its own
+//         web.page("/user/:id", User())    // :id and ?query= become props
+//         web.files("/assets", "public")
+//         web.serve(8080)
+//     }
+//
+// Every page a browser opens is a view: its components live on the server,
+// each with its own refs. An event (@click, @input, bind=...) is sent to the
+// server, the handler runs there, the components are rendered again and only
+// those whose own output changed are sent back and patched into the page.
+// A view also holds a server-sent event stream, so changes that happen
+// elsewhere - another visitor, web.tick() - reach it without a request.
+//
+// The server is one thread and one poll() loop, so handlers never race each
+// other and state shared between views needs no lock.
+
+// --- configuration -------------------------------------------------------
+
+var routes = []
+var mounts = []
+var views = {}
+var tickEvery = 0
+var viewTimeout = 300
+var quiet = false
+var lastError = ""
+
+// The placeholder for the event's value in handler arguments: $value in a
+// template, filled in by the browser (input text, checkbox state, form data).
+var VALUE = {"$nv": "value"}
+
+// A page: a URL pattern and the component that renders it. Segments written
+// :name are captured and, like query parameters, handed to the component's
+// props of that name.
+method page(string pattern, NvhComponent component) {
+    routes.append([segments(pattern), component])
+}
+
+// Serves the files below `dir` under the URL prefix.
+method files(string prefix, string dir) {
+    var p = prefix
+    if (p.endsWith("/") == false) {
+        p = p + "/"
+    }
+    mounts.append([p, dir])
+}
+
+// Calls tick() on every component of every open view each `milliseconds`
+// and pushes what changed (0 turns it off).
+method tick(integer milliseconds) {
+    tickEvery = milliseconds
+}
+
+// Seconds a view is kept after its page lost the connection (default 300).
+method keepViews(integer seconds) {
+    viewTimeout = seconds
+}
+
+// No request log on stdout.
+method silent() {
+    quiet = true
+}
+
+// The port from $PORT, or the fallback.
+method port(integer fallback): integer {
+    var p = os.env("PORT")
+    if (p == "") {
+        return fallback
+    }
+    return parseInt(p)
+}
+
+// --- values in templates --------------------------------------------------
+
+// Text for HTML: & < > " ' become entities.
+method escape(object value): string {
+    var s = text(value)
+    if (s.contains("&")) {
+        s = s.replace("&", "&amp;")
+    }
+    if (s.contains("<")) {
+        s = s.replace("<", "&lt;")
+    }
+    if (s.contains(">")) {
+        s = s.replace(">", "&gt;")
+    }
+    if (s.contains("\"")) {
+        s = s.replace("\"", "&quot;")
+    }
+    if (s.contains("'")) {
+        s = s.replace("'", "&#39;")
+    }
+    return s
+}
+
+// The text form of a value; nothing (an unset field) is "".
+method text(object value): string {
+    var kind = typeOf(value)
+    if (kind == "string") {
+        return value
+    }
+    if (kind == "unknown") {
+        return ""
+    }
+    return "" + value
+}
+
+// name={value}: true writes the bare attribute, false and nothing drop it.
+method attr(string name, object value): string {
+    var kind = typeOf(value)
+    if (kind == "bool") {
+        if (value) {
+            return " " + name
+        }
+        return ""
+    }
+    if (kind == "unknown") {
+        return ""
+    }
+    return " " + name + "=\"" + escape(value) + "\""
+}
+
+// Conversions for props and bound refs (the browser sends text).
+method toInt(object value): integer {
+    var kind = typeOf(value)
+    if (kind == "integer") {
+        return value
+    }
+    if (kind == "bool") {
+        if (value) {
+            return 1
+        }
+        return 0
+    }
+    if (kind == "unknown") {
+        return 0
+    }
+    return math.toInt(value)
+}
+
+method toFloat(object value): float {
+    var kind = typeOf(value)
+    if (kind == "float") {
+        return value
+    }
+    if (kind == "unknown") {
+        return 0.0
+    }
+    return math.toFloat(value)
+}
+
+method toBool(object value): bool {
+    var kind = typeOf(value)
+    if (kind == "bool") {
+        return value
+    }
+    if (kind == "integer") {
+        return value != 0
+    }
+    var s = text(value)
+    return s == "true" || s == "on" || s == "1" || s == "yes"
+}
+
+method toStr(object value): string {
+    return text(value)
+}
+
+// A prop handed to a child component (<Child name={value}>).
+method prop(NvhComponent child, string name, object value) {
+    if (child.nvProp(name, value) == false) {
+        raise("<${child.nvName()}> has no prop '${name}'")
+    }
+}
+
+// --- errors ------------------------------------------------------------------
+
+// A step of a component run with runtime errors caught (see guarded()).
+define class NvhGuard {
+    private object target: get, set
+    private string action: get, set
+    private string key: get, set
+    private object value: get, set
+
+    method run(): object {
+        if (action == "call") {
+            return target.nvCall(key, value)
+        }
+        if (action == "set") {
+            return target.nvSet(key, value)
+        }
+        if (action == "prop") {
+            return target.nvProp(key, value)
+        }
+        if (action == "render") {
+            target.nvRenderNow()
+            return true
+        }
+        if (action == "tick") {
+            target.tick()
+            return true
+        }
+        return false
+    }
+}
+
+method tryRun(object task): object native "nv_try_run"
+method tryFailed(): bool native "nv_try_failed"
+method tryError(): string native "nv_try_error"
+method raise(string message) native "nv_try_raise"
+
+// Runs one step of a component. A runtime error in it - an index out of
+// range in a handler, say - does not end the server: the step answers
+// nothing, failed() is true and failure() has the message.
+method guarded(object target, string action, string key, object value): object {
+    lastError = ""
+    var result = tryRun(NvhGuard{target=target, action=action, key=key, value=value})
+    if (tryFailed()) {
+        lastError = tryError()
+        var what = action
+        if (key != "") {
+            what = what + " " + key
+        }
+        eprintln "web: error in ${target.nvName()} (${what}): ${lastError}"
+    }
+    return result
+}
+
+method failed(): bool {
+    return lastError != ""
+}
+
+method failure(): string {
+    return lastError
+}
+
+// Handler arguments with the $value placeholders replaced.
+method fill(array args, object value): array {
+    var out = []
+    for (a in args) {
+        if (typeOf(a) == "map" && a.has("$nv")) {
+            out.append(value)
+        } else {
+            out.append(a)
+        }
+    }
+    return out
+}
+
+// --- components ------------------------------------------------------------
+
+// The base of every .nvh component. The nv* methods are generated by the
+// compiler or used by the generated code; mount(), tick(), emit(),
+// navigate() and id() are meant for components themselves.
+define class NvhComponent {
+    private string nvid
+    private object nvview
+    private object nvowner
+    private map<string, object> nvkids
+    private map<string, bool> nvseen
+    private map<string, integer> nvcount
+    private map<string, object> nvlisteners
+    private array nvslot
+    private array nvparts
+    private bool nvready
+
+    // generated for each .nvh file
+    method nvName(): string {
+        return "NvhComponent"
+    }
+
+    method nvNew(): NvhComponent {
+        return NvhComponent()
+    }
+
+    method nvDefaults() {
+    }
+
+    method nvSetup() {
+    }
+
+    method nvProp(string name, object value): bool {
+        return false
+    }
+
+    method nvSet(string name, object value): bool {
+        return false
+    }
+
+    method nvCall(string name, array args): bool {
+        return false
+    }
+
+    method nvRender(array out) {
+    }
+
+    method nvStyle(): string {
+        return ""
+    }
+
+    // Runs once, after the props arrived and the refs were initialized,
+    // before the first render.
+    method mount() {
+    }
+
+    // Runs every web.tick() interval while the page is open.
+    method tick() {
+    }
+
+    // The id of the component in its page (the data-nv attribute).
+    method id(): string {
+        return nvid
+    }
+
+    // Raises an event the parent listens to with @name="handler(...)".
+    method emit(string event) {
+        emit(event, "")
+    }
+
+    method emit(string event, object value) {
+        if (nvlisteners.has(event) == false) {
+            return
+        }
+        var spec = nvlisteners[event]
+        var owner = spec[0]
+        if (owner.nvCall(spec[1], fill(spec[2], value)) == false) {
+            eprintln "web: ${owner.nvName()} has no handler ${spec[1]}/${spec[2].length()} for @${event}"
+        }
+    }
+
+    // Sends the browser to another URL once the current event is handled.
+    method navigate(string url) {
+        nvview.nvGo(url)
+    }
+
+    // --- used by the generated code ---
+    method nvInit(object view, string id, object owner) {
+        nvview = view
+        nvid = id
+        nvowner = owner
+        nvkids = {}
+        nvseen = {}
+        nvcount = {}
+        nvlisteners = {}
+        nvslot = []
+        nvparts = []
+        nvready = false
+    }
+
+    method nvView(): object {
+        return nvview
+    }
+
+    method nvParts(): array {
+        return nvparts
+    }
+
+    // The key of the next <Tag> without key={...}: its position among the
+    // tags of that name in this render.
+    method nvKey(string tag): string {
+        var n = 0
+        if (nvcount.has(tag)) {
+            n = nvcount[tag]
+        }
+        nvcount[tag] = n + 1
+        return tag + "#" + n
+    }
+
+    method nvKeyed(string tag, object key): string {
+        return tag + "@" + text(key)
+    }
+
+    // The child rendered under `key`: the one from the last render, which
+    // keeps its refs, or `fresh` when there was none.
+    method nvChild(string key, NvhComponent fresh): NvhComponent {
+        nvseen[key] = true
+        if (nvkids.has(key)) {
+            var old = nvkids[key]
+            if (old.nvName() == fresh.nvName()) {
+                old.nvClaim()
+                return old
+            }
+        }
+        fresh.nvInit(nvview, nvview.nvNextId(), this)
+        fresh.nvDefaults()
+        nvkids[key] = fresh
+        return fresh
+    }
+
+    method nvClaim() {
+        nvlisteners = {}
+        nvslot = []
+    }
+
+    method nvListen(string event, NvhComponent owner, string handler, array args) {
+        nvlisteners[event] = [owner, handler, args]
+    }
+
+    method nvSetSlot(array parts) {
+        nvslot = parts
+    }
+
+    method nvEmitSlot(array out) {
+        for (p in nvslot) {
+            out.append(p)
+        }
+    }
+
+    method nvRenderChild(NvhComponent child): NvhComponent {
+        child.nvRenderNow()
+        return child
+    }
+
+    method nvRenderNow() {
+        if (nvready == false) {
+            nvready = true
+            nvSetup()
+            mount()
+        }
+        nvseen = {}
+        nvcount = {}
+        var out = []
+        nvRender(out)
+        var gone = []
+        for (k in nvkids) {
+            if (nvseen.has(k) == false) {
+                gone.append(k)
+            }
+        }
+        for (k in gone) {
+            nvkids.remove(k)
+        }
+        nvparts = out
+    }
+
+    method nvHeadOut(): array {
+        return nvview.nvHead()
+    }
+
+    method nvMark(): string {
+        return " data-nv=\"" + nvid + "\""
+    }
+
+    method nvOn(string event, string handler, array args, string mods): string {
+        return " data-nv-" + event + "=\"" + escape(json.stringify([nvid, handler, args, mods])) + "\""
+    }
+
+    method nvBind(string name): string {
+        return " data-nv-bind=\"" + escape(json.stringify([nvid, name])) + "\""
+    }
+}
+
+// --- views -------------------------------------------------------------------
+
+// One open page: its component tree and what the browser was sent last.
+define class NvhView {
+    private string vid
+    private NvhComponent root
+    private integer next
+    private map<string, object> comps
+    private map<string, string> own
+    private map<string, bool> styled
+    private array head
+    private string go
+    private integer socket
+    private integer touched
+
+    method nvStart(string id, NvhComponent page) {
+        vid = id
+        root = page
+        next = 0
+        comps = {}
+        own = {}
+        styled = {}
+        head = []
+        go = ""
+        socket = -1
+        touched = os.time()
+        page.nvInit(this, nvNextId(), page)
+        page.nvDefaults()
+    }
+
+    method nvId(): string {
+        return vid
+    }
+
+    method nvRoot(): NvhComponent {
+        return root
+    }
+
+    method nvNextId(): string {
+        next = next + 1
+        return "c" + next
+    }
+
+    method nvHead(): array {
+        return head
+    }
+
+    method nvGo(string url) {
+        go = url
+    }
+
+    method nvSocket(): integer {
+        return socket
+    }
+
+    method nvSetSocket(integer s) {
+        socket = s
+        touched = os.time()
+    }
+
+    method nvTouch() {
+        touched = os.time()
+    }
+
+    method nvExpired(integer now): bool {
+        return socket < 0 && now - touched > viewTimeout
+    }
+
+    method nvComponent(string cid): object {
+        return comps[cid]
+    }
+
+    method nvHas(string cid): bool {
+        return comps.has(cid)
+    }
+
+    // Renders everything again and answers what changed since the last
+    // time: {"p": [[id, html]...], "s": [css...], "go": url}.
+    method nvRefresh(): map<string, object> {
+        head = []
+        guarded(root, "render", "", "")
+        if (failed()) {
+            return {"p": [], "s": [], "error": failure()}
+        }
+        var fresh = {}
+        var found = {}
+        collect(root, fresh, found)
+        var patches = []
+        changed(root, own, fresh, patches)
+        own = fresh
+        comps = found
+        var css = []
+        for (cid in found) {
+            var c = found[cid]
+            var name = c.nvName()
+            if (styled.has(name) == false) {
+                styled[name] = true
+                var style = c.nvStyle()
+                if (style != "") {
+                    css.append(style)
+                }
+            }
+        }
+        var update = {"p": patches, "s": css}
+        if (go != "") {
+            update["go"] = go
+            go = ""
+        }
+        return update
+    }
+
+    // The style sheets of every kind of component on the page.
+    method nvStyles(): array {
+        var seen = {}
+        var out = []
+        for (cid in comps) {
+            var c = comps[cid]
+            if (seen.has(c.nvName()) == false) {
+                seen[c.nvName()] = true
+                var style = c.nvStyle()
+                if (style != "") {
+                    out.append(style)
+                }
+            }
+        }
+        return out
+    }
+
+    method nvTickAll() {
+        for (cid in comps) {
+            guarded(comps[cid], "tick", "", "")
+        }
+    }
+
+    // A browser event: {"c": id, "h": handler, "a": [args]} or a binding
+    // {"c": id, "b": ref, "val": value}.
+    method nvEvent(map<string, object> message): map<string, object> {
+        touched = os.time()
+        var cid = text(message["c"])
+        var problem = ""
+        if (comps.has(cid)) {
+            var c = comps[cid]
+            if (message.has("b")) {
+                var name = text(message["b"])
+                if (guarded(c, "set", name, message["val"]) == false && failed() == false) {
+                    eprintln "web: ${c.nvName()} has no ref '${name}' to bind"
+                }
+            } else {
+                var handler = text(message["h"])
+                var args = []
+                if (message.has("a") && typeOf(message["a"]) == "array") {
+                    args = message["a"]
+                }
+                if (guarded(c, "call", handler, args) == false && failed() == false) {
+                    eprintln "web: ${c.nvName()} has no handler ${handler}/${args.length()}"
+                }
+            }
+            problem = failure()
+        }
+        var update = nvRefresh()
+        if (problem != "" && update.has("error") == false) {
+            update["error"] = problem
+        }
+        return update
+    }
+}
+
+// Every component under `c`: its own output (children as <#id> markers)
+// into `fresh`, the component itself into `found`.
+method collect(NvhComponent c, map<string, string> fresh, map<string, object> found): integer {
+    found[c.id()] = c
+    var parts = []
+    for (p in c.nvParts()) {
+        if (typeOf(p) == "string") {
+            parts.append(p)
+        } else {
+            parts.append("<#" + p.id() + ">")
+            collect(p, fresh, found)
+        }
+    }
+    fresh[c.id()] = parts.join("")
+    return 0
+}
+
+// The topmost components whose own output differs from the last render.
+method changed(NvhComponent c, map<string, string> old, map<string, string> fresh, array patches): integer {
+    var cid = c.id()
+    if (old.has(cid) == false || old[cid] != fresh[cid]) {
+        patches.append([cid, html(c)])
+        return 0
+    }
+    for (p in c.nvParts()) {
+        if (typeOf(p) != "string") {
+            changed(p, old, fresh, patches)
+        }
+    }
+    return 0
+}
+
+// The HTML of a component, its children included.
+method html(NvhComponent c): string {
+    var out = []
+    htmlInto(c.nvParts(), out)
+    return out.join("")
+}
+
+method htmlInto(array parts, array out): integer {
+    for (p in parts) {
+        if (typeOf(p) == "string") {
+            out.append(p)
+        } else {
+            htmlInto(p.nvParts(), out)
+        }
+    }
+    return 0
+}
+
+// --- rendering without a server (static pages, tests) -----------------------
+
+// A view for `component`, rendered once and not registered with the server.
+method view(NvhComponent component): NvhView {
+    var view = NvhView()
+    view.nvStart("test", component)
+    view.nvRefresh()
+    return view
+}
+
+// The HTML of the view's page component.
+method render(NvhView view): string {
+    return html(view.nvRoot())
+}
+
+// The HTML of a component rendered on its own.
+method renderHtml(NvhComponent component): string {
+    return render(view(component))
+}
+
+// Runs a handler as a click would and answers the update as JSON.
+method trigger(NvhView view, string cid, string handler, array args): string {
+    return json.stringify(view.nvEvent({"c": cid, "h": handler, "a": args}))
+}
+
+// Sets a bound ref as typing into its input would.
+method input(NvhView view, string cid, string name, object value): string {
+    return json.stringify(view.nvEvent({"c": cid, "b": name, "val": value}))
+}
+
+// A whole HTML document for the view (head, styles, body); `live` adds the
+// script that connects it to the server.
+method document(NvhView view, bool live): string {
+    var out = ["<!doctype html>\n<html>\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"]
+    htmlInto(view.nvHead(), out)
+    for (css in view.nvStyles()) {
+        out.append("<style>" + css + "</style>\n")
+    }
+    out.append("</head>\n<body>\n")
+    out.append(html(view.nvRoot()))
+    if (live) {
+        out.append("\n<script>window.nvView=\"" + view.nvId() + "\";" + client() + "</script>")
+    }
+    out.append("\n</body>\n</html>\n")
+    return out.join("")
+}
+
+// --- the server ----------------------------------------------------------------
+
+// One connection: what came in, what still has to go out, and whether it
+// is a view's event stream.
+define class NvhConn {
+    private integer fd: get, set
+    private string input: get, set
+    private string output: get, set
+    private bool live: get, set
+    private bool closing: get, set
+    private string vid: get, set
+}
+
+// Serves the pages, files and views until the program is stopped.
+method serve(integer port) {
+    var server = net.listen("", port)
+    if (server < 0) {
+        eprintln "web: cannot listen on port ${port}: ${net.error()}"
+        os.exit(1)
+    }
+    println "web: serving on http://localhost:${port}"
+    io.flush()
+    var conns = {}
+    var lastTick = nowMs()
+    var lastSweep = os.time()
+    while (true) {
+        var sockets = [server]
+        var pending = false
+        for (key in conns) {
+            var c = conns[key]
+            sockets.append(c.fd())
+            if (bytes.size(c.output()) > 0) {
+                pending = true
+            }
+        }
+        var wait = 1000
+        if (tickEvery > 0) {
+            wait = tickEvery - (nowMs() - lastTick)
+            if (wait < 0) {
+                wait = 0
+            }
+        }
+        if (pending && wait > 10) {
+            wait = 10
+        }
+        for (s in net.poll(sockets, wait)) {
+            if (s == server) {
+                acceptAll(server, conns)
+            } else {
+                var key = "" + s
+                if (conns.has(key)) {
+                    readFrom(conns[key], conns)
+                }
+            }
+        }
+        flush(conns)
+        if (tickEvery > 0 && nowMs() - lastTick >= tickEvery) {
+            lastTick = nowMs()
+            for (vid in views) {
+                if (views[vid].nvSocket() >= 0) {
+                    views[vid].nvTickAll()
+                }
+            }
+            pushAll("", conns)
+            flush(conns)
+        }
+        var now = os.time()
+        if (now - lastSweep >= 15) {
+            lastSweep = now
+            sweep(now, conns)
+        }
+    }
+}
+
+method nowMs(): integer {
+    return math.floor(os.clock() * 1000.0)
+}
+
+method acceptAll(integer server, map<string, object> conns): integer {
+    while (true) {
+        var s = net.accept(server)
+        if (s < 0) {
+            return 0
+        }
+        conns["" + s] = NvhConn{fd=s, input="", output="", live=false, closing=false, vid=""}
+    }
+    return 0
+}
+
+method readFrom(NvhConn conn, map<string, object> conns): integer {
+    var data = net.recv(conn.fd(), 65536)
+    if (bytes.size(data) == 0) {
+        if (net.again() == false) {
+            drop(conn, conns)
+        }
+        return 0
+    }
+    if (conn.live()) {
+        return 0
+    }
+    conn.input(bytes.join([conn.input(), data]))
+    var buffer = conn.input()
+    var end = buffer.indexOf("\r\n\r\n")
+    if (end < 0) {
+        if (bytes.size(buffer) > 65536) {
+            respond(conn, "GET", 431, "text/plain", "request header too large")
+        }
+        return 0
+    }
+    var lines = buffer.substring(0, end).split("\r\n")
+    var first = lines[0].split(" ")
+    if (first.length() < 2) {
+        respond(conn, "GET", 400, "text/plain", "bad request")
+        return 0
+    }
+    var headers = {}
+    var i = 1
+    while (i < lines.length()) {
+        var colon = lines[i].indexOf(":")
+        if (colon > 0) {
+            headers[lines[i].substring(0, colon).trim().toLower()] = lines[i].substring(colon + 1, lines[i].length()).trim()
+        }
+        i = i + 1
+    }
+    var length = 0
+    if (headers.has("content-length")) {
+        length = parseInt(headers["content-length"])
+    }
+    if (bytes.size(buffer) < end + 4 + length) {
+        return 0
+    }
+    var body = bytes.slice(buffer, end + 4, end + 4 + length)
+    conn.input("")
+    dispatch(conn, first[0], first[1], body, conns)
+    return 0
+}
+
+method dispatch(NvhConn conn, string verb, string target, string body, map<string, object> conns): integer {
+    var where = target
+    var query = ""
+    var q = target.indexOf("?")
+    if (q >= 0) {
+        where = target.substring(0, q)
+        query = target.substring(q + 1, target.length())
+    }
+    where = urlDecode(where)
+    var params = parseQuery(query)
+    if (where == "/_nvh/event") {
+        if (verb != "POST") {
+            respond(conn, verb, 405, "text/plain", "method not allowed")
+            return 0
+        }
+        respond(conn, verb, 200, "application/json", eventReply(body, conns))
+        return 0
+    }
+    if (where == "/_nvh/live") {
+        startLive(conn, params, conns)
+        return 0
+    }
+    if (verb != "GET" && verb != "HEAD") {
+        logRequest(verb, target, 405)
+        respond(conn, verb, 405, "text/plain", "method not allowed")
+        return 0
+    }
+    for (m in mounts) {
+        if (where.startsWith(m[0])) {
+            if (serveFile(conn, verb, where.substring(m[0].length(), where.length()), m[1])) {
+                logRequest(verb, target, 200)
+                return 0
+            }
+        }
+    }
+    var parts = segments(where)
+    for (route in routes) {
+        var captured = {}
+        if (matches(route[0], parts, captured)) {
+            for (key in captured) {
+                params[key] = captured[key]
+            }
+            var view = NvhView()
+            view.nvStart(newViewId(), route[1].nvNew())
+            var root = view.nvRoot()
+            for (key in params) {
+                guarded(root, "prop", key, params[key])
+            }
+            var first = view.nvRefresh()
+            if (first.has("error")) {
+                logRequest(verb, target, 500)
+                respond(conn, verb, 500, "text/html; charset=utf-8", "<!doctype html>\n<title>500</title>\n<h1>500 - the page failed</h1>\n<pre>" + escape(first["error"]) + "</pre>\n")
+                return 0
+            }
+            views[view.nvId()] = view
+            logRequest(verb, target, 200)
+            respond(conn, verb, 200, "text/html; charset=utf-8", document(view, true))
+            return 0
+        }
+    }
+    logRequest(verb, target, 404)
+    respond(conn, verb, 404, "text/html; charset=utf-8", "<!doctype html>\n<title>404</title>\n<h1>404 - not found</h1>\n<p>" + escape(where) + "</p>\n")
+    return 0
+}
+
+method logRequest(string verb, string target, integer status) {
+    if (quiet == false) {
+        println "web: ${verb} ${target} ${status}"
+        io.flush()
+    }
+}
+
+method respond(NvhConn conn, string verb, integer status, string kind, string body) {
+    var head = "HTTP/1.1 " + status + " " + reason(status) + "\r\nContent-Type: " + kind + "\r\nContent-Length: " + bytes.size(body) + "\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n"
+    if (verb == "HEAD") {
+        conn.output(bytes.join([conn.output(), head]))
+    } else {
+        conn.output(bytes.join([conn.output(), head, body]))
+    }
+    conn.closing(true)
+}
+
+method reason(integer status): string {
+    var reasons = {200: "OK", 204: "No Content", 400: "Bad Request", 500: "Internal Server Error", 403: "Forbidden", 404: "Not Found", 405: "Method Not Allowed", 431: "Request Header Fields Too Large"}
+    if (reasons.has(status)) {
+        return reasons[status]
+    }
+    return "Status"
+}
+
+// An event from a page: runs it, lets the other open views catch up and
+// answers the update for the page that sent it.
+method eventReply(string body, map<string, object> conns): string {
+    var message = json.parseOr(body, {})
+    if (typeOf(message) != "map" || message.has("v") == false || views.has(text(message["v"])) == false) {
+        return "{\"reload\":true}"
+    }
+    var vid = text(message["v"])
+    var update = views[vid].nvEvent(message)
+    pushAll(vid, conns)
+    return json.stringify(update)
+}
+
+// GET /_nvh/live?v=<view>: the view's server-sent event stream.
+method startLive(NvhConn conn, map<string, string> params, map<string, object> conns): integer {
+    if (params.has("v") == false || views.has(params["v"]) == false) {
+        respond(conn, "GET", 204, "text/plain", "")
+        return 0
+    }
+    var view = views[params["v"]]
+    var old = "" + view.nvSocket()
+    if (view.nvSocket() >= 0 && old != "" + conn.fd() && conns.has(old)) {
+        net.close(view.nvSocket())
+        conns.remove(old)
+    }
+    view.nvSetSocket(conn.fd())
+    conn.live(true)
+    conn.vid(view.nvId())
+    conn.output(conn.output() + "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-store\r\nConnection: keep-alive\r\n\r\n: live\n\n")
+    push(conn, view.nvRefresh())
+    return 0
+}
+
+method push(NvhConn conn, map<string, object> update): integer {
+    if (update["p"].length() > 0 || update["s"].length() > 0 || update.has("go") || update.has("error")) {
+        conn.output(conn.output() + "data: " + json.stringify(update) + "\n\n")
+    }
+    return 0
+}
+
+// Renders every connected view except `except` again and streams the
+// changes to it.
+method pushAll(string except, map<string, object> conns): integer {
+    for (vid in views) {
+        if (vid == except) {
+            continue
+        }
+        var view = views[vid]
+        var key = "" + view.nvSocket()
+        if (view.nvSocket() < 0) {
+            continue
+        }
+        if (conns.has(key) == false) {
+            view.nvSetSocket(-1)
+            continue
+        }
+        push(conns[key], view.nvRefresh())
+    }
+    return 0
+}
+
+method flush(map<string, object> conns): integer {
+    var finished = []
+    for (key in conns) {
+        var c = conns[key]
+        var size = bytes.size(c.output())
+        if (size > 0) {
+            var written = net.send(c.fd(), c.output())
+            if (net.failed()) {
+                finished.append(key)
+                continue
+            }
+            if (written >= size) {
+                c.output("")
+            } else {
+                c.output(bytes.slice(c.output(), written, size))
+            }
+        }
+        if (bytes.size(c.output()) == 0 && c.closing()) {
+            finished.append(key)
+        }
+    }
+    for (key in finished) {
+        drop(conns[key], conns)
+    }
+    return 0
+}
+
+method drop(NvhConn conn, map<string, object> conns): integer {
+    net.close(conn.fd())
+    conns.remove("" + conn.fd())
+    if (conn.live() && views.has(conn.vid())) {
+        var view = views[conn.vid()]
+        if (view.nvSocket() == conn.fd()) {
+            view.nvSetSocket(-1)
+        }
+    }
+    return 0
+}
+
+// Forgets views whose page is gone and keeps the event streams alive.
+method sweep(integer now, map<string, object> conns): integer {
+    var expired = []
+    for (vid in views) {
+        if (views[vid].nvExpired(now)) {
+            expired.append(vid)
+        }
+    }
+    for (vid in expired) {
+        views.remove(vid)
+    }
+    for (key in conns) {
+        var c = conns[key]
+        if (c.live()) {
+            c.output(c.output() + ": ping\n\n")
+            if (views.has(c.vid())) {
+                views[c.vid()].nvTouch()
+            }
+        }
+    }
+    return 0
+}
+
+method newViewId(): string {
+    return crypto.hex(crypto.random(12))
+}
+
+// --- files ---------------------------------------------------------------------
+
+method serveFile(NvhConn conn, string verb, string rel, string dir): bool {
+    if (rel.contains("..") || rel.contains(chr(92))) {
+        return false
+    }
+    var file = path.join(dir, rel)
+    if (os.isDir(file)) {
+        file = path.join(file, "index.html")
+    }
+    if (os.isFile(file) == false) {
+        return false
+    }
+    respond(conn, verb, 200, mimeType(file), os.readFile(file))
+    return true
+}
+
+method mimeType(string file): string {
+    var types = {".html": "text/html; charset=utf-8", ".htm": "text/html; charset=utf-8",
+        ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8",
+        ".mjs": "text/javascript; charset=utf-8", ".json": "application/json",
+        ".txt": "text/plain; charset=utf-8", ".svg": "image/svg+xml", ".png": "image/png",
+        ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp",
+        ".ico": "image/x-icon", ".woff": "font/woff", ".woff2": "font/woff2",
+        ".wasm": "application/wasm", ".pdf": "application/pdf", ".xml": "application/xml"}
+    var ext = path.extension(file).toLower()
+    if (types.has(ext)) {
+        return types[ext]
+    }
+    return "application/octet-stream"
+}
+
+// --- URLs ----------------------------------------------------------------------
+
+method segments(string url): array<string> {
+    var out = []
+    for (s in url.split("/")) {
+        if (s != "") {
+            out.append(s)
+        }
+    }
+    return out
+}
+
+method matches(array<string> pattern, array<string> parts, map<string, string> captured): bool {
+    if (pattern.length() != parts.length()) {
+        return false
+    }
+    var i = 0
+    while (i < pattern.length()) {
+        if (pattern[i].startsWith(":")) {
+            captured[pattern[i].substring(1, pattern[i].length())] = parts[i]
+        } else {
+            if (pattern[i] != parts[i]) {
+                return false
+            }
+        }
+        i = i + 1
+    }
+    return true
+}
+
+method parseQuery(string query): map<string, string> {
+    var out = {}
+    for (pair in query.split("&")) {
+        if (pair == "") {
+            continue
+        }
+        var eq = pair.indexOf("=")
+        if (eq < 0) {
+            out[urlDecode(pair)] = ""
+        } else {
+            out[urlDecode(pair.substring(0, eq))] = urlDecode(pair.substring(eq + 1, pair.length()))
+        }
+    }
+    return out
+}
+
+// %XX escapes and + as a space.
+method urlDecode(string s): string {
+    if (s.contains("%") == false && s.contains("+") == false) {
+        return s
+    }
+    var out = []
+    var i = 0
+    var n = s.length()
+    while (i < n) {
+        var c = s.charAt(i)
+        if (c == "+") {
+            out.append(" ")
+            i = i + 1
+            continue
+        }
+        if (c == "%" && i + 2 < n) {
+            var decoded = bytes.fromHex(s.substring(i + 1, i + 3))
+            if (bytes.size(decoded) == 1) {
+                out.append(decoded)
+                i = i + 3
+                continue
+            }
+        }
+        out.append(c)
+        i = i + 1
+    }
+    return bytes.join(out)
+}
+
+// --- the browser side ------------------------------------------------------------
+
+// The script every live page runs: sends events, applies patches (a small
+// DOM morph that keeps focus and what is being typed) and listens to the
+// view's event stream. When the server lost the view - it restarted - the
+// page reloads itself.
+method client(): string {
+    return "(function(){
+var V=window.nvView,queue=[],busy=false,pend={};
+var keys={enter:'Enter',escape:'Escape',esc:'Escape',tab:'Tab',space:' ',up:'ArrowUp',down:'ArrowDown',left:'ArrowLeft',right:'ArrowRight',delete:'Delete',backspace:'Backspace'};
+function bkey(el){var b=JSON.parse(el.getAttribute('data-nv-bind'));return b[0]+' '+b[1];}
+function send(m){m.v=V;if(m.b){var k=m.c+' '+m.b;pend[k]=(pend[k]||0)+1;}queue.push(m);pump();}
+function pump(){
+if(busy||!queue.length)return;
+busy=true;
+var m=queue.shift();
+fetch('/_nvh/event',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(m)})
+.then(function(r){return r.json();}).then(apply,function(){})
+.then(function(){if(m.b)pend[m.c+' '+m.b]--;busy=false;pump();});
+}
+function apply(d){
+if(d.reload){location.reload();return;}
+var bar=document.getElementById('nv-error');
+if(d.error){console.error('novus: '+d.error);if(!bar){bar=document.createElement('div');bar.id='nv-error';bar.setAttribute('style','position:fixed;left:1rem;right:1rem;bottom:1rem;padding:.75rem 1rem;background:#b3261e;color:#fff;font:14px/1.4 ui-monospace,monospace;border-radius:.5rem;z-index:2147483647;white-space:pre-wrap');document.body.appendChild(bar);}bar.textContent='Server error: '+d.error;}
+else if(bar&&(d.p||[]).length){bar.remove();}
+(d.s||[]).forEach(function(css){var st=document.createElement('style');st.textContent=css;document.head.appendChild(st);});
+(d.p||[]).forEach(function(p){
+var el=document.querySelector('[data-nv='+JSON.stringify(p[0])+']');
+if(!el)return;
+var t=document.createElement('template');t.innerHTML=p[1];
+var n=t.content.firstElementChild;if(n)morph(el,n);
+});
+sync(document);
+if(d.go)location.href=d.go;
+}
+function morph(a,b){
+if(a.nodeType!==b.nodeType||a.nodeName!==b.nodeName){a.parentNode.replaceChild(document.importNode(b,true),a);return;}
+if(a.nodeType!==1){if(a.nodeValue!==b.nodeValue)a.nodeValue=b.nodeValue;return;}
+var i,n;
+for(i=a.attributes.length-1;i>=0;i--){n=a.attributes[i].name;if(!b.hasAttribute(n))a.removeAttribute(n);}
+for(i=0;i<b.attributes.length;i++){n=b.attributes[i];if(a.getAttribute(n.name)!==n.value)a.setAttribute(n.name,n.value);}
+if(a.tagName==='INPUT'&&settle(a)){if(a.type==='checkbox'||a.type==='radio')a.checked=b.hasAttribute('checked');else if(a.value!==(b.getAttribute('value')||''))a.value=b.getAttribute('value')||'';}
+var x=a.firstChild,y=b.firstChild,nx,ny;
+while(y){ny=y.nextSibling;if(!x){a.appendChild(document.importNode(y,true));}else{nx=x.nextSibling;morph(x,y);x=nx;}y=ny;}
+while(x){nx=x.nextSibling;a.removeChild(x);x=nx;}
+}
+function settle(el){
+if(el!==document.activeElement)return true;
+return el.hasAttribute('data-nv-bind')&&!pend[bkey(el)];
+}
+function sync(root){
+root.querySelectorAll('[data-nv-value]').forEach(function(el){var v=el.getAttribute('data-nv-value');if(settle(el)&&el.value!==v)el.value=v;});
+}
+function valueOf(el,type){
+if(type==='submit'){var o={};new FormData(el).forEach(function(v,k){o[k]=v;});return o;}
+if(el.type==='checkbox'||el.type==='radio')return el.checked;
+return el.value===undefined?null:el.value;
+}
+['click','dblclick','input','change','submit','keydown','keyup','focusin','focusout'].forEach(function(type){
+document.addEventListener(type,function(e){
+var el=e.target;
+if(!el||!el.closest)return;
+if((type==='input'||type==='change')&&el.hasAttribute('data-nv-bind')){
+var box=el.type==='checkbox',whole=box||el.type==='radio'||el.tagName==='SELECT';
+if(type===(whole?'change':'input')){var b=JSON.parse(el.getAttribute('data-nv-bind'));send({c:b[0],b:b[1],val:box?el.checked:el.value});}
+}
+var name=type==='focusin'?'focus':type==='focusout'?'blur':type;
+var t=el.closest('[data-nv-'+name+']');
+if(!t)return;
+var spec=JSON.parse(t.getAttribute('data-nv-'+name)),mods=(spec[3]||'').split(' ');
+var want=mods.filter(function(m){return keys[m];}).map(function(m){return keys[m];});
+if(want.length&&want.indexOf(e.key)<0)return;
+if(name==='submit'||mods.indexOf('prevent')>=0)e.preventDefault();
+if(mods.indexOf('stop')>=0)e.stopPropagation();
+var val=valueOf(t,name);
+send({c:spec[0],h:spec[1],a:(spec[2]||[]).map(function(a){return a&&a['$nv']==='value'?val:a;})});
+});
+});
+sync(document);
+if(window.EventSource){
+var es=new EventSource('/_nvh/live?v='+encodeURIComponent(V));
+es.onmessage=function(m){apply(JSON.parse(m.data));};
+es.onerror=function(){if(es.readyState===2)setTimeout(function(){location.reload();},500);};
+}
+})();"
+}

@@ -1,0 +1,114 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+
+    <title>Hello world</title>
+</head>
+<body>
+<article data-nv="c1">
+    <div class="card" data-nv="c2">
+    <h2>Card for world</h2>
+    
+        <p>slotted, last hit: -</p>
+    
+</div>
+    <ul><li data-nv-click="[&quot;c3&quot;,&quot;hit&quot;,[],&quot;&quot;]" data-nv="c3">a (0)</li><li data-nv-click="[&quot;c4&quot;,&quot;hit&quot;,[],&quot;&quot;]" data-nv="c4">b (0)</li><li data-nv-click="[&quot;c5&quot;,&quot;hit&quot;,[],&quot;&quot;]" data-nv="c5">c (0)</li></ul><p>ids: 6 &amp; <em>raw</em> {literal}</p>
+    <input type="checkbox" data-nv-bind="[&quot;c1&quot;,&quot;agree&quot;]"> <select data-nv-value="red" data-nv-bind="[&quot;c1&quot;,&quot;color&quot;]"><option>red</option><option>blue</option></select>
+    <textarea data-nv-value="" data-nv-bind="[&quot;c1&quot;,&quot;notes&quot;]"></textarea>
+    <input data-nv-input="[&quot;c1&quot;,&quot;shout&quot;,[{&quot;$nv&quot;:&quot;value&quot;}],&quot;&quot;]" data-nv-keydown="[&quot;c1&quot;,&quot;nvInline1&quot;,[{&quot;$nv&quot;:&quot;value&quot;}],&quot;enter prevent&quot;]">
+    <dl><nv-c data-nv="c6" style="display:contents"><dt data-nv-click="[&quot;c6&quot;,&quot;nvInline1&quot;,[],&quot;&quot;]">toggle</dt><dd class="">hidden</dd></nv-c></dl>
+    <p data-nv-click="[&quot;c7&quot;,&quot;nvInline1&quot;,[],&quot;&quot;]" data-nv="c7">only <button data-nv-click="[&quot;c7&quot;,&quot;explode&quot;,[],&quot;&quot;]">boom</button></p>
+    <button data-nv-click="[&quot;c1&quot;,&quot;dropFirst&quot;,[],&quot;&quot;]">drop</button>
+    <a href="/x" data-nv-click="[&quot;c1&quot;,&quot;navigate&quot;,[&quot;/elsewhere&quot;],&quot;prevent&quot;]">go</a>
+</article>
+</body>
+</html>
+
+--- click the second item: it and the card showing the last hit change
+patched: c2, c4
+<div class="card" data-nv="c2">
+    <h2>Card for world</h2>
+    
+        <p>slotted, last hit: b</p>
+    
+</div>
+--- again: now only the item changes
+patched: c4
+<li data-nv-click="[&quot;c4&quot;,&quot;hit&quot;,[],&quot;&quot;]" data-nv="c4">b (2)</li>
+--- drop the first entry: keyed items keep their state
+patched: c1
+<article data-nv="c1">
+    <div class="card" data-nv="c2">
+    <h2>Card for world</h2>
+    
+        <p>slotted, last hit: b</p>
+    
+</div>
+    <ul><li data-nv-click="[&quot;c4&quot;,&quot;hit&quot;,[],&quot;&quot;]" data-nv="c4">b (2)</li><li data-nv-click="[&quot;c5&quot;,&quot;hit&quot;,[],&quot;&quot;]" data-nv="c5">c (0)</li></ul><p>ids: 5 &amp; <em>raw</em> {literal}</p>
+    <input type="checkbox" data-nv-bind="[&quot;c1&quot;,&quot;agree&quot;]"> <select data-nv-value="red" data-nv-bind="[&quot;c1&quot;,&quot;color&quot;]"><option>red</option><option>blue</option></select>
+    <textarea data-nv-value="" data-nv-bind="[&quot;c1&quot;,&quot;notes&quot;]"></textarea>
+    <input data-nv-input="[&quot;c1&quot;,&quot;shout&quot;,[{&quot;$nv&quot;:&quot;value&quot;}],&quot;&quot;]" data-nv-keydown="[&quot;c1&quot;,&quot;nvInline1&quot;,[{&quot;$nv&quot;:&quot;value&quot;}],&quot;enter prevent&quot;]">
+    <dl><nv-c data-nv="c6" style="display:contents"><dt data-nv-click="[&quot;c6&quot;,&quot;nvInline1&quot;,[],&quot;&quot;]">toggle</dt><dd class="">hidden</dd></nv-c></dl>
+    <p data-nv-click="[&quot;c7&quot;,&quot;nvInline1&quot;,[],&quot;&quot;]" data-nv="c7">only <button data-nv-click="[&quot;c7&quot;,&quot;explode&quot;,[],&quot;&quot;]">boom</button></p>
+    <button data-nv-click="[&quot;c1&quot;,&quot;dropFirst&quot;,[],&quot;&quot;]">drop</button>
+    <a href="/x" data-nv-click="[&quot;c1&quot;,&quot;navigate&quot;,[&quot;/elsewhere&quot;],&quot;prevent&quot;]">go</a>
+</article>
+--- bindings
+patched: c1
+<article data-nv="c1">
+    <div class="card" data-nv="c2">
+    <h2>Card for world</h2>
+    
+        <p>slotted, last hit: b</p>
+    
+</div>
+    <ul><li data-nv-click="[&quot;c4&quot;,&quot;hit&quot;,[],&quot;&quot;]" data-nv="c4">b (2)</li><li data-nv-click="[&quot;c5&quot;,&quot;hit&quot;,[],&quot;&quot;]" data-nv="c5">c (0)</li></ul><p>ids: 5 &amp; <em>raw</em> {literal}</p>
+    <input type="checkbox" checked data-nv-bind="[&quot;c1&quot;,&quot;agree&quot;]"> <select data-nv-value="red" data-nv-bind="[&quot;c1&quot;,&quot;color&quot;]"><option>red</option><option>blue</option></select>
+    <textarea data-nv-value="" data-nv-bind="[&quot;c1&quot;,&quot;notes&quot;]"></textarea>
+    <input data-nv-input="[&quot;c1&quot;,&quot;shout&quot;,[{&quot;$nv&quot;:&quot;value&quot;}],&quot;&quot;]" data-nv-keydown="[&quot;c1&quot;,&quot;nvInline1&quot;,[{&quot;$nv&quot;:&quot;value&quot;}],&quot;enter prevent&quot;]">
+    <dl><nv-c data-nv="c6" style="display:contents"><dt data-nv-click="[&quot;c6&quot;,&quot;nvInline1&quot;,[],&quot;&quot;]">toggle</dt><dd class="">hidden</dd></nv-c></dl>
+    <p data-nv-click="[&quot;c7&quot;,&quot;nvInline1&quot;,[],&quot;&quot;]" data-nv="c7">only <button data-nv-click="[&quot;c7&quot;,&quot;explode&quot;,[],&quot;&quot;]">boom</button></p>
+    <button data-nv-click="[&quot;c1&quot;,&quot;dropFirst&quot;,[],&quot;&quot;]">drop</button>
+    <a href="/x" data-nv-click="[&quot;c1&quot;,&quot;navigate&quot;,[&quot;/elsewhere&quot;],&quot;prevent&quot;]">go</a>
+</article>
+patched: c1
+<article data-nv="c1">
+    <div class="card" data-nv="c2">
+    <h2>Card for world</h2>
+    
+        <p>slotted, last hit: b</p>
+    
+</div>
+    <ul><li data-nv-click="[&quot;c4&quot;,&quot;hit&quot;,[],&quot;&quot;]" data-nv="c4">b (2)</li><li data-nv-click="[&quot;c5&quot;,&quot;hit&quot;,[],&quot;&quot;]" data-nv="c5">c (0)</li></ul><p>ids: 5 &amp; <em>raw</em> {literal}</p>
+    <input type="checkbox" checked data-nv-bind="[&quot;c1&quot;,&quot;agree&quot;]"> <select data-nv-value="blue" data-nv-bind="[&quot;c1&quot;,&quot;color&quot;]"><option>red</option><option>blue</option></select>
+    <textarea data-nv-value="" data-nv-bind="[&quot;c1&quot;,&quot;notes&quot;]"></textarea>
+    <input data-nv-input="[&quot;c1&quot;,&quot;shout&quot;,[{&quot;$nv&quot;:&quot;value&quot;}],&quot;&quot;]" data-nv-keydown="[&quot;c1&quot;,&quot;nvInline1&quot;,[{&quot;$nv&quot;:&quot;value&quot;}],&quot;enter prevent&quot;]">
+    <dl><nv-c data-nv="c6" style="display:contents"><dt data-nv-click="[&quot;c6&quot;,&quot;nvInline1&quot;,[],&quot;&quot;]">toggle</dt><dd class="">hidden</dd></nv-c></dl>
+    <p data-nv-click="[&quot;c7&quot;,&quot;nvInline1&quot;,[],&quot;&quot;]" data-nv="c7">only <button data-nv-click="[&quot;c7&quot;,&quot;explode&quot;,[],&quot;&quot;]">boom</button></p>
+    <button data-nv-click="[&quot;c1&quot;,&quot;dropFirst&quot;,[],&quot;&quot;]">drop</button>
+    <a href="/x" data-nv-click="[&quot;c1&quot;,&quot;navigate&quot;,[&quot;/elsewhere&quot;],&quot;prevent&quot;]">go</a>
+</article>
+--- inline handler with $value
+patched: c2
+<div class="card" data-nv="c2">
+    <h2>Card for world</h2>
+    
+        <p>slotted, last hit: hey!</p>
+    
+</div>
+--- a component with two roots, inline toggle
+patched: c6
+<nv-c data-nv="c6" style="display:contents"><dt data-nv-click="[&quot;c6&quot;,&quot;nvInline1&quot;,[],&quot;&quot;]">toggle</dt><dd class=" open">shown</dd></nv-c>
+--- a handler that fails: the view survives, the error is reported
+web: error in Fragile (call explode): array index 3 out of bounds (size 0)
+patched: 
+error: array index 3 out of bounds (size 0)
+--- navigate
+patched: 
+go: /elsewhere
+--- a render that fails
+web: error in Page (render): array index 1 out of bounds (size 1)
+patched: 
+error: array index 1 out of bounds (size 1)

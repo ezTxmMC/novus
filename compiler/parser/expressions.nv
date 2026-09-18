@@ -1,11 +1,7 @@
 package parser
 
-import "../ast/sexp.nv"
-import "../ast/text.nv"
-import "../lexer/lexer.nv"
-import "../lexer/tokens.nv"
-import "errors.nv"
-import "tokens.nv"
+import ast
+import lexer
 
 // Expressions: precedence climbing, literals, calls, interpolation.
 //

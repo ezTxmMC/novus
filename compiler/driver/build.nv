@@ -3,11 +3,11 @@ package driver
 import os
 import path
 
-import "../codegen/program.nv"
-import "../loader/loader.nv"
-import "../project/deps.nv"
-import "../project/manifest.nv"
-import "../runtime/runtime.nv"
+import codegen
+import loader
+import nvh
+import project
+import runtime
 
 // Compiling programs: C generation, invoking the C compiler, run.
 
@@ -38,16 +38,21 @@ method currentProject(): Manifest {
 
 // Source file for a command: the argument, or the project's main file.
 method sourceFor(array<string> arguments): string {
-    if (arguments.length() >= 2 && arguments[1].endsWith(".nv")) {
+    if (arguments.length() >= 2 && isSourceFile(arguments[1])) {
         return arguments[1]
     }
     var m = currentProject()
     return path.join(m.dir(), m.main())
 }
 
+// A Novus source (.nv) or a component page (.nvh, served on its own).
+method isSourceFile(string file): bool {
+    return file.endsWith(".nv") || file.endsWith(".nvh")
+}
+
 // Build options start after the command and the optional source file.
 method optionStart(array<string> arguments): integer {
-    if (arguments.length() >= 2 && arguments[1].endsWith(".nv")) {
+    if (arguments.length() >= 2 && isSourceFile(arguments[1])) {
         return 2
     }
     return 1
@@ -105,6 +110,21 @@ method depsCommand(array<string> arguments): integer {
             println "${key} -> ${modules[key]}"
         }
     }
+    return 0
+}
+
+// novusc nvh <file.nvh>: prints the Novus source a component compiles to.
+method nvhCommand(array<string> arguments): integer {
+    if (arguments.length() < 2 || arguments[1].endsWith(".nvh") == false) {
+        eprintln "usage: novusc nvh <file.nvh>"
+        return 1
+    }
+    var file = arguments[1]
+    if (fileExists(file) == false) {
+        eprintln "novusc: cannot open '${file}'"
+        return 1
+    }
+    print transpileNvh(readFile(file), file, path.dirname(file), projectRoot(file))
     return 0
 }
 

@@ -1,0 +1,17 @@
+<?nv
+// /hello/:name - the route parameter arrives as a prop, like ?query=... does
+prop string name = "stranger"
+prop integer times = 1
+?>
+<!doctype html>
+<html>
+<body>
+<Layout title="Hello">
+    <?nv var i = 0 ?>
+    <?nv while (i < times) { ?>
+        <p>Hello, <strong><?= name ?></strong>!</p>
+    <?nv i = i + 1 } ?>
+    <p class="muted">Try <a href="/hello/Grace?times=3">/hello/Grace?times=3</a>.</p>
+</Layout>
+</body>
+</html>

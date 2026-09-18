@@ -2,9 +2,8 @@ package project
 
 import path
 
-import "../lexer/lexer.nv"
-import "../lexer/tokens.nv"
-import "../parser/errors.nv"
+import lexer
+import parser
 
 // project.nv - the project manifest. Explicit line based syntax, values
 // are string literals, comments as in Novus:

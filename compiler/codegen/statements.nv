@@ -1,13 +1,7 @@
 package codegen
 
-import "../ast/sexp.nv"
-import "../ast/text.nv"
-import "../parser/errors.nv"
-import "../parser/types.nv"
-import "common.nv"
-import "expressions.nv"
-import "inference.nv"
-import "index.nv"
+import ast
+import parser
 
 // Statements and blocks -> C.
 //

@@ -1,0 +1,10 @@
+<?nv
+prop object todo
+ref bool editing = false
+?>
+<li class:done={todo.done()}>
+    <input type="checkbox" checked={todo.done()} @change={emit("toggle")}>
+    <span @dblclick={editing = !editing}>{todo.text()}</span>
+    {#if editing}<small>(double-clicked)</small>{/if}
+    <button class="remove" @click={emit("remove")}>×</button>
+</li>

@@ -20,6 +20,10 @@ writeFileSync(
   join(site, 'src', 'lib', 'novus.tmLanguage.json'),
   readFileSync(join(root, 'vscode-novus', 'syntaxes', 'novus.tmLanguage.json')),
 );
+writeFileSync(
+  join(site, 'src', 'lib', 'nvh.tmLanguage.json'),
+  readFileSync(join(root, 'vscode-novus', 'syntaxes', 'nvh.tmLanguage.json')),
+);
 
 // --- examples ---------------------------------------------------------------
 type Example = {
@@ -98,8 +102,11 @@ for (const file of readdirSync(join(root, 'std')).sort()) {
   }
   const functions: StdFunction[] = [];
   let pending: string[] = [];
+  let inClass = false;                                      // methods of a define class are not module functions
   for (const raw of lines) {
     const line = raw.trim();
+    if (raw.startsWith('define ')) { inClass = true; pending = []; continue; }
+    if (inClass) { if (raw === '}') inClass = false; continue; }
     if (line === '') { pending = []; continue; }            // a blank line ends a doc comment
     if (line.startsWith('//')) { pending.push(line.replace(/^\/+/, '').trim()); continue; }
     if (!line.startsWith('method ')) { pending = []; continue; }

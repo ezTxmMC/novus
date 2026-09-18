@@ -1,0 +1,55 @@
+<?nv
+ref string draft = ""
+
+method add() {
+    if (draft.trim() != "") {
+        todos.append(Todo{text=draft.trim(), done=false, id=nextTodo})
+        nextTodo = nextTodo + 1
+        draft = ""
+    }
+}
+
+method toggle(integer id) {
+    for (t in todos) {
+        if (t.id() == id) {
+            t.done(t.done() == false)
+        }
+    }
+}
+
+method remove(integer id) {
+    var kept = []
+    for (t in todos) {
+        if (t.id() != id) {
+            kept.append(t)
+        }
+    }
+    todos = kept
+}
+
+method open(): integer {
+    var n = 0
+    for (t in todos) {
+        if (t.done() == false) {
+            n = n + 1
+        }
+    }
+    return n
+}
+?>
+<Layout title="Todos">
+    <form @submit="add">
+        <input bind="draft" placeholder="What needs to be done?" autofocus>
+        <button disabled={draft.trim() == ""}>Add</button>
+    </form>
+    <ul class="todos">
+        {#for t in todos}
+            <TodoItem todo={t} key={t.id()} @toggle="toggle(t.id())" @remove="remove(t.id())" />
+        {/for}
+    </ul>
+    {#if todos.length() == 0}
+        <p class="muted">Nothing to do.</p>
+    {:else}
+        <p class="muted">{open()} of {todos.length()} open - shared with everyone who has this page open.</p>
+    {/if}
+</Layout>

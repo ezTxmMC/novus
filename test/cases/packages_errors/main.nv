@@ -1,0 +1,8 @@
+package main
+
+import a
+import b
+
+method main {
+    println hello()
+}

@@ -259,14 +259,12 @@ export class Parser {
   private parseImport(): ast.ImportDecl {
     const kw = this.advance();
     if (this.cur.kind === TokenKind.String && !this.cur.newlineBefore) {
-      // File import: import "path/file.nv" - the imported file's symbols are
-      // resolved via its package (usually named after the file).
+      // Dependency module: import "example.com/geo[/package[/file]]".
       const tok = this.advance();
-      const file = tok.value.split(/[\\/]/).pop() ?? tok.value;
-      const name = file.replace(/\.nv$/, '');
+      const last = tok.value.split(/[\\/]/).pop() ?? tok.value;
       return {
         kind: 'Import',
-        name,
+        name: last.replace(/\.nvh?$/, ''),
         isFile: true,
         path: tok.value,
         nameSpan: { start: tok.start, end: tok.end },
@@ -274,8 +272,30 @@ export class Parser {
         end: this.prevEnd(),
       };
     }
-    const { name, nameSpan } = this.parseDottedName('module name');
-    return { kind: 'Import', name, nameSpan, start: kw.start, end: this.prevEnd() };
+    // import @geo/circle: one file of a package (relative to the project root)
+    const single = this.isPunct('@') && !this.cur.newlineBefore;
+    if (single) this.advance();
+    const { name: path, nameSpan } = this.parseSlashName(single ? 'file after @' : 'package or module name');
+    const segments = path.split('/');
+    if (single) {
+      return { kind: 'Import', name: segments.length > 1 ? segments[segments.length - 2] : '', isFile: true, path: '@' + path, nameSpan, start: kw.start, end: this.prevEnd() };
+    }
+    // import geo / import geo/shapes: a package (a folder), or a std module
+    return { kind: 'Import', name: segments[segments.length - 1], path: segments.length > 1 ? path : undefined, nameSpan, start: kw.start, end: this.prevEnd() };
+  }
+
+  /** a/b/c - the path of a package import. */
+  private parseSlashName(what: string): { name: string; nameSpan: Span } {
+    const first = this.parseDottedName(what);
+    let name = first.name;
+    let end = first.nameSpan.end;
+    while (this.isPunct('/') && this.peek().kind === TokenKind.Identifier && !this.peek().newlineBefore) {
+      this.advance();
+      const part = this.advance();
+      name += '/' + part.value;
+      end = part.end;
+    }
+    return { name, nameSpan: { start: first.nameSpan.start, end } };
   }
 
   private parseDottedName(what: string): { name: string; nameSpan: Span } {

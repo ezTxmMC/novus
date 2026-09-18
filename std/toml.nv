@@ -1,0 +1,707 @@
+package toml
+
+import json
+
+// TOML configuration files (TOML 1.0): parse, stringify, load and save.
+//
+//     var config = toml.load("app.toml")
+//     println config["server"]["port"]
+//
+// Tables become maps, arrays arrays, and values integers, floats, bools and
+// strings. Dates and times are kept as their text (2026-09-18T12:00:00Z).
+// Invalid input is a runtime error naming the line; parseOr() and isValid()
+// check without one.
+
+method parse(string text): map<string, object> {
+    var p = TomlParser{text=text, at=0, line=1}
+    return p.document()
+}
+
+// The parsed text, or `fallback` when it is not valid TOML.
+method parseOr(string text, object fallback): object {
+    var result = tryRun(TomlTask{text=text})
+    if (tryFailed()) {
+        return fallback
+    }
+    return result
+}
+
+method isValid(string text): bool {
+    tryRun(TomlTask{text=text})
+    return tryFailed() == false
+}
+
+// The message of why `text` is not valid TOML ("" when it is).
+method errorOf(string text): string {
+    tryRun(TomlTask{text=text})
+    return tryError()
+}
+
+method load(string file): map<string, object> {
+    if (fileExists(file) == false) {
+        raise("toml: cannot open '" + file + "'")
+    }
+    return parse(readFile(file))
+}
+
+method save(map<string, object> value, string file) {
+    writeFile(file, stringify(value))
+}
+
+// A map as a TOML document: plain keys first, then [tables] and
+// [[arrays of tables]].
+method stringify(map<string, object> value): string {
+    var out = []
+    writeTable(value, "", out)
+    var text = out.join("")
+    if (text.startsWith("\n")) {
+        return text.substring(1, text.length())
+    }
+    return text
+}
+
+method tryRun(object task): object native "nv_try_run"
+method tryFailed(): bool native "nv_try_failed"
+method tryError(): string native "nv_try_error"
+method raise(string message) native "nv_try_raise"
+
+// --- writing ---------------------------------------------------------------
+
+method writeTable(map<string, object> table, string prefix, array<string> out): integer {
+    var tables = []
+    for (key in table) {
+        var v = table[key]
+        if (isTable(v) || isTableArray(v)) {
+            tables.append(key)
+        } else {
+            out.append(quoteKey(key) + " = " + inline(v) + "\n")
+        }
+    }
+    for (key in tables) {
+        var path = quoteKey(key)
+        if (prefix != "") {
+            path = prefix + "." + path
+        }
+        var v = table[key]
+        if (isTable(v)) {
+            out.append("\n[" + path + "]\n")
+            writeTable(v, path, out)
+        } else {
+            for (item in v) {
+                out.append("\n[[" + path + "]]\n")
+                writeTable(item, path, out)
+            }
+        }
+    }
+    return 0
+}
+
+method isTable(object v): bool {
+    return typeOf(v) == "map"
+}
+
+// A non-empty array of maps is written as [[name]] sections.
+method isTableArray(object v): bool {
+    if (typeOf(v) != "array" || v.length() == 0) {
+        return false
+    }
+    for (item in v) {
+        if (typeOf(item) != "map") {
+            return false
+        }
+    }
+    return true
+}
+
+method inline(object v): string {
+    var kind = typeOf(v)
+    if (kind == "string") {
+        return quote(v)
+    }
+    if (kind == "integer" || kind == "bool") {
+        return "" + v
+    }
+    if (kind == "float") {
+        return json.stringify(v)
+    }
+    if (kind == "array") {
+        var parts = []
+        for (item in v) {
+            parts.append(inline(item))
+        }
+        return "[" + parts.join(", ") + "]"
+    }
+    if (kind == "map") {
+        var fields = []
+        for (key in v) {
+            fields.append(quoteKey(key) + " = " + inline(v[key]))
+        }
+        if (fields.length() == 0) {
+            return "{}"
+        }
+        return "{ " + fields.join(", ") + " }"
+    }
+    // TOML has no null: nothing is written as an empty string
+    return "\"\""
+}
+
+method quote(string s): string {
+    return json.stringify(s)
+}
+
+method quoteKey(string key): string {
+    if (key == "") {
+        return "\"\""
+    }
+    var i = 0
+    while (i < key.length()) {
+        if (bareChar(key.charAt(i)) == false) {
+            return quote(key)
+        }
+        i = i + 1
+    }
+    return key
+}
+
+method bareChar(string c): bool {
+    return (c >= "a" && c <= "z") || (c >= "A" && c <= "Z") || (c >= "0" && c <= "9") || c == "_" || c == "-"
+}
+
+// --- reading ---------------------------------------------------------------
+
+define class TomlTask {
+    private string text: get, set
+
+    method run(): object {
+        return toml.parse(text)
+    }
+}
+
+// A cursor over the text; the grammar is small enough for one class.
+define class TomlParser {
+    private string text: get, set
+    private integer at: get, set
+    private integer line: get, set
+
+    method fail(string message) {
+        raise("toml: line " + line + ": " + message)
+    }
+
+    method peek(): string {
+        if (at >= text.length()) {
+            return ""
+        }
+        return text.charAt(at)
+    }
+
+    method peekAt(integer offset): string {
+        if (at + offset >= text.length()) {
+            return ""
+        }
+        return text.charAt(at + offset)
+    }
+
+    method startsHere(string s): bool {
+        return text.substring(at, at + s.length()) == s
+    }
+
+    method advance(): string {
+        var c = text.charAt(at)
+        at = at + 1
+        if (c == "\n") {
+            line = line + 1
+        }
+        return c
+    }
+
+    // Spaces and tabs.
+    method spaces() {
+        while (peek() == " " || peek() == "\t") {
+            at = at + 1
+        }
+    }
+
+    // Spaces, line breaks and comments (inside arrays).
+    method blank() {
+        while (true) {
+            var c = peek()
+            if (c == " " || c == "\t" || c == "\r" || c == "\n") {
+                advance()
+            } else if (c == "#") {
+                comment()
+            } else {
+                return
+            }
+        }
+    }
+
+    method comment() {
+        while (peek() != "" && peek() != "\n") {
+            at = at + 1
+        }
+    }
+
+    // After a key/value or a header only a comment may follow on the line.
+    method endOfLine() {
+        spaces()
+        if (peek() == "#") {
+            comment()
+        }
+        if (peek() == "\r") {
+            at = at + 1
+        }
+        if (peek() == "") {
+            return
+        }
+        if (peek() != "\n") {
+            fail("unexpected '" + peek() + "' after the value")
+        }
+        advance()
+    }
+
+    method document(): map<string, object> {
+        var root = {}
+        var current = root
+        while (true) {
+            blank()
+            if (peek() == "") {
+                return root
+            }
+            if (startsHere("[[")) {
+                at = at + 2
+                var path = keyPath()
+                spaces()
+                if (startsHere("]]") == false) {
+                    fail("expected ']]'")
+                }
+                at = at + 2
+                var parent = descend(root, path, path.length() - 1)
+                var last = path[path.length() - 1]
+                if (parent.has(last) == false) {
+                    parent[last] = []
+                }
+                if (typeOf(parent[last]) != "array") {
+                    fail("'" + last + "' is not an array of tables")
+                }
+                var entry = {}
+                parent[last].append(entry)
+                current = entry
+                endOfLine()
+                continue
+            }
+            if (peek() == "[") {
+                at = at + 1
+                var tpath = keyPath()
+                spaces()
+                if (peek() != "]") {
+                    fail("expected ']'")
+                }
+                at = at + 1
+                current = descend(root, tpath, tpath.length())
+                endOfLine()
+                continue
+            }
+            keyValue(current)
+            endOfLine()
+        }
+        return root
+    }
+
+    // The table `count` steps down `path` (the last entry of an array of
+    // tables when one is on the way), created as needed.
+    method descend(map<string, object> root, array<string> path, integer count): map<string, object> {
+        var table = root
+        var i = 0
+        while (i < count) {
+            var key = path[i]
+            if (table.has(key) == false) {
+                table[key] = {}
+            }
+            var next = table[key]
+            if (typeOf(next) == "array" && next.length() > 0 && typeOf(next[next.length() - 1]) == "map") {
+                next = next[next.length() - 1]
+            }
+            if (typeOf(next) != "map") {
+                fail("'" + key + "' is already a value, not a table")
+            }
+            table = next
+            i = i + 1
+        }
+        return table
+    }
+
+    method keyValue(map<string, object> table) {
+        var path = keyPath()
+        spaces()
+        if (peek() != "=") {
+            fail("expected '=' after the key")
+        }
+        at = at + 1
+        spaces()
+        var target = descend(table, path, path.length() - 1)
+        var last = path[path.length() - 1]
+        if (target.has(last)) {
+            fail("'" + last + "' is defined twice")
+        }
+        target[last] = value()
+    }
+
+    // a.b."c d" -> ["a", "b", "c d"]
+    method keyPath(): array<string> {
+        var path = []
+        while (true) {
+            spaces()
+            var c = peek()
+            if (c == "\"") {
+                path.append(basicString())
+            } else if (c == "'") {
+                path.append(literalString())
+            } else {
+                var start = at
+                while (bareChar(peek())) {
+                    at = at + 1
+                }
+                if (at == start) {
+                    fail("expected a key")
+                }
+                path.append(text.substring(start, at))
+            }
+            spaces()
+            if (peek() != ".") {
+                return path
+            }
+            at = at + 1
+        }
+        return path
+    }
+
+    method value(): object {
+        var c = peek()
+        if (startsHere("\"\"\"")) {
+            return multiBasic()
+        }
+        if (startsHere("'''")) {
+            return multiLiteral()
+        }
+        if (c == "\"") {
+            return basicString()
+        }
+        if (c == "'") {
+            return literalString()
+        }
+        if (c == "[") {
+            return arrayValue()
+        }
+        if (c == "{") {
+            return inlineTable()
+        }
+        if (startsHere("true")) {
+            at = at + 4
+            return true
+        }
+        if (startsHere("false")) {
+            at = at + 5
+            return false
+        }
+        return scalar()
+    }
+
+    method arrayValue(): array {
+        at = at + 1
+        var items = []
+        while (true) {
+            blank()
+            if (peek() == "]") {
+                at = at + 1
+                return items
+            }
+            if (peek() == "") {
+                fail("unclosed array")
+            }
+            items.append(value())
+            blank()
+            if (peek() == ",") {
+                at = at + 1
+            } else if (peek() != "]") {
+                fail("expected ',' or ']' in an array")
+            }
+        }
+        return items
+    }
+
+    method inlineTable(): map<string, object> {
+        at = at + 1
+        var table = {}
+        spaces()
+        if (peek() == "}") {
+            at = at + 1
+            return table
+        }
+        while (true) {
+            keyValue(table)
+            spaces()
+            if (peek() == "}") {
+                at = at + 1
+                return table
+            }
+            if (peek() != ",") {
+                fail("expected ',' or '}' in an inline table")
+            }
+            at = at + 1
+        }
+        return table
+    }
+
+    // A number, a date or a time: everything up to the next delimiter.
+    method scalar(): object {
+        var start = at
+        while (peek() != "" && peek() != "," && peek() != "]" && peek() != "}" && peek() != "\n" && peek() != "\r" && peek() != "#") {
+            at = at + 1
+        }
+        var raw = text.substring(start, at).trim()
+        if (raw == "") {
+            fail("expected a value")
+        }
+        return number(raw)
+    }
+
+    method number(string raw): object {
+        var s = raw.replace("_", "")
+        var body = s
+        var negative = false
+        if (body.startsWith("+")) {
+            body = body.substring(1, body.length())
+        } else if (body.startsWith("-")) {
+            negative = true
+            body = body.substring(1, body.length())
+        }
+        if (body == "inf" || body == "nan") {
+            if (negative) {
+                return parseFloat("-" + body)
+            }
+            return parseFloat(body)
+        }
+        if (body.startsWith("0x") || body.startsWith("0o") || body.startsWith("0b")) {
+            var base = 16
+            if (body.startsWith("0o")) {
+                base = 8
+            }
+            if (body.startsWith("0b")) {
+                base = 2
+            }
+            var n = 0
+            var i = 2
+            while (i < body.length()) {
+                var d = digit(body.charAt(i))
+                if (d < 0 || d >= base) {
+                    fail("invalid number '" + raw + "'")
+                }
+                n = n * base + d
+                i = i + 1
+            }
+            if (negative) {
+                return 0 - n
+            }
+            return n
+        }
+        if (isDateLike(body)) {
+            return raw
+        }
+        if (body == "" || body.charAt(0) < "0" || body.charAt(0) > "9" || json.isValid(body) == false) {
+            fail("invalid value '" + raw + "'")
+        }
+        if (body.contains(".") || body.contains("e") || body.contains("E")) {
+            if (negative) {
+                return 0.0 - parseFloat(body)
+            }
+            return parseFloat(body)
+        }
+        if (negative) {
+            return 0 - parseInt(body)
+        }
+        return parseInt(body)
+    }
+
+    method isDateLike(string s): bool {
+        if (s.length() >= 10 && s.charAt(4) == "-" && s.charAt(7) == "-") {
+            return true
+        }
+        return s.length() >= 8 && s.charAt(2) == ":" && s.charAt(5) == ":"
+    }
+
+    method digit(string c): integer {
+        if (c >= "0" && c <= "9") {
+            return ord(c) - ord("0")
+        }
+        if (c >= "a" && c <= "f") {
+            return ord(c) - ord("a") + 10
+        }
+        if (c >= "A" && c <= "F") {
+            return ord(c) - ord("A") + 10
+        }
+        return 0 - 1
+    }
+
+    method basicString(): string {
+        at = at + 1
+        var out = []
+        while (true) {
+            var c = peek()
+            if (c == "" || c == "\n") {
+                fail("unclosed string")
+            }
+            at = at + 1
+            if (c == "\"") {
+                return out.join("")
+            }
+            if (c == "\\") {
+                out.append(escape())
+            } else {
+                out.append(c)
+            }
+        }
+        return ""
+    }
+
+    method literalString(): string {
+        at = at + 1
+        var start = at
+        while (peek() != "'") {
+            if (peek() == "" || peek() == "\n") {
+                fail("unclosed string")
+            }
+            at = at + 1
+        }
+        at = at + 1
+        return text.substring(start, at - 1)
+    }
+
+    method multiBasic(): string {
+        at = at + 3
+        skipFirstNewline()
+        var out = []
+        while (true) {
+            if (peek() == "") {
+                fail("unclosed \"\"\" string")
+            }
+            if (startsHere("\"\"\"")) {
+                // up to two quotes may end the content: """a""""" is a""
+                while (startsHere("\"\"\"\"")) {
+                    out.append("\"")
+                    at = at + 1
+                }
+                at = at + 3
+                return out.join("")
+            }
+            var c = advance()
+            if (c == "\\") {
+                var n = peek()
+                if (n == "\n" || n == " " || n == "\t" || n == "\r") {
+                    // a line ending backslash eats the break and the indentation
+                    while (peek() == " " || peek() == "\t" || peek() == "\r" || peek() == "\n") {
+                        advance()
+                    }
+                } else {
+                    out.append(escape())
+                }
+            } else if (c != "\r") {
+                out.append(c)
+            }
+        }
+        return ""
+    }
+
+    method multiLiteral(): string {
+        at = at + 3
+        skipFirstNewline()
+        var out = []
+        while (true) {
+            if (peek() == "") {
+                fail("unclosed ''' string")
+            }
+            if (startsHere("'''")) {
+                while (startsHere("''''")) {
+                    out.append("'")
+                    at = at + 1
+                }
+                at = at + 3
+                return out.join("")
+            }
+            var c = advance()
+            if (c != "\r") {
+                out.append(c)
+            }
+        }
+        return ""
+    }
+
+    method skipFirstNewline() {
+        if (peek() == "\r") {
+            at = at + 1
+        }
+        if (peek() == "\n") {
+            advance()
+        }
+    }
+
+    // The character after a backslash (already consumed).
+    method escape(): string {
+        var c = peek()
+        at = at + 1
+        if (c == "n") {
+            return "\n"
+        }
+        if (c == "t") {
+            return "\t"
+        }
+        if (c == "r") {
+            return "\r"
+        }
+        if (c == "b") {
+            return chr(8)
+        }
+        if (c == "f") {
+            return chr(12)
+        }
+        if (c == "e") {
+            return chr(27)
+        }
+        if (c == "\"" || c == "\\") {
+            return c
+        }
+        if (c == "u" || c == "U") {
+            var count = 4
+            if (c == "U") {
+                count = 8
+            }
+            var code = 0
+            var i = 0
+            while (i < count) {
+                var d = digit(peek())
+                if (d < 0) {
+                    fail("invalid \\" + c + " escape")
+                }
+                code = code * 16 + d
+                at = at + 1
+                i = i + 1
+            }
+            return utf8(code)
+        }
+        fail("invalid escape '\\" + c + "'")
+        return ""
+    }
+}
+
+// The UTF-8 bytes of a code point.
+method utf8(integer code): string {
+    if (code < 128) {
+        return chr(code)
+    }
+    if (code < 2048) {
+        return chr(192 + code / 64) + chr(128 + code % 64)
+    }
+    if (code < 65536) {
+        return chr(224 + code / 4096) + chr(128 + (code / 64) % 64) + chr(128 + code % 64)
+    }
+    return chr(240 + code / 262144) + chr(128 + (code / 4096) % 64) + chr(128 + (code / 64) % 64) + chr(128 + code % 64)
+}

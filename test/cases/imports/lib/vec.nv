@@ -1,4 +1,4 @@
-package mathlib
+package lib
 
 define class Vec {
     private final float x: get

@@ -1,5 +1,7 @@
 package loader
 
+import path
+
 // Path helpers for import resolution.
 //
 // NOTE: this file is part of the bootstrap chain: it must stay compilable
@@ -120,4 +122,52 @@ method fileLabel(string path): string {
         i = i + 1
     }
     return out
+}
+
+// The folder whose sub folders are the program's packages: the nearest one
+// above `file` holding a project.nv, else the file's own folder.
+method projectRoot(string file): string {
+    var dir = dirName(file)
+    var probe = dir
+    var guard = 0
+    while (guard < 64) {
+        if (fileExists(joinPath(probe, "project.nv"))) {
+            return probe
+        }
+        var up = joinPath(probe, "..")
+        if (path.absolute(up) == path.absolute(probe)) {
+            return dir
+        }
+        probe = up
+        guard = guard + 1
+    }
+    return dir
+}
+
+// The package `dir` is below `root`: "" for the root itself, "geo" or
+// "geo/shapes" below it, "?" when it is not below the root at all.
+method packagePath(string root, string dir): string {
+    var r = normalizePath(root)
+    var d = normalizePath(dir)
+    if (d == r) {
+        return ""
+    }
+    if (r == ".") {
+        if (d == ".." || d.startsWith("../") || isAbsolutePath(d)) {
+            return "?"
+        }
+        return d
+    }
+    if (d.startsWith(r + "/")) {
+        return d.substring(r.length() + 1, d.length())
+    }
+    return "?"
+}
+
+// The name a package is called by: the last folder of its path.
+method packageQualifier(string pkg): string {
+    if (pkg == "" || pkg == "?") {
+        return ""
+    }
+    return baseName(pkg)
 }

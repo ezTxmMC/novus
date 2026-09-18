@@ -96,8 +96,8 @@ function resolveExecutable(document: vscode.TextDocument): { command: string; fo
 
 async function executeCurrentFile(mode: 'run' | 'build'): Promise<void> {
   const editor = vscode.window.activeTextEditor;
-  if (!editor || editor.document.languageId !== 'novus') {
-    void vscode.window.showInformationMessage('Open a Novus (.nv) file to run it.');
+  if (!editor || (editor.document.languageId !== 'novus' && editor.document.languageId !== 'novus-html')) {
+    void vscode.window.showInformationMessage('Open a Novus (.nv) file or a component (.nvh) to run it.');
     return;
   }
   const document = editor.document;
@@ -129,7 +129,7 @@ async function executeCurrentFile(mode: 'run' | 'build'): Promise<void> {
   const terminal = vscode.window.terminals.find(t => t.name === 'Novus') ?? vscode.window.createTerminal({ name: 'Novus', cwd });
   terminal.show(true);
   if (mode === 'build') {
-    const output = document.uri.fsPath.replace(/\.nv$/, '');
+    const output = document.uri.fsPath.replace(/\.nvh?$/, '');
     terminal.sendText(`${quote(command)} build ${quote(document.uri.fsPath)} -o ${quote(output)}`);
   } else {
     terminal.sendText(`${quote(command)} run ${quote(document.uri.fsPath)}`);

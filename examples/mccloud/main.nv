@@ -3,9 +3,9 @@ package main
 import os
 import path
 
-import "cloud.nv"
-import "files.nv"
-import "process.nv"
+import @cloud
+import @files
+import @process
 
 // mccloud - a small Minecraft server cloud as a command line tool.
 //

@@ -1,4 +1,4 @@
-/** Keeps analyses of open documents and an index of every .nv file in the workspace. */
+/** Keeps analyses of open documents and an index of every .nv (and .nvh) file in the workspace. */
 import * as fs from 'fs';
 import * as path from 'path';
 import { URI } from 'vscode-uri';
@@ -150,7 +150,7 @@ export class Workspace {
       const stat = fs.statSync(file);
       if (!stat.isFile() || stat.size > MAX_FILE_SIZE) return false;
       const text = fs.readFileSync(file, 'utf8');
-      this.analyze(uri, text);
+      this.analyze(uri, file.endsWith('.nvh') ? nvhStub(file) : text);
       return true;
     } catch {
       return false;
@@ -200,8 +200,18 @@ function* walkDir(dir: string, depth = 0): Generator<string> {
     if (entry.isDirectory()) {
       if (IGNORED_DIRS.has(entry.name) || entry.name.startsWith('.')) continue;
       yield* walkDir(path.join(dir, entry.name), depth + 1);
-    } else if (entry.isFile() && entry.name.endsWith('.nv')) {
+    } else if (entry.isFile() && (entry.name.endsWith('.nv') || entry.name.endsWith('.nvh'))) {
       yield path.join(dir, entry.name);
     }
   }
+}
+
+/**
+ * A .nvh component compiles to a class named after the file (Counter.nvh ->
+ * class Counter); the index only needs that class to exist so that code
+ * importing the component can use it.
+ */
+function nvhStub(file: string): string {
+  const name = path.basename(file, '.nvh').replace(/[^A-Za-z0-9_]/g, '_');
+  return `define class ${/^[0-9]/.test(name) ? '_' + name : name} {\n}\n`;
 }

@@ -1,0 +1,1432 @@
+package nvh
+
+import lexer
+import loader
+import parser
+
+// .nvh files: HTML with Novus in it, compiled into a component class.
+//
+//     <?nv
+//     import strings
+//     prop string title = "Todo"          // set by the parent / the URL
+//     ref array<string> items = []         // state; the page updates when it changes
+//     ref string draft = ""
+//
+//     method add() {
+//         items.append(draft)
+//         draft = ""
+//     }
+//     ?>
+//     <head><title>{title}</title></head>
+//     <section class="todo">
+//         <h1>{title} ({items.length()})</h1>
+//         <input bind="draft" @keydown.enter="add">
+//         {#for item, i in items}
+//             <Item text={item} @remove="removeAt(i)" />
+//         {/for}
+//     </section>
+//     <style> .todo { max-width: 30rem } </style>
+//
+// The file Todo.nvh becomes `define class Todo based NvhComponent` (see
+// std/web.nv). The <?nv ... ?> block at the very start holds the members:
+// prop and ref (or var) declarations become fields, methods stay methods,
+// imports and define blocks move to the file level. Everything after it is
+// the template, compiled into nvRender(out), which appends the HTML to `out`:
+//
+//   {expr}               escaped text           {@html expr}   raw HTML
+//   <?= expr ?>          escaped text (PHP)     <?nv code ?>   statements
+//   {#if c} {:else if c} {:else} {/if}          {#for x in xs} {#for x, i in xs} {/for}
+//   attr={expr}          true/false toggle a bare attribute, nothing drops it
+//   attr="a {expr} b"    interpolated           class:name={cond}   class toggle
+//   @click="handler"     @click="handler(arg, $value)"   @click={count = count + 1}
+//   @keydown.enter.prevent="..."                modifiers
+//   bind="ref"           two-way binding of an input, textarea or select
+//   <Child prop={x} key={id} @event="handler">slot content</Child>   <slot/>
+//                        (Child.nvh next to the file, in components/ or in
+//                        ../components/ is imported by itself)
+//   <head>...</head>     goes into the document head; <style> at the top
+//                        level is the component's style sheet (sent once)
+//   \{ \}                literal braces
+//
+// The generated code keeps the line numbers of the .nvh file, so errors in
+// methods and template expressions point at the right line.
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+// The component class of a .nvh file: its name without the extension.
+method nvhClassName(string file): string {
+    var start = file.length()
+    while (start > 0 && file.charAt(start - 1) != "/" && file.charAt(start - 1) != chr(92)) {
+        start = start - 1
+    }
+    var base = file.substring(start, file.length())
+    if (base.endsWith(".nvh")) {
+        base = base.substring(0, base.length() - 4)
+    }
+    var out = ""
+    var i = 0
+    while (i < base.length()) {
+        var c = base.charAt(i)
+        if (isAlphaNum(c)) {
+            out = out + c
+        } else {
+            out = out + "_"
+        }
+        i = i + 1
+    }
+    if (out == "" || isDigit(out.charAt(0))) {
+        out = "_" + out
+    }
+    return out
+}
+
+method nvhIsIdent(string s): bool {
+    if (s.length() == 0 || isAlpha(s.charAt(0)) == false) {
+        return false
+    }
+    var i = 1
+    while (i < s.length()) {
+        if (isAlphaNum(s.charAt(i)) == false) {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+method nvhIsSpace(string c): bool {
+    return c == " " || c == chr(9) || c == chr(10) || c == chr(13)
+}
+
+method nvhBlank(string s): bool {
+    var i = 0
+    while (i < s.length()) {
+        if (nvhIsSpace(s.charAt(i)) == false) {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+method nvhNewlines(string s): integer {
+    var count = 0
+    var i = s.indexOf(chr(10))
+    while (i >= 0) {
+        count = count + 1
+        i = s.indexOf(chr(10), i + 1)
+    }
+    return count
+}
+
+// Only the line breaks of `s` - what a moved statement leaves behind.
+method nvhOnlyNewlines(string s): string {
+    var out = ""
+    var n = nvhNewlines(s)
+    while (n > 0) {
+        out = out + chr(10)
+        n = n - 1
+    }
+    return out
+}
+
+// A Novus string literal for `s`. "${" is split so it is not interpolated.
+method nvhLit(string s): string {
+    var bs = chr(92)
+    var q = chr(34)
+    var parts = [q]
+    var i = 0
+    var n = s.length()
+    while (i < n) {
+        var c = s.charAt(i)
+        if (c == bs) {
+            parts.append(bs + bs)
+        } else if (c == q) {
+            parts.append(bs + q)
+        } else if (c == chr(10)) {
+            parts.append(bs + "n")
+        } else if (c == chr(13)) {
+            parts.append(bs + "r")
+        } else if (c == chr(9)) {
+            parts.append(bs + "t")
+        } else if (c == "$" && i + 1 < n && s.charAt(i + 1) == "{") {
+            parts.append("$" + q + " + " + q)
+        } else {
+            parts.append(c)
+        }
+        i = i + 1
+    }
+    parts.append(q)
+    return parts.join("")
+}
+
+// Index after the string literal that starts at `at` (a double quote).
+method nvhSkipString(string s, integer at): integer {
+    var i = at + 1
+    var n = s.length()
+    while (i < n) {
+        var c = s.charAt(i)
+        if (c == chr(92)) {
+            i = i + 2
+            continue
+        }
+        if (c == chr(34)) {
+            return i + 1
+        }
+        i = i + 1
+    }
+    return n
+}
+
+// Index after the '}' closing the '{' at `open`, -1 when there is none.
+method nvhCloseBrace(string s, integer open): integer {
+    var depth = 0
+    var i = open
+    var n = s.length()
+    while (i < n) {
+        var c = s.charAt(i)
+        if (c == chr(34)) {
+            i = nvhSkipString(s, i)
+            continue
+        }
+        if (c == "{") {
+            depth = depth + 1
+        }
+        if (c == "}") {
+            depth = depth - 1
+            if (depth == 0) {
+                return i + 1
+            }
+        }
+        i = i + 1
+    }
+    return 0 - 1
+}
+
+// Splits `s` at the commas that are not nested in brackets or strings.
+method nvhSplitArgs(string s): array<string> {
+    var out = []
+    var depth = 0
+    var start = 0
+    var i = 0
+    var n = s.length()
+    while (i < n) {
+        var c = s.charAt(i)
+        if (c == chr(34)) {
+            i = nvhSkipString(s, i)
+            continue
+        }
+        if (c == "(" || c == "[" || c == "{") {
+            depth = depth + 1
+        }
+        if (c == ")" || c == "]" || c == "}") {
+            depth = depth - 1
+        }
+        if (c == "," && depth == 0) {
+            out.append(s.substring(start, i).trim())
+            start = i + 1
+        }
+        i = i + 1
+    }
+    var last = s.substring(start, n).trim()
+    if (last != "" || out.length() > 0) {
+        out.append(last)
+    }
+    return out
+}
+
+// "text {expr} text" -> [["t", "text "], ["e", "expr"], ["t", " text"]].
+method nvhInterpolate(string s, string pos): array<object> {
+    var out = []
+    var text = ""
+    var i = 0
+    var n = s.length()
+    while (i < n) {
+        var c = s.charAt(i)
+        if (c == chr(92) && i + 1 < n && (s.charAt(i + 1) == "{" || s.charAt(i + 1) == "}")) {
+            text = text + s.charAt(i + 1)
+            i = i + 2
+            continue
+        }
+        if (c == "{") {
+            var close = nvhCloseBrace(s, i)
+            if (close < 0) {
+                fail("unclosed '{' in attribute value", pos)
+            }
+            if (text != "") {
+                out.append(["t", text])
+                text = ""
+            }
+            out.append(["e", s.substring(i + 1, close - 1).trim()])
+            i = close
+            continue
+        }
+        text = text + c
+        i = i + 1
+    }
+    if (text != "") {
+        out.append(["t", text])
+    }
+    return out
+}
+
+method nvhHasExpr(array<object> parts): bool {
+    for (p in parts) {
+        if (p[0] == "e") {
+            return true
+        }
+    }
+    return false
+}
+
+method nvhIsVoid(string tag): bool {
+    var voids = {"area": true, "base": true, "br": true, "col": true, "embed": true, "hr": true,
+        "img": true, "input": true, "link": true, "meta": true, "param": true, "source": true,
+        "track": true, "wbr": true}
+    return voids.has(tag.toLower())
+}
+
+method nvhIsComponent(string tag): bool {
+    var c = tag.charAt(0)
+    return c >= "A" && c <= "Z"
+}
+
+// --- the <?nv ... ?> block of members -------------------------------------
+
+// Index of the line break that ends the statement starting at `i` (one at
+// bracket depth 0), or the end of the code.
+method nvhStatementEnd(string code, integer from): integer {
+    var depth = 0
+    var i = from
+    var n = code.length()
+    while (i < n) {
+        var c = code.charAt(i)
+        if (c == chr(34)) {
+            i = nvhSkipString(code, i)
+            continue
+        }
+        if (c == "/" && i + 1 < n && code.charAt(i + 1) == "/") {
+            while (i < n && code.charAt(i) != chr(10)) {
+                i = i + 1
+            }
+            continue
+        }
+        if (c == "/" && i + 1 < n && code.charAt(i + 1) == "*") {
+            var close = code.indexOf("*/", i + 2)
+            if (close < 0) {
+                return n
+            }
+            i = close + 2
+            continue
+        }
+        if (c == "{" || c == "(" || c == "[") {
+            depth = depth + 1
+        }
+        if (c == "}" || c == ")" || c == "]") {
+            depth = depth - 1
+        }
+        if (c == chr(10) && depth <= 0) {
+            return i
+        }
+        i = i + 1
+    }
+    return n
+}
+
+method nvhFirstWord(string s): string {
+    var i = 0
+    while (i < s.length() && isAlpha(s.charAt(i))) {
+        i = i + 1
+    }
+    return s.substring(0, i)
+}
+
+// Index of the '=' of a declaration (not ==, !=, <=, >=), -1 when none.
+method nvhAssignAt(string s): integer {
+    var depth = 0
+    var i = 0
+    var n = s.length()
+    while (i < n) {
+        var c = s.charAt(i)
+        if (c == chr(34)) {
+            i = nvhSkipString(s, i)
+            continue
+        }
+        if (c == "(" || c == "[" || c == "{") {
+            depth = depth + 1
+        }
+        if (c == ")" || c == "]" || c == "}") {
+            depth = depth - 1
+        }
+        if (c == "=" && depth == 0) {
+            var before = ""
+            if (i > 0) {
+                before = s.charAt(i - 1)
+            }
+            var after = ""
+            if (i + 1 < n) {
+                after = s.charAt(i + 1)
+            }
+            if (after != "=" && before != "=" && before != "!" && before != "<" && before != ">") {
+                return i
+            }
+        }
+        i = i + 1
+    }
+    return 0 - 1
+}
+
+// prop|ref|var [type] name [= initial] -> a field, recorded in st.
+method nvhField(string stmt, string word, integer line, string file, map<string, object> st): string {
+    var rest = stmt.substring(word.length(), stmt.length())
+    var eq = nvhAssignAt(rest)
+    var left = rest.trim()
+    var init = ""
+    if (eq >= 0) {
+        left = rest.substring(0, eq).trim()
+        init = rest.substring(eq + 1, rest.length()).trim()
+    }
+    var cut = left.length()
+    while (cut > 0 && nvhIsSpace(left.charAt(cut - 1)) == false) {
+        cut = cut - 1
+    }
+    var name = left.substring(cut, left.length())
+    var kind = left.substring(0, cut).trim()
+    if (kind == "") {
+        kind = "object"
+    }
+    if (nvhIsIdent(name) == false) {
+        fail("expected '" + word + " [type] name [= value]'", file + ":" + line)
+    }
+    var names = st["names"]
+    if (names.has(name)) {
+        fail("'" + name + "' is declared twice", file + ":" + line)
+    }
+    names[name] = word
+    var entry = {"name": name, "type": kind, "init": init, "line": line}
+    if (word == "prop") {
+        st["props"].append(entry)
+    } else {
+        st["refs"].append(entry)
+    }
+    return "private " + kind + " " + name + nvhOnlyNewlines(stmt)
+}
+
+// The members block, rewritten in place (line breaks kept): imports move to
+// the file header, define blocks stay at the file level before the class,
+// the class opens before the first member.
+method nvhDecls(string code, integer startLine, string file, string opener, map<string, object> st): string {
+    var out = []
+    var i = 0
+    var n = code.length()
+    var line = startLine
+    while (i < n) {
+        var c = code.charAt(i)
+        if (nvhIsSpace(c)) {
+            if (c == chr(10)) {
+                line = line + 1
+            }
+            out.append(c)
+            i = i + 1
+            continue
+        }
+        if (c == "/" && i + 1 < n && code.charAt(i + 1) == "/") {
+            var eol = code.indexOf(chr(10), i)
+            if (eol < 0) {
+                eol = n
+            }
+            out.append(code.substring(i, eol))
+            i = eol
+            continue
+        }
+        if (c == "/" && i + 1 < n && code.charAt(i + 1) == "*") {
+            var close = code.indexOf("*/", i + 2)
+            if (close < 0) {
+                close = n - 2
+            }
+            var comment = code.substring(i, close + 2)
+            out.append(comment)
+            line = line + nvhNewlines(comment)
+            i = close + 2
+            continue
+        }
+        var end = nvhStatementEnd(code, i)
+        var stmt = code.substring(i, end)
+        var word = nvhFirstWord(stmt)
+        if (word == "import") {
+            st["imports"].append(stmt.trim())
+            out.append(nvhOnlyNewlines(stmt))
+        } else if (word == "package") {
+            out.append(nvhOnlyNewlines(stmt))
+        } else if (word == "define") {
+            if (st["opened"]) {
+                fail("define blocks go before the component's members in the <?nv ?> block", file + ":" + line)
+            }
+            out.append(stmt)
+        } else {
+            if (st["opened"] == false) {
+                out.append(opener + " ")
+                st["opened"] = true
+            }
+            if (word == "prop" || word == "ref" || word == "var") {
+                out.append(nvhField(stmt, word, line, file, st))
+            } else {
+                out.append(stmt)
+            }
+        }
+        line = line + nvhNewlines(stmt)
+        i = end
+    }
+    return out.join("")
+}
+
+// --- the template: tokens ------------------------------------------------------
+
+method nvhBlockToken(string inner, integer line, string pos): map<string, object> {
+    var t = inner.trim()
+    if (t.startsWith("@html ")) {
+        return {"k": "html", "code": t.substring(6, t.length()).trim(), "line": line}
+    }
+    if (t.startsWith("#if ")) {
+        return {"k": "if", "code": t.substring(4, t.length()).trim(), "line": line}
+    }
+    if (t.startsWith(":else if ")) {
+        return {"k": "elif", "code": t.substring(9, t.length()).trim(), "line": line}
+    }
+    if (t == ":else") {
+        return {"k": "else", "line": line}
+    }
+    if (t == "/if") {
+        return {"k": "endif", "line": line}
+    }
+    if (t.startsWith("#for ")) {
+        return {"k": "for", "code": t.substring(5, t.length()).trim(), "line": line}
+    }
+    if (t == "/for") {
+        return {"k": "endfor", "line": line}
+    }
+    if (t.startsWith("#") || t.startsWith(":") || t.startsWith("/")) {
+        fail("unknown template block {" + t + "} (blocks: {#if}, {:else if}, {:else}, {/if}, {#for}, {/for})", pos)
+    }
+    if (t == "") {
+        fail("empty {} in the template (write \\{ for a literal brace)", pos)
+    }
+    return {"k": "expr", "code": t, "line": line}
+}
+
+method nvhTagChar(string c): bool {
+    return isAlphaNum(c) || c == "-" || c == ":" || c == "."
+}
+
+// The template as a flat list of tokens: text, comment, expr, html, echo,
+// code, if/elif/else/endif, for/endfor, open (with attrs), close.
+method nvhTokens(string t, integer startLine, string file): array<object> {
+    var toks = []
+    var lower = t.toLower()
+    var i = 0
+    var n = t.length()
+    var line = startLine
+    var text = []
+    var textLine = line
+    while (i < n) {
+        var c = t.charAt(i)
+        var pos = file + ":" + line
+        if (c == chr(92) && i + 1 < n && (t.charAt(i + 1) == "{" || t.charAt(i + 1) == "}")) {
+            if (text.length() == 0) {
+                textLine = line
+            }
+            text.append(t.charAt(i + 1))
+            i = i + 2
+            continue
+        }
+        var special = ""
+        if (c == "{") {
+            special = "brace"
+        } else if (c == "<" && i + 1 < n) {
+            var next = t.charAt(i + 1)
+            if (t.substring(i, i + 4) == "<?nv" || t.substring(i, i + 3) == "<?=") {
+                special = "code"
+            } else if (t.substring(i, i + 4) == "<!--") {
+                special = "comment"
+            } else if (next == "!") {
+                special = "bang"
+            } else if (next == "/" && i + 2 < n && isAlpha(t.charAt(i + 2))) {
+                special = "close"
+            } else if (isAlpha(next)) {
+                special = "open"
+            }
+        }
+        if (special == "") {
+            if (text.length() == 0) {
+                textLine = line
+            }
+            text.append(c)
+            if (c == chr(10)) {
+                line = line + 1
+            }
+            i = i + 1
+            continue
+        }
+        if (text.length() > 0) {
+            toks.append({"k": "text", "text": text.join(""), "line": textLine})
+            text = []
+        }
+        if (special == "brace") {
+            var close = nvhCloseBrace(t, i)
+            if (close < 0) {
+                fail("unclosed '{' in the template (write \\{ for a literal brace)", pos)
+            }
+            var inner = t.substring(i + 1, close - 1)
+            toks.append(nvhBlockToken(inner, line, pos))
+            line = line + nvhNewlines(inner)
+            i = close
+            continue
+        }
+        if (special == "code") {
+            var end = t.indexOf("?>", i)
+            if (end < 0) {
+                fail("unclosed <?nv (missing ?>)", pos)
+            }
+            if (t.substring(i, i + 3) == "<?=") {
+                toks.append({"k": "echo", "code": t.substring(i + 3, end).trim(), "line": line})
+            } else {
+                toks.append({"k": "code", "code": t.substring(i + 4, end), "line": line})
+            }
+            line = line + nvhNewlines(t.substring(i, end))
+            i = end + 2
+            continue
+        }
+        if (special == "comment") {
+            var cend = t.indexOf("-->", i)
+            if (cend < 0) {
+                fail("unclosed <!-- comment", pos)
+            }
+            var comment = t.substring(i, cend + 3)
+            toks.append({"k": "comment", "text": comment, "line": line})
+            line = line + nvhNewlines(comment)
+            i = cend + 3
+            continue
+        }
+        if (special == "bang") {
+            // <!doctype html>: the document shell has its own
+            var bend = t.indexOf(">", i)
+            if (bend < 0) {
+                bend = n - 1
+            }
+            line = line + nvhNewlines(t.substring(i, bend))
+            i = bend + 1
+            continue
+        }
+        if (special == "close") {
+            var gt = t.indexOf(">", i)
+            if (gt < 0) {
+                fail("unclosed tag", pos)
+            }
+            toks.append({"k": "close", "tag": t.substring(i + 2, gt).trim(), "line": line})
+            i = gt + 1
+            continue
+        }
+        // an opening tag and its attributes
+        var j = i + 1
+        while (j < n && nvhTagChar(t.charAt(j))) {
+            j = j + 1
+        }
+        var tag = t.substring(i + 1, j)
+        var attrs = []
+        var selfClosing = false
+        while (true) {
+            while (j < n && nvhIsSpace(t.charAt(j))) {
+                j = j + 1
+            }
+            if (j >= n) {
+                fail("unclosed tag <" + tag + ">", pos)
+            }
+            var ch = t.charAt(j)
+            if (ch == ">") {
+                j = j + 1
+                break
+            }
+            if (ch == "/" && j + 1 < n && t.charAt(j + 1) == ">") {
+                selfClosing = true
+                j = j + 2
+                break
+            }
+            var a0 = j
+            while (j < n && nvhIsSpace(t.charAt(j)) == false && t.charAt(j) != "=" && t.charAt(j) != ">" && (t.charAt(j) != "/" || j + 1 >= n || t.charAt(j + 1) != ">")) {
+                j = j + 1
+            }
+            var aname = t.substring(a0, j)
+            if (aname == "") {
+                j = j + 1
+                continue
+            }
+            var k = j
+            while (k < n && nvhIsSpace(t.charAt(k))) {
+                k = k + 1
+            }
+            if (k < n && t.charAt(k) == "=") {
+                j = k + 1
+                while (j < n && nvhIsSpace(t.charAt(j))) {
+                    j = j + 1
+                }
+                var qc = ""
+                if (j < n) {
+                    qc = t.charAt(j)
+                }
+                if (qc == chr(34) || qc == "'") {
+                    var e = j + 1
+                    while (e < n && t.charAt(e) != qc) {
+                        if (t.charAt(e) == "{" && t.charAt(e - 1) != chr(92)) {
+                            var be = nvhCloseBrace(t, e)
+                            if (be < 0) {
+                                fail("unclosed '{' in attribute " + aname, pos)
+                            }
+                            e = be
+                        } else {
+                            e = e + 1
+                        }
+                    }
+                    attrs.append({"name": aname, "kind": "str", "value": t.substring(j + 1, e)})
+                    j = e + 1
+                } else if (qc == "{") {
+                    var ve = nvhCloseBrace(t, j)
+                    if (ve < 0) {
+                        fail("unclosed '{' in attribute " + aname, pos)
+                    }
+                    attrs.append({"name": aname, "kind": "expr", "value": t.substring(j + 1, ve - 1).trim()})
+                    j = ve
+                } else {
+                    var u = j
+                    while (u < n && nvhIsSpace(t.charAt(u)) == false && t.charAt(u) != ">") {
+                        u = u + 1
+                    }
+                    attrs.append({"name": aname, "kind": "str", "value": t.substring(j, u)})
+                    j = u
+                }
+            } else {
+                attrs.append({"name": aname, "kind": "none", "value": ""})
+            }
+        }
+        var node = {"k": "open", "tag": tag, "attrs": attrs, "self": selfClosing, "line": line, "raw": "", "israw": false}
+        line = line + nvhNewlines(t.substring(i, j))
+        i = j
+        var ltag = tag.toLower()
+        if ((ltag == "script" || ltag == "style") && selfClosing == false) {
+            var rend = lower.indexOf("</" + ltag, i)
+            if (rend < 0) {
+                fail("unclosed <" + ltag + ">", pos)
+            }
+            node["raw"] = t.substring(i, rend)
+            node["israw"] = true
+            line = line + nvhNewlines(t.substring(i, rend))
+            var rgt = t.indexOf(">", rend)
+            if (rgt < 0) {
+                rgt = n - 1
+            }
+            i = rgt + 1
+        }
+        toks.append(node)
+    }
+    if (text.length() > 0) {
+        toks.append({"k": "text", "text": text.join(""), "line": textLine})
+    }
+    return toks
+}
+
+// Nests the tokens: an element gets the tokens up to its closing tag as
+// "kids". Void, self-closing and raw elements have none.
+method nvhTree(array<object> toks, string file): array<object> {
+    var top = []
+    var stack = []
+    for (tok in toks) {
+        var kids = top
+        if (stack.length() > 0) {
+            kids = stack[stack.length() - 1]["kids"]
+        }
+        var k = tok["k"]
+        if (k == "open") {
+            tok["kids"] = []
+            kids.append(tok)
+            if (tok["self"] == false && tok["israw"] == false && nvhIsVoid(tok["tag"]) == false) {
+                stack.append(tok)
+            }
+            continue
+        }
+        if (k == "close") {
+            var at = stack.length() - 1
+            while (at >= 0 && stack[at]["tag"] != tok["tag"]) {
+                at = at - 1
+            }
+            if (at < 0) {
+                if (nvhIsVoid(tok["tag"])) {
+                    continue
+                }
+                fail("</" + tok["tag"] + "> without an open <" + tok["tag"] + ">", file + ":" + tok["line"])
+            }
+            while (stack.length() > at) {
+                stack.pop()
+            }
+            continue
+        }
+        kids.append(tok)
+    }
+    return top
+}
+
+// --- the template: code ----------------------------------------------------------
+
+// Appends generated code, first adding line breaks until the output is at
+// `line` of the .nvh file.
+method nvhEmit(map<string, object> st, integer line, string code) {
+    var out = st["out"]
+    var at = st["line"]
+    while (at < line) {
+        out.append(chr(10))
+        at = at + 1
+    }
+    out.append(code + " ")
+    st["line"] = at + nvhNewlines(code)
+}
+
+// Static HTML, collected until something dynamic follows.
+method nvhStatic(map<string, object> st, integer line, string html) {
+    var pending = st["pending"]
+    if (pending.length() == 0) {
+        st["pline"] = line
+    }
+    pending.append(html)
+}
+
+method nvhFlush(map<string, object> st, string buf) {
+    var pending = st["pending"]
+    if (pending.length() > 0) {
+        var html = pending.join("")
+        st["pending"] = []
+        nvhEmit(st, st["pline"], buf + ".append(" + nvhLit(html) + ")")
+    }
+}
+
+method nvhNext(map<string, object> st): integer {
+    var n = st["n"] + 1
+    st["n"] = n
+    return n
+}
+
+// An event handler: "name", "name(args)" or statements. Returns
+// [method, "[args]"] and records the method for nvCall.
+method nvhHandler(string text, integer line, map<string, object> st): array<string> {
+    var h = text.trim()
+    var pos = st["file"] + ":" + line
+    if (h == "") {
+        fail("empty event handler", pos)
+    }
+    var name = ""
+    var args = []
+    var callForm = false
+    if (nvhIsIdent(h)) {
+        name = h
+        callForm = true
+    } else {
+        var open = h.indexOf("(")
+        if (open > 0 && h.endsWith(")") && nvhIsIdent(h.substring(0, open).trim())) {
+            // one call, its parentheses around everything that follows
+            var depth = 0
+            var i = open
+            var closesAtEnd = true
+            while (i < h.length()) {
+                var c = h.charAt(i)
+                if (c == chr(34)) {
+                    i = nvhSkipString(h, i)
+                    continue
+                }
+                if (c == "(") {
+                    depth = depth + 1
+                }
+                if (c == ")") {
+                    depth = depth - 1
+                    if (depth == 0 && i != h.length() - 1) {
+                        closesAtEnd = false
+                    }
+                }
+                i = i + 1
+            }
+            if (closesAtEnd) {
+                name = h.substring(0, open).trim()
+                args = nvhSplitArgs(h.substring(open + 1, h.length() - 1))
+                callForm = true
+                for (a in args) {
+                    if (a != "$value" && a.contains("$value")) {
+                        callForm = false
+                    }
+                }
+            }
+        }
+    }
+    var codes = []
+    if (callForm) {
+        for (a in args) {
+            if (a == "$value") {
+                codes.append("web.VALUE")
+            } else {
+                codes.append("(" + a + ")")
+            }
+        }
+    } else {
+        // statements: a method of their own; $value is its parameter
+        name = "nvInline" + (st["inline"].length() + 1)
+        var body = h.replace("$value", "nvvalue")
+        if (h.contains("$value")) {
+            st["inline"].append("method " + name + "(object nvvalue) { " + body + " }")
+            codes.append("web.VALUE")
+        } else {
+            st["inline"].append("method " + name + "() { " + body + " }")
+        }
+    }
+    var handlers = st["handlers"]
+    handlers[name + "/" + codes.length()] = [name, codes.length()]
+    return [name, "[" + codes.join(", ") + "]"]
+}
+
+// Novus code for an attribute's value as it is handed to a prop.
+method nvhValueCode(map<string, object> a, string pos): string {
+    if (a["kind"] == "none") {
+        return "true"
+    }
+    if (a["kind"] == "expr") {
+        return "(" + a["value"] + ")"
+    }
+    var parts = nvhInterpolate(a["value"], pos)
+    if (parts.length() == 0) {
+        return nvhLit("")
+    }
+    var codes = []
+    for (p in parts) {
+        if (p[0] == "t") {
+            codes.append(nvhLit(p[1]))
+        } else {
+            codes.append("web.text((" + p[1] + "))")
+        }
+    }
+    if (parts.length() == 1 && parts[0][0] == "e") {
+        // "{x}" hands over the value itself, not its text
+        return "(" + parts[0][1] + ")"
+    }
+    return codes.join(" + ")
+}
+
+// Static text and escaped expressions of an interpolated attribute value.
+method nvhEmitParts(map<string, object> st, array<object> parts, integer line, string buf) {
+    for (p in parts) {
+        if (p[0] == "t") {
+            nvhStatic(st, line, p[1])
+        } else {
+            nvhFlush(st, buf)
+            nvhEmit(st, line, buf + ".append(web.escape((" + p[1] + ")))")
+        }
+    }
+}
+
+method nvhFindAttr(array<object> attrs, string name): object {
+    for (a in attrs) {
+        if (a["name"] == name) {
+            return a
+        }
+    }
+    return {}
+}
+
+method nvhEmitElement(map<string, object> st, map<string, object> node, string buf, bool root) {
+    var tag = node["tag"]
+    var line = node["line"]
+    var pos = st["file"] + ":" + line
+    nvhStatic(st, line, "<" + tag)
+    var classAttr = {}
+    var toggles = []
+    for (a in node["attrs"]) {
+        var name = a["name"]
+        if (name.startsWith("@")) {
+            var bits = name.substring(1, name.length()).split(".")
+            var event = bits[0]
+            var known = {"click": true, "dblclick": true, "input": true, "change": true, "submit": true,
+                "keydown": true, "keyup": true, "focus": true, "blur": true}
+            if (known.has(event) == false) {
+                fail("unsupported event @" + event + " (click, dblclick, input, change, submit, keydown, keyup, focus, blur)", pos)
+            }
+            if (a["kind"] == "none") {
+                fail("@" + event + " needs a handler: @" + event + "=\"method\"", pos)
+            }
+            var mods = []
+            var b = 1
+            while (b < bits.length()) {
+                mods.append(bits[b])
+                b = b + 1
+            }
+            var h = nvhHandler(a["value"], line, st)
+            nvhFlush(st, buf)
+            nvhEmit(st, line, buf + ".append(this.nvOn(" + nvhLit(event) + ", " + nvhLit(h[0]) + ", " + h[1] + ", " + nvhLit(mods.join(" ")) + "))")
+            continue
+        }
+        if (name == "bind" || name.startsWith("bind:")) {
+            var ref = a["value"].trim()
+            if (nvhIsIdent(ref) == false) {
+                fail("bind needs the name of a ref: bind=\"name\"", pos)
+            }
+            st["binds"].append([ref, line])
+            var ltag = tag.toLower()
+            var type = ""
+            var typeAttr = nvhFindAttr(node["attrs"], "type")
+            if (typeAttr.has("kind") && typeAttr["kind"] == "str") {
+                type = typeAttr["value"].toLower()
+            }
+            nvhFlush(st, buf)
+            if (ltag == "input" && type == "checkbox") {
+                nvhEmit(st, line, buf + ".append(web.attr(\"checked\", web.toBool(" + ref + ")))")
+            } else if (ltag == "input" && type == "radio") {
+                var valueAttr = nvhFindAttr(node["attrs"], "value")
+                var valueCode = nvhLit("on")
+                if (valueAttr.has("kind")) {
+                    valueCode = nvhValueCode(valueAttr, pos)
+                }
+                nvhEmit(st, line, buf + ".append(web.attr(\"checked\", web.toStr(" + ref + ") == web.toStr(" + valueCode + ")))")
+            } else if (ltag == "input") {
+                nvhEmit(st, line, buf + ".append(web.attr(\"value\", " + ref + "))")
+            } else {
+                nvhEmit(st, line, buf + ".append(web.attr(\"data-nv-value\", web.toStr(" + ref + ")))")
+            }
+            nvhEmit(st, line, buf + ".append(this.nvBind(" + nvhLit(ref) + "))")
+            continue
+        }
+        if (name.startsWith("class:")) {
+            toggles.append(a)
+            continue
+        }
+        if (name == "class") {
+            classAttr = a
+            continue
+        }
+        if (a["kind"] == "none") {
+            nvhStatic(st, line, " " + name)
+        } else if (a["kind"] == "expr") {
+            nvhFlush(st, buf)
+            nvhEmit(st, line, buf + ".append(web.attr(" + nvhLit(name) + ", (" + a["value"] + ")))")
+        } else {
+            nvhStatic(st, line, " " + name + "=\"")
+            nvhEmitParts(st, nvhInterpolate(a["value"], pos), line, buf)
+            nvhStatic(st, line, "\"")
+        }
+    }
+    if (classAttr.has("kind") || toggles.length() > 0) {
+        if (classAttr.has("kind") && classAttr["kind"] == "expr" && toggles.length() == 0) {
+            nvhFlush(st, buf)
+            nvhEmit(st, line, buf + ".append(web.attr(\"class\", (" + classAttr["value"] + ")))")
+        } else {
+            nvhStatic(st, line, " class=\"")
+            if (classAttr.has("kind")) {
+                if (classAttr["kind"] == "expr") {
+                    nvhFlush(st, buf)
+                    nvhEmit(st, line, buf + ".append(web.escape((" + classAttr["value"] + ")))")
+                } else {
+                    nvhEmitParts(st, nvhInterpolate(classAttr["value"], pos), line, buf)
+                }
+            }
+            for (tg in toggles) {
+                var cls = tg["name"].substring(6, tg["name"].length())
+                var cond = cls
+                if (tg["kind"] == "expr") {
+                    cond = tg["value"]
+                } else if (tg["kind"] == "str") {
+                    cond = tg["value"]
+                }
+                nvhFlush(st, buf)
+                nvhEmit(st, line, "if (" + cond + ") { " + buf + ".append(" + nvhLit(" " + cls) + ") }")
+            }
+            nvhStatic(st, line, "\"")
+        }
+    }
+    if (root) {
+        nvhFlush(st, buf)
+        nvhEmit(st, line, buf + ".append(this.nvMark())")
+    }
+    if (node["israw"]) {
+        nvhStatic(st, line, ">" + node["raw"] + "</" + tag + ">")
+        return
+    }
+    if (nvhIsVoid(tag)) {
+        nvhStatic(st, line, ">")
+        return
+    }
+    nvhStatic(st, line, ">")
+    nvhEmitNodes(st, node["kids"], buf)
+    nvhStatic(st, line, "</" + tag + ">")
+}
+
+method nvhEmitComponent(map<string, object> st, map<string, object> node, string buf) {
+    var tag = node["tag"]
+    var line = node["line"]
+    var pos = st["file"] + ":" + line
+    var id = nvhNext(st)
+    var c = "nvc" + id
+    var tags = st["tags"]
+    tags[tag] = true
+    var key = "this.nvKey(" + nvhLit(tag) + ")"
+    for (a in node["attrs"]) {
+        if (a["name"] == "key") {
+            key = "this.nvKeyed(" + nvhLit(tag) + ", " + nvhValueCode(a, pos) + ")"
+        }
+    }
+    nvhFlush(st, buf)
+    nvhEmit(st, line, "if (true) { var " + c + " = this.nvChild(" + key + ", " + tag + "())")
+    for (a in node["attrs"]) {
+        var name = a["name"]
+        if (name == "key") {
+            continue
+        }
+        if (name.startsWith("@")) {
+            var event = name.substring(1, name.length()).split(".")[0]
+            if (a["kind"] == "none") {
+                fail("@" + event + " needs a handler", pos)
+            }
+            var h = nvhHandler(a["value"], line, st)
+            nvhEmit(st, line, c + ".nvListen(" + nvhLit(event) + ", this, " + nvhLit(h[0]) + ", " + h[1] + ")")
+            continue
+        }
+        if (name == "bind" || name.startsWith("bind:") || name.startsWith("class:")) {
+            fail(name + " works on HTML elements, not on the component <" + tag + ">", pos)
+        }
+        nvhEmit(st, line, "web.prop(" + c + ", " + nvhLit(name) + ", " + nvhValueCode(a, pos) + ")")
+    }
+    var hasSlot = false
+    for (kid in node["kids"]) {
+        if (kid["k"] != "text" || nvhBlank(kid["text"]) == false) {
+            hasSlot = true
+        }
+    }
+    if (hasSlot) {
+        var s = "nvs" + id
+        nvhEmit(st, line, "var " + s + " = []")
+        nvhEmitNodes(st, node["kids"], s)
+        nvhFlush(st, s)
+        nvhEmit(st, st["line"], c + ".nvSetSlot(" + s + ")")
+    }
+    nvhEmit(st, st["line"], buf + ".append(this.nvRenderChild(" + c + ")) }")
+}
+
+// {#for x in xs} / {#for x, i in xs}
+method nvhEmitFor(map<string, object> st, map<string, object> tok, string buf) {
+    var code = tok["code"]
+    var pos = st["file"] + ":" + tok["line"]
+    var at = code.indexOf(" in ")
+    if (at < 0) {
+        fail("expected {#for item in items} or {#for item, index in items}", pos)
+    }
+    var vars = code.substring(0, at).split(",")
+    var items = code.substring(at + 4, code.length()).trim()
+    var item = vars[0].trim()
+    if (nvhIsIdent(item) == false) {
+        fail("expected a name before 'in' in {#for}", pos)
+    }
+    nvhFlush(st, buf)
+    if (vars.length() > 1) {
+        var index = vars[1].trim()
+        if (nvhIsIdent(index) == false) {
+            fail("expected {#for item, index in items}", pos)
+        }
+        st["loops"].append(index)
+        nvhEmit(st, tok["line"], "if (true) { var " + index + " = 0 for (" + item + " in " + items + ") {")
+    } else {
+        st["loops"].append("")
+        nvhEmit(st, tok["line"], "for (" + item + " in " + items + ") {")
+    }
+}
+
+method nvhIsBlock(array<object> nodes, integer i): bool {
+    if (i < 0 || i >= nodes.length()) {
+        return false
+    }
+    var blocks = {"if": true, "elif": true, "else": true, "endif": true, "for": true, "endfor": true, "code": true}
+    return blocks.has(nodes[i]["k"])
+}
+
+method nvhEmitNodes(map<string, object> st, array<object> nodes, string buf) {
+    var blocks = []
+    var lines = []
+    var at = 0
+    for (node in nodes) {
+        var k = node["k"]
+        var line = node["line"]
+        var pos = st["file"] + ":" + line
+        at = at + 1
+        if (k == "text" && nvhBlank(node["text"]) && node["text"].contains(chr(10)) && (nvhIsBlock(nodes, at - 2) || nvhIsBlock(nodes, at))) {
+            // the line breaks around {#if}/{#for}/<?nv ?> lines
+            continue
+        }
+        if (k == "text" || k == "comment") {
+            nvhStatic(st, line, node["text"])
+        } else if (k == "expr" || k == "echo") {
+            nvhFlush(st, buf)
+            nvhEmit(st, line, buf + ".append(web.escape((" + node["code"] + ")))")
+        } else if (k == "html") {
+            nvhFlush(st, buf)
+            nvhEmit(st, line, buf + ".append(web.text((" + node["code"] + ")))")
+        } else if (k == "code") {
+            nvhFlush(st, buf)
+            nvhEmit(st, line, node["code"])
+        } else if (k == "if") {
+            nvhFlush(st, buf)
+            blocks.append("if")
+            lines.append(line)
+            nvhEmit(st, line, "if (" + node["code"] + ") {")
+        } else if (k == "elif" || k == "else" || k == "endif") {
+            if (blocks.length() == 0 || blocks[blocks.length() - 1] != "if") {
+                fail("{" + k + "} without {#if} at the same level", pos)
+            }
+            nvhFlush(st, buf)
+            if (k == "elif") {
+                nvhEmit(st, line, "} else if (" + node["code"] + ") {")
+            } else if (k == "else") {
+                nvhEmit(st, line, "} else {")
+            } else {
+                blocks.pop()
+                lines.pop()
+                nvhEmit(st, line, "}")
+            }
+        } else if (k == "for") {
+            blocks.append("for")
+            lines.append(line)
+            nvhEmitFor(st, node, buf)
+        } else if (k == "endfor") {
+            if (blocks.length() == 0 || blocks[blocks.length() - 1] != "for") {
+                fail("{/for} without {#for} at the same level", pos)
+            }
+            blocks.pop()
+            lines.pop()
+            nvhFlush(st, buf)
+            var index = st["loops"].pop()
+            if (index == "") {
+                nvhEmit(st, line, "}")
+            } else {
+                nvhEmit(st, line, index + " = " + index + " + 1 } }")
+            }
+        } else if (k == "open") {
+            var tag = node["tag"]
+            if (tag == "slot") {
+                nvhFlush(st, buf)
+                nvhEmit(st, line, "this.nvEmitSlot(" + buf + ")")
+            } else if (nvhIsComponent(tag)) {
+                nvhEmitComponent(st, node, buf)
+            } else {
+                nvhEmitElement(st, node, buf, false)
+            }
+        }
+    }
+    if (blocks.length() > 0) {
+        var open = blocks[blocks.length() - 1]
+        fail("{#" + open + "} is not closed with {/" + open + "} (blocks must close inside the element they open in)", st["file"] + ":" + lines[lines.length() - 1])
+    }
+}
+
+// The top level: <html> and <body> are unwrapped, <head> goes to the
+// document head, <style> becomes the component's style sheet, and a single
+// root element carries the component's data-nv id (otherwise a
+// display:contents <nv-c> wrapper does).
+method nvhEmitTop(map<string, object> st, array<object> nodes) {
+    var flat = []
+    nvhUnwrap(nodes, flat)
+    var content = []
+    for (node in flat) {
+        var k = node["k"]
+        if (k == "text" && nvhBlank(node["text"])) {
+            continue
+        }
+        if (k == "comment") {
+            continue
+        }
+        if (k == "open" && (node["tag"].toLower() == "head" || node["tag"].toLower() == "style")) {
+            continue
+        }
+        content.append(node)
+    }
+    var root = {}
+    if (content.length() == 1 && content[0]["k"] == "open" && nvhIsComponent(content[0]["tag"]) == false && content[0]["tag"] != "slot") {
+        root = content[0]
+        root["isroot"] = true
+    }
+    var wrapped = root.has("k") == false
+    var firstLine = st["line"]
+    if (flat.length() > 0) {
+        firstLine = flat[0]["line"]
+    }
+    if (wrapped) {
+        nvhStatic(st, firstLine, "<nv-c")
+        nvhFlush(st, "out")
+        nvhEmit(st, firstLine, "out.append(this.nvMark())")
+        nvhStatic(st, firstLine, " style=\"display:contents\">")
+    }
+    var styles = []
+    for (node in flat) {
+        var k = node["k"]
+        if (k == "text" && nvhBlank(node["text"])) {
+            continue
+        }
+        if (k == "open" && node["tag"].toLower() == "style" && node["israw"]) {
+            styles.append(node["raw"].trim())
+            continue
+        }
+        if (k == "open" && node["tag"].toLower() == "head") {
+            nvhFlush(st, "out")
+            var h = "nvh" + nvhNext(st)
+            nvhEmit(st, node["line"], "if (true) { var " + h + " = this.nvHeadOut()")
+            nvhEmitNodes(st, node["kids"], h)
+            nvhFlush(st, h)
+            nvhEmit(st, st["line"], "}")
+            continue
+        }
+        if (node.has("isroot")) {
+            nvhEmitElement(st, node, "out", true)
+            continue
+        }
+        nvhEmitNodes(st, [node], "out")
+    }
+    if (wrapped) {
+        nvhStatic(st, st["line"], "</nv-c>")
+    }
+    nvhFlush(st, "out")
+    st["style"] = styles.join(chr(10))
+}
+
+method nvhUnwrap(array<object> nodes, array<object> flat) {
+    for (node in nodes) {
+        if (node["k"] == "open") {
+            var tag = node["tag"].toLower()
+            if (tag == "html" || tag == "body") {
+                nvhUnwrap(node["kids"], flat)
+                continue
+            }
+        }
+        flat.append(node)
+    }
+}
+
+// Novus code converting `value` to a field's declared type.
+method nvhConvert(string type, string value): string {
+    if (type == "integer" || type == "int") {
+        return "web.toInt(" + value + ")"
+    }
+    if (type == "float" || type == "double") {
+        return "web.toFloat(" + value + ")"
+    }
+    if (type == "bool" || type == "boolean") {
+        return "web.toBool(" + value + ")"
+    }
+    if (type == "string" || type == "str") {
+        return "web.toStr(" + value + ")"
+    }
+    return value
+}
+
+// The Novus source for a .nvh file. `dir` is its directory and `root` the
+// project root: a component tag <Name> in the template imports Name.nvh by
+// itself (import @package/Name) when it is found next to the file, in
+// components/ below it or in ../components/.
+method transpileNvh(string source, string file, string dir, string root): string {
+    var name = nvhClassName(file)
+    var opener = "define class " + name + " based NvhComponent {"
+    var st = {"file": file, "out": [], "line": 1, "pending": [], "pline": 1, "n": 0,
+        "handlers": {}, "inline": [], "binds": [], "loops": [], "imports": [],
+        "props": [], "refs": [], "names": {}, "opened": false, "style": "", "tags": {}}
+    var i = 0
+    while (i < source.length() && nvhIsSpace(source.charAt(i))) {
+        i = i + 1
+    }
+    var decls = ""
+    var template = source
+    var templateLine = 1
+    if (source.substring(i, i + 4) == "<?nv") {
+        var end = source.indexOf("?>", i)
+        if (end < 0) {
+            fail("unclosed <?nv (missing ?>)", file + ":" + (1 + nvhNewlines(source.substring(0, i))))
+        }
+        var lead = nvhOnlyNewlines(source.substring(0, i))
+        decls = lead + nvhDecls(source.substring(i + 4, end), 1 + nvhNewlines(source.substring(0, i + 4)), file, opener, st)
+        template = source.substring(end + 2, source.length())
+        templateLine = 1 + nvhNewlines(source.substring(0, end))
+    }
+    if (st["opened"] == false) {
+        decls = decls + " " + opener
+    }
+    st["line"] = templateLine
+    st["pline"] = templateLine
+    var tree = nvhTree(nvhTokens(template, templateLine, file), file)
+    nvhEmitTop(st, tree)
+    var header = "import web "
+    for (imp in st["imports"]) {
+        header = header + imp + " "
+    }
+    for (tag in st["tags"]) {
+        if (tag != name) {
+            for (sub in [".", "components", "../components"]) {
+                var folder = joinPath(dir, sub)
+                if (fileExists(joinPath(folder, tag + ".nvh"))) {
+                    var pkg = packagePath(root, folder)
+                    if (pkg == "") {
+                        header = header + "import @" + tag + " "
+                    } else if (pkg != "?") {
+                        header = header + "import @" + pkg + "/" + tag + " "
+                    }
+                    break
+                }
+            }
+        }
+    }
+    var render = st["out"].join("")
+    for (b in st["binds"]) {
+        var names = st["names"]
+        if (names.has(b[0]) == false || names[b[0]] == "prop") {
+            fail("bind=\"" + b[0] + "\": '" + b[0] + "' is not a ref of " + name + " (declare it: ref " + b[0] + " = ...)", file + ":" + b[1])
+        }
+    }
+    var tail = []
+    tail.append("method nvName(): string { return " + nvhLit(name) + " }")
+    tail.append("method nvNew(): NvhComponent { return " + name + "() }")
+    var defaults = []
+    var props = []
+    for (p in st["props"]) {
+        if (p["init"] != "") {
+            defaults.append(p["name"] + " = " + p["init"])
+        }
+        props.append("if (nvkey == " + nvhLit(p["name"]) + ") { " + p["name"] + " = " + nvhConvert(p["type"], "nvvalue") + " return true }")
+    }
+    tail.append("method nvDefaults() { " + defaults.join(" ") + " }")
+    tail.append("method nvProp(string nvkey, object nvvalue): bool { " + props.join(" ") + " return false }")
+    var setup = []
+    var sets = []
+    for (r in st["refs"]) {
+        if (r["init"] != "") {
+            setup.append(r["name"] + " = " + r["init"])
+        }
+        sets.append("if (nvkey == " + nvhLit(r["name"]) + ") { " + r["name"] + " = " + nvhConvert(r["type"], "nvvalue") + " return true }")
+    }
+    tail.append("method nvSetup() { " + setup.join(" ") + " }")
+    tail.append("method nvSet(string nvkey, object nvvalue): bool { " + sets.join(" ") + " return false }")
+    var calls = []
+    var handlers = st["handlers"]
+    for (key in handlers) {
+        var h = handlers[key]
+        var args = []
+        var a = 0
+        while (a < h[1]) {
+            args.append("nvargs[" + a + "]")
+            a = a + 1
+        }
+        calls.append("if (nvkey == " + nvhLit(h[0]) + " && nvargs.length() == " + h[1] + ") { " + h[0] + "(" + args.join(", ") + ") return true }")
+    }
+    tail.append("method nvCall(string nvkey, array nvargs): bool { " + calls.join(" ") + " return false }")
+    if (st["style"] != "") {
+        tail.append("method nvStyle(): string { return " + nvhLit(st["style"]) + " }")
+    }
+    for (m in st["inline"]) {
+        tail.append(m)
+    }
+    return header + decls + " method nvRender(array out) { " + render + " }" + chr(10) + tail.join(chr(10)) + chr(10) + "}" + chr(10)
+}

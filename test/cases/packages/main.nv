@@ -1,0 +1,20 @@
+package main
+
+import geo
+import draw
+import draw/shapes
+import @helpers
+
+// Folders are packages. Their functions are called unqualified as long as
+// only one package has the name, and qualified (geo.describe) when two do.
+method main {
+    println area(Circle(2.0))          // only geo has area/1
+    println area(3, 4)                 // only draw has area/2
+    println geo.describe()             // both have describe/0
+    println draw.describe()
+    println geo.UNIT + " " + draw.UNIT // globals likewise
+    println corner()                   // draw/shapes is package shapes
+    println shapes.corner()
+    println Circle(1.0).label()        // a class of geo calls geo's describe()
+    println shout("done")              // helpers.nv is part of package main
+}

@@ -1,6 +1,6 @@
-package greetlib
+package lib
 
-import "math.nv"
+import @lib/math
 
 method greet(string who): string {
     return "hello ${who}, ${square(2)}"

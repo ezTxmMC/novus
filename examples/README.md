@@ -368,6 +368,7 @@ Larger programs with a directory of their own:
 | [shapes](shapes/main.nv) | Interfaces, abstract classes, inheritance, polymorphism, enums | `novusc run examples/shapes/main.nv` |
 | [todo](todo/main.nv) | CLI arguments and JSON persistence | `novusc run examples/todo/main.nv add "buy milk"` |
 | [wordcount](wordcount/main.nv) | Files, maps and string processing | `novusc run examples/wordcount/main.nv file.txt` |
+| [web](web/main.nv) | A live web app from `.nvh` components: pages, layout with slots, props, events, keyed lists, shared state pushed to every visitor, `tick()` | `novusc run examples/web/main.nv`, then open http://localhost:8080 |
 | [mccloud](mccloud/README.md) | A multi-file project: classes, `os`/`path`/`json`, `screen` and Windows consoles | `novusc build examples/mccloud/main.nv && ./mccloud init` |
 
 ## Notes

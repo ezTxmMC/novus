@@ -1,0 +1,15 @@
+package main
+
+// State every visitor shares. Components read and change it like any other
+// value; after each event the open pages are rendered again, so a change
+// made by one visitor shows up for all of them.
+
+define class Todo {
+    private string text: get
+    private bool done: get, set
+    private integer id: get
+}
+
+var todos = [Todo{text="Try Novus", done=true, id=1}, Todo{text="Write a .nvh component", done=false, id=2}]
+var nextTodo = 3
+var messages = []

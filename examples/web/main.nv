@@ -1,0 +1,25 @@
+package main
+
+import web
+import @state
+import pages
+
+// A small web app built from .nvh components.
+//
+//   novusc run examples/web/main.nv          then open http://localhost:8080
+//   PORT=3000 novusc run examples/web/main.nv
+//
+// Every page is a component (pages/), made of smaller ones (components/).
+// Their refs live on the server; clicks and typing are sent there, and what
+// changed is patched into the page. Todos and chat messages are shared
+// between everyone who has the page open - open it in two windows.
+
+method main {
+    web.page("/", Home())
+    web.page("/todos", Todos())
+    web.page("/chat", Chat())
+    web.page("/hello/:name", Hello())
+    web.files("/public", "public")
+    web.tick(1000)
+    web.serve(web.port(8080))
+}

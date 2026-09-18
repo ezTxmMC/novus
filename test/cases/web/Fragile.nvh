@@ -1,0 +1,10 @@
+<?nv
+ref array<string> items = ["only"]
+ref integer at = 0
+
+method explode() {
+    var empty = []
+    items.append(empty[3])
+}
+?>
+<p @click={at = at + 1}>{items[at]} <button @click="explode">boom</button></p>

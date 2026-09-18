@@ -1,30 +1,64 @@
 # Modules and imports
 
-Novus has two kinds of imports: **files** of your own program and **modules**
-(the standard library and dependencies).
-
-## Files
-
-```nv
-import "helpers.nv"
-import "../lib/shapes.nv"
-```
-
-The path is relative to the importing file. Every file is loaded once, cycles
-are fine, and all declarations end up in one program - so a method from an
-imported file is called without any prefix.
+Novus has three kinds of imports: **packages** of your own project, the
+**standard modules** and **dependency modules** from `project.nv`. There are
+no file paths in imports - a folder is a package.
 
 ## Packages
 
-The `package` line at the top names the file's package:
+The project root is the folder with the `project.nv` (without one: the folder
+of the main file). Every folder below it is a package, and its files say so:
 
-```nv
-package geometry
+```
+app/
+  project.nv
+  main.nv            package main
+  helpers.nv         package main
+  geo/
+    circle.nv        package geo
+    units.nv         package geo
+    shapes/
+      square.nv      package shapes
 ```
 
-Packages group files that belong together and give the editor its symbol
-scopes. They do not create a namespace at run time - within one program,
-top-level names must be unique.
+```nv
+package main
+
+import geo              // every .nv (and .nvh) file in geo/
+import geo/shapes       // a nested package: geo/shapes/
+import @geo/circle      // only geo/circle.nv - a file, without the extension
+import @helpers         // a file of the root folder
+```
+
+A file's `package` line has to name its folder (`geo/units.nv` is
+`package geo`); the compiler says so when it does not. `package main` is
+the exception: it may live anywhere, and the root folder's files are the
+main package. Every file is loaded once and cycles are fine.
+
+## Names
+
+What a package declares is used **unqualified** - no prefix, as long as only
+one package has the name:
+
+```nv
+println area(Circle(2.0))       // geo's area()
+println corner()                // shapes' corner()
+```
+
+When two packages declare the same function or constant, the unqualified
+name is ambiguous and the compiler asks for the package in front of it:
+
+```nv
+println geo.describe()          // both geo and draw have describe()
+println draw.describe()
+println geo.UNIT
+```
+
+Inside a package its own names come first, so `describe()` in a file of
+`geo` is geo's. The main package's names always win over those of other
+packages. A nested package is qualified by its last folder (`shapes.corner()`).
+Classes, enums and interfaces are shared by the whole program: their names
+must be unique.
 
 ## Standard modules
 
@@ -66,19 +100,24 @@ missing import. The full list is in the [standard library reference](/stdlib).
 
 ## Dependency modules
 
-A dependency declared in `project.nv` is imported by its module path:
+A dependency declared in `project.nv` is imported by its module path, in
+quotes:
 
 ```nv
-import "github.com/user/geo"                   // the module's entry file
-import "github.com/user/geo/shapes/circle.nv"  // a file inside the module
+import "github.com/user/geo"                // the module's entry file
+import "github.com/user/geo/shapes"         // a package of the module
+import "github.com/user/geo/shapes/circle"  // one file of that package
 ```
 
-See [Dependencies](/docs/projects/dependencies).
+Inside the module, its own folder is the root its packages are found in. See
+[Dependencies](/docs/projects/dependencies).
 
 ## Resolution order
 
-When `novusc` sees an import it tries, in this order:
+For `import name` (and `import a/b`), `novusc` takes:
 
-1. a standard module with that name (`import os`)
-2. a dependency module path from `project.nv`
-3. a file path relative to the importing file
+1. the folder `name/` below the project root, when it has `.nv` or `.nvh` files
+2. otherwise the standard module of that name
+
+`import @a/b` is always the file `a/b.nv` (or `a/b.nvh`) below the root, and
+a quoted path is always a dependency module.

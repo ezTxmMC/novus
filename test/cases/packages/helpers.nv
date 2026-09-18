@@ -1,0 +1,5 @@
+package main
+
+method shout(string s): string {
+    return s.toUpper() + "!"
+}

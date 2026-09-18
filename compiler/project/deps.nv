@@ -3,8 +3,6 @@ package project
 import os
 import path
 
-import "manifest.nv"
-
 // Dependencies: every `require` is fetched with git into the module cache
 // ($NOVUS_DEPS, default ~/.novus/deps) as <module>@<version>, transitively
 // through the dependencies' own project.nv files. The result is a module

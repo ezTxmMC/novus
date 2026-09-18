@@ -5,6 +5,7 @@ novusc run [file.nv] [args...]     compile to a temporary binary and run it
 novusc build [file.nv] [options]   compile to a native executable
 novusc emit [file.nv] [-o out.c]   write the generated C
 novusc check [file.nv]             parse and analyze only
+novusc nvh <file.nvh>              the Novus code a .nvh component compiles to
 novusc init [module-path]          create project.nv + main.nv
 novusc deps [add|update]           fetch dependencies
 novusc version | help
@@ -46,6 +47,18 @@ novusc emit app.nv --no-runtime -o app.c   # #include "novus_rt.h" instead
 
 Parses, resolves imports and runs the semantic checks without producing
 anything - the fastest way to validate a file.
+
+### nvh
+
+```bash
+novusc run Counter.nvh         # a component on its own: served as the page at /
+novusc nvh Counter.nvh         # the class it compiles to
+```
+
+`run`, `build` and `check` take a `.nvh` [component](/docs/web/components)
+as well; run on its own it becomes a server for the page at `/` (port
+`$PORT`, default 8080). `nvh` prints the generated Novus source - its line
+numbers match the `.nvh` file, which is also what error messages refer to.
 
 ### init and deps
 

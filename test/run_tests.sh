@@ -82,5 +82,14 @@ if [[ -z "$FILTER" || "examples/todo" == *"$FILTER"* ]]; then
     fi
 fi
 
+# the web example serves forever: it only has to compile
+if [[ -z "$FILTER" || "examples/web" == *"$FILTER"* ]]; then
+    if (cd "$ROOT/examples/web" && "$NOVUSC" check main.nv) > "$WORK/web.out" 2>&1; then
+        echo "ok   examples/web"; pass=$((pass + 1))
+    else
+        echo "FAIL examples/web"; head -20 "$WORK/web.out"; failed=$((failed + 1))
+    fi
+fi
+
 echo "$pass passed, $failed failed"
 [ "$failed" = 0 ]

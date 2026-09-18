@@ -1,7 +1,6 @@
 package main
 
-import "driver/build.nv"
-import "driver/cli.nv"
+import driver
 
 // novusc - the Novus compiler driver.
 //
@@ -9,6 +8,7 @@ import "driver/cli.nv"
 //   novusc build [file.nv] [options]      compile to a native executable
 //   novusc emit [file.nv] [-o out.c]      write the generated C
 //   novusc check [file.nv]                parse and analyze only
+//   novusc nvh <file.nvh>                 the Novus code a component compiles to
 //   novusc init [module] | deps [...]     project.nv and dependencies
 //   novusc version | help
 //
@@ -39,6 +39,9 @@ method main(array<string> arguments) {
     }
     if (command == "emit") {
         return emitCommand(sourceFor(arguments), optionsFrom(arguments, optionStart(arguments)))
+    }
+    if (command == "nvh") {
+        return nvhCommand(arguments)
     }
     if (command == "check") {
         var source = sourceFor(arguments)

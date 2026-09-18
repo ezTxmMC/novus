@@ -1,0 +1,5 @@
+package tools
+
+method help(): string {
+    return "?"
+}

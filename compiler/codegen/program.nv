@@ -1,15 +1,7 @@
 package codegen
 
-import "../ast/sexp.nv"
-import "../ast/text.nv"
-import "../parser/errors.nv"
-import "../parser/types.nv"
-import "calls.nv"
-import "checks.nv"
-import "common.nv"
-import "expressions.nv"
-import "index.nv"
-import "methods.nv"
+import ast
+import parser
 
 // Whole-program generation: classes, enums, globals, main.
 //

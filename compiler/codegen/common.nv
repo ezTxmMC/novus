@@ -1,9 +1,7 @@
 package codegen
 
-import "../ast/sexp.nv"
-import "../ast/text.nv"
-import "../parser/errors.nv"
-import "../parser/types.nv"
+import ast
+import parser
 
 // Small helpers shared by the code generator files.
 //

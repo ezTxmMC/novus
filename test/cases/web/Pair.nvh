@@ -1,0 +1,5 @@
+<?nv
+ref bool open = false
+?>
+<dt @click={open = !open}>toggle</dt>
+<dd class:open>{#if open}shown{:else}hidden{/if}</dd>

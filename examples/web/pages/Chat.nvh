@@ -1,0 +1,23 @@
+<?nv
+ref string name = "guest"
+ref string text = ""
+
+method send() {
+    if (text.trim() != "") {
+        messages.append({"from": name, "text": text.trim()})
+        text = ""
+    }
+}
+?>
+<Layout title="Chat">
+    <p class="muted">Open this page in a second window: messages arrive there without a reload.</p>
+    <div class="chat">
+        <input bind="name" class="name">
+        <input bind="text" @keydown.enter="send" placeholder="Say something, press Enter">
+    </div>
+    <ul class="messages">
+        {#for m in messages}
+            <li class:mine={m["from"] == name}><b>{m["from"]}</b> {m["text"]}</li>
+        {/for}
+    </ul>
+</Layout>

@@ -1,8 +1,8 @@
 package app
 
-import "lib/math.nv"
-import "lib/greet.nv"
-import "lib/math.nv"
+import @lib/math
+import @lib/greet
+import @lib/math
 import json
 
 method main {

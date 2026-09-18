@@ -1,0 +1,1 @@
+error: main.nv:7: 'hello' is defined in more than one package (a.hello, b.hello) - call it qualified, e.g. a.hello(...)

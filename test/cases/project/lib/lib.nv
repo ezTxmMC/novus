@@ -1,6 +1,6 @@
 package geo
 
-import "shapes/circle.nv"
+import shapes
 
 method greetGeo(): string {
     return "geo v1"

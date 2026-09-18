@@ -1,8 +1,6 @@
 package parser
 
-import "../lexer/tokens.nv"
-import "errors.nv"
-import "tokens.nv"
+import lexer
 
 // Type names and parameter lists.
 //

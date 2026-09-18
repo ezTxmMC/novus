@@ -8,11 +8,13 @@ import remarkMdxFrontmatter from 'remark-mdx-frontmatter';
 import rehypeSlug from 'rehype-slug';
 import rehypeShiki from '@shikijs/rehype';
 import novusGrammar from './src/lib/novus.tmLanguage.json';
+import nvhGrammar from './src/lib/nvh.tmLanguage.json';
 
-// The Novus grammar is the same TextMate file the VS Code extension uses
+// The Novus grammars are the same TextMate files the VS Code extension uses
 // (copied by scripts/sync-content.ts), so code blocks look exactly like the
-// editor does.
+// editor does - `nv` for Novus, `nvh` for .nvh components.
 const novus = { ...novusGrammar, name: 'novus', aliases: ['nv'] } as never;
+const nvh = { ...nvhGrammar, name: 'nvh', embeddedLangs: ['html', 'novus'] } as never;
 
 export default defineConfig({
   base: process.env.DOCS_BASE ?? '/',
@@ -28,7 +30,7 @@ export default defineConfig({
             rehypeShiki,
             {
               themes: { light: 'github-light', dark: 'github-dark-default' },
-              langs: ['bash', 'json', 'c', 'typescript', 'ini', novus],
+              langs: ['bash', 'json', 'c', 'typescript', 'ini', 'html', novus, nvh],
               defaultColor: false,
             },
           ],

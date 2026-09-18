@@ -1,0 +1,1 @@
+error: Broken.nvh:7: bind="title": 'title' is not a ref of Broken (declare it: ref title = ...)

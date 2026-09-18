@@ -1,13 +1,8 @@
 package codegen
 
-import "../ast/sexp.nv"
-import "../ast/text.nv"
-import "../parser/errors.nv"
-import "../std/stdlib.nv"
-import "builtins.nv"
-import "common.nv"
-import "expressions.nv"
-import "index.nv"
+import ast
+import parser
+import std
 
 // Calls: builtins, constructors, user methods and overloads.
 //
@@ -145,6 +140,14 @@ method genCall(string node, map<string, string> prog, map<string, string> ctx, m
         }
         return invokeCall("self", name, nargs, genArgs(node, 2, prog, ctx, locals))
     }
+    if (prog.has("func:" + key) == false && prog.has("unq:" + key)) {
+        // a function of one of the program's packages, called unqualified
+        var candidates = prog["unq:" + key]
+        if (candidates.contains(" ")) {
+            ambiguousName(name, candidates, ctx["pos"])
+        }
+        return genResolvedCall(candidates, nargs, genArgs(node, 2, prog, ctx, locals), prog)
+    }
     if (isCoreBuiltin(name) || (prog.has("hasfunc:" + name) == false && isClassLike(prog, name) == false)) {
         var builtin = genBuiltinCall(name, nargs, genArgs(node, 2, prog, ctx, locals), ctx)
         if (builtin != "") {
@@ -176,6 +179,9 @@ method genCall(string node, map<string, string> prog, map<string, string> ctx, m
     }
     if (prog.has("iface:" + name)) {
         fail("cannot instantiate interface '" + name + "'", ctx["pos"])
+    }
+    if (prog.has("unqname:" + name)) {
+        fail("no overload of '" + name + "' (" + prog["unqname:" + name].split(" ").join(", ") + ") takes " + nargs + " argument(s)", ctx["pos"])
     }
     fail("unknown method '" + name + "()'", ctx["pos"])
     return ""

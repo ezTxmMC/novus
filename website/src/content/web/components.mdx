@@ -1,0 +1,270 @@
+# .nvh components
+
+A `.nvh` file is HTML with Novus in it - the way a PHP page is HTML with PHP
+in it - and at the same time a component, the way a `.vue` or `.svelte` file
+is one. Pages are rendered on the server; the components keep their state
+there, and the page stays live: a click or a keystroke is sent to the server,
+the handler runs, and only the components whose output changed are patched
+into the page.
+
+```nvh
+<?nv
+ref integer count = 0
+?>
+<button @click={count = count + 1}>Clicked {count} times</button>
+```
+
+```bash
+novusc run Counter.nvh          # serves it on http://localhost:8080 (PORT=... to change)
+```
+
+There is no JavaScript to write and no build step besides `novusc`: the
+compiler turns `Counter.nvh` into a class `Counter`, and the `web` module
+renders it, answers the browser and ships a small script (about 4 KB) that
+sends events and applies patches.
+
+## How it works
+
+- **Rendering** - every visit renders the page component on the server into
+  plain HTML. It works without JavaScript; with it the page becomes live.
+- **Views** - each open page is a *view* on the server: the component tree
+  with its refs. Events name a component and a handler; the handler runs on
+  that component's object.
+- **Patches** - after an event every component is rendered again. The server
+  compares each component's own output (its children count as markers) with
+  what the browser has and sends the topmost changed ones. The browser morphs
+  them into the page, keeping focus, caret and what is being typed.
+- **Live** - every view also holds a server-sent event stream. A change that
+  happens elsewhere - another visitor's click, a `web.tick()` - is pushed to
+  the page without a request.
+
+The server is one thread and one `poll()` loop, so handlers never run at the
+same time and state shared between visitors needs no lock.
+
+## Anatomy of a file
+
+```nvh
+<?nv
+import strings
+
+prop string title = "Todos"          // set by the parent or the URL
+ref array<string> items = []         // the component's state
+ref string draft = ""
+
+method add() {
+    if (draft.trim() != "") {
+        items.append(draft.trim())
+        draft = ""
+    }
+}
+?>
+<head>
+    <title>{title}</title>
+</head>
+<section class="todos">
+    <h1>{title} ({items.length()})</h1>
+    <form @submit="add">
+        <input bind="draft" placeholder="What next?">
+    </form>
+    <ul>
+        {#for item, i in items}
+            <li>{i + 1}. {item}</li>
+        {/for}
+    </ul>
+</section>
+<style>
+.todos { max-width: 30rem }
+</style>
+```
+
+The `<?nv ... ?>` block at the very start holds the component's members:
+
+| Member | Becomes |
+| --- | --- |
+| `prop [type] name [= default]` | a field the parent (or the URL) sets |
+| `ref [type] name [= initial]` | a field holding state - initialized once per view, bindable |
+| `var [type] name [= initial]` | the same as `ref` |
+| `method ...` | a method of the component |
+| `import ...` | an import of the file |
+| `define class/enum ...` | a type next to the component (write these first) |
+
+Everything after the block is the template. Initial values may use props -
+refs are initialized after the props arrived.
+
+## Templates
+
+| Syntax | Meaning |
+| --- | --- |
+| `{expr}` | the value, HTML-escaped |
+| `{@html expr}` | the value as raw HTML |
+| `<?= expr ?>` | the value, HTML-escaped (PHP style) |
+| `<?nv statements ?>` | Novus statements, run while rendering |
+| `{#if c}` `{:else if c}` `{:else}` `{/if}` | conditions |
+| `{#for x in xs}` `{#for x, i in xs}` `{/for}` | loops (with an index) |
+| `attr={expr}` | the attribute from a value; `true` writes it bare, `false` and nothing drop it |
+| `attr="a {expr} b"` | an interpolated attribute |
+| `class:name={cond}` / `class:name` | adds the class when the condition (or the ref of that name) is true |
+| `\{` `\}` | literal braces |
+
+`<script>` and `<style>` contents are copied as they are. The PHP style
+works throughout - a block may open in one `<?nv ?>` and close in another:
+
+```nvh
+<ul>
+<?nv for (n in names) { ?>
+    <li><?= n ?></li>
+<?nv } ?>
+</ul>
+```
+
+## Events
+
+`@event="handler"` calls a method of the component; arguments are evaluated
+while rendering, `$value` is what the browser reports: the text of an input,
+the state of a checkbox, the fields of a submitted form (as a map).
+
+```nvh
+<button @click="remove(item.id())">x</button>
+<input @input="search($value)">
+<input @keydown.enter.prevent="save">
+<button @click={open = !open}>toggle</button>      // statements work too
+```
+
+Events: `click`, `dblclick`, `input`, `change`, `submit`, `keydown`, `keyup`,
+`focus`, `blur`. Modifiers: `.prevent`, `.stop` and keys - `.enter`,
+`.escape`, `.tab`, `.space`, `.up`, `.down`, `.left`, `.right`, `.delete`,
+`.backspace`. `@submit` always prevents the browser's own submit.
+
+Statements in braces become a method of their own, so they see the
+component's fields but not the variables of a `{#for}` - pass those as
+arguments of a named handler instead.
+
+## Binding
+
+`bind="ref"` connects an input to a ref both ways: typing sets the ref, and
+setting the ref changes the input. It works on text inputs, textareas,
+selects, checkboxes (a `bool`) and radio buttons (the chosen `value`). The
+browser sends text; the ref's declared type decides the conversion
+(`ref integer age` receives an integer).
+
+## Components
+
+A tag that starts with an upper-case letter is a component. `<Counter>` finds
+`Counter.nvh` by itself next to the file, in `components/` below it or in
+`../components/`; anywhere else, import its package (`import widgets`) or
+the one file (`import @widgets/Counter`).
+
+```nvh
+<Counter label="Apples" start={3} @change="changed($value)" />
+<Card title="News">
+    <p>Content for the card's slot</p>
+</Card>
+```
+
+- **Props** - attributes set the child's props on every render. `name={x}`
+  passes the value itself, `name="text {x}"` a string.
+- **Slots** - what is written between the tags is rendered by the parent and
+  shown where the child writes `<slot/>`.
+- **Events** - the child calls `emit("change", value)`; the parent listens
+  with `@change="handler($value)"`.
+- **Identity** - a child keeps its refs as long as it is rendered at the same
+  place. In a loop, give it `key={item.id()}` so its state follows the item
+  instead of the position.
+
+## Pages and the server
+
+```nv
+import web
+import pages                    // every component in pages/
+
+method main {
+    web.page("/", Home())
+    web.page("/user/:id", User())   // :id and ?query=... become props
+    web.files("/assets", "public")  // static files
+    web.tick(1000)                  // tick() on every open page, each second
+    web.serve(web.port(8080))       // $PORT, else 8080
+}
+```
+
+| Function | What |
+| --- | --- |
+| `web.page(pattern, component)` | a page; `:name` segments and query parameters are handed to props of that name |
+| `web.files(prefix, dir)` | serves the files below `dir` |
+| `web.tick(ms)` | calls `tick()` on every component of every open page and pushes what changed |
+| `web.serve(port)` | runs the server |
+| `web.port(fallback)` | `$PORT` or the fallback |
+| `web.keepViews(seconds)` | how long a view survives a lost connection (300) |
+| `web.silent()` | no request log |
+
+`<head>` at the top of a template goes into the document head (from any
+component - a layout component can own the `<title>` and the stylesheets).
+A top-level `<style>` is the component's style sheet, sent once per page no
+matter how many instances there are. A page may also be written as a whole
+document - `<!doctype html>`, `<html>` and `<body>` are unwrapped.
+
+## Live state
+
+A ref belongs to one component in one page. State that lives in a global
+belongs to everyone:
+
+```nv
+// state.nv
+var messages = []
+```
+
+```nvh
+<?nv
+ref string text = ""
+method send() {
+    messages.append(text)
+    text = ""
+}
+?>
+<input bind="text" @keydown.enter="send">
+<ul>{#for m in messages}<li>{m}</li>{/for}</ul>
+```
+
+After any event, every open page is rendered again and gets what changed for
+it, so a message sent in one window shows up in all of them.
+
+## Lifecycle and helpers
+
+| In a component | What |
+| --- | --- |
+| `method mount()` | runs once, after props and refs are set, before the first render |
+| `method tick()` | runs every `web.tick()` interval while the page is open |
+| `emit(event[, value])` | raises an event for the parent |
+| `navigate(url)` | sends the browser to another URL after the event |
+| `id()` | the component's id in the page |
+
+## Testing without a browser
+
+The same machinery renders and runs events in a plain program:
+
+```nv
+import web
+import @Counter
+
+method main {
+    var view = web.view(Counter())
+    println web.render(view)                               // the HTML
+    println web.trigger(view, "c1", "nvInline1", [])       // an event -> {"p": [[id, html]...]}
+    println web.input(view, "c1", "count", "5")            // typing into an input with bind="count"
+    println web.document(view, false)                      // the whole page
+}
+```
+
+`novusc nvh Counter.nvh` prints the Novus code a component compiles to.
+
+## Things to know
+
+- Handler arguments travel through the page: the browser can send any value
+  for them. Check what a handler receives before trusting it, as with any
+  form field.
+- The document head is rendered with the page and not updated live.
+- Every event renders the view again; pages are meant to be interactive
+  documents, not canvases updated sixty times a second.
+- A component with a single root element carries its id on that element;
+  otherwise it is wrapped in `<nv-c style="display:contents">`, which the
+  HTML parser does not accept everywhere (inside `<table>`, give the
+  component a single root such as a `<tr>`).

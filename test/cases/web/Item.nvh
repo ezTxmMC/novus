@@ -1,0 +1,10 @@
+<?nv
+prop string label = "?"
+ref integer clicks = 0
+
+method hit() {
+    clicks = clicks + 1
+    emit("hit", label)
+}
+?>
+<li @click="hit">{label} ({clicks})</li>

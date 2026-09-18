@@ -1,0 +1,14 @@
+<?nv
+import time
+ref string now = ""
+
+method mount() {
+    now = time.format(time.now(), "%H:%M:%S")
+}
+
+// web.tick(1000) calls this every second while the page is open
+method tick() {
+    now = time.format(time.now(), "%H:%M:%S")
+}
+?>
+<p class="clock">Server time (UTC): <code>{now}</code></p>

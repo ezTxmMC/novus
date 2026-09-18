@@ -1,0 +1,9 @@
+package main
+
+import web
+import @Broken
+
+// bind= works on refs only: props belong to the parent.
+method main {
+    println web.renderHtml(Broken())
+}

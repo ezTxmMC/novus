@@ -1,6 +1,6 @@
 package codegen
 
-import "../parser/errors.nv"
+import parser
 
 // Free builtin functions.
 //

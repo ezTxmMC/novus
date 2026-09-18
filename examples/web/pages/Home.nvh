@@ -1,0 +1,18 @@
+<?nv
+ref integer total = 0
+
+method changed(integer value) {
+    total = value
+}
+?>
+<Layout title="Home">
+    <p>
+        This page is a <code>.nvh</code> file: HTML with Novus in it, rendered on
+        the server. The counters below keep their state there - every click is a
+        round trip, and only what changed comes back.
+    </p>
+    <Counter label="Apples" start={3} @change="changed($value)" />
+    <Counter label="Pears" />
+    <p>Last change: {total}</p>
+    <Clock />
+</Layout>

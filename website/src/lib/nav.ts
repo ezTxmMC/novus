@@ -9,7 +9,7 @@ export const NAV: NavSection[] = [
       { title: 'Introduction', path: '/docs/introduction', summary: 'What Novus is and why it exists' },
       { title: 'Installation', path: '/docs/installation', summary: 'Bootstrap from source or grab a binary' },
       { title: 'Your first program', path: '/docs/first-program', summary: 'From hello world to a native binary' },
-      { title: 'The novusc CLI', path: '/docs/cli', summary: 'run, build, emit, check, init, deps' },
+      { title: 'The novusc CLI', path: '/docs/cli', summary: 'run, build, emit, check, nvh, init, deps' },
     ],
   },
   {
@@ -20,8 +20,14 @@ export const NAV: NavSection[] = [
       { title: 'Methods', path: '/docs/language/methods', summary: 'Parameters, returns, overloading, recursion' },
       { title: 'Collections', path: '/docs/language/collections', summary: 'Arrays and maps' },
       { title: 'Classes and objects', path: '/docs/language/classes', summary: 'Fields, inheritance, interfaces, enums' },
-      { title: 'Modules and imports', path: '/docs/language/modules', summary: 'Packages, file imports, std modules' },
+      { title: 'Modules and imports', path: '/docs/language/modules', summary: 'Packages (folders), @file imports, std modules' },
       { title: 'Concurrency', path: '/docs/language/concurrency', summary: 'thread, virtual, async, await, sync, channels' },
+    ],
+  },
+  {
+    title: 'Web',
+    items: [
+      { title: '.nvh components', path: '/docs/web/components', summary: 'HTML with Novus: server rendered, live components' },
     ],
   },
   {

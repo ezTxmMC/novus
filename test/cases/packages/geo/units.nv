@@ -1,0 +1,7 @@
+package geo
+
+final UNIT = "cm"
+
+method describe(): string {
+    return "geo in " + UNIT
+}

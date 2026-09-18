@@ -30,8 +30,9 @@ The version can be a **tag**, a **branch**, a **commit hash** or `latest`
 ## Importing
 
 ```nv
-import "github.com/user/geo"                   // the module's lib/main entry
-import "github.com/user/geo/shapes/circle.nv"  // any file inside the module
+import "github.com/user/geo"                  // the module's lib/main entry
+import "github.com/user/geo/shapes"           // a package (folder) of the module
+import "github.com/user/geo/shapes/circle"    // one file of it, without extension
 ```
 
 Everything the module declares becomes part of your program, so its methods

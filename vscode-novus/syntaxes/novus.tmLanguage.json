@@ -105,7 +105,7 @@
     },
     "import": {
       "name": "meta.import.novus",
-      "match": "^\\s*(import)\\s+([A-Za-z_][\\w.]*)",
+      "match": "^\\s*(import)\\s+(@?[A-Za-z_][\\w.]*(?:/[A-Za-z_]\\w*)*)",
       "captures": {
         "1": { "name": "keyword.control.import.novus" },
         "2": { "name": "entity.name.namespace.novus" }

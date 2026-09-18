@@ -1,0 +1,18 @@
+package geo
+
+define class Circle {
+    private final float radius: get
+
+    construct(float radius) {
+        this.radius = radius
+    }
+
+    // inside the package, its own describe() is meant
+    method label(): string {
+        return describe() + " r=" + radius
+    }
+}
+
+method area(Circle c): float {
+    return 3.0 * c.radius() * c.radius()
+}

@@ -1,0 +1,5 @@
+package a
+
+method hello(): string {
+    return "a"
+}

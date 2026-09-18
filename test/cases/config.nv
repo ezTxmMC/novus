@@ -1,0 +1,133 @@
+package main
+
+import config
+import json
+import properties
+import toml
+import yaml
+
+method main {
+    println "--- toml"
+    var t = toml.parse("# settings
+title = \"Novus \\u00e9 app\"
+version = 1_000
+ratio = 0.75
+big = 6.02e23
+hex = 0xff
+debug = true
+created = 2026-09-18T12:00:00Z
+tags = [\"a\", 'b', [1, 2]]
+matrix = [
+    1,   # one
+    2,
+]
+point = { x = 1, y = -2 }
+site.\"host name\" = 'example.org'
+
+[server]
+port = 8080
+paths = '''
+C:\\raw
+two'''
+
+[server.limits]
+body = 1024
+
+[[users]]
+name = \"ada\"
+
+[[users]]
+name = \"grace\"
+admin = true
+")
+    println json.stringify(t)
+    println "round trip: " + (json.stringify(toml.parse(toml.stringify(t))) == json.stringify(t))
+    print toml.stringify({"name": "x", "db": {"port": 5432, "hosts": ["a", "b"]}, "jobs": [{"id": 1}, {"id": 2}]})
+    println toml.isValid("a = ")
+    println toml.errorOf("a = 1\nb = [1, 2")
+    println toml.errorOf("a = 1\na = 2")
+    println json.stringify(toml.parseOr("= 1", {"fallback": true}))
+
+    println "--- yaml"
+    var y = yaml.parse("---
+# service
+name: novus app
+version: 3
+ratio: .5
+debug: false
+nothing: ~
+empty:
+quoted: \"a: b # not a comment\"
+single: 'it''s'
+url: http://example.org:8080/x   # a comment
+list:
+  - one
+  - 2
+  - 3.5
+inline: [1, two, {k: v}]
+map: {a: 1, b: [x, y]}
+servers:
+- host: alpha
+  port: 1
+- host: beta
+  tags:
+    - x
+text: |
+  line one
+  line two
+folded: >-
+  folded
+  together
+
+  new paragraph
+nested:
+  deeper:
+    deepest: true
+")
+    println json.stringify(y)
+    println "round trip: " + (json.stringify(yaml.parse(yaml.stringify(y))) == json.stringify(y))
+    print yaml.stringify({"name": "x", "list": [1, "two", {"a": 1, "b": [true]}], "empty": [], "quote": "yes: no", "number text": "42"})
+    println json.stringify(yaml.parse("- a\n- - b\n  - c\n-\n  k: v"))
+    println yaml.errorOf("a: 1\n  b: 2")
+    println yaml.errorOf("a: [1, 2")
+    println yaml.isValid("a: 1\nb:\n  - x")
+
+    println "--- properties"
+    var p = properties.parse("# comment
+! another
+db.url = jdbc:postgres://localhost/app
+db.user:admin
+greeting  Hello \\
+          world
+path=C:\\\\temp
+tab=a\\tb
+unicode=caf\\u00e9
+key\\ with\\ spaces = yes
+empty=
+
+[server]
+port = 8080
+; ini comment
+host=0.0.0.0
+")
+    println json.stringify(p)
+    println json.stringify(properties.sections("top=1\n[a]\nx=1\n[b]\ny=2\n"))
+    print properties.stringify({"a": "1", "b": {"c": "x y", "d": "line\nbreak"}, "key with space": "v"})
+    print properties.stringifySections({"": {"top": "1"}, "server": {"port": "80"}})
+
+    println "--- config"
+    writeFile("config-test.yaml", "server:\n  port: 9000\n  hosts: [a, b]\n")
+    var c = config.load("config-test.yaml")
+    println config.get(c, "server.port", 0)
+    println config.get(c, "server.hosts.1", "")
+    println config.get(c, "server.missing", "default")
+    config.save(c, "config-test.toml")
+    print readFile("config-test.toml")
+    config.save(c, "config-test.properties")
+    print readFile("config-test.properties")
+    println json.stringify(config.load("config-test.toml")) == json.stringify(c)
+    println config.format("app.YML") + " " + config.format("a.cfg") + " " + config.format("x.txt")
+    removeFile("config-test.yaml")
+    removeFile("config-test.toml")
+    removeFile("config-test.properties")
+}

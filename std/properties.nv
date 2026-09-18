@@ -1,0 +1,287 @@
+package properties
+
+// .properties and .cfg files: key = value lines.
+//
+//     var settings = properties.load("app.properties")
+//     println settings["db.url"]
+//
+// The Java format: `key=value`, `key: value` or `key value`; comments start
+// with # or ! (and ; as in .cfg/.ini files); a line ending in a backslash
+// continues on the next one; \t \n \r \f \\ and \uXXXX are escapes. A
+// `[section]` header, as .cfg and .ini files have, prefixes the keys after
+// it: `port` below `[server]` is "server.port" - sections() groups them
+// instead. Values are always strings.
+
+method parse(string text): map<string, string> {
+    var out = {}
+    var section = ""
+    for (entry in entries(text)) {
+        if (entry[0] == "section") {
+            section = entry[1]
+            continue
+        }
+        var key = entry[1]
+        if (section != "") {
+            key = section + "." + key
+        }
+        out[key] = entry[2]
+    }
+    return out
+}
+
+// section -> key -> value; keys before the first [section] are under "".
+method sections(string text): map<string, map<string, string>> {
+    var out = {}
+    var section = ""
+    for (entry in entries(text)) {
+        if (entry[0] == "section") {
+            section = entry[1]
+            if (out.has(section) == false) {
+                out[section] = {}
+            }
+            continue
+        }
+        if (out.has(section) == false) {
+            out[section] = {}
+        }
+        out[section][entry[1]] = entry[2]
+    }
+    return out
+}
+
+method load(string file): map<string, string> {
+    return parse(readText(file))
+}
+
+method loadSections(string file): map<string, map<string, string>> {
+    return sections(readText(file))
+}
+
+method save(map<string, object> values, string file) {
+    writeFile(file, stringify(values))
+}
+
+// key=value lines (keys in order). Nested maps are written with dotted keys.
+method stringify(map<string, object> values): string {
+    var out = []
+    writeFlat(values, "", out)
+    return out.join("")
+}
+
+// [section] blocks: section -> key -> value ("" for keys without a section).
+method stringifySections(map<string, object> sections): string {
+    var out = []
+    if (sections.has("")) {
+        writeFlat(sections[""], "", out)
+    }
+    for (name in sections) {
+        if (name == "") {
+            continue
+        }
+        if (out.length() > 0) {
+            out.append("\n")
+        }
+        out.append("[" + name + "]\n")
+        writeFlat(sections[name], "", out)
+    }
+    return out.join("")
+}
+
+method raise(string message) native "nv_try_raise"
+
+method readText(string file): string {
+    if (fileExists(file) == false) {
+        raise("properties: cannot open '" + file + "'")
+    }
+    return readFile(file)
+}
+
+method writeFlat(map<string, object> values, string prefix, array<string> out): integer {
+    for (key in values) {
+        var full = key
+        if (prefix != "") {
+            full = prefix + "." + key
+        }
+        var v = values[key]
+        if (typeOf(v) == "map") {
+            writeFlat(v, full, out)
+        } else {
+            var text = ""
+            if (typeOf(v) != "unknown") {
+                text = "" + v
+            }
+            out.append(escapeText(full, true) + "=" + escapeText(text, false) + "\n")
+        }
+    }
+    return 0
+}
+
+method escapeText(string s, bool isKey): string {
+    var out = []
+    var i = 0
+    while (i < s.length()) {
+        var c = s.charAt(i)
+        if (c == "\\") {
+            out.append("\\\\")
+        } else if (c == "\n") {
+            out.append("\\n")
+        } else if (c == "\r") {
+            out.append("\\r")
+        } else if (c == "\t") {
+            out.append("\\t")
+        } else if (isKey && (c == "=" || c == ":" || c == " " || c == "#" || c == "!")) {
+            out.append("\\" + c)
+        } else if (isKey == false && i == 0 && c == " ") {
+            out.append("\\ ")
+        } else {
+            out.append(c)
+        }
+        i = i + 1
+    }
+    return out.join("")
+}
+
+// The logical lines as ["section", name] and ["pair", key, value].
+method entries(string text): array<object> {
+    var out = []
+    var lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    var i = 0
+    while (i < lines.length()) {
+        var line = trimStart(lines[i])
+        i = i + 1
+        if (line == "" || line.startsWith("#") || line.startsWith("!") || line.startsWith(";")) {
+            continue
+        }
+        // a backslash at the end continues the line (an even number of them
+        // are escaped backslashes)
+        while (endsInContinuation(line) && i < lines.length()) {
+            line = line.substring(0, line.length() - 1) + trimStart(lines[i])
+            i = i + 1
+        }
+        if (endsInContinuation(line)) {
+            line = line.substring(0, line.length() - 1)
+        }
+        var trimmed = line.trim()
+        if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+            out.append(["section", trimmed.substring(1, trimmed.length() - 1).trim()])
+            continue
+        }
+        var split = separator(line)
+        var key = line
+        var value = ""
+        if (split >= 0) {
+            key = line.substring(0, split)
+            var rest = split + 1
+            // "key = value": the separator may be surrounded by spaces
+            if (line.charAt(split) == " " || line.charAt(split) == "\t") {
+                while (rest < line.length() && (line.charAt(rest) == " " || line.charAt(rest) == "\t")) {
+                    rest = rest + 1
+                }
+                if (rest < line.length() && (line.charAt(rest) == "=" || line.charAt(rest) == ":")) {
+                    rest = rest + 1
+                }
+            }
+            value = trimStart(line.substring(rest, line.length()))
+        }
+        out.append(["pair", unescape(key.trim()), unescape(value)])
+    }
+    return out
+}
+
+method trimStart(string s): string {
+    var i = 0
+    while (i < s.length() && (s.charAt(i) == " " || s.charAt(i) == "\t" || s.charAt(i) == chr(12))) {
+        i = i + 1
+    }
+    return s.substring(i, s.length())
+}
+
+method endsInContinuation(string line): bool {
+    var count = 0
+    var i = line.length() - 1
+    while (i >= 0 && line.charAt(i) == "\\") {
+        count = count + 1
+        i = i - 1
+    }
+    return count % 2 == 1
+}
+
+// Index of the first unescaped '=', ':' or whitespace, -1 if none.
+method separator(string line): integer {
+    var i = 0
+    while (i < line.length()) {
+        var c = line.charAt(i)
+        if (c == "\\") {
+            i = i + 2
+            continue
+        }
+        if (c == "=" || c == ":" || c == " " || c == "\t") {
+            return i
+        }
+        i = i + 1
+    }
+    return 0 - 1
+}
+
+method unescape(string s): string {
+    if (s.contains("\\") == false) {
+        return s
+    }
+    var out = []
+    var i = 0
+    while (i < s.length()) {
+        var c = s.charAt(i)
+        if (c != "\\" || i + 1 >= s.length()) {
+            out.append(c)
+            i = i + 1
+            continue
+        }
+        var e = s.charAt(i + 1)
+        i = i + 2
+        if (e == "t") {
+            out.append("\t")
+        } else if (e == "n") {
+            out.append("\n")
+        } else if (e == "r") {
+            out.append("\r")
+        } else if (e == "f") {
+            out.append(chr(12))
+        } else if (e == "u" && i + 4 <= s.length()) {
+            out.append(utf8(hexValue(s.substring(i, i + 4))))
+            i = i + 4
+        } else {
+            out.append(e)
+        }
+    }
+    return out.join("")
+}
+
+method hexValue(string s): integer {
+    var n = 0
+    var i = 0
+    while (i < s.length()) {
+        var c = s.charAt(i)
+        var d = 0
+        if (c >= "0" && c <= "9") {
+            d = ord(c) - ord("0")
+        } else if (c >= "a" && c <= "f") {
+            d = ord(c) - ord("a") + 10
+        } else if (c >= "A" && c <= "F") {
+            d = ord(c) - ord("A") + 10
+        }
+        n = n * 16 + d
+        i = i + 1
+    }
+    return n
+}
+
+// The UTF-8 bytes of a code point.
+method utf8(integer code): string {
+    if (code < 128) {
+        return chr(code)
+    }
+    if (code < 2048) {
+        return chr(192 + code / 64) + chr(128 + code % 64)
+    }
+    return chr(224 + code / 4096) + chr(128 + (code / 64) % 64) + chr(128 + code % 64)
+}

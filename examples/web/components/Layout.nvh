@@ -1,0 +1,19 @@
+<?nv
+prop string title = "Novus"
+?>
+<head>
+    <title>{title} · Novus web</title>
+    <link rel="stylesheet" href="/public/app.css">
+</head>
+<div class="page">
+    <nav>
+        <a href="/">Home</a>
+        <a href="/todos">Todos</a>
+        <a href="/chat">Chat</a>
+        <a href="/hello/Ada">Hello</a>
+    </nav>
+    <main>
+        <h1>{title}</h1>
+        <slot/>
+    </main>
+</div>

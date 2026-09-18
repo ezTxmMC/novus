@@ -1,14 +1,7 @@
 package parser
 
-import "../ast/text.nv"
-import "../lexer/lexer.nv"
-import "../lexer/tokens.nv"
-import "errors.nv"
-import "expressions.nv"
-import "members.nv"
-import "statements.nv"
-import "tokens.nv"
-import "types.nv"
+import ast
+import lexer
 
 // Top-level declarations and whole files.
 //
@@ -189,16 +182,35 @@ method parseFile(string source, string file): array<string> {
         var t = tokens[p]
         if (isKw(tokens, p, "package")) {
             p = expectIdent(tokens, p + 1, "package name")
+            decls.append("(package " + tokVal(tokens[p - 1]) + " " + sexpStr(posOf(tokens, p - 1)) + ")")
             continue
         }
         if (isKw(tokens, p, "import")) {
+            // import "module/path"   a dependency module (or a package in it)
+            // import geo/shapes       a package: every file of that folder
+            // import @geo/circle      one file of a package (no extension)
             if (tokKind(tokens[p + 1]) == "STRING") {
                 decls.append("(import " + sexpStr(tokVal(tokens[p + 1])) + ")")
                 p = p + 2
                 continue
             }
-            p = expectIdent(tokens, p + 1, "module name or file path after 'import'")
-            decls.append("(importmod " + tokVal(tokens[p - 1]) + ")")
+            var single = false
+            p = p + 1
+            if (isSym(tokens, p, "@")) {
+                single = true
+                p = p + 1
+            }
+            p = expectIdent(tokens, p, "package name after 'import'")
+            var target = tokVal(tokens[p - 1])
+            while (isSym(tokens, p, "/") && isIdent(tokens, p + 1)) {
+                target = target + "/" + tokVal(tokens[p + 1])
+                p = p + 2
+            }
+            if (single) {
+                decls.append("(importfile " + sexpStr(target) + " " + sexpStr(posOf(tokens, p - 1)) + ")")
+            } else {
+                decls.append("(importmod " + target + ")")
+            }
             continue
         }
         if (isSym(tokens, p, "@")) {

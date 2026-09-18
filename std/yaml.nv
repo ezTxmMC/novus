@@ -1,0 +1,912 @@
+package yaml
+
+import json
+
+// YAML configuration files (.yaml, .yml): parse, stringify, load and save.
+//
+//     var config = yaml.load("app.yml")
+//     for (host in config["servers"]) { ... }
+//
+// The configuration subset of YAML 1.2: block mappings and sequences by
+// indentation, flow collections ([a, b], {k: v}), plain, 'single' and
+// "double" quoted scalars, block scalars (| and >, with - and + chomping),
+// comments and a leading --- document marker. Scalars resolve to integers
+// (also 0x.., 0o..), floats (also .inf, .nan), true/false and null (nothing);
+// everything else is a string. Anchors, aliases, tags and several documents
+// in one file are not supported. Invalid input is a runtime error naming the
+// line; parseOr() and isValid() check without one.
+
+method parse(string text): object {
+    var p = YamlParser{lines=[], numbers=[], at=0}
+    p.prepare(text)
+    return p.document()
+}
+
+// The parsed text, or `fallback` when it is not valid YAML.
+method parseOr(string text, object fallback): object {
+    var result = tryRun(YamlTask{text=text})
+    if (tryFailed()) {
+        return fallback
+    }
+    return result
+}
+
+method isValid(string text): bool {
+    tryRun(YamlTask{text=text})
+    return tryFailed() == false
+}
+
+// The message of why `text` is not valid YAML ("" when it is).
+method errorOf(string text): string {
+    tryRun(YamlTask{text=text})
+    return tryError()
+}
+
+method load(string file): object {
+    if (fileExists(file) == false) {
+        raise("yaml: cannot open '" + file + "'")
+    }
+    return parse(readFile(file))
+}
+
+method save(object value, string file) {
+    writeFile(file, stringify(value))
+}
+
+// A value as a YAML document in block style.
+method stringify(object value): string {
+    var out = []
+    writeValue(value, 0, out)
+    var text = out.join("")
+    if (text.endsWith("\n") == false) {
+        text = text + "\n"
+    }
+    return text
+}
+
+method tryRun(object task): object native "nv_try_run"
+method tryFailed(): bool native "nv_try_failed"
+method tryError(): string native "nv_try_error"
+method raise(string message) native "nv_try_raise"
+
+// nothing: what YAML's null becomes
+method none(): object {
+}
+
+// --- writing ---------------------------------------------------------------
+
+method spaces(integer n): string {
+    var s = ""
+    var i = 0
+    while (i < n) {
+        s = s + " "
+        i = i + 1
+    }
+    return s
+}
+
+method isCollection(object v): bool {
+    var kind = typeOf(v)
+    return (kind == "map" || kind == "array") && v.length() > 0
+}
+
+// Appends `value` as the content of a line already started (after "key:" or
+// "- "), continuing on indented lines when it is a collection.
+method writeValue(object value, integer indent, array<string> out): integer {
+    var kind = typeOf(value)
+    if (kind == "map" && value.length() > 0) {
+        for (key in value) {
+            var v = value[key]
+            out.append(spaces(indent) + scalarText(key) + ":")
+            if (isCollection(v)) {
+                out.append("\n")
+                if (typeOf(v) == "array") {
+                    writeValue(v, indent, out)
+                } else {
+                    writeValue(v, indent + 2, out)
+                }
+            } else {
+                out.append(" " + scalarText(v) + "\n")
+            }
+        }
+        return 0
+    }
+    if (kind == "array" && value.length() > 0) {
+        for (item in value) {
+            if (typeOf(item) == "map" && item.length() > 0) {
+                // - first: 1
+                //   second: 2
+                var inner = []
+                writeValue(item, indent + 2, inner)
+                var text = inner.join("")
+                out.append(spaces(indent) + "- " + text.substring(indent + 2, text.length()))
+            } else if (typeOf(item) == "array" && item.length() > 0) {
+                out.append(spaces(indent) + "-\n")
+                writeValue(item, indent + 2, out)
+            } else {
+                out.append(spaces(indent) + "- " + scalarText(item) + "\n")
+            }
+        }
+        return 0
+    }
+    out.append(spaces(indent) + scalarText(value) + "\n")
+    return 0
+}
+
+method scalarText(object v): string {
+    var kind = typeOf(v)
+    if (kind == "unknown") {
+        return "null"
+    }
+    if (kind == "integer" || kind == "bool") {
+        return "" + v
+    }
+    if (kind == "float") {
+        return json.stringify(v)
+    }
+    if (kind == "map") {
+        return "{}"
+    }
+    if (kind == "array") {
+        return "[]"
+    }
+    var s = "" + v
+    if (needsQuotes(s)) {
+        return json.stringify(s)
+    }
+    return s
+}
+
+// Would the plain scalar be read back as something else?
+method needsQuotes(string s): bool {
+    if (s == "" || s.trim() != s) {
+        return true
+    }
+    if (typeOf(resolve(s)) != "string") {
+        return true
+    }
+    var first = s.charAt(0)
+    var specials = "-?:,[]{}#&*!|>'\"%@`"
+    if (specials.contains(first)) {
+        return true
+    }
+    if (s.contains(": ") || s.contains(" #") || s.endsWith(":") || s.contains("\n") || s.contains("\t")) {
+        return true
+    }
+    return false
+}
+
+// --- reading ---------------------------------------------------------------
+
+// A plain scalar's value: null, bool, integer, float or the text itself.
+method resolve(string s): object {
+    if (s == "" || s == "~" || s == "null" || s == "Null" || s == "NULL") {
+        return none()
+    }
+    if (s == "true" || s == "True" || s == "TRUE") {
+        return true
+    }
+    if (s == "false" || s == "False" || s == "FALSE") {
+        return false
+    }
+    var body = s
+    var negative = false
+    if (body.startsWith("-") || body.startsWith("+")) {
+        negative = body.startsWith("-")
+        body = body.substring(1, body.length())
+    }
+    if (body == ".inf" || body == ".Inf" || body == ".INF") {
+        if (negative) {
+            return parseFloat("-inf")
+        }
+        return parseFloat("inf")
+    }
+    if (s == ".nan" || s == ".NaN" || s == ".NAN") {
+        return parseFloat("nan")
+    }
+    if (body.startsWith("0x") || body.startsWith("0o")) {
+        var base = 16
+        if (body.startsWith("0o")) {
+            base = 8
+        }
+        var n = 0
+        var i = 2
+        if (body.length() == 2) {
+            return s
+        }
+        while (i < body.length()) {
+            var d = hexDigit(body.charAt(i))
+            if (d < 0 || d >= base) {
+                return s
+            }
+            n = n * base + d
+            i = i + 1
+        }
+        if (negative) {
+            return 0 - n
+        }
+        return n
+    }
+    if (allDigits(body)) {
+        if (negative) {
+            return 0 - parseInt(body)
+        }
+        return parseInt(body)
+    }
+    if (isFloatText(body)) {
+        var text = body
+        if (text.startsWith(".")) {
+            text = "0" + text
+        }
+        if (negative) {
+            return 0.0 - parseFloat(text)
+        }
+        return parseFloat(text)
+    }
+    return s
+}
+
+method allDigits(string s): bool {
+    if (s == "") {
+        return false
+    }
+    var i = 0
+    while (i < s.length()) {
+        if (s.charAt(i) < "0" || s.charAt(i) > "9") {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+// YAML 1.2 core schema floats: (.5 | 1 | 1. | 1.5)([eE][-+]?9)?, unsigned.
+method isFloatText(string s): bool {
+    var mantissa = s
+    var exponent = ""
+    var e = s.indexOf("e")
+    if (e < 0) {
+        e = s.indexOf("E")
+    }
+    if (e >= 0) {
+        mantissa = s.substring(0, e)
+        exponent = s.substring(e + 1, s.length())
+        if (exponent.startsWith("+") || exponent.startsWith("-")) {
+            exponent = exponent.substring(1, exponent.length())
+        }
+        if (allDigits(exponent) == false) {
+            return false
+        }
+    }
+    var dot = mantissa.indexOf(".")
+    if (dot < 0) {
+        return e >= 0 && allDigits(mantissa)
+    }
+    var whole = mantissa.substring(0, dot)
+    var fraction = mantissa.substring(dot + 1, mantissa.length())
+    if (whole == "") {
+        return allDigits(fraction)
+    }
+    return allDigits(whole) && (fraction == "" || allDigits(fraction))
+}
+
+method hexDigit(string c): integer {
+    if (c >= "0" && c <= "9") {
+        return ord(c) - ord("0")
+    }
+    if (c >= "a" && c <= "f") {
+        return ord(c) - ord("a") + 10
+    }
+    if (c >= "A" && c <= "F") {
+        return ord(c) - ord("A") + 10
+    }
+    return 0 - 1
+}
+
+method indentOf(string line): integer {
+    var i = 0
+    while (i < line.length() && line.charAt(i) == " ") {
+        i = i + 1
+    }
+    return i
+}
+
+// The line without a trailing comment (a # at the start or after a space,
+// outside quotes).
+method stripComment(string line): string {
+    var quote = ""
+    var i = 0
+    while (i < line.length()) {
+        var c = line.charAt(i)
+        if (quote != "") {
+            if (c == "\\" && quote == "\"") {
+                i = i + 2
+                continue
+            }
+            if (c == quote) {
+                quote = ""
+            }
+        } else if (c == "\"" || c == "'") {
+            if (i == 0 || line.charAt(i - 1) == " " || line.charAt(i - 1) == "[" || line.charAt(i - 1) == "{" || line.charAt(i - 1) == ",") {
+                quote = c
+            }
+        } else if (c == "#" && (i == 0 || line.charAt(i - 1) == " " || line.charAt(i - 1) == "\t")) {
+            return line.substring(0, i)
+        }
+        i = i + 1
+    }
+    return line
+}
+
+// Index of the ':' that separates a mapping key from its value (followed by
+// a space or the end of the line, outside quotes and brackets), -1 if none.
+method keyColon(string s): integer {
+    var quote = ""
+    var depth = 0
+    var i = 0
+    while (i < s.length()) {
+        var c = s.charAt(i)
+        if (quote != "") {
+            if (c == "\\" && quote == "\"") {
+                i = i + 2
+                continue
+            }
+            if (c == quote) {
+                quote = ""
+            }
+        } else if ((c == "\"" || c == "'") && i == 0) {
+            quote = c
+        } else if (c == "[" || c == "{") {
+            depth = depth + 1
+        } else if (c == "]" || c == "}") {
+            depth = depth - 1
+        } else if (c == ":" && depth == 0 && (i + 1 == s.length() || s.charAt(i + 1) == " ")) {
+            return i
+        }
+        i = i + 1
+    }
+    return 0 - 1
+}
+
+method isSequenceItem(string content): bool {
+    return content == "-" || content.startsWith("- ")
+}
+
+define class YamlTask {
+    private string text: get, set
+
+    method run(): object {
+        return yaml.parse(text)
+    }
+}
+
+// The document as lines (tabs kept out of indentation, comments dropped for
+// all but block scalars) and a cursor over them.
+define class YamlParser {
+    private array<string> lines: get, set
+    private array<integer> numbers: get, set
+    private integer at: get, set
+    private array<string> raw
+
+    method fail(integer lineNumber, string message) {
+        raise("yaml: line " + lineNumber + ": " + message)
+    }
+
+    method prepare(string text) {
+        raw = text.replace("\r\n", "\n").split("\n")
+        var started = false
+        var n = 0
+        while (n < raw.length()) {
+            var line = raw[n]
+            var trimmed = line.trim()
+            if (trimmed == "---" || trimmed.startsWith("--- ")) {
+                if (started) {
+                    // only the first document
+                    return
+                }
+                started = true
+                n = n + 1
+                continue
+            }
+            if (trimmed == "...") {
+                return
+            }
+            lines.append(line)
+            numbers.append(n + 1)
+            n = n + 1
+        }
+    }
+
+    // The next line that has content (skipping blank and comment-only ones).
+    method skipBlank() {
+        while (at < lines.length() && stripComment(lines[at]).trim() == "") {
+            at = at + 1
+        }
+    }
+
+    method document(): object {
+        skipBlank()
+        if (at >= lines.length()) {
+            return none()
+        }
+        var indent = indentOf(lines[at])
+        var value = block(indent)
+        skipBlank()
+        if (at < lines.length()) {
+            fail(numbers[at], "unexpected indentation")
+        }
+        return value
+    }
+
+    // The collection or scalar starting at the current line, whose lines are
+    // indented by `indent`.
+    method block(integer indent): object {
+        skipBlank()
+        var line = lines[at]
+        if (line.contains("\t") && indentOf(line) < line.length() && line.substring(0, indentOf(line) + 1).contains("\t")) {
+            fail(numbers[at], "tabs cannot indent YAML")
+        }
+        var content = stripComment(line).trim()
+        if (isSequenceItem(content)) {
+            return sequence(indent)
+        }
+        if (keyColon(content) >= 0 && content.startsWith("[") == false && content.startsWith("{") == false) {
+            return mapping(indent)
+        }
+        // a lone scalar or flow collection, possibly over several lines
+        var number = numbers[at]
+        var text = content
+        at = at + 1
+        while (open(text) && at < lines.length()) {
+            text = text + " " + stripComment(lines[at]).trim()
+            at = at + 1
+        }
+        return inlineValue(text, number)
+    }
+
+    method sequence(integer indent): array {
+        var items = []
+        while (true) {
+            skipBlank()
+            if (at >= lines.length()) {
+                return items
+            }
+            var line = lines[at]
+            var content = stripComment(line).trim()
+            if (indentOf(line) != indent || isSequenceItem(content) == false) {
+                if (indentOf(line) > indent) {
+                    fail(numbers[at], "unexpected indentation in a sequence")
+                }
+                return items
+            }
+            var k = 1
+            while (k < content.length() && content.charAt(k) == " ") {
+                k = k + 1
+            }
+            var rest = content.substring(k, content.length())
+            if (rest == "") {
+                at = at + 1
+                skipBlank()
+                if (at < lines.length() && indentOf(lines[at]) > indent) {
+                    items.append(block(indentOf(lines[at])))
+                } else {
+                    items.append(none())
+                }
+                continue
+            }
+            // "- key: value" or "- - x": the item is a block starting inside
+            // this line; parse it with the dash turned into indentation
+            lines[at] = spaces(indent + k) + rest
+            items.append(block(indent + k))
+        }
+        return items
+    }
+
+    method mapping(integer indent): map<string, object> {
+        var result = {}
+        while (true) {
+            skipBlank()
+            if (at >= lines.length()) {
+                return result
+            }
+            var line = lines[at]
+            var number = numbers[at]
+            if (indentOf(line) != indent) {
+                if (indentOf(line) > indent) {
+                    fail(number, "unexpected indentation")
+                }
+                return result
+            }
+            var content = stripComment(line).trim()
+            if (isSequenceItem(content)) {
+                return result
+            }
+            var colon = keyColon(content)
+            if (colon < 0) {
+                fail(number, "expected 'key: value'")
+            }
+            var key = keyText(content.substring(0, colon).trim(), number)
+            if (result.has(key)) {
+                fail(number, "duplicate key '" + key + "'")
+            }
+            var rest = content.substring(colon + 1, content.length()).trim()
+            at = at + 1
+            if (rest == "") {
+                skipBlank()
+                if (at < lines.length() && (indentOf(lines[at]) > indent || (indentOf(lines[at]) == indent && isSequenceItem(stripComment(lines[at]).trim())))) {
+                    result[key] = block(indentOf(lines[at]))
+                } else {
+                    result[key] = none()
+                }
+                continue
+            }
+            if (rest.startsWith("|") || rest.startsWith(">")) {
+                result[key] = blockScalar(rest, indent, number)
+                continue
+            }
+            var text = rest
+            while (open(text) && at < lines.length()) {
+                text = text + " " + stripComment(lines[at]).trim()
+                at = at + 1
+            }
+            // plain scalars may continue on more indented lines
+            if (text.startsWith("\"") == false && text.startsWith("'") == false && text.startsWith("[") == false && text.startsWith("{") == false) {
+                while (at < lines.length() && stripComment(lines[at]).trim() != "" && indentOf(lines[at]) > indent && keyColon(stripComment(lines[at]).trim()) < 0) {
+                    text = text + " " + stripComment(lines[at]).trim()
+                    at = at + 1
+                }
+            }
+            result[key] = inlineValue(text, number)
+        }
+        return result
+    }
+
+    method keyText(string key, integer number): string {
+        if (key.startsWith("\"") || key.startsWith("'")) {
+            var v = inlineValue(key, number)
+            return "" + v
+        }
+        return key
+    }
+
+    // Has the flow collection or quoted scalar not ended on this line yet?
+    method open(string text): bool {
+        var depth = 0
+        var quote = ""
+        var previous = ""
+        var i = 0
+        while (i < text.length()) {
+            var c = text.charAt(i)
+            if (quote != "") {
+                if (c == "\\" && quote == "\"") {
+                    i = i + 2
+                    continue
+                }
+                if (c == quote) {
+                    quote = ""
+                }
+            } else if ((c == "\"" || c == "'") && (previous == "" || previous == "[" || previous == "{" || previous == "," || previous == ":")) {
+                // a quote starts a scalar only where one begins: it's stays plain
+                quote = c
+            } else if (c == "[" || c == "{") {
+                depth = depth + 1
+            } else if (c == "]" || c == "}") {
+                depth = depth - 1
+            }
+            if (c != " " && c != "\t") {
+                previous = c
+            }
+            i = i + 1
+        }
+        return depth > 0 || quote != ""
+    }
+
+    // | and > scalars: the more indented lines that follow, literally or
+    // folded, with the final line break kept (clip), dropped (-) or all
+    // trailing breaks kept (+).
+    method blockScalar(string header, integer indent, integer number): string {
+        var folded = header.startsWith(">")
+        var chomp = ""
+        if (header.contains("-")) {
+            chomp = "-"
+        }
+        if (header.contains("+")) {
+            chomp = "+"
+        }
+        var body = []
+        var width = 0 - 1
+        while (at < lines.length()) {
+            var line = lines[at]
+            if (line.trim() == "") {
+                body.append("")
+                at = at + 1
+                continue
+            }
+            if (indentOf(line) <= indent) {
+                break
+            }
+            if (width < 0) {
+                width = indentOf(line)
+            }
+            if (indentOf(line) < width) {
+                fail(numbers[at], "a block scalar's lines need the indentation of its first line")
+            }
+            body.append(line.substring(width, line.length()))
+            at = at + 1
+        }
+        var trailing = 0
+        while (body.length() > 0 && body[body.length() - 1] == "") {
+            body.pop()
+            trailing = trailing + 1
+        }
+        var text = ""
+        if (folded) {
+            var i = 0
+            while (i < body.length()) {
+                var part = body[i]
+                if (i > 0) {
+                    if (part == "" || body[i - 1] == "" || part.startsWith(" ") || body[i - 1].startsWith(" ")) {
+                        text = text + "\n"
+                    } else {
+                        text = text + " "
+                    }
+                }
+                text = text + part
+                i = i + 1
+            }
+        } else {
+            text = body.join("\n")
+        }
+        if (body.length() == 0) {
+            return ""
+        }
+        if (chomp == "-") {
+            return text
+        }
+        if (chomp == "+") {
+            var k = 0
+            text = text + "\n"
+            while (k < trailing) {
+                text = text + "\n"
+                k = k + 1
+            }
+            return text
+        }
+        return text + "\n"
+    }
+
+    // A scalar or a flow collection written on one (joined) line.
+    method inlineValue(string text, integer number): object {
+        var f = YamlFlow{text=text, at=0, line=number, depth=0}
+        var value = f.value()
+        f.skipSpaces()
+        if (f.done() == false) {
+            fail(number, "unexpected text after the value: " + text.substring(f.at(), text.length()))
+        }
+        return value
+    }
+}
+
+// Flow style: [a, b], {k: v}, quoted and plain scalars.
+define class YamlFlow {
+    private string text: get, set
+    private integer at: get, set
+    private integer line: get, set
+    private integer depth: get, set
+
+    method fail(string message) {
+        raise("yaml: line " + line + ": " + message)
+    }
+
+    method done(): bool {
+        return at >= text.length()
+    }
+
+    method peek(): string {
+        if (at >= text.length()) {
+            return ""
+        }
+        return text.charAt(at)
+    }
+
+    method skipSpaces() {
+        while (peek() == " " || peek() == "\t") {
+            at = at + 1
+        }
+    }
+
+    method value(): object {
+        skipSpaces()
+        var c = peek()
+        if (c == "[") {
+            return list()
+        }
+        if (c == "{") {
+            return mapValue()
+        }
+        if (c == "\"") {
+            return doubleQuoted()
+        }
+        if (c == "'") {
+            return singleQuoted()
+        }
+        return plain(true)
+    }
+
+    method list(): array {
+        at = at + 1
+        depth = depth + 1
+        var items = []
+        while (true) {
+            skipSpaces()
+            if (peek() == "]") {
+                at = at + 1
+                depth = depth - 1
+                return items
+            }
+            if (done()) {
+                fail("unclosed [")
+            }
+            items.append(value())
+            skipSpaces()
+            if (peek() == ",") {
+                at = at + 1
+            } else if (peek() != "]") {
+                fail("expected ',' or ']'")
+            }
+        }
+        return items
+    }
+
+    method mapValue(): map<string, object> {
+        at = at + 1
+        depth = depth + 1
+        var result = {}
+        while (true) {
+            skipSpaces()
+            if (peek() == "}") {
+                at = at + 1
+                depth = depth - 1
+                return result
+            }
+            if (done()) {
+                fail("unclosed {")
+            }
+            var key = ""
+            if (peek() == "\"") {
+                key = doubleQuoted()
+            } else if (peek() == "'") {
+                key = singleQuoted()
+            } else {
+                key = "" + plain(false)
+            }
+            skipSpaces()
+            if (peek() != ":") {
+                fail("expected ':' after '" + key + "'")
+            }
+            at = at + 1
+            result[key] = value()
+            skipSpaces()
+            if (peek() == ",") {
+                at = at + 1
+            } else if (peek() != "}") {
+                fail("expected ',' or '}'")
+            }
+        }
+        return result
+    }
+
+    // Up to the next delimiter: inside a flow collection , ] } end it, and
+    // a key's plain scalar also ends at ':'.
+    method plain(bool isValue): object {
+        var start = at
+        while (done() == false) {
+            var c = peek()
+            if (depth > 0 && (c == "," || c == "]" || c == "}")) {
+                break
+            }
+            if (c == ":" && (isValue == false || at + 1 >= text.length() || text.charAt(at + 1) == " ")) {
+                if (isValue == false) {
+                    break
+                }
+            }
+            at = at + 1
+        }
+        var s = text.substring(start, at).trim()
+        if (isValue) {
+            return resolve(s)
+        }
+        return s
+    }
+
+    method doubleQuoted(): string {
+        at = at + 1
+        var out = []
+        while (true) {
+            if (done()) {
+                fail("unclosed \" string")
+            }
+            var c = peek()
+            at = at + 1
+            if (c == "\"") {
+                return out.join("")
+            }
+            if (c != "\\") {
+                out.append(c)
+                continue
+            }
+            var e = peek()
+            at = at + 1
+            if (e == "n") {
+                out.append("\n")
+            } else if (e == "t") {
+                out.append("\t")
+            } else if (e == "r") {
+                out.append("\r")
+            } else if (e == "0") {
+                out.append(chr(0))
+            } else if (e == "e") {
+                out.append(chr(27))
+            } else if (e == "u" || e == "x" || e == "U") {
+                var count = 4
+                if (e == "x") {
+                    count = 2
+                }
+                if (e == "U") {
+                    count = 8
+                }
+                var code = 0
+                var i = 0
+                while (i < count) {
+                    var d = hexDigit(peek())
+                    if (d < 0) {
+                        fail("invalid \\" + e + " escape")
+                    }
+                    code = code * 16 + d
+                    at = at + 1
+                    i = i + 1
+                }
+                out.append(utf8(code))
+            } else {
+                out.append(e)
+            }
+        }
+        return ""
+    }
+
+    method singleQuoted(): string {
+        at = at + 1
+        var out = []
+        while (true) {
+            if (done()) {
+                fail("unclosed ' string")
+            }
+            var c = peek()
+            at = at + 1
+            if (c == "'") {
+                if (peek() == "'") {
+                    out.append("'")
+                    at = at + 1
+                    continue
+                }
+                return out.join("")
+            }
+            out.append(c)
+        }
+        return ""
+    }
+}
+
+// The UTF-8 bytes of a code point.
+method utf8(integer code): string {
+    if (code < 128) {
+        return chr(code)
+    }
+    if (code < 2048) {
+        return chr(192 + code / 64) + chr(128 + code % 64)
+    }
+    if (code < 65536) {
+        return chr(224 + code / 4096) + chr(128 + (code / 64) % 64) + chr(128 + code % 64)
+    }
+    return chr(240 + code / 262144) + chr(128 + (code / 4096) % 64) + chr(128 + (code / 64) % 64) + chr(128 + code % 64)
+}

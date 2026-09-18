@@ -1,9 +1,7 @@
 package codegen
 
-import "../ast/sexp.nv"
-import "../parser/types.nv"
-import "common.nv"
-import "expressions.nv"
+import ast
+import parser
 
 // Type inference for local variables.
 //

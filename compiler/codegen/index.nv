@@ -1,8 +1,7 @@
 package codegen
 
-import "../ast/sexp.nv"
-import "../parser/errors.nv"
-import "common.nv"
+import ast
+import parser
 
 // The program index: methods, classes, enums, interfaces, globals.
 //
@@ -39,6 +38,14 @@ method indexProgram(array<string> decls, map<string, string> prog): integer {
             prog[head + ":" + name] = d
             continue
         }
+        if (head == "classpkg") {
+            prog["classpkg:" + name] = nodeChild(d, 2)
+            continue
+        }
+        if (head == "userpkg") {
+            prog["userpkg:" + name] = "1"
+            continue
+        }
         if (head == "iface" || head == "annodef" || head == "global") {
             prog[head + ":" + name] = d
             if (head == "global" && packageOf(name) != "") {
@@ -46,7 +53,61 @@ method indexProgram(array<string> decls, map<string, string> prog): integer {
             }
         }
     }
+    indexUnqualified(decls, prog)
     return 0
+}
+
+// Functions and globals of the program's packages are namespaced
+// (geo.area) but called unqualified where one package alone has the name:
+// "unq:area/1" and "unqglobal:NAME" name the qualified candidates,
+// separated by spaces when there are several (the call is then ambiguous).
+method indexUnqualified(array<string> decls, map<string, string> prog): integer {
+    for (d in decls) {
+        var head = nodeHead(d)
+        if (head != "method" && head != "global") {
+            continue
+        }
+        var name = nodeChild(d, 1)
+        var pkg = packageOf(name)
+        if (pkg == "" || prog.has("userpkg:" + pkg) == false) {
+            continue
+        }
+        var short = name.substring(pkg.length() + 1, name.length())
+        var key = "unqglobal:" + short
+        if (head == "method") {
+            key = "unq:" + short + "/" + arityOf(d)
+            prog["unqname:" + short] = addCandidate(prog, "unqname:" + short, name)
+        }
+        prog[key] = addCandidate(prog, key, name)
+    }
+    return 0
+}
+
+method addCandidate(map<string, string> prog, string key, string name): string {
+    if (prog.has(key) == false) {
+        return name
+    }
+    for (c in prog[key].split(" ")) {
+        if (c == name) {
+            return prog[key]
+        }
+    }
+    return prog[key] + " " + name
+}
+
+// The error for a name several packages define.
+method ambiguousName(string name, string candidates, string pos): integer {
+    var list = candidates.split(" ")
+    fail("'" + name + "' is defined in more than one package (" + list.join(", ") + ") - call it qualified, e.g. " + list[0] + "(...)", pos)
+    return 0
+}
+
+// The standard module a class was declared in, "" for program classes.
+method classPackage(map<string, string> prog, string cls): string {
+    if (prog.has("classpkg:" + cls)) {
+        return prog["classpkg:" + cls]
+    }
+    return ""
 }
 
 method isClassLike(map<string, string> prog, string name): bool {

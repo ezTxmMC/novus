@@ -1,10 +1,6 @@
 package parser
 
-import "../lexer/tokens.nv"
-import "errors.nv"
-import "expressions.nv"
-import "tokens.nv"
-import "types.nv"
+import lexer
 
 // Statements and blocks.
 //

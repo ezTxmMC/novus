@@ -1,13 +1,9 @@
 package codegen
 
-import "../ast/sexp.nv"
-import "../lexer/chars.nv"
-import "../parser/errors.nv"
-import "../std/stdlib.nv"
-import "calls.nv"
-import "common.nv"
-import "index.nv"
-import "inference.nv"
+import ast
+import lexer
+import parser
+import std
 
 // Expressions -> C.
 //
@@ -62,6 +58,14 @@ method resolveVar(string name, map<string, string> prog, map<string, string> ctx
     }
     if (prog.has("global:" + name)) {
         return "g_" + cName(name)
+    }
+    if (prog.has("unqglobal:" + name) && prog["unqglobal:" + name].contains(" ") == false) {
+        // a global of one of the program's packages - unless a field of the
+        // class is meant
+        if (ctx["class"] != "" && fieldSlot(prog, ctx["class"], name) >= 0) {
+            return ""
+        }
+        return "g_" + cName(prog["unqglobal:" + name])
     }
     return ""
 }
@@ -227,6 +231,9 @@ method genExpr(string node, map<string, string> prog, map<string, string> ctx, m
             fail("'this' is only available inside classes", ctx["pos"])
         }
         failModuleUse(node, prog, ctx)
+        if (prog.has("unqglobal:" + node)) {
+            ambiguousName(node, prog["unqglobal:" + node], ctx["pos"])
+        }
         fail("unknown variable '" + node + "'", ctx["pos"])
     }
     var head = nodeHead(node)

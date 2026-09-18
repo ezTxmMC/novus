@@ -1,0 +1,1 @@
+error: util/help.nv:1: the file declares package tools but lives in the folder of package util - a folder is a package, so write 'package util'

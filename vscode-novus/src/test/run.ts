@@ -139,6 +139,19 @@ console.log('errors.nv');
   check(a.symbols.some(s => s.name === 'A' && s.kind === 'class'), 'recovers and still declares class A');
 }
 
+// --- package imports -----------------------------------------------------------
+console.log('package imports (import geo, import draw/shapes, import @helpers)');
+{
+  const dir = path.join(repoTest, 'cases', 'packages');
+  const importWs = new Workspace();
+  void importWs.scanFolders(['file://' + dir]);
+  const main = load(path.join(dir, 'main.nv'));
+  const a = importWs.analyze(main.uri, main.text);
+  check(errorsOf(a).length === 0, `new import forms parse (${errorsOf(a).join('; ')})`);
+  check(['geo', 'draw', 'shapes', 'main'].every(n => a.importNames.includes(n)), `packages become visible (${a.importNames.join(',')})`);
+  check(!a.diagnostics.some(d => d.message.includes("'shout'")), 'a root file imported with @ is resolved');
+}
+
 // --- packages & auto import -------------------------------------------------
 console.log('pkg fixtures (auto import)');
 {

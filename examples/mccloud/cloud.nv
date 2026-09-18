@@ -4,8 +4,8 @@ import json
 import os
 import path
 
-import "files.nv"
-import "process.nv"
+import @files
+import @process
 
 // Cloud state: groups (cloud.json), running servers (servers.json), the
 // template and server directories.

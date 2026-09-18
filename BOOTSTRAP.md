@@ -50,14 +50,21 @@ up to date. `scripts/snapshot.sh` regenerates `compiler/runtime/runtime.nv` and
 
 ## Pipeline
 
-Each package lives in its own directory under `compiler/`; files import
-what they use with `import "file.nv"` (relative to the importing file).
+Each package lives in its own directory under `compiler/` (the root of the
+compiler's packages, since it has no project.nv); files import the packages
+they use by name (`import parser`, `import codegen`).
 
 - `lexer/` produces tokens as strings `KIND file:line value`.
 - `parser/` builds an AST of nested s-expressions (also strings); `ast/`
   holds the navigation helpers (`nodeChild`, `nodeCount`, ...).
-- `loader/` resolves `import "file.nv"` relative to the importing file and
-  flattens the declarations of all files into one list.
+- `loader/` finds the project root, loads packages (`import geo`: every file
+  of the folder `geo/`, `import @geo/circle`: one file), standard and
+  dependency modules, and flattens the declarations of all files into one
+  list. Functions and globals of a package are prefixed with its name like
+  those of a std module (`(method geo.area ...)`), recorded with
+  `(userpkg geo)`; `codegen/index.nv` indexes them as `unq:area/1` so that an
+  unqualified call finds the one package that has the name (or reports that
+  several do).
 - `codegen/` indexes the declarations (`index.nv`), runs the semantic checks
   (`checks.nv`) and emits C against `runtime/novus_rt.h` - expressions,
   statements, methods, whole program; `modules.nv` maps `json`/`path`/`os`/
@@ -68,6 +75,13 @@ what they use with `import "file.nv"` (relative to the importing file).
   are called as `os.mkdir(...)`. A method body `(native "nv_os_mkdir")`
   makes the code generator call that C function directly (`variadic`
   natives receive the argument count first).
+- `nvh/` compiles `.nvh` components (HTML with Novus) into Novus source -
+  a class based `NvhComponent` whose template became `nvRender(out)` - with
+  the line numbers of the `.nvh` file; the loader runs it for every `.nvh`
+  it loads, and appends a `main` serving the page when the program itself
+  is a `.nvh` file. Classes of a std module (`NvhComponent` in `std/web.nv`)
+  are recorded as `(classpkg Class module)` so that their methods see the
+  module's functions and globals unqualified.
 - `project/` parses `project.nv` manifests and fetches `require`d modules
   with git into the cache; the loader resolves module imports through the
   resulting module table.
@@ -83,7 +97,8 @@ what they use with `import "file.nv"` (relative to the importing file).
     ctor: (ctor (params ...) (block ...)) or (noctor)
 (enum Name (consts (c NAME arg...)...) (fields ...) ctor (methods ...))
 (iface Name (names m1 m2 ...))        (annodef Name)        (global name expr)
-(import "path")
+(import "module/path")  (importmod pkg/path)  (importfile "pkg/file" "pos")
+(package name "pos")    (userpkg name)        (classpkg Class pkg)
 
 statements:  (var name [expr]) (tvar type name [expr]) (assign name expr)
              (setexpr target expr) (return [expr]) (println e) (print e) (eprintln e)

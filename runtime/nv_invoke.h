@@ -359,5 +359,32 @@ static NvArr *nv_iter(nv v) {
     return nv_arr_new();
 }
 
+/* task.run() with runtime errors caught: its result, or nothing with
+ * nv_try_failed() set and the message in nv_try_error(). Traps nest. */
+static nv nv_try_run(nv task) {
+    jmp_buf here;
+    jmp_buf *outer = nv_trap;
+    nv volatile result = nv_nil;
+    nv_trap_failed = 0;
+    nv_trap = &here;
+    if (setjmp(here) == 0) {
+        result = nv_invoke0(task, "run");
+        nv_trap_failed = 0;
+    } else {
+        nv_trap_failed = 1;
+        result = nv_nil;
+    }
+    nv_trap = outer;
+    return result;
+}
+
+static nv nv_try_failed(void) { return nv_bool(nv_trap_failed); }
+static nv nv_try_error(void) { return nv_str(nv_trap_failed ? nv_trap_message : ""); }
+
+/* A runtime error with the given message (caught by nv_try_run). */
+static nv nv_try_raise(nv message) {
+    nv_error("%s", nv_display(message));
+    return nv_nil;
+}
 
 #endif /* NV_INVOKE_H */

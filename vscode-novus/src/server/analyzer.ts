@@ -385,11 +385,11 @@ export class Analysis {
         }
         case 'Import': {
           if (item.isFile) {
-            // `import "file.nv"`: the imported file's package becomes visible
-            // (novusc flattens file imports; the extension maps them to packages).
+            // `import @geo/circle` or `import "example.com/geo"`: the imported
+            // file's package becomes visible.
             const pkg = this.opts.packageOf(this.resolveFileImport(item.path ?? ''));
             if (pkg) this.importNames.push(pkg);
-            this.importNames.push(item.name);
+            if (item.name) this.importNames.push(item.name);
             break;
           }
           const short = item.name.includes('.') ? item.name.slice(item.name.lastIndexOf('.') + 1) : item.name;
@@ -591,6 +591,15 @@ export class Analysis {
   private resolveFileImport(rel: string): string {
     try {
       const base = URI.parse(this.uri).fsPath;
+      if (rel.startsWith('@')) {
+        // one file of a package, relative to the project root
+        const root = projectRoot(path.dirname(base));
+        for (const ext of ['.nv', '.nvh']) {
+          const file = path.join(root, rel.slice(1) + ext);
+          if (fs.existsSync(file)) return URI.file(file).toString();
+        }
+        return URI.file(path.join(root, rel.slice(1) + '.nv')).toString();
+      }
       const local = path.resolve(path.dirname(base), rel);
       if (!fs.existsSync(local) && this.opts.resolveModuleImport) {
         const module = this.opts.resolveModuleImport(this.uri, rel);
@@ -1047,4 +1056,16 @@ export class Analysis {
       });
     }
   }
+}
+
+/** The folder whose sub folders are packages: the nearest one with a project.nv, else `dir`. */
+function projectRoot(dir: string): string {
+  let probe = dir;
+  for (let i = 0; i < 64; i++) {
+    if (fs.existsSync(path.join(probe, 'project.nv'))) return probe;
+    const up = path.dirname(probe);
+    if (up === probe) break;
+    probe = up;
+  }
+  return dir;
 }

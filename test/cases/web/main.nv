@@ -1,0 +1,48 @@
+package main
+
+import json
+import web
+import @Page
+
+// Prints which components an update patches, and the first patch.
+method show(string update) {
+    var u = json.parse(update)
+    var ids = []
+    for (p in u["p"]) {
+        ids.append(p[0])
+    }
+    println "patched: " + ids.join(", ")
+    if (u["p"].length() > 0) {
+        println u["p"][0][1]
+    }
+    if (u.has("go")) {
+        println "go: " + u["go"]
+    }
+    if (u.has("error")) {
+        println "error: " + u["error"]
+    }
+}
+
+method main {
+    var v = web.view(Page())
+    println web.document(v, false)
+    println "--- click the second item: it and the card showing the last hit change"
+    show(web.trigger(v, "c4", "hit", []))
+    println "--- again: now only the item changes"
+    show(web.trigger(v, "c4", "hit", []))
+    println "--- drop the first entry: keyed items keep their state"
+    show(web.trigger(v, "c1", "dropFirst", []))
+    println "--- bindings"
+    show(web.input(v, "c1", "agree", true))
+    show(web.input(v, "c1", "color", "blue"))
+    println "--- inline handler with \$value"
+    show(web.trigger(v, "c1", "nvInline1", ["hey"]))
+    println "--- a component with two roots, inline toggle"
+    show(web.trigger(v, "c6", "nvInline1", []))
+    println "--- a handler that fails: the view survives, the error is reported"
+    show(web.trigger(v, "c7", "explode", []))
+    println "--- navigate"
+    show(web.trigger(v, "c1", "navigate", ["/elsewhere"]))
+    println "--- a render that fails"
+    show(web.trigger(v, "c7", "nvInline1", []))
+}

@@ -49,9 +49,9 @@ export interface ImportDecl extends Span {
   kind: 'Import';
   name: string;
   nameSpan: Span;
-  /** Set for file imports: `import "file.nv"`. */
+  /** Set for imports of files: `import @geo/circle` and modules `import "example.com/geo"`. */
   isFile?: boolean;
-  /** The raw path of a file import. */
+  /** `@geo/circle`, the module path, or `geo/shapes` for a nested package. */
   path?: string;
 }
 

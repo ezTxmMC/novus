@@ -1,0 +1,19 @@
+:root { color-scheme: light dark; --accent: #4f6df5; font-family: system-ui, sans-serif }
+body { margin: 0 }
+.page { max-width: 42rem; margin: 0 auto; padding: 1rem 1.25rem 3rem }
+nav { display: flex; gap: 1rem; padding: .5rem 0 1rem; border-bottom: 1px solid #8884 }
+nav a { color: var(--accent); text-decoration: none; font-weight: 600 }
+h1 { margin: 1.5rem 0 1rem }
+button { font: inherit; padding: .3rem .8rem; border-radius: .4rem; border: 1px solid #8886; background: #8881; cursor: pointer }
+button:disabled { opacity: .4; cursor: default }
+input { font: inherit; padding: .35rem .6rem; border-radius: .4rem; border: 1px solid #8886 }
+.muted { opacity: .7 }
+form, .chat { display: flex; gap: .5rem; margin-bottom: 1rem }
+form input, .chat input:not(.name) { flex: 1 }
+.chat .name { width: 7rem }
+.todos, .messages { list-style: none; padding: 0 }
+.todos li { display: flex; align-items: center; gap: .6rem; padding: .35rem 0; border-bottom: 1px solid #8882 }
+.todos li.done span { text-decoration: line-through; opacity: .6 }
+.todos .remove { margin-left: auto; border: none; background: none; font-size: 1.2rem }
+.messages li { padding: .2rem 0 }
+.messages li.mine b { color: var(--accent) }

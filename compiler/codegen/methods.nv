@@ -1,10 +1,7 @@
 package codegen
 
-import "../ast/sexp.nv"
-import "../parser/types.nv"
-import "common.nv"
-import "inference.nv"
-import "statements.nv"
+import ast
+import parser
 
 // Method bodies, constructors and overload dispatchers -> C.
 //
@@ -214,7 +211,7 @@ method methodCName(string cls, string m, integer variant): string {
 }
 
 method genClassMethod(string cls, string m, string cname, map<string, string> prog): string {
-    var ctx = {"class": cls, "pkg": "", "func": methodName(m), "ret": methodRet(m), "pos": "method " + cls + "." + methodName(m)}
+    var ctx = {"class": cls, "pkg": classPackage(prog, cls), "func": methodName(m), "ret": methodRet(m), "pos": "method " + cls + "." + methodName(m)}
     var locals = {}
     var out = "static nv " + cname + "(nv self, nv *args, int n) {" + nl()
     out = out + bindArrayParams(m, "    ", locals)
@@ -235,7 +232,7 @@ method genClassMethod(string cls, string m, string cname, map<string, string> pr
 }
 
 method genCtor(string cls, string ctor, map<string, string> prog): string {
-    var ctx = {"class": cls, "pkg": "", "func": "construct", "ret": "void", "pos": "constructor of " + cls}
+    var ctx = {"class": cls, "pkg": classPackage(prog, cls), "func": "construct", "ret": "void", "pos": "constructor of " + cls}
     var locals = {}
     var out = "static nv c_" + cls + "(nv self, nv *args, int n) {" + nl()
     var params = nodeChild(ctor, 1)

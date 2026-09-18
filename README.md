@@ -50,8 +50,12 @@ novusc run <file.nv> [args...]     compile to a temporary binary and run it
 novusc build <file.nv> [options]   compile to a native executable
 novusc emit <file.nv> [-o out.c]   write the generated C (single file, runtime included)
 novusc check <file.nv>             parse and analyze only
+novusc nvh <file.nvh>              the Novus code a .nvh component compiles to
 novusc version
 ```
+
+`run` and `build` also take a `.nvh` component: it is served as the page at
+`/` (see [Web components](#web-components-nvh)).
 
 Build options: `-o <path>`, `--cc <compiler>`, `--cflags <flags>`,
 `--target <triple>` (cross compile through `zig cc -target`, e.g.
@@ -94,13 +98,36 @@ through their own `project.nv`. Code imports a module by its path:
 
 ```nv
 import "github.com/user/geo"                  // the module's entry file (lib)
-import "github.com/user/geo/shapes/circle.nv" // a file inside the module
+import "github.com/user/geo/shapes"           // a package (folder) of the module
+import "github.com/user/geo/shapes/circle"    // one file of it
 ```
+
+## Packages and imports
+
+A folder is a package. The project root (the folder of `project.nv`, else
+the one of the main file) holds the main package; every folder below it is a
+package whose files declare its name:
+
+```nv
+package main
+
+import geo              // every .nv/.nvh file in geo/ (package geo)
+import geo/shapes       // the nested package geo/shapes/ (package shapes)
+import @geo/circle      // only geo/circle.nv - no extension
+import @helpers         // helpers.nv of the root folder
+import json             // no such folder: the standard module
+```
+
+There are no relative file imports. What packages declare is used
+unqualified (`area(c)`) as long as one package alone has the name; when two
+have it, the call names the package: `geo.describe()`, `draw.describe()`.
+Inside a package its own names come first, and the main package's names
+always win.
 
 ## Language
 
 The showcase in [test/syntax.nv](test/syntax.nv) and the golden tests in
-[test/cases/](test/cases/) cover the language: packages and file imports,
+[test/cases/](test/cases/) cover the language: packages (folders) and imports,
 methods with overloading (by arity and parameter type, including
 `method main(array<string> args)`), `var` with inference and typed
 declarations (`integer x = 2.9` truncates), all control flow (`if`/`else if`,
@@ -209,6 +236,70 @@ The program ends when `main` returns, whatever is still running - await what
 has to finish. [examples/11-concurrency](examples/11-concurrency) works
 through all of it.
 
+## Web components (.nvh)
+
+A `.nvh` file is HTML with Novus in it - like a PHP page - and at the same
+time a component, like a `.vue` or `.svelte` file. It is rendered on the
+server, its state stays there, and the page is live: events go to the
+server, handlers run, and only the components whose output changed are
+patched into the page. Changes made elsewhere - another visitor, a timer -
+are pushed over a server-sent event stream.
+
+```html
+<?nv
+prop string label = "Count"          // set by the parent or the URL
+ref integer count = 0                // state; the page follows it
+
+method add(integer by) {
+    count = count + by
+    emit("change", count)            // for a parent listening with @change
+}
+?>
+<div class="counter">
+    <button @click="add(-1)" disabled={count <= 0}>-</button>
+    <span class:high={count > 9}>{label}: {count}</span>
+    <button @click="add(1)">+</button>
+</div>
+<style>
+.counter { display: flex; gap: .5rem }
+</style>
+```
+
+```sh
+novusc run Counter.nvh               # serves it on http://localhost:8080
+```
+
+Templates have `{expr}`, `{@html expr}`, `{#if}`/`{:else}`/`{/if}`,
+`{#for x, i in xs}`/`{/for}`, the PHP forms `<?= expr ?>` and
+`<?nv statements ?>`, `attr={expr}`, `class:name={cond}`, events
+(`@click="handler(arg, $value)"`, `@keydown.enter.prevent`, `@click={count = 0}`)
+and two-way `bind="ref"`. Components are tags starting with an upper-case
+letter (`<Counter start={3} key={id} @change="...">slot</Counter>`, found next
+to the file or in `components/`), with props, slots, events and keys. An app
+maps URLs to page components with the [web](std/web.nv) module:
+
+```nv
+import web
+import pages                         // pages/Home.nvh, pages/User.nvh, ...
+
+method main {
+    web.page("/", Home())
+    web.page("/user/:id", User())    // :id and ?query= become props
+    web.files("/assets", "public")
+    web.tick(1000)                   // tick() on open pages, changes pushed
+    web.serve(web.port(8080))
+}
+```
+
+The compiler turns `Counter.nvh` into a class `Counter based NvhComponent`
+(`novusc nvh Counter.nvh` shows the code, line numbers stay those of the
+`.nvh` file); the server is a single `poll()` loop, so handlers never race
+and state shared through globals needs no lock. `web.view`, `web.render`,
+`web.trigger` and `web.input` run components without a server, for tests.
+[examples/web](examples/web) is a complete app (counters, a live clock, a
+shared todo list and a chat); the [documentation](website/src/content/web/components.mdx)
+has the details.
+
 ## Standard library
 
 The standard library lives in [std/](std/) - one Novus file per module,
@@ -237,6 +328,11 @@ implemented by the C runtime, everything else is plain Novus you can read.
 | [csv](std/csv.nv) | `parse`/`parseWith`, `stringify`/`stringifyWith` |
 | [io](std/io.nv) | `readLine`, `readAll`, `readLines`, `write`, `writeErr`, `flush`, `prompt` |
 | [test](std/test.nv) | `assert`, `assertEqual`, `report` |
+| [toml](std/toml.nv) | `.toml` files: `parse`, `parseOr`, `isValid`, `errorOf`, `stringify`, `load`, `save` (tables, arrays of tables, inline tables, all string and number forms) |
+| [yaml](std/yaml.nv) | `.yaml`/`.yml` files: the same functions - block and flow collections, quoted and block scalars (`\|`, `>`), comments; no anchors or multiple documents |
+| [properties](std/properties.nv) | `.properties`/`.cfg`/`.ini` files: `parse` (flat, `[section]` prefixes keys), `sections`, `stringify`, `stringifySections`, `load`, `loadSections`, `save` |
+| [config](std/config.nv) | any of them by extension: `load`/`save` (`.json`, `.toml`, `.yaml`, `.yml`, `.properties`, `.cfg`, `.ini`), `parse`/`stringify` by format, `get(value, "server.port", fallback)` |
+| [web](std/web.nv) | `.nvh` pages and the live HTTP server: `page`, `files`, `tick`, `serve`, `port`; `view`/`render`/`trigger`/`input`/`document` for rendering without a server |
 | [thread](std/thread.nv) | tasks (`join`, `joinAll`, `done`), `sleep`/`yield`, locks (`mutex`, `lock`, `tryLock`), channels (`channel`, `send`, `recv`, `close`), counters, groups, `cpus`/`parallelism` |
 
 Free builtins need no import: `readFile`, `writeFile`, `fileExists`,
@@ -251,11 +347,12 @@ Free builtins need no import: `readFile`, `writeFile`, `fileExists`,
 | `compiler/lexer/`      | Lexer (`tokens.nv`, `chars.nv`, `lexer.nv`)                                  |
 | `compiler/ast/`        | The string-encoded s-expression AST (`sexp.nv`, `text.nv`)                   |
 | `compiler/parser/`     | Parser: `tokens`, `types`, `expressions`, `statements`, `members`, `declarations` |
-| `compiler/loader/`     | Program loading and `import "file.nv"` resolution (`paths.nv`, `loader.nv`)  |
+| `compiler/loader/`     | Program loading: packages (folders), `@` file imports, modules (`paths.nv`, `loader.nv`) |
 | `compiler/codegen/`    | Novus -> C: `index`, `checks`, `modules`, `builtins`, `calls`, `expressions`, `statements`, `methods`, `program` |
 | `compiler/runtime/`    | `runtime.nv`: the runtime headers embedded as one string (generated by `tools/embed.nv`) |
 | `compiler/std/`        | `stdlib.nv`: the `std/` modules embedded as strings (generated by `tools/embedstd.nv`) |
 | `std/`                 | The standard library, one Novus module per file                              |
+| `compiler/nvh/`        | `.nvh` components: template -> Novus class (`nvh.nv`), used by the loader    |
 | `compiler/project/`    | `project.nv` manifests (`manifest.nv`) and git dependencies (`deps.nv`)      |
 | `compiler/driver/`     | The `novusc` command line (`cli.nv`) and build/run steps (`build.nv`)         |
 | `compiler/main.nv`     | Entry point                                                                   |

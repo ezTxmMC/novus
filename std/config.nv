@@ -1,0 +1,99 @@
+package config
+
+import json
+import properties
+import toml
+import yaml
+
+// Configuration files by their extension: .json, .toml, .yaml/.yml,
+// .properties/.cfg/.ini (see the modules of those names).
+//
+//     var settings = config.load("app.yaml")
+//     config.save(settings, "app.toml")
+
+// The parsed file.
+method load(string file): object {
+    return parse(readText(file), format(file))
+}
+
+// Writes `value` in the format the file's extension names.
+method save(object value, string file) {
+    writeFile(file, stringify(value, format(file)))
+}
+
+// "json", "toml", "yaml" or "properties" for a file name ("" when unknown).
+method format(string file): string {
+    var lower = file.toLower()
+    if (lower.endsWith(".json")) {
+        return "json"
+    }
+    if (lower.endsWith(".toml")) {
+        return "toml"
+    }
+    if (lower.endsWith(".yaml") || lower.endsWith(".yml")) {
+        return "yaml"
+    }
+    if (lower.endsWith(".properties") || lower.endsWith(".cfg") || lower.endsWith(".ini") || lower.endsWith(".conf")) {
+        return "properties"
+    }
+    return ""
+}
+
+method parse(string text, string kind): object {
+    if (kind == "json") {
+        return json.parse(text)
+    }
+    if (kind == "toml") {
+        return toml.parse(text)
+    }
+    if (kind == "yaml" || kind == "yml") {
+        return yaml.parse(text)
+    }
+    if (kind == "properties" || kind == "cfg" || kind == "ini") {
+        return properties.parse(text)
+    }
+    raise("config: unknown format '" + kind + "' (json, toml, yaml, properties)")
+    return ""
+}
+
+method stringify(object value, string kind): string {
+    if (kind == "json") {
+        return json.pretty(value) + "\n"
+    }
+    if (kind == "toml") {
+        return toml.stringify(value)
+    }
+    if (kind == "yaml" || kind == "yml") {
+        return yaml.stringify(value)
+    }
+    if (kind == "properties" || kind == "cfg" || kind == "ini") {
+        return properties.stringify(value)
+    }
+    raise("config: unknown format '" + kind + "' (json, toml, yaml, properties)")
+    return ""
+}
+
+// A value by dotted path: get(settings, "server.port"); `fallback` when a
+// part of the path is missing.
+method get(object value, string path, object fallback): object {
+    var current = value
+    for (part in path.split(".")) {
+        if (typeOf(current) == "map" && current.has(part)) {
+            current = current[part]
+        } else if (typeOf(current) == "array" && part != "" && parseInt(part) >= 0 && parseInt(part) < current.length() && "" + parseInt(part) == part) {
+            current = current[parseInt(part)]
+        } else {
+            return fallback
+        }
+    }
+    return current
+}
+
+method raise(string message) native "nv_try_raise"
+
+method readText(string file): string {
+    if (fileExists(file) == false) {
+        raise("config: cannot open '" + file + "'")
+    }
+    return readFile(file)
+}

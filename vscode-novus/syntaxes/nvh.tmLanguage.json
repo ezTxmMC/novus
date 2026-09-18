@@ -1,0 +1,131 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Novus HTML",
+  "scopeName": "text.html.novus",
+  "comment": ".nvh components: HTML with <?nv ... ?> blocks, {expressions}, {#if}/{#for} blocks and @event / bind= / class:name directives.",
+  "patterns": [
+    { "include": "#code-block" },
+    { "include": "#echo-block" },
+    { "include": "#template-block" },
+    { "include": "#expression" },
+    { "include": "text.html.basic" }
+  ],
+  "injections": {
+    "L:text.html.novus meta.tag -meta.embedded.block.novus -meta.embedded.expression.novus": {
+      "patterns": [
+        { "include": "#directive-attribute" },
+        { "include": "#expression" }
+      ]
+    },
+    "L:text.html.novus meta.tag string.quoted -meta.embedded.expression.novus": {
+      "patterns": [{ "include": "#expression" }]
+    }
+  },
+  "repository": {
+    "code-block": {
+      "name": "meta.embedded.block.novus",
+      "begin": "<\\?nv\\b",
+      "end": "\\?>",
+      "beginCaptures": { "0": { "name": "punctuation.section.embedded.begin.novus" } },
+      "endCaptures": { "0": { "name": "punctuation.section.embedded.end.novus" } },
+      "contentName": "source.novus",
+      "patterns": [
+        { "match": "\\b(prop|ref)\\b", "name": "storage.modifier.novus" },
+        { "include": "source.novus" }
+      ]
+    },
+    "echo-block": {
+      "name": "meta.embedded.block.novus",
+      "begin": "<\\?=",
+      "end": "\\?>",
+      "beginCaptures": { "0": { "name": "punctuation.section.embedded.begin.novus" } },
+      "endCaptures": { "0": { "name": "punctuation.section.embedded.end.novus" } },
+      "contentName": "source.novus",
+      "patterns": [{ "include": "source.novus" }]
+    },
+    "template-block": {
+      "patterns": [
+        {
+          "name": "meta.embedded.expression.novus",
+          "begin": "(\\{)\\s*([#:]\\s*(?:else\\s+if|if|else|for))\\b",
+          "end": "\\}",
+          "beginCaptures": {
+            "1": { "name": "punctuation.section.embedded.begin.novus" },
+            "2": { "name": "keyword.control.novus" }
+          },
+          "endCaptures": { "0": { "name": "punctuation.section.embedded.end.novus" } },
+          "patterns": [
+            { "match": "\\bin\\b", "name": "keyword.control.novus" },
+            { "include": "source.novus" }
+          ]
+        },
+        {
+          "match": "(\\{)\\s*(/\\s*(?:if|for))\\s*(\\})",
+          "captures": {
+            "1": { "name": "punctuation.section.embedded.begin.novus" },
+            "2": { "name": "keyword.control.novus" },
+            "3": { "name": "punctuation.section.embedded.end.novus" }
+          }
+        },
+        {
+          "name": "meta.embedded.expression.novus",
+          "begin": "(\\{)\\s*(@html)\\b",
+          "end": "\\}",
+          "beginCaptures": {
+            "1": { "name": "punctuation.section.embedded.begin.novus" },
+            "2": { "name": "keyword.other.novus" }
+          },
+          "endCaptures": { "0": { "name": "punctuation.section.embedded.end.novus" } },
+          "patterns": [{ "include": "source.novus" }]
+        }
+      ]
+    },
+    "expression": {
+      "patterns": [
+        { "match": "\\\\[{}]", "name": "constant.character.escape.novus" },
+        {
+          "name": "meta.embedded.expression.novus",
+          "begin": "\\{",
+          "end": "\\}",
+          "beginCaptures": { "0": { "name": "punctuation.section.embedded.begin.novus" } },
+          "endCaptures": { "0": { "name": "punctuation.section.embedded.end.novus" } },
+          "contentName": "source.novus",
+          "patterns": [
+            { "match": "\\$value\\b", "name": "variable.language.novus" },
+            { "include": "#braces" },
+            { "include": "source.novus" }
+          ]
+        }
+      ]
+    },
+    "braces": {
+      "begin": "\\{",
+      "end": "\\}",
+      "patterns": [{ "include": "#braces" }, { "include": "source.novus" }]
+    },
+    "directive-attribute": {
+      "patterns": [
+        {
+          "comment": "@click=\"handler(args)\" and @keydown.enter.prevent=...",
+          "begin": "(@[A-Za-z]+(?:\\.[A-Za-z]+)*)\\s*(=)\\s*(\")",
+          "end": "\"",
+          "beginCaptures": {
+            "1": { "name": "entity.other.attribute-name.event.novus keyword.other.novus" },
+            "2": { "name": "punctuation.separator.key-value.html" },
+            "3": { "name": "punctuation.definition.string.begin.html" }
+          },
+          "endCaptures": { "0": { "name": "punctuation.definition.string.end.html" } },
+          "contentName": "meta.embedded.expression.novus source.novus",
+          "patterns": [
+            { "match": "\\$value\\b", "name": "variable.language.novus" },
+            { "include": "source.novus" }
+          ]
+        },
+        {
+          "match": "(@[A-Za-z]+(?:\\.[A-Za-z]+)*|bind(?::[A-Za-z]+)?|class:[A-Za-z0-9_-]+|key)(?=\\s*=|\\s|/?>)",
+          "name": "entity.other.attribute-name.directive.novus keyword.other.novus"
+        }
+      ]
+    }
+  }
+}

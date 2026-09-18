@@ -105,9 +105,11 @@ jobs:
     permissions:
       contents: write
     steps:
+      # only the compiler binaries; docs-site is not a release asset
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
+          pattern: novusc-*
       - name: Collect
         run: |
           mkdir -p release

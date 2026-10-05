@@ -1,0 +1,12 @@
+package main
+
+import os
+
+// Load markdown content from files
+method loadContent(string path): string {
+    var file = "content" + path + ".md"
+    if (os.isDir(file)) {
+        return ""
+    }
+    return os.readFile(file)
+}

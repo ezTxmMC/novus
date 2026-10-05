@@ -1,0 +1,58 @@
+<?nv
+prop string path = "/docs/introduction"
+?>
+<Layout title="Novus Docs" section="docs">
+  <div class="docs-container">
+    <aside class="sidebar">
+      <nav class="doc-nav">
+        <?nv for (item in NAV) { ?>
+          <a href="{item.path}" class:active={item.path == path}>{item.title}</a>
+        <?nv } ?>
+      </nav>
+    </aside>
+    <main class="doc-content">
+      <article id="doc-content">
+        <?nv
+          var content = loadContent(path)
+          if (content == "") {
+            content = "<h1>Not found</h1><p>This page does not exist.</p>"
+          }
+        ?>
+        {@html mdToHtml(content)}
+      </article>
+      <nav class="doc-nav-bottom">
+        <?nv
+          var prev = navPrev(path)
+          var next = navNext(path)
+        ?>
+        <?nv if (prev.path != "") { ?>
+          <a href="{prev.path}" class="prev">← {prev.title}</a>
+        <?nv } ?>
+        <?nv if (next.path != "") { ?>
+          <a href="{next.path}" class="next">{next.title} →</a>
+        <?nv } ?>
+      </nav>
+    </main>
+  </div>
+</Layout>
+
+<style>
+.docs-container { display: grid; grid-template-columns: 250px 1fr; gap: 3rem; }
+.sidebar { }
+.doc-nav { display: flex; flex-direction: column; gap: 0.5rem; font-size: 0.95rem; }
+.doc-nav a { padding: 0.5rem 0.75rem; border-radius: 4px; color: #d8b4fe; border-left: 2px solid transparent; }
+.doc-nav a:hover { background: rgba(168, 85, 247, 0.1); }
+.doc-nav a.active { color: #f5d0fe; border-left-color: #a855f7; background: rgba(168, 85, 247, 0.1); font-weight: 500; }
+
+.doc-content { }
+.doc-nav-bottom { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 3rem; padding-top: 2rem; border-top: 1px solid rgba(168, 85, 247, 0.1); }
+.doc-nav-bottom a { padding: 1rem; border: 1px solid rgba(168, 85, 247, 0.2); border-radius: 6px; color: #d8b4fe; font-size: 0.9rem; }
+.doc-nav-bottom a:hover { background: rgba(168, 85, 247, 0.05); border-color: rgba(168, 85, 247, 0.4); }
+.prev { text-align: left; }
+.next { text-align: right; }
+
+@media (max-width: 1024px) {
+  .docs-container { grid-template-columns: 1fr; }
+  .sidebar { display: none; }
+}
+</style>

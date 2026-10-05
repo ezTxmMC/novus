@@ -3,12 +3,28 @@ package main
 import web
 import os
 import pages
+import strings
+
+// Navigation structure (static for now, matching old website)
+define class NavItem {
+    private string path: get
+    private string title: get
+    private string summary: get
+}
+
+var NAV = [
+    NavItem{path="/docs/introduction", title="Introduction", summary="What is Novus?"},
+    NavItem{path="/docs/first-program", title="First Program", summary="Hello, world."},
+]
 
 method main {
     if (os.env("BUILD") == "export") {
         exportSite()
     } else {
         web.page("/", Home())
+        for (item in NAV) {
+            web.page(item.path, Docs())
+        }
         web.serve(web.port(8080))
     }
 }
@@ -17,9 +33,84 @@ method exportSite() {
     var dist = "dist"
     os.mkdir(dist)
 
-    // Spike: export Home component
+    // Export home
     var home = Home()
     var view = web.view(home)
     var html = web.document(view, false)
     os.writeFile(dist + "/index.html", html)
+
+    // Export docs
+    for (item in NAV) {
+        var docs = Docs()
+        docs.nvProp("path", item.path)
+        view = web.view(docs)
+        html = web.document(view, false)
+        var dir = dist + item.path
+        var idx = strings.lastIndexOf(dir, "/")
+        if (idx > 0) {
+            os.mkdir(dir.substring(0, idx))
+        }
+        os.mkdir(dir)
+        os.writeFile(dir + "/index.html", html)
+    }
+}
+
+method navPrev(string path): NavItem {
+    var idx = navIndex(path)
+    if (idx <= 0) {
+        return NavItem{path="", title="", summary=""}
+    }
+    return NAV[idx - 1]
+}
+
+method navNext(string path): NavItem {
+    var idx = navIndex(path)
+    if (idx < 0 || idx >= NAV.length() - 1) {
+        return NavItem{path="", title="", summary=""}
+    }
+    return NAV[idx + 1]
+}
+
+method navIndex(string path): integer {
+    var i = 0
+    while (i < NAV.length()) {
+        if (NAV[i].path == path) {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+method loadContent(string path): string {
+    var file = "content" + path + ".md"
+    if (os.isDir(file)) {
+        return ""
+    }
+    return os.readFile(file)
+}
+
+// Simplified markdown renderer (stub for quick test)
+method mdToHtml(string md): string {
+    // For now, just escape and wrap paragraphs: raw markdown content
+    // Full renderer in lib/markdown.nv (to be integrated)
+    var lines = md.split(chr(10))
+    var out = []
+    var i = 0
+    while (i < lines.length()) {
+        var line = lines[i]
+        if (line.startsWith("# ")) {
+            out.append("<h1>" + line.substring(2, line.length()) + "</h1>")
+        } else if (line.startsWith("## ")) {
+            out.append("<h2>" + line.substring(3, line.length()) + "</h2>")
+        } else if (line.startsWith("```")) {
+            out.append("<pre><code>")
+        } else if (line == "") {
+            // skip blank lines
+        } else {
+            out.append("<p>" + line + "</p>")
+        }
+        i = i + 1
+    }
+    return out.join("")
 }

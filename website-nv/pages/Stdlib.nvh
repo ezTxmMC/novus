@@ -1,0 +1,41 @@
+<?nv
+prop string section = "stdlib"
+?>
+<Layout title="Stdlib" section="{section}">
+  <h1>Standard Library</h1>
+  <p>Core modules for I/O, strings, collections, JSON, file operations.</p>
+
+  <div class="stdlib-modules">
+    <div class="module">
+      <h3>io</h3>
+      <p>Input/output: print, println, input.</p>
+    </div>
+    <div class="module">
+      <h3>strings</h3>
+      <p>String manipulation: split, join, contains, replace.</p>
+    </div>
+    <div class="module">
+      <h3>arrays</h3>
+      <p>Array operations: map, filter, reduce.</p>
+    </div>
+    <div class="module">
+      <h3>json</h3>
+      <p>JSON parsing and serialization.</p>
+    </div>
+    <div class="module">
+      <h3>os</h3>
+      <p>Operating system: files, directories, environment.</p>
+    </div>
+    <div class="module">
+      <h3>math</h3>
+      <p>Math functions: sin, cos, sqrt, pow.</p>
+    </div>
+  </div>
+</Layout>
+
+<style>
+.stdlib-modules { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1.5rem; margin: 2rem 0; }
+.module { padding: 1rem; background: rgba(168, 85, 247, 0.05); border: 1px solid rgba(168, 85, 247, 0.1); border-radius: 6px; }
+.module h3 { margin: 0 0 0.5rem 0; color: #d8b4fe; }
+.module p { margin: 0; font-size: 0.9rem; color: #c084fc; }
+</style>

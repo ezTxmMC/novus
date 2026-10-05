@@ -1,0 +1,37 @@
+<?nv
+prop string section = "examples"
+?>
+<Layout title="Examples" section="{section}">
+  <h1>Examples</h1>
+  <p>258 programs demonstrating Novus: from one-liners to a virtual machine.</p>
+
+  <div class="examples-grid">
+    <div class="example-card">
+      <h3>Basics</h3>
+      <p>Hello world, variables, operators, control flow.</p>
+      <a href="#">View chapter →</a>
+    </div>
+    <div class="example-card">
+      <h3>Collections</h3>
+      <p>Arrays, maps, iteration, functional programming.</p>
+      <a href="#">View chapter →</a>
+    </div>
+    <div class="example-card">
+      <h3>Classes</h3>
+      <p>Object-oriented programming, methods, inheritance.</p>
+      <a href="#">View chapter →</a>
+    </div>
+    <div class="example-card">
+      <h3>Algorithms</h3>
+      <p>Sorting, searching, graphs, dynamic programming.</p>
+      <a href="#">View chapter →</a>
+    </div>
+  </div>
+</Layout>
+
+<style>
+.examples-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 2rem; margin: 2rem 0; }
+.example-card { padding: 1.5rem; background: rgba(168, 85, 247, 0.05); border: 1px solid rgba(168, 85, 247, 0.1); border-radius: 8px; }
+.example-card h3 { margin-top: 0; color: #d8b4fe; }
+.example-card a { display: inline-block; margin-top: 1rem; }
+</style>

@@ -1,0 +1,35 @@
+<?nv
+prop string section = "benchmarks"
+?>
+<Layout title="Benchmarks" section="{section}">
+  <h1>Benchmarks</h1>
+  <p>Performance comparison: Novus vs Rust, C++, Go, Crystal, Java, Node, Python.</p>
+
+  <div class="benchmark-summary">
+    <div class="stat">
+      <div class="stat-value">7 languages</div>
+      <div class="stat-label">Compared</div>
+    </div>
+    <div class="stat">
+      <div class="stat-value">8 workloads</div>
+      <div class="stat-label">Benchmarked</div>
+    </div>
+    <div class="stat">
+      <div class="stat-value">Fastest compile</div>
+      <div class="stat-label">Novus strength</div>
+    </div>
+    <div class="stat">
+      <div class="stat-value">Competitive runtime</div>
+      <div class="stat-label">C++-class speed</div>
+    </div>
+  </div>
+
+  <p>See benchmarks/results.json for detailed metrics.</p>
+</Layout>
+
+<style>
+.benchmark-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 2rem; margin: 3rem 0; }
+.stat { text-align: center; }
+.stat-value { font-size: 1.5rem; font-weight: 700; color: #f5d0fe; }
+.stat-label { font-size: 0.9rem; color: #a78bfa; margin-top: 0.5rem; }
+</style>

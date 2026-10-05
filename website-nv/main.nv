@@ -1,0 +1,25 @@
+package main
+
+import web
+import os
+import pages
+
+method main {
+    if (os.env("BUILD") == "export") {
+        exportSite()
+    } else {
+        web.page("/", Home())
+        web.serve(web.port(8080))
+    }
+}
+
+method exportSite() {
+    var dist = "dist"
+    os.mkdir(dist)
+
+    // Spike: export Home component
+    var home = Home()
+    var view = web.view(home)
+    var html = web.document(view, false)
+    os.writeFile(dist + "/index.html", html)
+}

@@ -1,0 +1,18 @@
+package main
+
+import os
+import web
+
+// Static export: render all pages to dist/
+method exportRun() {
+    var dist = "dist"
+    os.mkdir(dist)
+
+    // Spike: export a simple test page
+    exportPage(dist + "/index.html", "test page")
+}
+
+method exportPage(string path, string title) {
+    var html = "<html><body><h1>" + title + "</h1></body></html>"
+    os.writeFile(path, html)
+}

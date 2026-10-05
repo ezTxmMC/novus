@@ -1,0 +1,233 @@
+# Language server
+
+`novus-lsp` is the language server of Novus. It is written in Novus (about 36
+packages under `lsp/`), compiles with `novusc build lsp/main.nv`, and
+speaks LSP 3.17 over stdio. How to install it and wire it into an editor is on
+the [Editor support](/docs/projects/editor) page.
+
+## What it does
+
+| Feature | Notes |
+|---|---|
+| Completion | context aware (top level, class body, statement, after `.`, after `:`, after `@`, imports); sorted by distance; auto import of a package the file does not import yet; dependency modules and std modules; snippets |
+| Hover and signature help | declarations with their `///` documentation, std and built-in members, overloads |
+| Definition, references, highlights | across the program, into dependencies and into std sources, `<Tag>` in `.nvh` files |
+| Rename | across the workspace; refuses std, built-in and dependency symbols and ambiguous members |
+| Document and workspace symbols, folding, document links | imports are links |
+| Semantic tokens | full and range; lexical first, resolved refinement second (see below) |
+| Formatting | whole document and range, whitespace only, idempotent |
+| Code actions | *Import 'x'*, *Organize imports*, *Fetch dependencies* |
+| Diagnostics | three layers: the server's own, `novusc check`, Pureline (see below) |
+| Commands | `novus.fetchDependencies`, `novus.rerunChecks` |
+
+### Diagnostics
+
+| Layer | Source | When |
+|---|---|---|
+| own | `novus` | on every change, without running a compiler: syntax errors with recovery, unresolved names and imports, duplicate declarations, `project.nv` errors |
+| compiler | `novusc` | the authoritative `novusc check` (`novus.check.mode`), run on a shadow copy so unsaved buffers count |
+| style | `pureline` | off by default: the rules of the Pureline specification (`novus.pureline.enabled`) |
+
+The own layer stays quiet while the program is incomplete (a dependency that is
+not fetched yet), so it never reports a false error; `novusc` has the last word.
+
+### Semantic tokens
+
+The legend (in this order):
+
+| Types | `namespace` `type` `class` `enum` `interface` `parameter` `variable` `property` `enumMember` `function` `method` `decorator` `keyword` `comment` `string` `number` `operator` `modifier` |
+|---|---|
+| **Modifiers** | `declaration` `readonly` `abstract` `deprecated` `defaultLibrary` `modification` `async` `documentation` |
+
+The lexical pass classifies keywords (also the contextual ones: `define`,
+`based`, `construct`, `await`, `thread`, `sync`, ... where the grammar gives
+them a meaning), literals, comments (`///` carries `documentation`), annotations
+and operators. The resolved pass classifies every identifier the program
+resolves: types by kind, functions and methods, fields as `property`,
+parameters, locals, enum constants, module qualifiers. A name that resolves to
+nothing is left unclassified, so a typo is not painted like a real symbol.
+Names from the standard library carry `defaultLibrary`, a `final` global and an
+enum constant carry `readonly`, a method marked `@Deprecated` carries
+`deprecated`, and an assignment target carries `modification`. The
+expression of a string interpolation is classified on top of the string.
+`.nvh` files get tokens for their `<?nv ... ?>` header only, `project.nv` none.
+
+## Settings
+
+All keys live under `novus.*`; the defaults are in the server. A wrong type or
+an out of range value keeps the previous value.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `novus.server.implementation` | `lsp` | VS Code only: `lsp` or the previous `typescript` server |
+| `novus.server.path` | `""` | VS Code only: the `novus-lsp` binary |
+| `novus.diagnostics.own` | `true` | the own diagnostics layer |
+| `novus.check.mode` | `onSave` | `onSave` (open and save), `onType` (also after 1.5 s idle), `off` |
+| `novus.check.novuscPath` | `""` | `novusc` for the check; empty uses `novus.executablePath`, then the workspace, then the `PATH` |
+| `novus.executablePath` | `""` | `novusc` for run/build (and the check, see above) |
+| `novus.check.timeoutSeconds` | `60` | a check that takes longer is abandoned (1 to 600) |
+| `novus.pureline.enabled` | `false` | Pureline diagnostics |
+| `novus.pureline.flagPlainElse` | `false` | `PL-CF-002` also for an `else` after a branch that does not end the block |
+| `novus.pureline.functionReviewLines` | `30` | `PL-FN-001`: review above this length |
+| `novus.pureline.functionMaxLines` | `50` | `PL-FN-001`: split above this length |
+| `novus.pureline.maxLinesPerFile` | `200` | `PL-STRUCT-001` |
+| `novus.pureline.maxFilesPerFolder` | `10` | `PL-STRUCT-002` |
+| `novus.pureline.allowedShortNames` | `["i","j","k"]` | `PL-NAME-001` |
+| `novus.imports.explicit` | `true` | completion adds the `import` line even when another file already loads the package |
+| `novus.format.tabSize` | `4` | formatter width when the editor sends none |
+| `novus.format.insertSpaces` | `true` | spaces instead of tabs when the editor sends none |
+| `novus.format.maxBlankLines` | `1` | consecutive blank lines kept |
+| `novus.snippets.indent` | four spaces | indentation unit inside snippet bodies |
+| `novus.completion.maxItems` | `200` | longest answer; more is marked incomplete |
+
+A key can be written nested (``), dotted
+(`check.mode`) or fully dotted (`novus.check.mode`), with or without the
+wrapping `novus` object.
+
+## Snippets
+
+Snippets are offered by completion with the prefixes below. The server
+verifies every one with `novusc check` and `novusc build`
+(`scripts/lsp_snippets.sh`), and the list for VS Code, `vscode-novus/snippets/novus.json`,
+is generated from the same catalogue (`make snippets`).
+
+**Program, packages and imports**
+
+| Prefix | Inserts |
+|---|---|
+| `main` | Program entry point |
+| `psvm`, `mainargs` | Program entry point receiving the command line arguments |
+| `maine`, `psvmi` | Entry point whose return value is the exit code |
+| `pkg`, `package` | Package declaration |
+| `import` | Import a package folder or a standard module |
+| `importf`, `importfile` | Import one file of the project |
+| `importn`, `importnested` | Import a nested package folder |
+| `importm`, `importmod` | Import a dependency module |
+| `psf`, `const`, `final` | Top-level constant |
+| `gvar` | Top-level mutable global |
+
+**Methods**
+
+| Prefix | Inserts |
+|---|---|
+| `method`, `meth` | Method with parameters and return type |
+| `methodv`, `methodn` | Method without a parameter list |
+| `methoda`, `async` | Async method: calls start on a virtual thread and return a task |
+| `tryrun`, `guarded` | Run a task so that a runtime error becomes a value |
+| `doc` | Documentation comment |
+
+**Types and members**
+
+| Prefix | Inserts |
+|---|---|
+| `class`, `cls` | Class with fields and a constructor |
+| `classb`, `extends` | Class based on another class, abstract class or interface |
+| `abstract`, `abstractclass` | Abstract class |
+| `interface`, `iface` | Interface |
+| `impl`, `implements` | Class implementing an interface |
+| `enum` | Enum |
+| `enumv`, `enumc` | Enum with a value per constant |
+| `annotation`, `anno` | Annotation definition |
+| `@Deprecated`, `deprecated` | Mark a method as deprecated |
+| `construct`, `ctor` | Constructor assigning one field |
+| `field`, `fld` | Field |
+| `fieldg`, `getter` | Field with a getter |
+| `fieldgs`, `accessors` | Field with getter and/or setter |
+| `abstractm`, `absm` | Abstract method signature |
+| `ctord`, `constructall` | Constructor taking two fields |
+
+**Output and variables**
+
+| Prefix | Inserts |
+|---|---|
+| `sout`, `println`, `pl` | Print a line |
+| `soutv`, `printv` | Print a variable with its name |
+| `soutm`, `printm` | Print the current method name |
+| `soutp`, `printp` | Print a parameter with its name |
+| `serr`, `eprintln` | Print a line to standard error |
+| `print` | Print without a line break |
+| `var` | Variable |
+| `vart`, `tvar` | Variable with an explicit type |
+| `local`, `typed` | Typed local declaration |
+| `ret`, `return` | Return a value |
+| `mapl`, `newmap` | Map literal |
+| `arrl`, `newarr` | Array literal |
+| `struct`, `obj` | Object literal with named fields |
+| `new` | Constructor call |
+| `todo` | TODO comment |
+
+**Control flow**
+
+| Prefix | Inserts |
+|---|---|
+| `fori`, `forc` | Counted loop |
+| `forir`, `forr` | Counting down |
+| `forrange`, `fora` | For-in over arrays.range |
+| `foreach`, `iter`, `for`, `itar` | For-in over an array |
+| `itmap`, `formap` | Iterate the keys of a map |
+| `itstr`, `forchar` | Iterate the characters |
+| `if` | If |
+| `ifelse`, `ife` | If / else |
+| `elif`, `elseif` | Else-if branch |
+| `else` | Else branch |
+| `guard`, `ifret` | Guard clause: leave early |
+| `ifnot`, `ifn` | If not |
+| `ifhas` | If a map has the key |
+| `while` | While loop |
+| `wh1`, `loop` | Endless loop with a way out |
+
+**Concurrency**
+
+| Prefix | Inserts |
+|---|---|
+| `thread`, `osthread` | Run a method call on an operating-system thread |
+| `virtual`, `vthread` | Run a method call on a virtual thread |
+| `await` | Wait for a task and take its value |
+| `joinall` | Wait for all tasks |
+| `sync` | Block guarded by the program-wide lock |
+| `syncl`, `synchronized` | Block guarded by a mutex |
+| `chan`, `channel` | Create a channel |
+
+**Tests, command line and the standard library**
+
+| Prefix | Inserts |
+|---|---|
+| `testmain`, `tmain` | Test program: assertions, then the exit code |
+| `maincli`, `cli` | Entry point parsing --options and positional arguments |
+| `asserteq`, `assertequal` | Compare two values in a test |
+| `asserttrue`, `assert` | Assert a condition in a test |
+| `cliopt` | Read a command line option |
+| `cliflag` | Read a command line flag |
+| `httpget`, `get` | HTTP GET returning the body |
+| `httppost`, `post` | HTTP POST of a map or array as JSON |
+| `httpjson`, `getjson` | HTTP GET parsed as JSON |
+| `httpreq`, `http` | HTTP request with status, body and headers |
+| `jsonparse`, `jparse` | Parse JSON text |
+| `jsonstr`, `jstringify` | Serialize a value to JSON |
+| `jsonpretty`, `jpretty` | Serialize a value to indented JSON |
+| `jsonload`, `jload` | Load a JSON file |
+| `jsonsave`, `jsave` | Save a value as a JSON file |
+| `jsontry`, `jtry` | Parse JSON text without aborting |
+| `readfile`, `rf` | Read a whole file |
+| `writefile`, `wf` | Write a whole file |
+| `readlines`, `rl` | Loop over the lines of a file |
+| `listdir`, `ls` | Loop over the entries of a directory |
+| `exec`, `shell` | Run a shell command and get its exit code |
+| `stdin`, `readline` | Read a line from standard input |
+
+Inside `project.nv` the server offers `project`, `require`, `replace`, `lib`,
+`mainfile` and `manifestfull`; inside `.nvh` files `component`, `prop`, `ref`,
+`nvif`, `nvfor`, `click`, `bind` and `html`.
+
+## Troubleshooting
+
+| Symptom | Cause |
+|---|---|
+| nothing happens | the editor did not find `novus-lsp`; run `novus-lsp --version` in the same shell |
+| no `novusc` diagnostics | `novusc` was not found: set `novus.check.novuscPath`, or `novus.check.mode` is `off` |
+| dependency names are unknown | run the *Fetch dependencies* code action, or `novusc deps` in the project folder |
+| a project path with a space fails the check | `novusc` itself does not support it |
+| std definitions open a file in the temp folder | std sources are materialised there; edits are overwritten |
+
+`NOVUS_LSP_LOG=debug novus-lsp --stdio` prints what it does to stderr. The
+server never writes anything but protocol messages to stdout.

@@ -14,7 +14,23 @@ define class NavItem {
 
 var NAV = [
     NavItem{path="/docs/introduction", title="Introduction", summary="What is Novus?"},
+    NavItem{path="/docs/installation", title="Installation", summary="Get Novus running."},
     NavItem{path="/docs/first-program", title="First Program", summary="Hello, world."},
+    NavItem{path="/docs/cli", title="Command Line", summary="novusc commands."},
+    NavItem{path="/docs/language/basics", title="Basics", summary="Values and types."},
+    NavItem{path="/docs/language/control-flow", title="Control Flow", summary="if, while, for."},
+    NavItem{path="/docs/language/methods", title="Methods", summary="Functions and methods."},
+    NavItem{path="/docs/language/collections", title="Collections", summary="arrays, maps."},
+    NavItem{path="/docs/language/classes", title="Classes", summary="Objects and state."},
+    NavItem{path="/docs/language/modules", title="Modules", summary="Packages and imports."},
+    NavItem{path="/docs/language/concurrency", title="Concurrency", summary="Threads and sync."},
+    NavItem{path="/docs/web/components", title="Web Components", summary="nvh templates."},
+    NavItem{path="/docs/projects/manifest", title="Manifest", summary="project.nv"},
+    NavItem{path="/docs/projects/dependencies", title="Dependencies", summary="Versions and imports."},
+    NavItem{path="/docs/projects/editor", title="Editor Setup", summary="LSP and IDEs."},
+    NavItem{path="/docs/projects/language-server", title="Language Server", summary="novus-lsp."},
+    NavItem{path="/docs/architecture", title="Architecture", summary="Compiler and runtime."},
+    NavItem{path="/docs/bootstrapping", title="Bootstrapping", summary="Self-hosting."},
 ]
 
 method main {

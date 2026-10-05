@@ -1,0 +1,123 @@
+# Modules and imports
+
+Novus has three kinds of imports: **packages** of your own project, the
+**standard modules** and **dependency modules** from `project.nv`. There are
+no file paths in imports - a folder is a package.
+
+## Packages
+
+The project root is the folder with the `project.nv` (without one: the folder
+of the main file). Every folder below it is a package, and its files say so:
+
+```
+app/
+  project.nv
+  main.nv            package main
+  helpers.nv         package main
+  geo/
+    circle.nv        package geo
+    units.nv         package geo
+    shapes/
+      square.nv      package shapes
+```
+
+```nv
+package main
+
+import geo              // every .nv (and .nvh) file in geo/
+import geo/shapes       // a nested package: geo/shapes/
+import @geo/circle      // only geo/circle.nv - a file, without the extension
+import @helpers         // a file of the root folder
+```
+
+A file's `package` line has to name its folder (`geo/units.nv` is
+`package geo`); the compiler says so when it does not. `package main` is
+the exception: it may live anywhere, and the root folder's files are the
+main package. Every file is loaded once and cycles are fine.
+
+## Names
+
+What a package declares is used **unqualified** - no prefix, as long as only
+one package has the name:
+
+```nv
+println area(Circle(2.0))       // geo's area()
+println corner()                // shapes' corner()
+```
+
+When two packages declare the same function or constant, the unqualified
+name is ambiguous and the compiler asks for the package in front of it:
+
+```nv
+println geo.describe()          // both geo and draw have describe()
+println draw.describe()
+println geo.UNIT
+```
+
+Inside a package its own names come first, so `describe()` in a file of
+`geo` is geo's. The main package's names always win over those of other
+packages. A nested package is qualified by its last folder (`shapes.corner()`).
+Classes, enums and interfaces are shared by the whole program: their names
+must be unique.
+
+## Standard modules
+
+```nv
+import strings
+import os
+import json
+```
+
+Module functions are **namespaced**, so they never collide with your own
+names:
+
+```nv
+println strings.repeat("ab", 3)
+println os.exists("file.txt")
+println json.stringify()
+```
+
+Every module is a regular Novus file in [std/](https://github.com/ezTxmMC/novus/tree/master/std),
+embedded into the compiler. Functions declared `native "..."` are implemented
+by the C runtime:
+
+```nv
+package os
+
+method mkdir(string path): bool native "nv_os_mkdir"
+
+method envOr(string name, string fallback): string {
+    var value = env(name)
+    if (value == "") {
+        return fallback
+    }
+    return value
+}
+```
+
+Using a module without importing it is a compile-time error that names the
+missing import. The full list is in the [standard library reference](/stdlib).
+
+## Dependency modules
+
+A dependency declared in `project.nv` is imported by its module path, in
+quotes:
+
+```nv
+import "github.com/user/geo"                // the module's entry file
+import "github.com/user/geo/shapes"         // a package of the module
+import "github.com/user/geo/shapes/circle"  // one file of that package
+```
+
+Inside the module, its own folder is the root its packages are found in. See
+[Dependencies](/docs/projects/dependencies).
+
+## Resolution order
+
+For `import name` (and `import a/b`), `novusc` takes:
+
+1. the folder `name/` below the project root, when it has `.nv` or `.nvh` files
+2. otherwise the standard module of that name
+
+`import @a/b` is always the file `a/b.nv` (or `a/b.nvh`) below the root, and
+a quoted path is always a dependency module.

@@ -1,0 +1,85 @@
+package alpha
+
+import base/maybe
+import os
+import math
+
+define class AlphaThing {
+    string path
+
+    construct() {
+    }
+}
+
+define class AlphaThing {
+}
+
+define class BetaPublic {
+}
+
+define class TomlLike {
+}
+
+private final UNPREFIXED_LIMIT = 3
+private final ALPHA_LIMIT = 4
+
+method unprefixed(): integer {
+    return 1
+}
+
+method alphaChecks(integer os, integer x): integer {
+    var y = 1
+    var math = 2
+    for (k in [1]) {
+        y = k
+    }
+    for (w in [1]) {
+        y = w
+    }
+    if (x == 1) {
+        return 1
+    } else {
+        return 2
+    }
+    // else, println(x) and sync (lock) in a comment are not code
+    var quoted = "else println(x) io.write(x) os.exec(y) thread nothing(1)"
+    if (x == 2) {
+        return 3
+    } else { // pureline:allow-else the exemption needs a reason
+        return 4
+    }
+    println("x")
+    print("x")
+    io.write("x")
+    os.exec("ls")
+    os.output("ls")
+    eprintln "stderr is fine"
+    return 0
+}
+
+method alphaLocks(integer lock, map<string, bool> cache): integer {
+    sync (lock) {
+        alphaHelper()
+    }
+    sync (lock) {
+        cache.has("key")
+        cache["key"] = true
+    }
+    thread alphaUnguarded(1)
+    thread alphaGuarded(1)
+    thread alphaUnknown(1)
+    return 0
+}
+
+method alphaUnguarded(integer count) {
+    var total = count
+}
+
+method alphaGuarded(integer count) {
+    var outcome = runGuarded(count)
+}
+
+method alphaTyped(string first, map<string, object> options, integer z) {
+    string q = "typed one-letter local"
+    string fine = "typed local"
+}

@@ -1,0 +1,40 @@
+package main
+
+import "novus/lsp/base/model"
+import "novus/lsp/base/text"
+import "novus/lsp/features/semtok"
+import "novus/lsp/server/protocol"
+import @support
+
+// The engine and the encoder together: a multi-line token is split per line, an interpolation cuts its string, and the
+// lengths and columns are in UTF-16 code units (or bytes for a client that negotiated utf-8).
+method runEncodeCases() {
+    println("== encoded tokens")
+    var dollar = "$"
+    var source = stLines([
+        "/* two",
+        "   lines */",
+        "method main() {",
+        "    var n = 1 // 😀 done",
+        "    var s = \"日本 " + dollar + "{n} 😀 x\"",
+        "    println(\"multi",
+        "line\" + s)",
+        "}"
+    ])
+    var world = StWorld(stProject(source))
+    var context = world.open("/p/main.nv", source)
+    var spans = world.engine.spansFor(context, Span(0, source.length()))
+    stEncoded("utf-16", PositionCodec("utf-16"), context, spans)
+    stEncoded("utf-8", PositionCodec("utf-8"), context, spans)
+}
+
+method stEncoded(string label, PositionCodec codec, FileContext context, array<SemanticSpan> spans) {
+    var encoded = SemanticTokenEncoder(codec).encode(context.document.lines, spans)
+    var data = encoded["data"]
+    println("-- " + label + ": " + (data.length() / 5) + " tokens")
+    var i = 0
+    while (i < data.length()) {
+        println("  " + data[i] + " " + data[i + 1] + " " + data[i + 2] + " " + stTypeName(data[i + 3]) + stModifierNames(data[i + 4]))
+        i = i + 5
+    }
+}

@@ -1,0 +1,78 @@
+package main
+
+import "novus/lsp/syntax/parsing"
+
+// The one source that covers every kind of declaration.
+private final SAMPLE = "package demo\n\nimport json\nimport geo/shapes\nimport @geo/circle\nimport \"github.com/user/geo/pkg\"\n\n// The limit.\nprivate final LIMIT = 10\nvar counter: array<integer> = [1, 2]\n\n// Doc for foo\n// continues\n@Deprecated{text=\"old\", since=\"1.0\"}\nmethod foo(integer a, string b): integer {\n    return a\n}\n\nmethod nat(string p): integer native \"nv_x\" variadic   // trailing doc\n\nasync method fetch(string url): string {\n    return url\n}\n\ndefine class Circle(float r) based Shape {\n    private final float radius: get, set\n    string name\n\n    construct(float r) {\n        this.radius = r\n    }\n\n    area(): float {\n        return 1\n    }\n\n    method label(string prefix) {\n    }\n\n    sendPacket()\n}\n\ndefine enum Color {\n    Red, Green(1), Blue;\n\n    string describe\n\n    construct() {\n    }\n}\n\ndefine interface Shape {\n    area(): float\n    @Interface\n    name(): string\n}\n\ndefine abstract Base {\n    abstract method run(integer n): bool\n}\n\ndefine annotation Note {\n    text(): string\n}\n\nprintln \"hello\"\n"
+
+method parseSample(): SourceFile {
+    return parseSourceText("demo.nv", SAMPLE, editorParseOptions())
+}
+
+method checkSampleOutline() {
+    var expected = "LIMIT | mods=private,final | doc=The limit."
+    expected = expected + "\n" + "counter: array<integer>"
+    expected = expected + "\n" + "method foo(integer a, string b): integer | @Deprecated{since=1.0,text=old} | doc=Doc for foo\\ncontinues"
+    expected = expected + "\n" + "method nat(string p): integer | mods=native,variadic | native=nv_x | doc=trailing doc"
+    expected = expected + "\n" + "method fetch(string url): string | mods=async"
+    expected = expected + "\n" + "define class Circle based Shape"
+    expected = expected + "\n" + "    float radius | in=Circle | mods=private,final | acc=get,set"
+    expected = expected + "\n" + "    string name | in=Circle"
+    expected = expected + "\n" + "    construct(float r) | in=Circle"
+    expected = expected + "\n" + "    method area(): float | in=Circle"
+    expected = expected + "\n" + "    method label(string prefix) | in=Circle"
+    expected = expected + "\n" + "    abstract method sendPacket() | in=Circle"
+    expected = expected + "\n" + "define enum Color"
+    expected = expected + "\n" + "    Red | in=Color"
+    expected = expected + "\n" + "    Green | in=Color"
+    expected = expected + "\n" + "    Blue | in=Color"
+    expected = expected + "\n" + "    string describe | in=Color"
+    expected = expected + "\n" + "    construct() | in=Color"
+    expected = expected + "\n" + "define interface Shape"
+    expected = expected + "\n" + "    abstract method area(): float | in=Shape"
+    expected = expected + "\n" + "    abstract method name(): string | in=Shape | @Interface"
+    expected = expected + "\n" + "define abstract Base"
+    expected = expected + "\n" + "    abstract method run(integer n): bool | in=Base | mods=abstract"
+    expected = expected + "\n" + "define annotation Note"
+    var file = parseSample()
+    expectEqual("sample/outline", expected, renderOutline(file))
+}
+
+method text(Span span): string {
+    return SAMPLE.substring(span.start, span.end)
+}
+
+method checkSampleImports() {
+    var file = parseSample()
+    expectEqual("sample/package", "demo|demo|8", file.packageName + "|" + text(file.packageSpan) + "|" + file.packageSpan.start)
+    expectEqual("sample/imports", "Package:json Package:geo/shapes File:geo/circle Module:github.com/user/geo/pkg", renderImports(file))
+    var spans = []
+    for (importDecl in file.imports) {
+        spans.append(text(importDecl.span) + " => " + text(importDecl.targetSpan))
+    }
+    var expected = "import json => json | import geo/shapes => geo/shapes | import @geo/circle => geo/circle | import \"github.com/user/geo/pkg\" => github.com/user/geo/pkg"
+    expectEqual("sample/import-spans", expected, spans.join(" | "))
+    expectEqual("sample/only-issue-is-the-top-level-print-hint", "useless-top-level-print@" + SAMPLE.indexOf("println", 0) + "-" + (SAMPLE.indexOf("println", 0) + 7) + "/hint", renderIssues(file))
+    expectInt("sample/line-count-counts-the-empty-last-line", SAMPLE.split("\n").length(), file.lineCount)
+}
+
+method checkSampleSpans() {
+    var file = parseSample()
+    var foo = file.topLevelNamed("foo")[0]
+    expectEqual("spans/name", "foo", text(foo.nameSpan))
+    expectTrue("spans/full-starts-at-the-annotation", text(foo.fullSpan).startsWith("@Deprecated{text=\"old\", since=\"1.0\"}\nmethod foo("))
+    expectTrue("spans/full-ends-at-the-closing-brace", text(foo.fullSpan).endsWith("return a\n}"))
+    expectEqual("spans/body-is-the-braces", "{\n    return a\n}", text(foo.bodySpan))
+    var nat = file.topLevelNamed("nat")[0]
+    expectEqual("spans/native-has-no-body", "-1,-1", nat.bodySpan.start + "," + nat.bodySpan.end)
+    expectEqual("spans/native-full-ends-after-variadic", "method nat(string p): integer native \"nv_x\" variadic", text(nat.fullSpan))
+    var circle = file.typeNamed("Circle")
+    expectEqual("spans/class-name-and-base", "Circle|Shape", text(circle.nameSpan) + "|" + text(circle.baseSpan))
+    expectTrue("spans/class-full-starts-at-define", text(circle.fullSpan).startsWith("define class Circle(float r) based Shape {"))
+    var radius = file.memberNamed("Circle", "radius")[0]
+    expectEqual("spans/field-with-modifiers", "private final float radius: get, set", text(radius.fullSpan))
+    var green = file.memberNamed("Color", "Green")[0]
+    expectEqual("spans/enum-constant-with-arguments", "Green(1),", text(green.fullSpan))
+    var counter = file.topLevelNamed("counter")[0]
+    expectEqual("spans/global-with-initializer", "var counter: array<integer> = [1, 2]", text(counter.fullSpan))
+}

@@ -1,0 +1,42 @@
+package queries
+
+import base/maybe
+import base/text
+import features/semtok
+import server/protocol
+import server/rpc
+import server/session
+
+private final QUERIES_METHOD_SEMANTIC_RANGE = "textDocument/semanticTokens/range"
+
+// Answers semanticTokens/full and semanticTokens/range; it tells the two apart by request.methodName.
+define class SemanticTokensHandler based RequestHandler {
+    Session session
+    SemanticTokenEngine engine
+    WireEncoder encoder
+
+    construct(Session session, SemanticTokenEngine engine, WireEncoder encoder) {
+        this.session = session
+        this.engine = engine
+        this.encoder = encoder
+    }
+
+    // A document that is not open has no tokens: the answer is an empty `data`, never an error.
+    method handle(Request request): object {
+        var context = this.session.contextFor(decodeDocumentUri(request.params))
+        if (isNone(context)) {
+            return {"data": []}
+        }
+        var range = this.rangeOf(request, context.document)
+        return this.encoder.semanticTokens(context.document.lines, this.engine.spansFor(context, range))
+    }
+
+    // The whole text for `full`; for `range` the span of the requested range, which is empty when the client sent none.
+    method rangeOf(Request request, Document document): Span {
+        if (request.methodName != QUERIES_METHOD_SEMANTIC_RANGE) {
+            return Span(0, document.text.length())
+        }
+        var wire = decodeSelectedRange(request.params)
+        return this.session.codec.spanOf(document.lines, wire)
+    }
+}

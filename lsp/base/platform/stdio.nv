@@ -1,0 +1,33 @@
+package platform
+
+import io
+
+private final PLATFORM_LINE_END = "\n"
+
+method stdinReadLine(): string {
+    return io.readLine()
+}
+
+method stdinReadBytes(integer count): string {
+    return io.readBytes(count)
+}
+
+// Blocks while the input is open but idle (io.eof peeks one byte).
+method stdinAtEof(): bool {
+    return io.eof()
+}
+
+// The only writer of protocol frames: stdout is fully buffered on pipes, so every frame is flushed.
+method stdoutWriteFrame(string frame) {
+    io.write(frame)
+    io.flush()
+}
+
+method stdoutWriteText(string text) {
+    io.write(text)
+    io.flush()
+}
+
+method stderrWriteLine(string line) {
+    io.writeErr(line + PLATFORM_LINE_END)
+}

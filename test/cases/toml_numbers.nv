@@ -1,0 +1,54 @@
+package main
+
+import json
+import toml
+
+// TOML numbers follow TOML 1.0, not the lenient JSON reader: no leading
+// zeros (a port written 08080 is an error, not 8080), digits on both sides of
+// the point, and a digit after the exponent mark. toml.nv checks the digits
+// with json.isValid, which is strict about exactly that.
+
+method show(string text) {
+    var shown = text.replace("\n", "<LF>")
+    if (toml.isValid(text)) {
+        println "ok    ${shown}  ->  ${json.stringify(toml.parse(text))}"
+        return
+    }
+    println "error ${shown}  ->  ${toml.errorOf(text)}"
+}
+
+method printAccepted() {
+    show("a = 0")
+    show("a = 10")
+    show("a = -7")
+    show("a = +5")
+    show("a = 1_000")
+    show("a = 0.5")
+    show("a = -0.25")
+    show("a = 1.5e3")
+    show("a = 6.02E+23")
+    show("a = 2e-2")
+    show("a = 0x1F")
+    show("a = 0o17")
+    show("a = 0b101")
+}
+
+method printRejected() {
+    show("a = 01")
+    show("port = 08080")
+    show("a = 00")
+    show("a = -01")
+    show("a = 007.5")
+    show("a = 1.")
+    show("a = .5")
+    show("a = 1.e3")
+    show("a = 1e")
+    show("a = 1e+")
+    show("a = 0.")
+    show("a = 1.2.3")
+}
+
+method main {
+    printAccepted()
+    printRejected()
+}

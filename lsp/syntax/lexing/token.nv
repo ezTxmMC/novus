@@ -1,0 +1,57 @@
+package lexing
+
+import base/text
+
+// One lexical token. Offsets are UTF-8 byte offsets, `line` is 0-based, `column` is a byte column.
+define class Token {
+    TokenKind kind
+    string text
+    integer start
+    integer end
+    integer line
+    integer column
+    bool firstOnLine
+    string value
+    array<Span> interpolations
+    bool terminated
+
+    construct(TokenKind kind, string text, integer start, integer end, integer line, integer column) {
+        this.kind = kind
+        this.text = text
+        this.start = start
+        this.end = end
+        this.line = line
+        this.column = column
+        this.firstOnLine = false
+        this.value = text
+        this.interpolations = []
+        this.terminated = true
+    }
+
+    method span(): Span {
+        return Span(this.start, this.end)
+    }
+
+    method isPunct(string punct): bool {
+        return this.kind == TokenKind.Punct && this.value == punct
+    }
+
+    method isKeyword(string word): bool {
+        return this.kind == TokenKind.Keyword && this.text == word
+    }
+
+    method isIdent(string word): bool {
+        return this.kind == TokenKind.Ident && this.text == word
+    }
+
+    method isWord(string word): bool {
+        if (this.kind == TokenKind.Ident || this.kind == TokenKind.Keyword) {
+            return this.text == word
+        }
+        return false
+    }
+
+    method isEnd(): bool {
+        return this.kind == TokenKind.EndOfFile
+    }
+}

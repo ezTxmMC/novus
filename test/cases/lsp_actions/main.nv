@@ -1,0 +1,12 @@
+package main
+
+import @support
+import @import_cases
+import @organize_cases
+import @project_cases
+
+method main() {
+    runImportActionCases()
+    runOrganizeCases()
+    runProjectActionCases()
+}

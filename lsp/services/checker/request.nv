@@ -1,0 +1,56 @@
+package checker
+
+// One authoritative novusc check run, as immutable data.
+define class CheckRequest {
+    integer requestId
+    string novuscPath
+    string entryFile
+    string projectRoot
+    map<string, string> overlays
+    map<string, integer> snapshotVersions
+    integer timeoutSeconds
+
+    construct(integer requestId, string novuscPath, string entryFile, string projectRoot, integer timeoutSeconds) {
+        this.requestId = requestId
+        this.novuscPath = novuscPath
+        this.entryFile = entryFile
+        this.projectRoot = projectRoot
+        this.overlays = {}
+        this.snapshotVersions = {}
+        this.timeoutSeconds = timeoutSeconds
+    }
+}
+
+define class CheckFinding {
+    string filePath
+    integer line
+    string message
+    bool hasPosition
+
+    construct(string filePath, integer line, string message, bool hasPosition) {
+        this.filePath = filePath
+        this.line = line
+        this.message = message
+        this.hasPosition = hasPosition
+    }
+}
+
+define class CheckResult {
+    integer requestId
+    array<CheckFinding> findings
+    bool succeeded
+    bool skipped
+    string detail
+    map<string, integer> snapshotVersions
+    integer durationMillis
+
+    construct(integer requestId) {
+        this.requestId = requestId
+        this.findings = []
+        this.succeeded = false
+        this.skipped = false
+        this.detail = ""
+        this.snapshotVersions = {}
+        this.durationMillis = 0
+    }
+}

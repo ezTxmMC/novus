@@ -1,0 +1,160 @@
+package diagnostics
+
+import base/maybe
+import base/model
+import base/text
+import projects/modules
+import projects/workspace
+
+private final DIAGNOSTICS_DUPLICATE_REQUIRE = "duplicate-require"
+private final DIAGNOSTICS_REPLACE_WITHOUT_REQUIRE = "replace-without-require"
+private final DIAGNOSTICS_ABSOLUTE_REPLACE = "absolute-replace-unsupported"
+private final DIAGNOSTICS_NOT_FETCHED = "dependency-not-fetched"
+private final DIAGNOSTICS_REPLACE_MISSING = "replace-target-missing"
+private final DIAGNOSTICS_KEY_REQUIRE = "require"
+private final DIAGNOSTICS_KEY_REPLACE = "replace"
+
+// The diagnostics of a `project.nv` buffer (5.9, V84): what the tolerant reader found, three notes derived from the
+// directives (novusc accepts those manifests, so they are no reader issues) and the state of the dependencies.
+// `var` locals only: `diagnostics` does not declare `manifest`, so no type of that package is named (LSP-R11).
+define class ManifestDiagnostics based DiagnosticProducer {
+    Workspace workspace
+    // Additive: the session's settings, set by the wiring; a producer made without them is always on.
+    Settings settings
+
+    construct(Workspace workspace) {
+        this.workspace = workspace
+        this.settings = Settings()
+    }
+
+    method produce(Document document): array<Diagnostic> {
+        var found = []
+        if (document.fileKind() != FILE_KIND_MANIFEST || this.settings.ownDiagnostics == false) {
+            return found
+        }
+        var context = this.workspace.contextFor(document)
+        var manifest = context.project.layout.manifest
+        diagnosticsAppendAll(found, this.readerIssues(manifest))
+        diagnosticsAppendAll(found, this.directiveNotes(manifest))
+        diagnosticsAppendAll(found, this.dependencyStates(document, manifest, context.project.modules))
+        return found
+    }
+
+    method readerIssues(object manifest): array<Diagnostic> {
+        var found = []
+        for (issue in manifest.issues) {
+            var severity = Severity.Error
+            if (issue.isWarning()) {
+                severity = Severity.Warning
+            }
+            found.append(diagnosticsFinding(issue.span, severity, issue.code(), issue.message))
+        }
+        return found
+    }
+
+    method directiveNotes(object manifest): array<Diagnostic> {
+        var found = []
+        var required = {}
+        for (directive in manifest.directives) {
+            if (directive.values.length() == 0) {
+                continue
+            }
+            var module = directive.values[0]
+            if (directive.key == DIAGNOSTICS_KEY_REQUIRE) {
+                this.noteRequire(directive, required, found)
+                required[module] = true
+            }
+            if (directive.key == DIAGNOSTICS_KEY_REPLACE) {
+                this.noteReplace(directive, manifest, found)
+            }
+        }
+        return found
+    }
+
+    method noteRequire(object directive, map<string, bool> required, array<Diagnostic> found) {
+        var module = directive.values[0]
+        if (required.has(module)) {
+            var message = "'" + module + "' is required twice: novusc keeps the first require"
+            found.append(this.note(directive, DIAGNOSTICS_DUPLICATE_REQUIRE, message))
+        }
+    }
+
+    method noteReplace(object directive, object manifest, array<Diagnostic> found) {
+        var module = directive.values[0]
+        if (manifest.requireIndex.has(module) == false) {
+            var message = "'" + module + "' is replaced but no require names it"
+            found.append(this.note(directive, DIAGNOSTICS_REPLACE_WITHOUT_REQUIRE, message))
+        }
+        if (directive.values.length() > 1 && this.isAbsolute(directive.values[1])) {
+            var message = "an absolute replace target is not supported by novusc: use a path relative to this file"
+            found.append(this.note(directive, DIAGNOSTICS_ABSOLUTE_REPLACE, message))
+        }
+    }
+
+    // A warning on the whole directive; `data` is the module it names, which a quick fix needs.
+    method note(object directive, string code, string message): Diagnostic {
+        var warning = diagnosticsFinding(this.directiveSpan(directive), Severity.Warning, code, message)
+        warning.data = directive.values[0]
+        return warning
+    }
+
+    method isAbsolute(string target): bool {
+        if (target.startsWith("/") || target.startsWith("\\")) {
+            return true
+        }
+        return target.length() > 1 && target.charAt(1) == ":"
+    }
+
+    method dependencyStates(Document document, object manifest, ModuleTable modules): array<Diagnostic> {
+        var found = []
+        for (entry in modules.entries) {
+            if (entry.direct == false || entry.isReady()) {
+                continue
+            }
+            if (entry.status == ModuleStatus.NotFetched) {
+                this.noteNotFetched(document, manifest, entry, found)
+            }
+            if (entry.status == ModuleStatus.ReplaceMissing) {
+                this.noteReplaceMissing(manifest, entry, found)
+            }
+        }
+        return found
+    }
+
+    method noteNotFetched(Document document, object manifest, ModuleEntry entry, array<Diagnostic> found) {
+        var requirement = manifest.requirementOf(entry.module)
+        if (isNone(requirement)) {
+            return
+        }
+        var message = "dependency '" + entry.module + "' (" + entry.version + ") is not fetched: run Fetch dependencies (novusc deps)"
+        var note = diagnosticsFinding(requirement.span, Severity.Information, DIAGNOSTICS_NOT_FETCHED, message)
+        if (requirement.span.start >= 0 && requirement.span.end <= document.text.length()) {
+            note.data = document.text.substring(requirement.span.start, requirement.span.end)
+        }
+        found.append(note)
+    }
+
+    method noteReplaceMissing(object manifest, ModuleEntry entry, array<Diagnostic> found) {
+        for (directive in manifest.directives) {
+            if (directive.key == DIAGNOSTICS_KEY_REPLACE && directive.values.length() > 0 && directive.values[0] == entry.module) {
+                var message = "the replace target '" + this.targetOf(directive) + "' of '" + entry.module + "' does not exist"
+                found.append(diagnosticsFinding(this.directiveSpan(directive), Severity.Error, DIAGNOSTICS_REPLACE_MISSING, message))
+            }
+        }
+    }
+
+    method targetOf(object directive): string {
+        if (directive.values.length() > 1) {
+            return directive.values[1]
+        }
+        return ""
+    }
+
+    method directiveSpan(object directive): Span {
+        var end = directive.keySpan.end
+        for (valueSpan in directive.valueSpans) {
+            end = valueSpan.end
+        }
+        return Span(directive.keySpan.start, end)
+    }
+}

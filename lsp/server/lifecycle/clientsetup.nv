@@ -1,0 +1,62 @@
+package lifecycle
+
+import base/maybe
+import log
+import server/jobs
+import server/protocol
+import server/rpc
+import server/session
+
+private final LIFECYCLE_CONFIGURATION_METHOD = "workspace/configuration"
+private final LIFECYCLE_REGISTER_METHOD = "client/registerCapability"
+private final LIFECYCLE_WATCH_METHOD = "workspace/didChangeWatchedFiles"
+private final LIFECYCLE_SECTION = "novus"
+private final LIFECYCLE_WATCH_ID = "novus-watched-files"
+private final LIFECYCLE_WATCH_GLOBS = ["**/*.nv", "**/*.nvh"]
+
+// Copies every field into the client object that the encoders hold; the object itself is never replaced.
+method lifecycleFillClient(ClientInfo target, ClientInfo source) {
+    target.name = source.name
+    target.positionEncodings = source.positionEncodings
+    target.snippetSupport = source.snippetSupport
+    target.insertTextModeSupport = source.insertTextModeSupport
+    target.labelDetailsSupport = source.labelDetailsSupport
+    target.configurationPull = source.configurationPull
+    target.dynamicWatchers = source.dynamicWatchers
+    target.workspaceFolders = source.workspaceFolders
+    target.hierarchicalSymbols = source.hierarchicalSymbols
+    target.markdownDocumentation = source.markdownDocumentation
+    target.relatedInformation = source.relatedInformation
+}
+
+// workspace/configuration for the section "novus"; the answer is applied by ConfigurationResponse.
+method lifecyclePullConfiguration(Session session, MessageWriter writer, Router router, DiagnosticScheduler scheduler) {
+    var params = {"items": [{"section": LIFECYCLE_SECTION}]}
+    var requestId = writer.sendRequest(LIFECYCLE_CONFIGURATION_METHOD, params)
+    router.expectResponse(requestId, ConfigurationResponse(session, scheduler))
+}
+
+method lifecycleRegisterWatchers(MessageWriter writer, Router router) {
+    var watchers = []
+    for (glob in LIFECYCLE_WATCH_GLOBS) {
+        watchers.push({"globPattern": glob})
+    }
+    var registration = {"id": LIFECYCLE_WATCH_ID, "method": LIFECYCLE_WATCH_METHOD, "registerOptions": {"watchers": watchers}}
+    var requestId = writer.sendRequest(LIFECYCLE_REGISTER_METHOD, {"registrations": [registration]})
+    router.expectResponse(requestId, LifecycleIgnoredResponse(LIFECYCLE_REGISTER_METHOD))
+}
+
+// The answer to a request whose outcome does not matter: a failure is logged, nothing else happens.
+define class LifecycleIgnoredResponse based ResponseHandler {
+    string what
+
+    construct(string what) {
+        this.what = what
+    }
+
+    method onResponse(object result, bool failed) {
+        if (failed) {
+            log.warn("lifecycle: the client refused " + this.what)
+        }
+    }
+}

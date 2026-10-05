@@ -1,0 +1,186 @@
+package completion
+
+import base/maybe
+import features/candidates
+import projects/workspace
+import syntax/scanning
+
+// After a `.`: the receiver chain is read backwards from the token before the dot.
+define class MemberContextRule based ContextRule {
+    CompletionCursors cursors
+
+    construct(CompletionCursors cursors) {
+        this.cursors = cursors
+    }
+
+    method matches(FileContext context, integer offset): CompletionContext {
+        var cursor = this.cursors.cursorFor(context, offset)
+        if (cursor.isPunctBack(1, ".") == false) {
+            return nothing()
+        }
+        var receiverEnd = cursor.significantAtOrBefore(cursor.indexBack(1) - 1)
+        var chain = []
+        if (receiverEnd >= 0) {
+            chain = chainEndingAt(cursor.tokens, receiverEnd)
+        }
+        if (chain.length() == 0) {
+            return completionSuppressedContext(offset)
+        }
+        var request = CompletionContext(CANDIDATES_KIND_MEMBER, cursor.prefix, cursor.replaceSpan)
+        request.receiver = chain
+        return request
+    }
+}
+
+private final COMPLETION_ESCAPABLE = ["$", "}", "\\", ",", "|"]
+private final COMPLETION_PLAIN_DEPTH = 8
+private final COMPLETION_DIGIT_LOW = 48
+private final COMPLETION_DIGIT_HIGH = 57
+
+// The plain text of an LSP snippet (7.2, the plain column): tabstops are empty, a mirror repeats the first default of its
+// number, a placeholder is its default, a choice its first option, and the escapes of the snippet syntax are resolved.
+define class CompletionPlainText {
+    string source
+    integer position
+    map<string, string> mirrors
+
+    construct(string source) {
+        this.source = source
+        this.position = 0
+        this.mirrors = {}
+    }
+
+    method render(): string {
+        return this.readText(false, 0)
+    }
+
+    // Reads up to the end, or up to the `}` that closes a placeholder (which stays for the caller).
+    method readText(bool insideBraces, integer depth): string {
+        var parts = []
+        while (this.position < this.source.length()) {
+            var character = this.source.charAt(this.position)
+            if (insideBraces && character == "}") {
+                break
+            }
+            parts.append(this.readPiece(character, depth))
+        }
+        return parts.join("")
+    }
+
+    method readPiece(string character, integer depth): string {
+        if (character == "\\") {
+            return this.readEscape()
+        }
+        if (character == "$") {
+            return this.readDollar(depth)
+        }
+        this.position = this.position + 1
+        return character
+    }
+
+    method readEscape(): string {
+        var next = this.charAt(this.position + 1)
+        if (next != "" && COMPLETION_ESCAPABLE.contains(next)) {
+            this.position = this.position + 2
+            return next
+        }
+        this.position = this.position + 1
+        return "\\"
+    }
+
+    method charAt(integer index): string {
+        if (index >= this.source.length()) {
+            return ""
+        }
+        return this.source.charAt(index)
+    }
+
+    method isDigit(string character): bool {
+        return character != "" && ord(character) >= COMPLETION_DIGIT_LOW && ord(character) <= COMPLETION_DIGIT_HIGH
+    }
+
+    method readDollar(integer depth): string {
+        var next = this.charAt(this.position + 1)
+        if (this.isDigit(next)) {
+            this.position = this.position + 1
+            return this.mirrors.get(this.readDigits(), "")
+        }
+        if (next == "{" && depth < COMPLETION_PLAIN_DEPTH) {
+            this.position = this.position + 2
+            return this.readBraced(depth)
+        }
+        this.position = this.position + 1
+        return "$"
+    }
+
+    method readDigits(): string {
+        var digits = ""
+        while (this.isDigit(this.charAt(this.position))) {
+            digits = digits + this.charAt(this.position)
+            this.position = this.position + 1
+        }
+        return digits
+    }
+
+    // After `${`: a number, then `}`, `:default}` or `|a,b|}`.
+    method readBraced(integer depth): string {
+        var number = this.readDigits()
+        if (number == "") {
+            return "$" + "{"
+        }
+        var marker = this.charAt(this.position)
+        if (marker == ":") {
+            this.position = this.position + 1
+            return this.readDefault(number, depth)
+        }
+        if (marker == "|") {
+            this.position = this.position + 1
+            return this.readChoice()
+        }
+        if (marker == "}") {
+            this.position = this.position + 1
+        }
+        return this.mirrors.get(number, "")
+    }
+
+    method readDefault(string number, integer depth): string {
+        var text = this.readText(true, depth + 1)
+        if (this.charAt(this.position) == "}") {
+            this.position = this.position + 1
+        }
+        if (this.mirrors.has(number) == false) {
+            this.mirrors[number] = text
+        }
+        return text
+    }
+
+    // The first option of `a,b|}`; the rest is skipped through the closing `|}`.
+    method readChoice(): string {
+        var first = []
+        var reading = true
+        while (this.position < this.source.length()) {
+            var character = this.charAt(this.position)
+            if (character == "|") {
+                this.position = this.position + 1
+                break
+            }
+            var piece = this.readChoicePiece(character)
+            if (reading && character != ",") {
+                first.append(piece)
+            }
+            reading = reading && character != ","
+        }
+        if (this.charAt(this.position) == "}") {
+            this.position = this.position + 1
+        }
+        return first.join("")
+    }
+
+    method readChoicePiece(string character): string {
+        if (character == "\\") {
+            return this.readEscape()
+        }
+        this.position = this.position + 1
+        return character
+    }
+}

@@ -1,0 +1,71 @@
+package builtins
+
+// The member tables as rows "name|parameters|return type|minimum arguments|maximum arguments|documentation"
+// (the loader of the rows is members.nv). The tables are checked against runtime/nv_invoke.h and
+// compiler/codegen/builtins.nv by the golden case lsp_builtins.
+
+private final BUILTINS_STRING_ROWS = [
+    "charAt|integer index|string|1|1|The one-byte string at byte offset `index`; a runtime error when out of bounds.",
+    "substring|integer start, integer end|string|1|2|The bytes from `start` up to `end` (default: the length) as a view, not a copy.",
+    "indexOf|string needle, integer from|integer|1|2|Byte offset of the first occurrence at or after `from` (default 0), -1 when absent.",
+    "contains|string needle|bool|1|1|True when `needle` occurs in the string.",
+    "startsWith|string prefix|bool|1|1|True when the string begins with `prefix`.",
+    "endsWith|string suffix|bool|1|1|True when the string ends with `suffix`.",
+    "split|string separator|array<string>|1|1|Splits at every `separator`; an empty separator gives the single bytes.",
+    "replace|string target, string replacement|string|2|2|A copy with every occurrence of `target` replaced.",
+    "trim||string|0|0|A copy without leading and trailing whitespace.",
+    "toUpper||string|0|0|A copy with ASCII letters in upper case.",
+    "toLower||string|0|0|A copy with ASCII letters in lower case.",
+    "length||integer|0|0|The length in bytes (not characters)."
+]
+
+private final BUILTINS_ARRAY_ROWS = [
+    "append|object value|void|1|-1|Appends the values to the end.",
+    "push|object value|void|1|-1|Appends the values to the end (same as append).",
+    "pop||object|0|0|Removes and returns the last element; a runtime error on an empty array.",
+    "contains|object value|bool|1|1|True when an element equals `value`.",
+    "indexOf|object value|integer|1|1|Index of the first element equal to `value`, -1 when absent.",
+    "join|string separator|string|0|1|The elements as text, separated by `separator` (default empty).",
+    "clear||void|0|0|Removes every element.",
+    "insert|integer index, object value|void|2|2|Inserts `value` before `index`; a runtime error when out of bounds.",
+    "remove|integer index|void|1|1|Removes the element at `index`; a runtime error when out of bounds.",
+    "length||integer|0|0|The number of elements."
+]
+
+private final BUILTINS_MAP_ROWS = [
+    "has|string key|bool|1|1|True when the map holds `key`.",
+    "keys||array<string>|0|0|The keys, sorted as strings.",
+    "values||array|0|0|The values in key order.",
+    "remove|string key|void|1|1|Removes `key`; nothing happens when it is absent.",
+    "get|string key, object fallback|object|2|2|The value of `key`, or `fallback` when the key is absent. Indexing a missing key is a runtime error.",
+    "length||integer|0|0|The number of entries."
+]
+
+private final BUILTINS_ANY_ROWS = [
+    "length||integer|0|0|The length of a string (bytes), array or map; a runtime error on any other value."
+]
+
+private final BUILTINS_FREE_ROWS = [
+    "readFile|string path|string|1|1|Reads a whole file; the empty string when it cannot be opened.",
+    "writeFile|string path, string content|void|2|2|Replaces a file with `content`; a runtime error when it cannot be opened.",
+    "fileExists|string path|bool|1|1|True when the path exists, as file or directory.",
+    "removeFile|string path|bool|1|1|Deletes a file; true when it was removed.",
+    "readLine||string|0|0|One line from standard input without its line break; empty at the end of input.",
+    "args||array<string>|0|0|The command line arguments, without the program name.",
+    "parseInt|string text|integer|1|1|Converts text to an integer; 0 when it is not a number, floats are truncated.",
+    "parseFloat|string text|float|1|1|Converts text or an integer to a float.",
+    "chr|integer code|string|1|1|The one-byte string with that byte value.",
+    "ord|string text|integer|1|1|The byte value of the first byte, 0 for the empty string.",
+    "typeOf|object value|string|1|1|integer, float, bool, string, array, map, the class name of an object, or unknown for nil.",
+    "exec|string command|integer|1|1|Runs a shell command that inherits standard input and output; its exit code, -1 when it did not exit.",
+    "env|string name|string|1|1|The environment variable; the empty string when it is not set.",
+    "exit|integer code|void|1|1|Flushes standard output and ends the process with `code`.",
+    "platform||string|0|0|linux, macos, windows or unix."
+]
+
+private final BUILTINS_ANNOTATION_ROWS = [
+    "Deprecated|string text, string since|void|0|2|Marks a method as deprecated: the first call prints a runtime warning with `text` and `since` (the version).",
+    "Interface||void|0|0|Marks a method as implementing an interface member. Accepted by novusc, no effect.",
+    "Abstract||void|0|0|Marks a method as implementing an abstract member. Accepted by novusc, no effect.",
+    "Warning||void|0|0|Marks a member as one to be careful with. Accepted by novusc, no effect."
+]

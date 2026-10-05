@@ -1,0 +1,186 @@
+package rpc
+
+import base/maybe
+import base/text
+import math
+
+private final RPC_PARSE_ERROR = -32700
+private final RPC_INVALID_REQUEST = -32600
+private final RPC_CONTENT_MODIFIED = -32801
+private final RPC_METHOD_NOT_FOUND = -32601
+private final RPC_INVALID_PARAMS = -32602
+private final RPC_INTERNAL_ERROR = -32603
+private final RPC_REQUEST_CANCELLED = -32800
+private final RPC_SERVER_NOT_INITIALIZED = -32002
+private final RPC_RAISE_PREFIX = "RPC"
+private final RPC_RAISE_SEPARATOR = ":"
+private final RPC_MAX_CODE_DIGITS = 9
+private final RPC_MINUS = "-"
+// The runtime keeps 4095 bytes of a trap message; the text of a failure the server raises is short by design, so the prefix "RPC-999999999:" always fits.
+private final RPC_MAX_FAIL_BYTES = 480
+
+// The trap natives are declared again here because rpc cannot reach another package's declarations (NG25).
+method rpcTryRun(object task): object native "nv_try_run"
+method rpcTryFailed(): bool native "nv_try_failed"
+method rpcTryError(): string native "nv_try_error"
+method rpcTryRaise(string message) native "nv_try_raise"
+
+// A handler fails a request on purpose with a trap message RPC<code>:<message>; errorCodeOf reads it back.
+// A message beyond RPC_MAX_FAIL_BYTES is cut at a character boundary, because the runtime would cut it anywhere.
+method failRequest(integer code, string message) {
+    rpcTryRaise(RPC_RAISE_PREFIX + code + RPC_RAISE_SEPARATOR + truncateUtf8(message, RPC_MAX_FAIL_BYTES))
+}
+
+method errorCodeOf(string trapMessage): integer {
+    var colon = rpcRaisedColon(trapMessage)
+    if (colon < 0) {
+        return RPC_INTERNAL_ERROR
+    }
+    return math.toInt(trapMessage.substring(RPC_RAISE_PREFIX.length(), colon))
+}
+
+method errorTextOf(string trapMessage): string {
+    var colon = rpcRaisedColon(trapMessage)
+    if (colon < 0) {
+        return trapMessage
+    }
+    return trapMessage.substring(colon + 1, trapMessage.length())
+}
+
+// The index of the ':' of a message made by failRequest, -1 for every other trap message.
+method rpcRaisedColon(string trapMessage): integer {
+    if (trapMessage.startsWith(RPC_RAISE_PREFIX) == false) {
+        return -1
+    }
+    var colon = trapMessage.indexOf(RPC_RAISE_SEPARATOR)
+    if (colon < 0) {
+        return -1
+    }
+    if (rpcIsSmallInteger(trapMessage.substring(RPC_RAISE_PREFIX.length(), colon)) == false) {
+        return -1
+    }
+    return colon
+}
+
+method rpcIsSmallInteger(string digits): bool {
+    var body = digits
+    if (body.startsWith(RPC_MINUS)) {
+        body = body.substring(1, body.length())
+    }
+    return body.length() <= RPC_MAX_CODE_DIGITS && rpcIsDecimal(body)
+}
+
+method rpcParseError(): integer {
+    return RPC_PARSE_ERROR
+}
+
+method rpcInvalidRequest(): integer {
+    return RPC_INVALID_REQUEST
+}
+
+method rpcContentModified(): integer {
+    return RPC_CONTENT_MODIFIED
+}
+
+method rpcMethodNotFound(): integer {
+    return RPC_METHOD_NOT_FOUND
+}
+
+method rpcInvalidParams(): integer {
+    return RPC_INVALID_PARAMS
+}
+
+method rpcInternalError(): integer {
+    return RPC_INTERNAL_ERROR
+}
+
+method rpcRequestCancelled(): integer {
+    return RPC_REQUEST_CANCELLED
+}
+
+method rpcServerNotInitialized(): integer {
+    return RPC_SERVER_NOT_INITIALIZED
+}
+
+define interface GuardedWork {
+    run(): object
+}
+
+define class GuardOutcome {
+    bool failed
+    string message
+    object value
+
+    construct(bool failed, string message, object value) {
+        this.failed = failed
+        this.message = message
+        this.value = value
+    }
+}
+
+// Every request handler and every thread body runs here: a runtime error becomes an outcome, not an exit.
+method runGuarded(GuardedWork work): GuardOutcome {
+    var value = rpcTryRun(work)
+    if (rpcTryFailed()) {
+        return GuardOutcome(true, rpcTryError(), nothing())
+    }
+    return GuardOutcome(false, "", value)
+}
+
+define class RpcHandlerWork based GuardedWork {
+    RequestHandler handler
+    Request request
+
+    construct(RequestHandler handler, Request request) {
+        this.handler = handler
+        this.request = request
+    }
+
+    method run(): object {
+        return this.handler.handle(this.request)
+    }
+}
+
+define class RpcListenerWork based GuardedWork {
+    EnvelopeListener listener
+    Envelope envelope
+
+    construct(EnvelopeListener listener, Envelope envelope) {
+        this.listener = listener
+        this.envelope = envelope
+    }
+
+    method run(): object {
+        this.listener.onEnvelope(this.envelope)
+        return nothing()
+    }
+}
+
+define class RpcResponseWork based GuardedWork {
+    ResponseRouter responses
+    map<string, object> message
+
+    construct(ResponseRouter responses, map<string, object> message) {
+        this.responses = responses
+        this.message = message
+    }
+
+    method run(): object {
+        return this.responses.route(this.message)
+    }
+}
+
+// What a request gate is asked under the guard: the verdict is the code that check returns.
+define class RpcGateWork based GuardedWork {
+    RequestGate gate
+    Request request
+
+    construct(RequestGate gate, Request request) {
+        this.gate = gate
+        this.request = request
+    }
+
+    method run(): object {
+        return this.gate.check(this.request)
+    }
+}

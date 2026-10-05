@@ -1,0 +1,60 @@
+package main
+
+import "novus/lsp/features/navigation"
+import "novus/lsp/base/model"
+import @support
+import @fixtures
+
+private final NAV_CANCEL_ALWAYS = "cancelled"
+
+define class NavAlwaysCancelled based CancelCheck {
+    construct() {
+    }
+
+    method isCancelled(): bool {
+        return true
+    }
+}
+
+method navReferences(string label, NavWorld world, bool includeDeclaration) {
+    var found = ReferenceFinder().find(world.context(), world.cursorOffset, includeDeclaration)
+    navCheck(label, world.describeAll(found))
+}
+
+method navHighlights(string label, NavWorld world) {
+    var parts = []
+    for (entry in ReferenceFinder().highlights(world.context(), world.cursorOffset)) {
+        var lines = LineIndex(world.context().document.text)
+        parts.append((lines.lineOf(entry.span.start) + 1) + ":" + (lines.byteColumn(entry.span.start) + 1) + " kind " + entry.kind)
+    }
+    navCheck(label, parts.join("; "))
+}
+
+method runReferenceCases() {
+    println("== references")
+    navReferences("class from a constructor call", NavWorld(navMain("Circle(2.0)", 1)), true)
+    navReferences("class without its declaration", NavWorld(navMain("Circle(2.0)", 1)), false)
+    navReferences("local variable is scope-exact", NavWorld(navMain("total = total", 1)), true)
+    navReferences("override family from a call", NavWorld(navMain("area()", 1)), true)
+    navReferences("override family without declarations", NavWorld(navMain("area()", 1)), false)
+    navReferences("field, the parameter of the same name is another symbol", NavWorld(navShape("float radius\n", 7)), true)
+    navReferences("parameter", NavWorld(navShape("(float radius)", 8)), true)
+    navReferences("root function", NavWorld(navMain("helper(1)", 1)), true)
+    navReferences("overload by arity, from the call", NavWorld(navMain("scaled(1.0) +", 1)), true)
+    navReferences("overload by arity, from the declaration", NavWorld(navShape("scaled(float factor, float extra)", 1)), true)
+    navReferences("a call with the wrong arity has no exact target", NavWorld(navMarkedCall()), true)
+    navReferences("enum constant", NavWorld(navMain("Red\n", 1)), true)
+    navReferences("std function", NavWorld(navMain("repeat(", 1)), true)
+    navReferences("class used as a base and as a type", NavWorld(navShape("Shape {\n    abstract", 0)), true)
+    navReferences("keyword", NavWorld(navMain("method main", 2)), true)
+    var cancelled = NavWorld(navMain("Circle(2.0)", 1))
+    var partial = ReferenceFinder().find(cancelled.context(), cancelled.cursorOffset, true, NavAlwaysCancelled())
+    navCheck("a cancelled search stops at once", cancelled.describeAll(partial))
+}
+
+method runHighlightCases() {
+    println("== highlights")
+    navHighlights("local variable", NavWorld(navMain("total = total", 1)))
+    navHighlights("class", NavWorld(navMain("Circle(2.0)", 1)))
+    navHighlights("no symbol", NavWorld(navMain("method main", 2)))
+}

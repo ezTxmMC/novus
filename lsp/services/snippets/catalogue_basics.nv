@@ -1,0 +1,76 @@
+package snippets
+
+// Statement snippets: printing, variables, literals, return (DESIGN Appendix A), and the wrapper
+// that gives every statement-level snippet of the catalogue its scope for the compile check.
+
+private final SNIPPETS_DECLARATIONS = "method work() {\n}\n\ndefine class Point {\n    integer x\n    integer y\n}\n\n"
+private final SNIPPETS_STATEMENT_PRELUDE = "    var items = [1, 2]\n    var names = {\"a\": 1}\n    var count = 3\n" +
+    "    var text = \"t\"\n    var done = false\n    var condition = true\n    var value = 1\n" +
+    "    var tasks = []\n    var lock = 0\n    var task = 0\n    var parsed = {}\n"
+
+method basicSnippets(): array<Snippet> {
+    return snippetsConcat([snippetsPrintSnippets(), snippetsVariableSnippets(), snippetsLiteralSnippets()])
+}
+
+method snippetsPrintSnippets(): array<Snippet> {
+    var statement = [SNIPPETS_SCOPE_STATEMENT]
+    return [
+        Snippet("println", ["sout", "println", "pl"], "Print a line", statement,
+            "println \"#{1:text}\""),
+        Snippet("soutv", ["soutv", "printv"], "Print a variable with its name", statement,
+            "println \"#{1:value} = #d{#1}\""),
+        Snippet("soutm", ["soutm", "printm"], "Print the current method name", statement,
+            "println \"#{1:Class}.#{2:method}()\""),
+        Snippet("soutp", ["soutp", "printp"], "Print a parameter with its name", statement,
+            "println \"#{1:value} = #d{#1}\""),
+        Snippet("serr", ["serr", "eprintln"], "Print a line to standard error", statement,
+            "eprintln \"#{1:message}\""),
+        Snippet("print", ["print"], "Print without a line break", statement,
+            "print #{1:text}").withOverrides({1: "\"t\""})
+    ]
+}
+
+method snippetsVariableSnippets(): array<Snippet> {
+    var statement = [SNIPPETS_SCOPE_STATEMENT]
+    return [
+        Snippet("var", ["var"], "Variable", statement,
+            "var #{1:name} = #{2:value}"),
+        Snippet("vart", ["vart", "tvar"], "Variable with an explicit type", statement,
+            "var #{1:name}: #{2:integer} = #{3:value}"),
+        Snippet("local", ["local", "typed"], "Typed local declaration", statement,
+            "#{1:integer} #{2:name} = #{3:value}"),
+        Snippet("return", ["ret", "return"], "Return a value", statement,
+            "return #{1:value}")
+    ]
+}
+
+method snippetsLiteralSnippets(): array<Snippet> {
+    var statement = [SNIPPETS_SCOPE_STATEMENT]
+    var inExpression = [SNIPPETS_SCOPE_STATEMENT, SNIPPETS_SCOPE_EXPRESSION]
+    var description = "Object literal with named fields (skips the constructor, so collection fields stay nil; " +
+        "use new for the constructor call)"
+    return [
+        Snippet("map", ["mapl", "newmap"], "Map literal", statement,
+            "var #{1:table} = {\"#{2:key}\": #{3:value}}"),
+        Snippet("array", ["arrl", "newarr"], "Array literal", statement,
+            "var #{1:list} = [#{2:1, 2, 3}]"),
+        Snippet("struct", ["struct", "obj"], description, inExpression,
+            "#{1:Point}{\n\t#{2:x}=#{3:1}\n}").withVerify(SNIPPETS_VERIFY_EXPRESSION),
+        Snippet("newcall", ["new"], "Constructor call (runs construct; Novus has no new keyword)", inExpression,
+            "#{1:Point}(#{2})").withVerify(SNIPPETS_VERIFY_EXPRESSION).withOverrides({2: "1"}),
+        Snippet("todo", ["todo"], "TODO comment", [SNIPPETS_SCOPE_STATEMENT, SNIPPETS_SCOPE_TOPLEVEL, SNIPPETS_SCOPE_CLASS],
+            "// TODO: #{1:describe}")
+    ]
+}
+
+method snippetsStatementProgram(string mode, string expansion): string {
+    var statements = snippetsIndent(expansion)
+    if (mode == SNIPPETS_VERIFY_EXPRESSION) {
+        statements = SNIPPETS_PLAIN_INDENT + "var made = " + expansion
+    }
+    if (mode == SNIPPETS_VERIFY_AFTER_IF) {
+        statements = "    if (condition) {\n    }\n" + statements
+    }
+    var opening = "method main(array<string> args) {\n"
+    return SNIPPETS_DECLARATIONS + opening + SNIPPETS_STATEMENT_PRELUDE + statements + "\n}\n"
+}

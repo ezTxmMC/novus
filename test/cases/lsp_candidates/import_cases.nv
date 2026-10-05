@@ -1,0 +1,122 @@
+package main
+
+import "novus/lsp/base/maybe"
+import "novus/lsp/base/model"
+import "novus/lsp/features/candidates"
+import "novus/lsp/projects/closure"
+import "novus/lsp/syntax/outline"
+import "novus/lsp/syntax/parsing"
+import @support
+
+method caApply(string text, TextEdit edit): string {
+    return text.substring(0, edit.span.start) + edit.newText + text.substring(edit.span.end, text.length())
+}
+
+// The file after the insertion, with the line breaks visible.
+method caInsert(string title, string text, string importLine, bool standardModule) {
+    var syntax = parseSourceText("/x.nv", text, editorParseOptions())
+    var edit = importEditFor(syntax, text, importLine, standardModule)
+    if (isNone(edit)) {
+        println(title + ": no edit")
+        return
+    }
+    println(title + ": @" + edit.span.start + "-" + edit.span.end + " " + caEscape(caApply(text, edit)))
+}
+
+method runImportLineCases() {
+    println("#### importLineFor")
+    println(importLineFor(ImportTarget(ImportKind.Package, "os", "std:os", FileOrigin.Standard)))
+    println(importLineFor(ImportTarget(ImportKind.Package, "geo/shapes", "/p/geo/shapes", FileOrigin.Project)))
+    println(importLineFor(ImportTarget(ImportKind.File, "geo/circle", "/p/geo/circle.nv", FileOrigin.Project)))
+    println(importLineFor(ImportTarget(ImportKind.Module, "github.com/user/lib", "/c/lib.nv", FileOrigin.Dependency)))
+    println(importLineFor(ImportTarget(ImportKind.Module, "github.com/user/lib/pkg/file", "/c/pkg/file.nv", FileOrigin.Dependency)))
+}
+
+method runStdGroupCases() {
+    println("#### a std import goes into the std group")
+    var text = "package main\n\nimport os\nimport strings\n\nimport geo\n\nmethod main() {\n}\n"
+    caInsert("before the first that sorts after it", text, "import json", true)
+    caInsert("between two", text, "import path", true)
+    caInsert("after the last of the group", text, "import thread", true)
+    caInsert("already imported", text, "import os", true)
+    caInsert("a project import is not a std import", text, "import geo", false)
+}
+
+method runProjectGroupCases() {
+    println("#### a project import goes into the project group")
+    var text = "package main\n\nimport os\n\nimport geo\nimport util\n\nmethod main() {\n}\n"
+    caInsert("in the middle", text, "import other", false)
+    caInsert("before the first", text, "import alpha", false)
+    caInsert("after the last", text, "import zeta", false)
+    caInsert("a file import sorts before the folders", text, "import @helper", false)
+    caInsert("a dependency import sorts before the files", text, "import \"ex.com/lib\"", false)
+    caInsert("already imported", text, "import util", false)
+}
+
+method runNewGroupCases() {
+    println("#### a group that does not exist yet")
+    var projectOnly = "package main\n\nimport geo\n\nmethod main() {\n}\n"
+    caInsert("std group before the project imports", projectOnly, "import os", true)
+    var stdOnly = "package main\n\nimport os\n\nmethod main() {\n}\n"
+    caInsert("project group after the std imports", stdOnly, "import geo", false)
+    var two = "package main\n\nimport geo\nimport util\n\nmethod main() {\n}\n"
+    caInsert("std group before several project imports", two, "import strings", true)
+    var stdTwo = "package main\n\nimport os\nimport strings\n\nmethod main() {\n}\n"
+    caInsert("project group after several std imports", stdTwo, "import util", false)
+}
+
+method runFirstImportCases() {
+    println("#### the first import of a file")
+    caInsert("blank line below the package line", "package main\n\nmethod main() {\n}\n", "import os", true)
+    caInsert("code right below the package line", "package main\nmethod main() {\n}\n", "import os", true)
+    caInsert("the package line is the whole file", "package main", "import os", true)
+    caInsert("the package line ends with a line break", "package main\n", "import os", true)
+    caInsert("no package line", "method main() {\n}\n", "import os", true)
+    caInsert("an empty file", "", "import os", true)
+    caInsert("a project import into a file without imports", "package main\n\nmethod main() {\n}\n", "import geo", false)
+    caInsert("two lines at once", "package main\n\nmethod main() {\n}\n", "import json\nimport thread", true)
+    caInsert("a comment before the package line", "// header\npackage main\n\nmethod main() {\n}\n", "import os", true)
+}
+
+method runLineEndingCases() {
+    println("#### line endings follow the file")
+    caInsert("crlf, first import", "package main\r\n\r\nmethod main() {\r\n}\r\n", "import os", true)
+    caInsert("crlf, code below the package line", "package main\r\nmethod main() {\r\n}\r\n", "import os", true)
+    caInsert("crlf, into the std group", "package main\r\n\r\nimport os\r\nimport strings\r\n\r\nimport geo\r\n", "import path", true)
+    caInsert("crlf, new project group", "package main\r\n\r\nimport os\r\n\r\nmethod main() {\r\n}\r\n", "import geo", false)
+    caInsert("lf in a file without line breaks at all", "package main", "import geo", false)
+}
+
+// The new line follows the line of the last import, so the comment at its end stays with its own import.
+method runTrailingCommentCases() {
+    println("#### a comment at the end of an import line")
+    var std = "package main\n\nimport strings // text helpers\n\nmethod main() {\n}\n"
+    caInsert("new project group after a commented import", std, "import zeta", false)
+    caInsert("after the last of the group", std, "import thread", true)
+    caInsert("before a later import", std, "import os", true)
+    var project = "package main\n\nimport os\n\nimport geo // shapes\nimport util /* tools */\n\nmethod main() {\n}\n"
+    caInsert("after a block comment", project, "import zeta", false)
+    caInsert("crlf", "package main\r\n\r\nimport strings // text\r\n\r\nmethod main() {\r\n}\r\n", "import zeta", false)
+    caInsert("the last line without a line break", "package main\n\nimport strings // text", "import zeta", false)
+}
+
+method runWithheldCases() {
+    println("#### withheld candidates and bare names")
+    var world = CaWorld(caProject())
+    var context = world.open("/p/main.nv", "package main\n\nimport geo\nimport other\nimport @util\n\nmethod main() {\n}\n")
+    var index = context.index()
+    for (name in ["describe", "helper"]) {
+        for (symbol in index.functionsNamed(name)) {
+            println(name + " (" + symbol.qualifier + "): withheld=" + candidatesIsWithheld(index, symbol) + " bare=" + candidatesIsBareReachable(index, symbol))
+        }
+    }
+    for (name in ["Shape", "Thing", "Color"]) {
+        println(name + ": withheld=" + candidatesIsWithheld(index, index.typeNamed(name)) + " bare=" + candidatesIsBareReachable(index, index.typeNamed(name)))
+    }
+    var root = CaWorld({"/r/main.nv": "import @util\nmethod main() {\n}\n", "/r/util.nv": "method helper(integer n): integer {\n    return n\n}\nmethod other() {\n}\n", "/r/more.nv": "method helper(integer n): integer {\n    return n\n}\nmethod fresh(integer n): integer {\n    return n\n}\nmethod fresh() {\n}\n"})
+    var rootContext = root.open("/r/main.nv", "import @util\nmethod main() {\n}\n")
+    var more = root.space.contextForPath("/r/more.nv")
+    for (symbol in candidatesDeclaredSymbols(more.closureFile)) {
+        println("unloaded root function " + symbol.describe() + ": withheld=" + candidatesIsWithheld(rootContext.index(), symbol))
+    }
+}

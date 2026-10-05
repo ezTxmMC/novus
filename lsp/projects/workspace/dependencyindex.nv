@@ -1,0 +1,138 @@
+package workspace
+
+import strings
+import base/platform
+import base/text
+import projects/closure
+import projects/manifest
+import projects/modules
+
+private final WORKSPACE_DEPENDENCY_DEPTH = 12
+private final WORKSPACE_DEPENDENCY_EXTENSIONS = [".nv", ".nvh"]
+private final WORKSPACE_DEPENDENCY_MAIN_PACKAGE = "main"
+private final WORKSPACE_DEPENDENCY_SEPARATOR = "@"
+private final WORKSPACE_DEPENDENCY_STAMP_MARK = "#"
+private final WORKSPACE_DEPENDENCY_SLASH = "/"
+
+// Lazy symbol tables of dependency modules that are not (yet) imported: the parsed files of the module directory,
+// each as a Dependency file with the root and qualifier the loader would give it (the root level and `package main`
+// have the empty qualifier, a package folder its last segment). `byModule` holds one entry per module directory under
+// the key `<module>@<dir>#<stamp>`, where the stamp is a hash of the modification times of the directory, of every
+// folder and of every file that the entry lists: a change of any of them makes the entry unreachable and the module
+// is read again, so a holder never has to invalidate anything. Callers use it for modules that no file imports.
+// contract-note: no field can hold an index (LSP-R03) and the signature has no time budget, see DESIGN-NOTES.md 1.
+define class DependencyIndex {
+    map<string, array<ClosureFile>> byModule
+
+    construct() {
+        this.byModule = {}
+    }
+
+    // The files of a Ready module, `[]` for a module that is not Ready or has no sources; parsed on first use.
+    method filesOfModule(FileCache files, ModuleEntry entry): array<ClosureFile> {
+        if (entry.isReady() == false) {
+            return []
+        }
+        var prefix = entry.module + WORKSPACE_DEPENDENCY_SEPARATOR + entry.dir + WORKSPACE_DEPENDENCY_STAMP_MARK
+        var cachedKey = this.keyWithPrefix(prefix)
+        if (cachedKey != "" && this.isFresh(files, entry, prefix, cachedKey)) {
+            return this.byModule[cachedKey]
+        }
+        if (cachedKey != "") {
+            this.byModule.remove(cachedKey)
+        }
+        var loaded = this.load(files, entry)
+        this.byModule[prefix + this.stampOf(files, entry, loaded)] = loaded
+        return loaded
+    }
+
+    method keyWithPrefix(string prefix): string {
+        for (key in this.byModule.keys()) {
+            if (key.startsWith(prefix)) {
+                return key
+            }
+        }
+        return ""
+    }
+
+    method isFresh(FileCache files, ModuleEntry entry, string prefix, string cachedKey): bool {
+        return cachedKey == prefix + this.stampOf(files, entry, this.byModule[cachedKey])
+    }
+
+    // Every directory of the module counts, also one that holds no source yet (a new file there must be noticed), and so
+    // does the text of an open file, because the parse reads the editor buffer before the disk.
+    method stampOf(FileCache files, ModuleEntry entry, array<ClosureFile> loaded): string {
+        var parts = []
+        for (folder in this.directoriesOf(files, entry.dir, WORKSPACE_DEPENDENCY_DEPTH)) {
+            parts.append(folder + ":" + files.modifiedMillis(folder))
+        }
+        for (file in loaded) {
+            parts.append(file.filePath + ":" + files.modifiedMillis(file.filePath) + ":" + this.overlayHash(files, file.filePath))
+        }
+        return "" + textHashOf(parts.join(" "))
+    }
+
+    method overlayHash(FileCache files, string filePath): integer {
+        if (files.hasOverlay(filePath) == false) {
+            return 0
+        }
+        return textHashOf(files.textOf(filePath))
+    }
+
+    method directoriesOf(FileCache files, string directory, integer depth): array<string> {
+        var found = []
+        this.collectDirectories(files, directory, depth, found)
+        return found
+    }
+
+    method collectDirectories(FileCache files, string directory, integer depth, array<string> found) {
+        found.append(directory)
+        if (depth <= 0) {
+            return
+        }
+        for (name in files.entriesOf(directory)) {
+            var child = manifestJoinPath(directory, name)
+            if (isSkippedDirectoryName(name) == false && files.isDirectory(child)) {
+                this.collectDirectories(files, child, depth - 1, found)
+            }
+        }
+    }
+
+    method load(FileCache files, ModuleEntry entry): array<ClosureFile> {
+        var loaded = []
+        var paths = walkSourceFiles(files, entry.dir, WORKSPACE_DEPENDENCY_EXTENSIONS, WORKSPACE_DEPENDENCY_DEPTH)
+        for (filePath in paths) {
+            loaded.append(this.fileOf(files, entry, filePath))
+        }
+        return loaded
+    }
+
+    method fileOf(FileCache files, ModuleEntry entry, string filePath): ClosureFile {
+        var syntax = files.syntaxOf(filePath)
+        var packagePath = this.packagePathOf(entry.dir, filePath)
+        var file = ClosureFile(filePath, FileOrigin.Dependency, entry.dir, this.qualifierOf(syntax, packagePath), syntax)
+        file.packageName = packagePath
+        file.moduleName = entry.module
+        return file
+    }
+
+    // The folder of the file below the module directory, `""` for the directory itself.
+    method packagePathOf(string moduleDirectory, string filePath): string {
+        var folder = manifestDirectoryOf(filePath)
+        if (folder.length() <= moduleDirectory.length()) {
+            return ""
+        }
+        return folder.substring(moduleDirectory.length() + 1, folder.length())
+    }
+
+    method qualifierOf(SourceFile syntax, string packagePath): string {
+        if (syntax.packageName == WORKSPACE_DEPENDENCY_MAIN_PACKAGE || packagePath == "") {
+            return ""
+        }
+        var slash = strings.lastIndexOf(packagePath, WORKSPACE_DEPENDENCY_SLASH)
+        if (slash < 0) {
+            return packagePath
+        }
+        return packagePath.substring(slash + 1, packagePath.length())
+    }
+}

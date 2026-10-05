@@ -1,0 +1,181 @@
+package semantic
+
+import base/maybe
+import projects/closure
+import syntax/outline
+import syntax/scanning
+
+private final SEMANTIC_STATUS_RESOLVED = "resolved"
+private final SEMANTIC_STATUS_AMBIGUOUS = "ambiguous"
+private final SEMANTIC_STATUS_UNKNOWN = "unknown"
+
+// The outcome of a lookup. `status` is "resolved" (the candidates are the overloads of one function or member of one
+// owner, usually one), "ambiguous" (candidates of several packages: the call must be written qualified) or
+// "unknown" (no candidate, `candidates` is empty).
+define class Resolution {
+    array<Symbol> candidates
+    string status
+
+    construct(array<Symbol> candidates, string status) {
+        this.candidates = candidates
+        this.status = status
+    }
+}
+
+// The answer for a list of candidates found by one rule: none is unknown, candidates that share one qualifier and
+// one owner (overloads of a function or of a class member) are resolved together, candidates of several packages
+// are ambiguous.
+method semanticResolution(array<Symbol> candidates): Resolution {
+    if (candidates.length() == 0) {
+        return Resolution([], SEMANTIC_STATUS_UNKNOWN)
+    }
+    var first = candidates[0]
+    for (candidate in candidates) {
+        if (candidate.qualifier != first.qualifier || candidate.container != first.container) {
+            return Resolution(candidates, SEMANTIC_STATUS_AMBIGUOUS)
+        }
+    }
+    return Resolution(candidates, SEMANTIC_STATUS_RESOLVED)
+}
+
+// What a chain has reached after some steps: a value of a type, a module or package qualifier (members are its
+// functions and globals), an enum type (members are its constants and `values()`), or nothing known.
+define class SemanticReceiver {
+    string mode
+    TypeRef type
+    string target
+
+    construct(string mode, TypeRef type, string target) {
+        this.mode = mode
+        this.type = type
+        this.target = target
+    }
+
+    method valueType(): TypeRef {
+        if (this.mode == SEMANTIC_MODE_VALUE) {
+            return this.type
+        }
+        return unknownType()
+    }
+}
+
+method semanticValueReceiver(TypeRef type): SemanticReceiver {
+    return SemanticReceiver(SEMANTIC_MODE_VALUE, type, "")
+}
+
+method semanticNoReceiver(): SemanticReceiver {
+    return SemanticReceiver(SEMANTIC_MODE_NONE, unknownType(), "")
+}
+
+// Name resolution with the loader's rules (DESIGN 5.6): own package, root level wins, a unique package function is
+// reachable unqualified, std only qualified. The rules live in `SemanticNameRules` and `SemanticCallRules`; the
+// typing in `TypeInference`.
+define class Resolver {
+    ProgramIndex index
+    MemberLookup lookup
+    TypeInference inference
+
+    construct(ProgramIndex index) {
+        this.index = index
+        this.lookup = MemberLookup(index)
+        this.inference = TypeInference(this)
+    }
+
+    // A scope for an offset of a closure file; a nil file gives an empty scope.
+    method scopeAt(ClosureFile file, integer offset): Scope {
+        return SemanticScopeBuilder().build(file, offset)
+    }
+
+    // A variable or a value name: a local becomes a symbol with `isLocal()`, `this` the enclosing type; a type name,
+    // a function name and a std module are no variables and give unknown.
+    method lookupName(Scope scope, string name): Resolution {
+        return SemanticNameRules(this).lookup(scope, name)
+    }
+
+    // The function that `name(arguments)` calls from that scope; a class (constructor call) resolves to its type
+    // symbol. A built-in function is unknown here: ask `isBuiltinCall`.
+    method lookupCall(Scope scope, string name, integer arity): Resolution {
+        return SemanticCallRules(this).lookup(scope, name, arity)
+    }
+
+    // Types are global and not namespaced; nil when no loaded file declares it.
+    method lookupType(string name): Symbol {
+        return this.index.typeNamed(name)
+    }
+
+    method membersOf(TypeRef type): array<Symbol> {
+        return this.lookup.membersOf(type)
+    }
+
+    method qualifierMembers(string qualifier): array<Symbol> {
+        return this.lookup.qualifierMembers(qualifier)
+    }
+
+    method typeOfChain(Scope scope, array<ChainStep> chain): TypeRef {
+        return this.inference.typeOfChain(scope, chain)
+    }
+
+    method typeOfLocal(Scope scope, Local local): TypeRef {
+        return this.inference.typeOfLocal(scope, local)
+    }
+
+    // A name that can stand before a dot as a module or package: a std module or a qualifier of the program.
+    method isModuleQualifier(string name): bool {
+        if (name == "") {
+            return false
+        }
+        return this.index.hasQualifier(name)
+    }
+
+    // Additive: the local visible in the scope under that name (the innermost declaration); nil when there is none.
+    method localNamed(Scope scope, string name): Local {
+        for (local in scope.locals) {
+            if (local.name == name) {
+                return local
+            }
+        }
+        return nothing()
+    }
+
+    // Additive: `qualifier.name` for a function (arity -1: any) or a global of that qualifier. A parameterless
+    // `module.name` without parentheses is a global or a call, so a global matches only without an arity.
+    method lookupQualified(string qualifier, string name, integer arity): Resolution {
+        var found = []
+        for (symbol in this.lookup.qualifierMembers(qualifier)) {
+            if (symbol.decl.name == name && this.matchesQualified(symbol, arity)) {
+                found.append(symbol)
+            }
+        }
+        return semanticResolution(found)
+    }
+
+    method matchesQualified(Symbol symbol, integer arity): bool {
+        if (arity == SEMANTIC_ANY_ARITY) {
+            return true
+        }
+        return symbol.decl.isCallable() && semanticArityMatches(symbol.decl, arity)
+    }
+
+    // Additive: the field or method `name` of a value of the type (an arity of -1 accepts any).
+    method lookupMember(TypeRef type, string name, integer arity): Resolution {
+        return semanticResolution(this.lookup.findMember(type, name, arity))
+    }
+
+    // Additive: the constants of an enum type, in declaration order.
+    method constantsOf(string typeName): array<Symbol> {
+        return this.lookup.constantsOf(typeName)
+    }
+
+    // Additive: whether `name(arguments)` is the call of a free built-in function when nothing else claims it.
+    method isBuiltinCall(string name): bool {
+        return SemanticCallRules(this).isBuiltinCall(name)
+    }
+
+    // Additive: the type of `this` in the scope; unknown outside a class.
+    method thisType(Scope scope): TypeRef {
+        if (isNone(scope.enclosingType)) {
+            return unknownType()
+        }
+        return semanticNamedType(scope.enclosingType.name)
+    }
+}

@@ -1,0 +1,14 @@
+package geo
+
+define class Shape {
+    string name
+    integer sides
+
+    method corners(): integer {
+        return this.sides
+    }
+}
+
+method describe(Shape shape): string {
+    return shape.name
+}

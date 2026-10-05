@@ -1,0 +1,79 @@
+package hover
+
+import base/maybe
+import base/model
+import semantics/builtins
+import semantics/semantic
+import syntax/outline
+
+private final HOVER_METHOD_PREFIX = "method "
+private final HOVER_PARAMETER_SEPARATOR = ", "
+
+// The signature of a declaration as help shows it: `area(float r): float`, a constructor as `Circle(float r)`.
+method hoverSignatureInfo(Symbol symbol): SignatureInfo {
+    var decl = symbol.decl
+    var name = decl.name
+    if (decl.kind == DeclKind.Constructor) {
+        name = symbol.container
+    }
+    var label = name + "(" + decl.paramsText() + ")"
+    if (decl.typeText != "" && decl.kind != DeclKind.Constructor) {
+        label = label + ": " + decl.typeText
+    }
+    var parameters = []
+    for (param in decl.params) {
+        parameters.append(param.typeText + " " + param.name)
+    }
+    return SignatureInfo(label, parameters, decl.doc)
+}
+
+// A class without `construct` takes its fields in declaration order (the implicit positional constructor).
+method hoverImplicitConstructor(Symbol type, array<Symbol> members): SignatureInfo {
+    var parameters = []
+    for (member in members) {
+        if (member.decl.kind == DeclKind.Field) {
+            parameters.append(member.decl.typeText + " " + member.decl.name)
+        }
+    }
+    return SignatureInfo(type.decl.name + "(" + parameters.join(HOVER_PARAMETER_SEPARATOR) + ")", parameters, type.decl.doc)
+}
+
+// A built-in as help shows it: its table signature without the `method ` word, the parameters cut out of the brackets.
+method hoverBuiltinInfo(BuiltinMember member): SignatureInfo {
+    var label = member.signature
+    if (label.startsWith(HOVER_METHOD_PREFIX)) {
+        label = label.substring(HOVER_METHOD_PREFIX.length(), label.length())
+    }
+    return SignatureInfo(label, hoverBracketParameters(label), member.documentation)
+}
+
+method hoverBracketParameters(string label): array<string> {
+    var open = label.indexOf("(")
+    var close = label.indexOf(")")
+    if (open < 0 || close <= open + 1) {
+        return []
+    }
+    return label.substring(open + 1, close).split(HOVER_PARAMETER_SEPARATOR)
+}
+
+// Which signature is the active one: the first whose parameter list can hold the argument that is being typed.
+method hoverActiveSignature(array<SignatureInfo> signatures, integer activeArgument): integer {
+    var index = 0
+    while (index < signatures.length()) {
+        if (signatures[index].parameters.length() > activeArgument) {
+            return index
+        }
+        index = index + 1
+    }
+    return 0
+}
+
+method hoverActiveParameter(SignatureInfo signature, integer activeArgument): integer {
+    if (signature.parameters.length() == 0) {
+        return 0
+    }
+    if (activeArgument >= signature.parameters.length()) {
+        return signature.parameters.length() - 1
+    }
+    return activeArgument
+}

@@ -1,0 +1,2 @@
+# Known defects found by fuzz_features.py: method|start of the problem text
+textDocument/completion|completion item without label

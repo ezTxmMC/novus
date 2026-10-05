@@ -1,0 +1,62 @@
+package main
+
+// A string cannot hold more than INT_MAX - 1 bytes. A concatenation that would
+// exceed that raises the catchable "text is longer than N bytes" error (the
+// same one the string builders raise) instead of overflowing the length.
+// The test builds a 1 GiB string (about 1.5 GiB of memory at its peak).
+
+final HALF = 1073741824
+
+define class Concat {
+    private final string left
+    private final string right
+
+    construct(string left, string right) {
+        this.left = left
+        this.right = right
+    }
+
+    method run(): object {
+        return left + right
+    }
+}
+
+define class ConcatChain {
+    private final string left
+    private final string right
+
+    construct(string left, string right) {
+        this.left = left
+        this.right = right
+    }
+
+    method run(): object {
+        return left + "-" + right
+    }
+}
+
+method tryRun(object task): object native "nv_try_run"
+method tryFailed(): bool native "nv_try_failed"
+method tryError(): string native "nv_try_error"
+
+method doubled(string seed, integer length): string {
+    var text = seed
+    while (text.length() < length) {
+        text = text + text
+    }
+    return text
+}
+
+method report(string label, object task) {
+    tryRun(task)
+    println "${label}: failed ${tryFailed()}, ${tryError()}"
+}
+
+method main {
+    var half = doubled("x", HALF)
+    println "half: ${half.length()} bytes"
+    report("a + b", Concat(half, half))
+    report("a + b + c", ConcatChain(half, half))
+    var fits = half + "y"
+    println "just below the limit: ${fits.length()} bytes"
+}

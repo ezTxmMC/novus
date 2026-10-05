@@ -1,0 +1,78 @@
+package main
+
+// The dynamic method calls on strings (charAt, substring, length and the
+// rest go through direct dispatch): results, defaults for missing arguments
+// and the errors of a bad call.
+
+define class Probe {
+    private string text: get, set
+    private string name: get, set
+    private integer first: get, set
+    private integer second: get, set
+
+    method run(): object {
+        if (name == "charAt") {
+            return text.charAt(first)
+        }
+        if (name == "substring") {
+            return text.substring(first, second)
+        }
+        if (name == "shout") {
+            return text.shout()
+        }
+        return text.length()
+    }
+}
+
+method tryRun(object task): object native "nv_try_run"
+method tryFailed(): bool native "nv_try_failed"
+method tryError(): string native "nv_try_error"
+
+method probe(string text, string name, integer first, integer second) {
+    var result = tryRun(Probe{text=text, name=name, first=first, second=second})
+    if (tryFailed()) {
+        println "${name}(${first}, ${second}) failed: ${tryError()}"
+        return
+    }
+    println "${name}(${first}, ${second}) = [${result}]"
+}
+
+method printDirect(object value) {
+    println value.length()
+    println value.charAt(1)
+    println value.substring(1)
+    println value.substring(1, 3)
+    println value.substring(-4, 2)
+    println value.substring(3, 1)
+    println value.substring(2, 99)
+    println value.indexOf("c")
+    println value.indexOf("c", 3)
+    println value.contains("bc")
+    println value.startsWith("ab")
+    println value.endsWith("de")
+    println value.split("c").length()
+    println value.replace("c", "-")
+    println value.trim()
+    println value.toUpper()
+    println value.toLower()
+}
+
+method main {
+    probe("abcde", "charAt", 0, 0)
+    probe("abcde", "charAt", 4, 0)
+    probe("abcde", "charAt", 5, 0)
+    probe("abcde", "charAt", -1, 0)
+    probe("", "charAt", 0, 0)
+    probe("abcde", "substring", 1, 3)
+    probe("abcde", "substring", 3, 1)
+    probe("abcde", "substring", -2, 9)
+    probe("abcde", "substring", 2, 3)
+    probe("abcde", "shout", 0, 0)
+    probe("abcde", "length", 0, 0)
+    printDirect("abcde")
+    printDirect("xx abcde xx".substring(3, 8))
+    var cells = ["abcde"]
+    println cells[0].length()
+    println cells[0].charAt(2)
+    println cells[0].substring(2, 4)
+}

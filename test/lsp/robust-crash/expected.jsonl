@@ -1,0 +1,5 @@
+{"id":1,"jsonrpc":"2.0","result":{"capabilities":"@CAPABILITIES@","serverInfo":{"name":"novus-lsp","version":"0.1.0"}}}
+{"error":{"code":-32603,"message":"key 'a key that is not there' not found in map"},"id":2,"jsonrpc":"2.0"}
+{"error":{"code":-32601,"message":"method not found: nope/after-crash"},"id":3,"jsonrpc":"2.0"}
+{"error":{"code":-32603,"message":"key 'a key that is not there' not found in map"},"id":4,"jsonrpc":"2.0"}
+{"id":5,"jsonrpc":"2.0","result":null}

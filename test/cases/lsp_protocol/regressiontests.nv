@@ -1,0 +1,141 @@
+package main
+
+import json
+import strings
+import "novus/lsp/base/text"
+import "novus/lsp/base/model"
+import "novus/lsp/server/protocol"
+
+// Cases that a review found broken; each block names the finding it pins down.
+private final REGRESSION_BIG_EDIT_BYTES = 624288
+
+method testEditsAreNeverClipped() {
+    println "== regression: edit texts are not clipped"
+    var big = strings.repeat("x", REGRESSION_BIG_EDIT_BYTES)
+    var lines = LineIndex("abc")
+    var encoder = newEncoder("utf-16", ClientInfo())
+    show("textEdit", encoder.textEdit(lines, TextEdit(Span(0, 3), big))["newText"].length())
+    var workspace = encoder.workspaceEdit({"/a.nv": lines}, [FileEdit("/a.nv", [TextEdit(Span(0, 3), big)])])
+    show("workspaceEdit", workspace["changes"]["file:///a.nv"][0]["newText"].length())
+    var item = CompletionItem("lbl", CompletionKind.Method, "")
+    item.replaceSpan = Span(0, 3)
+    item.insertText = big
+    item.additionalEdits = [TextEdit(Span(0, 0), big)]
+    var encoded = encoder.completionItem(lines, item)
+    show("completion textEdit", encoded["textEdit"]["newText"].length())
+    show("completion additionalTextEdits", encoded["additionalTextEdits"][0]["newText"].length())
+    show("labels are still clipped", encoder.logMessage(3, big)["message"].length())
+}
+
+method testUnsetReplaceSpan() {
+    println "== regression: completion item without replaceSpan"
+    var lines = LineIndex("abc")
+    var encoder = newEncoder("utf-16", ClientInfo())
+    var item = CompletionItem("lbl", CompletionKind.Method, "")
+    show("has replaceSpan", item.hasReplaceSpan())
+    showJson("unset", encoder.completionItem(lines, item))
+    item.insertText = "lbl($1)"
+    item.isSnippet = true
+    showJson("unset with insertText", encoder.completionItem(lines, item))
+    item.replaceSpan = Span(0, 0)
+    show("empty span at 0 is a real span", item.hasReplaceSpan())
+    showJson("set at 0", encoder.completionItem(lines, item)["textEdit"])
+}
+
+method testUnnamedSymbols() {
+    println "== regression: symbols without a name"
+    var lines = LineIndex("class {\n}")
+    var encoder = newEncoder("utf-16", ClientInfo())
+    var unnamed = OutlineEntry("", "", OutlineKind.Class, Span(0, 9), Span(0, 5))
+    unnamed.children = [OutlineEntry("m", "", OutlineKind.Method, Span(2, 4), Span(2, 3))]
+    show("hierarchical", encoder.documentSymbol(lines, unnamed)["name"] + " / " + encoder.documentSymbol(lines, unnamed)["children"][0]["name"])
+    var flat = encoder.documentSymbolFlat("file:///a.nv", lines, unnamed)
+    show("flat", flat[0]["name"] + " / " + flat[1]["name"] + " in " + flat[1]["containerName"])
+    var place = Location("/a.nv", Span(0, 5))
+    var workspace = encoder.workspaceSymbol({"/a.nv": lines}, WorkspaceSymbolEntry("", OutlineKind.Class, "", place))
+    show("workspace", workspace["name"])
+    show("a real name is kept", encoder.documentSymbol(lines, OutlineEntry("Circle", "", OutlineKind.Class, Span(0, 5), Span(0, 5)))["name"])
+}
+
+method testHugeNumbers() {
+    println "== regression: numbers outside the int64 range"
+    var huge = protocolDecodePosition(json.tryParse("{\"line\":1e300,\"character\":-1e300}"))
+    show("1e300 / -1e300", huge.line + " " + huge.character)
+    var saturated = protocolDecodePosition(json.tryParse("{\"line\":99999999999999999999,\"character\":-99999999999999999999}"))
+    show("integers saturate alike", saturated.line + " " + saturated.character)
+    var edge = protocolDecodePosition(json.tryParse("{\"line\":9.3e18,\"character\":3.7}"))
+    show("above the limit / fraction", edge.line + " " + edge.character)
+    var codec = PositionCodec("utf-16")
+    show("a huge line reaches the end of the text", codec.offsetOf(LineIndex("a\nb"), huge))
+}
+
+method showDecoded(string label, string source) {
+    var changes = decodeContentChanges(json.tryParse(source))
+    var shown = []
+    for (change in changes) {
+        shown.append(change.hasRange + ":" + change.text)
+    }
+    show(label, changes.length() + " [" + shown.join(",") + "]")
+}
+
+method testMalformedRanges() {
+    println "== regression: a malformed range drops the change"
+    showDecoded("empty range", "[{\"text\":\"a\",\"range\":{}}]")
+    showDecoded("start without numbers", "[{\"text\":\"a\",\"range\":{\"start\":{\"line\":\"x\"},\"end\":{\"line\":1,\"character\":1}}}]")
+    showDecoded("end missing", "[{\"text\":\"a\",\"range\":{\"start\":{\"line\":0,\"character\":0}}}]")
+    showDecoded("float positions are fine", "[{\"text\":\"a\",\"range\":{\"start\":{\"line\":0.0,\"character\":1},\"end\":{\"line\":0,\"character\":2.0}}}]")
+    showDecoded("whole document", "[{\"text\":\"a\"}]")
+}
+
+method testTabSizeLimit() {
+    println "== regression: tabSize has an upper bound"
+    for (size in ["1000000000", "65", "64", "1", "0"]) {
+        var options = decodeFormattingOptions(json.tryParse("{\"options\":{\"tabSize\":" + size + "}}"))
+        show("tabSize " + size, options.tabSize)
+    }
+}
+
+method testCodeActionsOfSeveralFiles() {
+    println "== regression: code action edits in other files"
+    var current = LineIndex("a\nb")
+    var other = LineIndex("long first line\nsecond")
+    var item = CodeActionItem("Move", "quickfix")
+    item.edits = [FileEdit("/a.nv", [TextEdit(Span(2, 3), "B")]), FileEdit("/b.nv", [TextEdit(Span(16, 22), "2nd")]), FileEdit("/c.nv", [TextEdit(Span(0, 1), "?")])]
+    var encoder = newEncoder("utf-16", ClientInfo())
+    showJson("per file line indexes", encoder.codeAction(current, item, {"/a.nv": current, "/b.nv": other})["edit"])
+    showJson("same-document form uses one index for every file (DESIGN-NOTES 2)", encoder.codeAction(current, item)["edit"]["changes"]["file:///b.nv"])
+}
+
+// DESIGN 7.7 (amendment 4): insertTextMode adjustIndentation only for snippet items and only for a client that announced mode 2.
+method testInsertTextMode() {
+    println "== regression: insertTextMode of snippet items"
+    var announced = json.tryParse("{\"capabilities\":{\"textDocument\":{\"completion\":{\"completionItem\":{\"snippetSupport\":true,\"insertTextModeSupport\":{\"valueSet\":[1,2]}}}}}}")
+    var asIs = json.tryParse("{\"capabilities\":{\"textDocument\":{\"completion\":{\"completionItem\":{\"insertTextModeSupport\":{\"valueSet\":[1]}}}}}}")
+    var wrongShape = json.tryParse("{\"capabilities\":{\"textDocument\":{\"completion\":{\"completionItem\":{\"insertTextModeSupport\":true}}}}}")
+    show("client announces mode 2", parseClientInfo(announced).insertTextModeSupport)
+    show("client announces only mode 1", parseClientInfo(asIs).insertTextModeSupport)
+    show("wrong shape", parseClientInfo(wrongShape).insertTextModeSupport)
+    show("empty object", parseClientInfo({}).insertTextModeSupport)
+    var lines = LineIndex("x")
+    var snippet = CompletionItem("fori", CompletionKind.Snippet, "")
+    snippet.isSnippet = true
+    snippet.replaceSpan = Span(0, 1)
+    var plain = CompletionItem("name", CompletionKind.Variable, "")
+    plain.replaceSpan = Span(0, 1)
+    var supporting = newEncoder("utf-16", parseClientInfo(announced))
+    var other = newEncoder("utf-16", ClientInfo())
+    show("snippet, supporting client", supporting.completionItem(lines, snippet).get("insertTextMode", 0))
+    show("plain item, supporting client", supporting.completionItem(lines, plain).has("insertTextMode"))
+    show("snippet, other client", other.completionItem(lines, snippet).has("insertTextMode"))
+}
+
+method testRegressions() {
+    testInsertTextMode()
+    testEditsAreNeverClipped()
+    testUnsetReplaceSpan()
+    testUnnamedSymbols()
+    testHugeNumbers()
+    testMalformedRanges()
+    testTabSizeLimit()
+    testCodeActionsOfSeveralFiles()
+}

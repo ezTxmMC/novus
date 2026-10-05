@@ -1,0 +1,137 @@
+package rpc
+
+import base/platform
+import base/text
+import math
+import strings
+
+private final FRAME_OK = "ok"
+private final FRAME_EOF = "eof"
+private final FRAME_CORRUPT = "corrupt"
+private final FRAME_EMPTY = "empty"
+private final RPC_LENGTH_HEADER = "content-length:"
+private final RPC_HEADER_END = "\r\n\r\n"
+private final RPC_LENGTH_HEADER_NAME = "Content-Length: "
+private final RPC_MAX_LENGTH_DIGITS = 12
+private final RPC_NEGATIVE_SIGN = "-"
+private final RPC_ZERO = "0"
+
+define class Frame {
+    string status
+    string body
+    string detail
+
+    construct(string status, string body, string detail) {
+        this.status = status
+        this.body = body
+        this.detail = detail
+    }
+}
+
+// What the header block said: the raw Content-Length value and whether the blank line ended it.
+define class RpcHeaderBlock {
+    string lengthText
+    bool sawLength
+    bool sawBlankLine
+
+    construct() {
+        this.lengthText = ""
+        this.sawLength = false
+        this.sawBlankLine = false
+    }
+}
+
+define class FrameReader {
+    construct() {
+    }
+
+    // Reads one frame from stdin. readBytes is only ever called with a length that was checked here.
+    method readFrame(): Frame {
+        var headers = this.readHeaders()
+        if (headers.sawBlankLine == false) {
+            return Frame(FRAME_EOF, "", "end of input inside the headers")
+        }
+        if (headers.sawLength == false) {
+            return Frame(FRAME_CORRUPT, "", "missing Content-Length header")
+        }
+        var problem = rpcLengthProblem(headers.lengthText)
+        if (problem != "") {
+            return Frame(FRAME_CORRUPT, "", problem)
+        }
+        return this.readBody(math.toInt(rpcTrimLeadingZeros(headers.lengthText)))
+    }
+
+    // stdinAtEof is never asked after the blank line: it blocks while the input is open but idle.
+    method readHeaders(): RpcHeaderBlock {
+        var block = RpcHeaderBlock()
+        while (stdinAtEof() == false) {
+            var line = stdinReadLine()
+            if (line == "") {
+                block.sawBlankLine = true
+                return block
+            }
+            this.recordHeader(block, line)
+        }
+        return block
+    }
+
+    method recordHeader(RpcHeaderBlock block, string line) {
+        if (line.toLower().startsWith(RPC_LENGTH_HEADER) == false) {
+            return
+        }
+        block.sawLength = true
+        block.lengthText = line.substring(RPC_LENGTH_HEADER.length(), line.length()).trim()
+    }
+
+    method readBody(integer length): Frame {
+        if (length == 0) {
+            return Frame(FRAME_EMPTY, "", "")
+        }
+        var body = stdinReadBytes(length)
+        if (body.length() < length) {
+            return Frame(FRAME_EOF, "", "end of input inside a body")
+        }
+        return Frame(FRAME_OK, body, "")
+    }
+}
+
+// "" when the value is a plain decimal number within MAX_FRAME_BYTES, else why the frame cannot be read.
+method rpcLengthProblem(string lengthText): string {
+    if (lengthText.startsWith(RPC_NEGATIVE_SIGN) && rpcIsDecimal(lengthText.substring(1, lengthText.length()))) {
+        return "Content-Length is negative"
+    }
+    if (rpcIsDecimal(lengthText) == false) {
+        return "Content-Length is not a number"
+    }
+    var digits = rpcTrimLeadingZeros(lengthText)
+    if (digits.length() > RPC_MAX_LENGTH_DIGITS || math.toInt(digits) > MAX_FRAME_BYTES) {
+        return "Content-Length exceeds the limit of " + MAX_FRAME_BYTES + " bytes"
+    }
+    return ""
+}
+
+// Leading zeros do not count towards the digit limit: 0000000000000038 is the number 38.
+method rpcTrimLeadingZeros(string digits): string {
+    var start = 0
+    while (start < digits.length() - 1 && digits.substring(start, start + 1) == RPC_ZERO) {
+        start = start + 1
+    }
+    return digits.substring(start, digits.length())
+}
+
+method rpcIsDecimal(string digits): bool {
+    if (digits.length() == 0) {
+        return false
+    }
+    for (character in digits) {
+        if (strings.isDigit(character) == false) {
+            return false
+        }
+    }
+    return true
+}
+
+// The byte length counts bytes: strings are byte buffers, so length() is right for multi-byte text.
+method encodeFrame(string payload): string {
+    return RPC_LENGTH_HEADER_NAME + payload.length() + RPC_HEADER_END + payload
+}

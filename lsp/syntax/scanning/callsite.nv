@@ -1,0 +1,120 @@
+package scanning
+
+import base/maybe
+import base/text
+import syntax/lexing
+
+private final SCANNING_MAX_CALLSITE_TOKENS = 4000
+
+// The call whose argument list contains an offset: the callee chain, the `(` token, the argument under the cursor.
+define class CallSite {
+    array<ChainStep> callee
+    integer openParen
+    integer activeArgument
+    Span argumentsSpan
+
+    construct(array<ChainStep> callee, integer openParen, integer activeArgument, Span argumentsSpan) {
+        this.callee = callee
+        this.openParen = openParen
+        this.activeArgument = activeArgument
+        this.argumentsSpan = argumentsSpan
+    }
+}
+
+// Scans backwards from the offset for the unmatched `(` of a call; nil when the offset is in no argument list.
+method callSiteAt(array<Token> tokens, integer offset): CallSite {
+    var cursor = ScanningCursor(tokens, tokens.length())
+    var index = scanningFirstTokenAtOrAfter(tokens, offset) - 1
+    var depth = 0
+    var commas = 0
+    var visited = 0
+    while (index >= 0 && visited < SCANNING_MAX_CALLSITE_TOKENS) {
+        var token = tokens[index]
+        if (token.kind == TokenKind.Punct && scanningIsCloser(token.value)) {
+            depth = depth + 1
+        }
+        if (token.kind == TokenKind.Punct && scanningIsOpener(token.value)) {
+            if (depth == 0 && token.isPunct("(") && cursor.isIdent(index - 1)) {
+                return scanningBuildCallSite(cursor, index, commas, offset)
+            }
+            commas = scanningCommasAfterOpener(depth, commas)
+            depth = scanningDepthAfterOpener(depth)
+        }
+        if (depth == 0 && scanningEndsArgumentScan(token)) {
+            return nothing()
+        }
+        if (depth == 0 && token.isPunct(",")) {
+            commas = commas + 1
+        }
+        index = index - 1
+        visited = visited + 1
+    }
+    return nothing()
+}
+
+// An unmatched `[`, `{` or a bare `(` is a literal or group around the cursor: commas seen so far belong to it.
+method scanningCommasAfterOpener(integer depth, integer commas): integer {
+    if (depth == 0) {
+        return 0
+    }
+    return commas
+}
+
+method scanningDepthAfterOpener(integer depth): integer {
+    if (depth == 0) {
+        return 0
+    }
+    return depth - 1
+}
+
+// A token that cannot be part of an argument list: a statement separator or a statement keyword.
+method scanningEndsArgumentScan(Token token): bool {
+    if (token.kind == TokenKind.EndOfFile || token.isPunct(";")) {
+        return true
+    }
+    if (token.kind != TokenKind.Keyword) {
+        return false
+    }
+    return token.text != "true" && token.text != "false"
+}
+
+method scanningBuildCallSite(ScanningCursor cursor, integer open, integer commas, integer offset): CallSite {
+    var tokens = cursor.tokens
+    if (cursor.isIdent(open - 1) == false) {
+        return nothing()
+    }
+    var close = cursor.matchingClose(open)
+    var argumentsEnd = scanningUnclosedEnd(tokens, open, offset)
+    var count = commas + 1
+    if (open + 1 >= tokens.length() || tokens[open + 1].start >= offset) {
+        count = 0
+    }
+    if (close >= 0) {
+        argumentsEnd = tokens[close].start
+        count = scanningArgumentCount(tokens, open, close)
+    }
+    var calleeEnd = argumentsEnd
+    if (close >= 0) {
+        calleeEnd = tokens[close].end
+    }
+    var callee = scanningCalleeChain(tokens, open, count, calleeEnd)
+    return CallSite(callee, open, commas, Span(tokens[open].end, argumentsEnd))
+}
+
+method scanningUnclosedEnd(array<Token> tokens, integer open, integer offset): integer {
+    if (offset > tokens[open].end) {
+        return offset
+    }
+    return tokens[open].end
+}
+
+// The chain before the `(`; its last step becomes the call step with the argument count.
+method scanningCalleeChain(array<Token> tokens, integer open, integer count, integer calleeEnd): array<ChainStep> {
+    var steps = chainEndingAt(tokens, open - 1)
+    if (steps.length() == 0) {
+        return steps
+    }
+    var last = steps[steps.length() - 1]
+    steps[steps.length() - 1] = ChainStep(last.text, "call", count, Span(last.span.start, calleeEnd))
+    return steps
+}

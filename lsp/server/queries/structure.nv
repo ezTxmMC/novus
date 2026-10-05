@@ -1,0 +1,131 @@
+package queries
+
+import base/maybe
+import base/model
+import features/structure
+import projects/workspace
+import server/protocol
+import server/rpc
+import server/session
+
+private final QUERIES_SYMBOL_LIMIT = 500
+
+// textDocument/documentSymbol: hierarchical symbols, or the flat list for a client that cannot nest them.
+define class DocumentSymbolHandler based RequestHandler {
+    Session session
+    OutlineBuilder builder
+    WireEncoder encoder
+
+    construct(Session session, OutlineBuilder builder, WireEncoder encoder) {
+        this.session = session
+        this.builder = builder
+        this.encoder = encoder
+    }
+
+    method handle(Request request): object {
+        var context = this.session.contextFor(decodeDocumentUri(request.params))
+        if (isNone(context)) {
+            return []
+        }
+        var encoded = []
+        for (entry in this.builder.documentSymbols(context)) {
+            this.append(encoded, context, entry)
+        }
+        return encoded
+    }
+
+    method append(array<object> encoded, FileContext context, OutlineEntry entry) {
+        if (this.session.client.hierarchicalSymbols) {
+            encoded.append(this.encoder.documentSymbol(context.document.lines, entry))
+            return
+        }
+        for (flat in this.encoder.documentSymbolFlat(context.document.uri, context.document.lines, entry)) {
+            encoded.append(flat)
+        }
+    }
+}
+
+// workspace/symbol: symbols of every project and scanned file that match the query, capped; a cancelled request is
+// answered with -32800.
+define class WorkspaceSymbolHandler based RequestHandler {
+    Session session
+    SymbolSearch search
+    WireEncoder encoder
+    CancelRegistry cancellations
+
+    construct(Session session, SymbolSearch search, WireEncoder encoder, CancelRegistry cancellations) {
+        this.session = session
+        this.search = search
+        this.encoder = encoder
+        this.cancellations = cancellations
+    }
+
+    method handle(Request request): object {
+        var cancel = RequestCancelCheck(this.cancellations, request.id)
+        var entries = this.search.search(decodeSymbolQuery(request.params), QUERIES_SYMBOL_LIMIT, cancel)
+        if (cancel.isCancelled()) {
+            failRequest(rpcRequestCancelled(), QUERIES_CANCELLED_MESSAGE)
+        }
+        var linesByPath = {}
+        var encoded = []
+        for (entry in entries) {
+            var filePath = entry.location.filePath
+            if (linesByPath.has(filePath) == false) {
+                linesByPath[filePath] = this.session.linesOf(filePath)
+            }
+            encoded.append(this.encoder.workspaceSymbol(linesByPath, entry))
+        }
+        return encoded
+    }
+}
+
+// textDocument/foldingRange.
+define class FoldingHandler based RequestHandler {
+    Session session
+    FoldingBuilder builder
+    WireEncoder encoder
+
+    construct(Session session, FoldingBuilder builder, WireEncoder encoder) {
+        this.session = session
+        this.builder = builder
+        this.encoder = encoder
+    }
+
+    method handle(Request request): object {
+        var context = this.session.contextFor(decodeDocumentUri(request.params))
+        if (isNone(context)) {
+            return []
+        }
+        var encoded = []
+        for (entry in this.builder.ranges(context)) {
+            encoded.append(this.encoder.foldingRange(entry))
+        }
+        return encoded
+    }
+}
+
+// textDocument/documentLink: a std import links to the materialised copy of the module.
+define class LinkHandler based RequestHandler {
+    Session session
+    LinkBuilder builder
+    WireEncoder encoder
+
+    construct(Session session, LinkBuilder builder, WireEncoder encoder) {
+        this.session = session
+        this.builder = builder
+        this.encoder = encoder
+    }
+
+    method handle(Request request): object {
+        var context = this.session.contextFor(decodeDocumentUri(request.params))
+        if (isNone(context)) {
+            return []
+        }
+        var encoded = []
+        for (link in this.builder.links(context)) {
+            var target = this.session.workspace.editorPathOf(link.targetPath)
+            encoded.append(this.encoder.documentLink(context.document.lines, DocumentLink(link.span, target)))
+        }
+        return encoded
+    }
+}

@@ -1,0 +1,223 @@
+== FileCache: overlays shadow the disk
+ok   disk text: 29 true false
+ok   overlay text wins: 15
+ok   the disk is untouched: 29
+ok   an overlay-only file exists: true false -1
+ok   overlays never add directory entries: a.nv,page.nvh,project.nv
+ok   overlay paths: /c/a.nv,/c/new.nv
+ok   cleared: the disk text again: 29
+ok   a missing file: |false -1 true
+ok   paths are normalised on the way in: true x
+== FileCache.syntaxOf: parse options by overlay, cache hits by text hash (V100)
+ok   a file nobody opened: index options: 0 locals=0
+ok   a second call is a cache hit: true
+ok   an open document is never served a parse without tokens: false true locals=1
+ok   the editor parse is now the cached one: true
+ok   closed again: the parse with tokens still satisfies the path: true
+ok   other text: a new parse replaces the stored one: false true y
+ok   forget drops the parse, not the overlay: false true
+== FileCache.syntaxOf: the file kind decides the parser
+ok   a component: nvh page NvhComponent 2
+ok   a manifest has no declarations: manifest 0 0
+ok   a missing file parses as the empty text: 0 nv
+ok   an open manifest gives a different parse object: true
+== FileCache.syntaxWithTokens and the TokenCache (LRU)
+ok   tokens for a file that is not open: true true
+ok   the plain parse stays without tokens: 0
+ok   changed on disk: a new parse: false b
+ok   an open document: the editor parse: true
+ok   full: /1,/2,/3
+ok   a hit moves the file to the end: true /2,/3,/1
+ok   the least recently used is dropped: /3,/1,/4 false
+ok   a wrong hash is a miss and changes nothing: true /3,/1,/4
+ok   storing again replaces and refreshes: /3,/4,/1 uno
+ok   drop: /3,/1 2
+ok   the capacity of the contract: 64
+== ProjectModel: key, rebuild, invalidate, revision
+ok   before the first build: key=/p/project.nv valid=false revision=0 files=0
+ok   built: key=/p/project.nv valid=true revision=1 files: /p/main.nv, /p/geo/extra.nv, /p/geo/shape.nv
+ok   index and resolver follow the closure: true
+ok   the resolver answers: /p/geo/shape.nv
+ok   invalidate only flips the flag: key=/p/project.nv valid=false revision=1
+ok   a rebuild reads the manifest again: key=/p/project.nv valid=true revision=2 main=/p/lone.nv files: /p/lone.nv
+ok   rebuildIndex is a revision of its own: 3
+ok   without a manifest the file is its own program: key=/solo/a.nv valid=true revision=1 files: /solo/a.nv, /solo/b.nv
+ok   a scratch model has the empty key: [] false
+== ProjectModel.checkEntry
+ok   main file declares main: [/p/main.nv]
+ok   the open path is normalised and ignored when main exists: [/p/main.nv]
+ok   a library: the main file has no main method: []
+ok   main file missing: the open file with main: [/p/tool.nv]
+ok   main file missing: an open file without main: []
+ok   main file missing: a file that is not in the program: []
+ok   a program without manifest: [/solo/a.nv]
+ok   a dependency file is never the entry: []
+== ProjectModel.hasUnfetchedDependencies and userFiles
+ok   no requirement: false
+ok   a module that is not in the cache: true
+ok   a replaced module that exists: false
+ok   user files are the project's own files, not the replaced dependency's: /p/main.nv | all: /p/main.nv, /p/lib/lib.nv
+ok   a replace target that does not exist: true
+== scanProject and ProjectModel.scanFor
+ok   package folders: /s/components, /s/geo, /s/geo/shapes, /s/pages, /s/sub
+ok   root files (no manifest): /s/main.nv, /s/util.nv
+ok   components: /s/components/Button.nvh, /s/pages/Home.nvh
+ok   knows: true true false false
+ok   a layout without a root has nothing: 0
+ok   first scan: 1000 2
+ok   served from the cache for 30 seconds: true 1000
+ok   older than 30 seconds: scanned again: false 31001
+ok   a new file is not seen from the cache: true 2
+ok   invalidateScan forces a new scan: false /s/fresh.nv, /s/main.nv, /s/util.nv at 32001
+== Workspace.contextFor
+ok   the bundle: /p/project.nv revision=1 closureFile=/p/main.nv kind=nv
+ok   the open document is parsed for the editor: true true true true
+ok   the project knows its files: /p/main.nv, /p/geo/extra.nv, /p/geo/shape.nv
+ok   another file of the program: the same model: true 1
+ok   asking again changes nothing: true 1 true
+ok   a file that is not open: /p/geo/extra.nv tokens=0 same project=true
+ok   a path without a file: true
+== a body edit invalidates nothing; a signature edit rebuilds the index
+ok   nothing invalidated: key=/p/project.nv valid=true revision=1 before=1
+ok   the symbols point at the newest parse: true nameSpan=54 true true
+ok   a signature change rebuilds the index, not the closure: key=/p/project.nv valid=true revision=2 arity=1 files=3
+ok   the index object is new: false
+ok   a body edit after it again changes nothing: key=/p/project.nv valid=true revision=2
+== an import edit, a package line edit, a new file
+ok   dropping the import invalidates: key=/p/project.nv valid=false revision=1
+ok   the next request rebuilds lazily: key=/p/project.nv valid=true revision=2 files: /p/main.nv
+ok   adding it back: key=/p/project.nv valid=true revision=3 files=3
+ok   a package line edit invalidates: false
+ok   and the closure reports the mismatch: package-folder-mismatch true
+ok   fixed again: 0
+== files that no import reaches, and the scan
+ok   an unreached file that the scan knows invalidates nothing: key=/p/project.nv valid=true revision=1 scan kept=true
+ok   opening it adds it to the program as an orphan: /p/lone.nv Project true files=4
+ok   it is a user file, right after main (entries come first): /p/main.nv, /p/lone.nv, /p/geo/extra.nv, /p/geo/shape.nv
+ok   a body edit of the orphan changes nothing: key=/p/project.nv valid=true revision=3 was 3
+ok   a file that neither the closure nor the scan knows invalidates the model and its scan: false true
+ok   and joins the program: /p/brandnew.nv /p/main.nv, /p/brandnew.nv, /p/lone.nv, /p/geo/extra.nv, /p/geo/shape.nv
+ok   closing the buffer of a file that was never saved: the model is stale: false
+== an open file of a package folder that nothing imports brings its folder along
+ok   the whole folder is in the program, as the package lib: /p/main.nv, /p/lib/a.nv, /p/lib/b.nv
+ok   with the qualifier of the folder: [] [lib] [lib]
+ok   so the names of the siblings resolve: resolved lib.fromB/0
+ok   a file at the root is alone: /p/main.nv, /p/lib/a.nv, /p/lib/b.nv, /p/top.nv
+== closing a buffer discards its unsaved edits
+ok   the unsaved function is in the index: 1
+ok   closed: the disk text is the truth again: false false
+ok   rebuilt from disk: 0 1
+ok   closed without changes: nothing to do: key=/p/project.nv valid=true revision=3 3
+== manifest edits
+ok   an edited manifest invalidates its project: key=/p/project.nv valid=false revision=1
+ok   a manifest document: no closure file, the model of its project: manifest closureFile=true true main=/p/lone.nv
+ok   the new main file is the program; the open old main joins it as an orphan: /p/lone.nv, /p/main.nv, /p/geo/extra.nv, /p/geo/shape.nv
+ok   closing it discards the edit: stale again: false false
+ok   back to the disk manifest: /p/main.nv
+== Workspace.onFilesChangedOnDisk
+ok   a changed file: its parse is forgotten, the project and the scan are stale: key=/p/project.nv valid=false revision=1 parsed=false scan=true
+ok   rebuilt with the new text: 1 0
+ok   a path outside every project changes nothing: key=/p/project.nv valid=true revision=2
+ok   a created file is treated like a changed one: false
+ok   an overlay survives a disk event: true 27
+== one model per program (V99)
+ok   two manifests, two models: /a/project.nv /b/project.nv false
+ok   an unreached file below a manifest joins that project: /b/main.nv, /b/sub/deep.nv
+ok   without a manifest every file is its own program: /solo/a.nv /solo/b.nv /solo/c.nv
+ok   the program of a.nv holds what it imports: /solo/a.nv, /solo/b.nv | /solo/b.nv
+ok   models by key: /a/project.nv, /b/project.nv, /solo/a.nv, /solo/b.nv, /solo/c.nv
+ok   allProjects in key order: /a/project.nv, /b/project.nv, /solo/a.nv, /solo/b.nv, /solo/c.nv
+ok   a manifest that appears above programs without one drops them: /a/project.nv, /b/project.nv
+ok   they come back under the manifest: /solo/project.nv /solo/project.nv
+== scratch buffers
+ok   a program of its own: key=[] file=[] origin=Project files=1 symbols=1
+ok   no check entry, no root: [] []
+ok   it is not one of the projects: 0 true
+ok   unchanged text: the same closure file: true
+ok   changed text: built again: false 1 revision=2
+ok   projectFor: true 0
+ok   closing it removes the model: false
+== Workspace.setFolders, stdSourcePath, editorPathOf
+ok   folders are normalised and models made for the manifests above them: /p, /nowhere | /p/project.nv
+ok   allProjects builds what is stale: 1 key=/p/project.nv valid=true revision=1
+ok   editorPathOf leaves other paths alone: /p/main.nv 
+ok   a std key becomes a file the editor can open: true true true
+ok   it lives in a directory named after the std fingerprint: true
+ok   a name that is no module: |
+== a manifest that is deleted
+ok   the model of the manifest is dropped: 0
+ok   the file is its own program now: /p/main.nv /p/main.nv, /p/geo/extra.nv, /p/geo/shape.nv
+ok   the old model object is not reused: false
+== the manifest of a required module
+ok   the dependency is part of the program: /p/main.nv, /lib/lib.nv | entries=1
+ok   an unrelated manifest changes nothing: true
+ok   the manifest of a required module makes the project stale: false
+== Revalidator: modification time, once per second
+ok   the first run only records the stamps: true stamps=4
+ok   within a second of the last run: not looked at: true
+ok   a changed file makes the project stale: false parsed=false
+ok   and the next request sees the new text: 1
+ok   the stamps were updated: nothing stale any more: true
+== Revalidator: overlays, deletions, manifests, stale models
+ok   an open file is the editor's: its disk time is not looked at: true
+ok   a deleted file: false
+ok   is gone from the program: /p/main.nv, /p/geo/extra.nv
+ok   the manifest counts too: false
+ok   a stale project is skipped until it is rebuilt: false
+== Revalidator ignores scratch buffers
+ok   nothing to look at: true 0
+== DependencyIndex
+ok   every source file of the module: lib@v1/lib.nv q=[] package=[] Dependency module=ex.com/lib root=/deps/ex.com/lib@v1; lib@v1/tools/t.nv q=[] package=[tools] Dependency module=ex.com/lib root=/deps/ex.com/lib@v1; lib@v1/util/u.nv q=[util] package=[util] Dependency module=ex.com/lib root=/deps/ex.com/lib@v1
+ok   parsed: rootLike utilFn
+ok   cached: true entries=1
+ok   a changed file is read again: false changedFn entries=1
+ok   a new file in a new folder is found: 4 entries=1
+ok   a removed file is dropped: 3
+ok   a module that is not Ready has no files: 0
+ok   a Ready module without sources: 0
+== StdSourceStore
+ok   written once, the same path afterwards: true 1 true
+ok   a store trusts its own record: stale copy
+ok   a new store rewrites a copy whose content differs: true true
+ok   an unknown module: |1
+ok   one directory for all modules: true
+== odd documents
+  /p/binary.nv -> project [/p/project.nv] file [/p/binary.nv] valid=true
+  /p/empty.nv -> project [/p/project.nv] file [/p/empty.nv] valid=true
+  /p/garbage.nv -> project [/p/project.nv] file [/p/garbage.nv] valid=true
+  /p/geo -> project [/p/project.nv] file [/p/geo] valid=true
+  rel.nv -> project [/rel.nv] file [/rel.nv] valid=true
+  /p/page.nvh -> nvh decls=1 issues>0=true
+== odd events
+ok   paths that are no files: true true true
+ok   the workspace still answers: /p/project.nv
+ok   a scratch buffer next to it: 0
+== .nvh components
+ok   a component is a closure file with a class named after the file: /n/page.nvh nvh NvhComponent 2
+ok   the web module is loaded for it: true
+ok   the provider serves the cache: true
+== texts with a NUL byte
+ok   a change behind a NUL byte is a change: false true
+== review fixes
+ok   an open orphan is in the program: dupes=1 onlyHere=1 fromB=0 valid=true
+ok   closing it takes it out again, with its text equal to the disk: dupes=0 onlyHere=0 fromB=0 valid=true
+ok   an orphan of a package folder brings its siblings: dupes=0 onlyHere=0 fromB=1 valid=true
+ok   closing it takes the siblings out too: dupes=0 onlyHere=0 fromB=0 valid=true
+ok   a file that the imports reach keeps the model: true
+ok   a clock that went backwards counts as due: false
+ok   the cached scan is not fresh when the clock is behind its stamp: true false
+ok   a source file in a folder that held none is found: 3 -> 4
+ok   an unsaved edit of a dependency file is seen: libFn -> fromBuffer
+ok   and so is the end of that edit: libFn
+ok   a copy that was deleted is written again: true true
+ok   so is its directory: true true
+ok   a markdown buffer is no part of the program: false 0 0
+ok   and does not make the model stale: key=/od/project.nv valid=true revision=1
+== FileContext.lookupImport
+ok   a std module: standard strings
+ok   a package folder: folder /q/geo
+ok   a root file: file /q/helper.nv
+ok   an import that leads nowhere says why: false true
+ok   a manifest has no closure file and no lookup: false
+ok   a scratch buffer resolves std imports: standard strings
+ok   a context made by hand has no lookup: the context has no import lookup

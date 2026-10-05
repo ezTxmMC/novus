@@ -1,0 +1,21 @@
+package main
+
+import "novus/lsp/base/platform"
+
+method showSystem(string label, object value) {
+    println("system " + label + ": " + value)
+}
+
+method runSystemCases() {
+    println("--- clock, environment")
+    var first = nowMillis()
+    var second = nowMillis()
+    showSystem("nowMillis is an integer in milliseconds", typeOf(first) + " " + (first > 1600000000000) + " " + (first < 32503680000000))
+    showSystem("nowMillis does not go back", second >= first)
+    showSystem("PATH is set", environmentValue("PATH", "") != "")
+    showSystem("an unset variable gives the fallback", environmentValue("LSP_PLATFORM_TEST_UNSET_VARIABLE", "fallback"))
+    showSystem("homeDirectory", homeDirectory() != "")
+    showSystem("temporaryDirectory", temporaryDirectory() != "")
+    var known = operatingSystem() == "linux" || operatingSystem() == "macos" || operatingSystem() == "windows"
+    showSystem("operatingSystem is one of linux, macos, windows", known)
+}

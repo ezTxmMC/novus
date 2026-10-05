@@ -1,0 +1,112 @@
+package main
+
+import "novus/lsp/base/model"
+import "novus/lsp/features/candidates"
+import @support
+
+method caItem(string label, CompletionKind kind, string detail, string bucket): CompletionItem {
+    var item = CompletionItem(label, kind, detail)
+    item.sortText = bucket
+    return item
+}
+
+method runQualityCases() {
+    println("#### matchQuality")
+    var pairs = [
+        ["foo", "foo"], ["foo", "fo"], ["Foo", "fo"], ["foo", ""], ["getOrDefault", "gOD"], ["getOrDefault", "god"],
+        ["getOrDefault", "gd"], ["foo", "x"], ["foo", "fooo"], ["readFile", "rf"], ["readFile", "r"], ["", "a"], ["", ""],
+        ["charAt", "CHAR"], ["a_b_c", "abc"], ["println", "pln"]
+    ]
+    for (pair in pairs) {
+        println("[" + pair[0] + "] [" + pair[1] + "] -> " + matchQuality(pair[0], pair[1]))
+    }
+}
+
+method rankInput(): array<CompletionItem> {
+    return [
+        caItem("zeta", CompletionKind.Variable, "var zeta", "0"),
+        caItem("fo", CompletionKind.Method, "", "1"),
+        caItem("foo", CompletionKind.Method, "", "1"),
+        caItem("Foo", CompletionKind.Class, "", "2"),
+        caItem("foobar", CompletionKind.Function, "", "3"),
+        caItem("FOX", CompletionKind.Constant, "", "4"),
+        caItem("flow", CompletionKind.Function, "", "5"),
+        caItem("far", CompletionKind.Module, "", "7"),
+        caItem("fop", CompletionKind.Field, "", "8"),
+        caItem("bar", CompletionKind.Method, "", "1")
+    ]
+}
+
+method runRankCases() {
+    println("#### rankItems")
+    var ranked = rankItems(rankInput(), "fo")
+    println("prefix fo: " + caLabels(ranked))
+    for (item in ranked) {
+        println("  " + item.sortText + " " + item.label)
+    }
+    println("empty prefix: " + caLabels(rankItems(rankInput(), "")))
+    println("sort texts of the empty prefix: " + sortTexts(rankItems(rankInput(), "")))
+}
+
+method sortTexts(array<CompletionItem> items): string {
+    var texts = []
+    for (item in items) {
+        texts.append(item.sortText)
+    }
+    return texts.join(" ")
+}
+
+method snippetInput(): array<CompletionItem> {
+    return [
+        caItem("if", CompletionKind.Keyword, "keyword", "5"),
+        caItem("if", CompletionKind.Snippet, "If statement", "6"),
+        caItem("while", CompletionKind.Keyword, "keyword", "5"),
+        caItem("iff", CompletionKind.Snippet, "A snippet that is not a keyword", "6"),
+        caItem("println", CompletionKind.Function, "", "5")
+    ]
+}
+
+method runSnippetRankCases() {
+    println("#### snippets and keywords")
+    for (item in rankItems(snippetInput(), "if")) {
+        println("  " + item.sortText + " " + item.label + " (" + item.kind + ") documentation=[" + item.documentation.substring(0, 20) + "]")
+    }
+    var empty = rankItems(snippetInput(), "")
+    println("empty prefix: " + caLabels(empty) + " | " + sortTexts(empty))
+    var builtin = [caItem("exec", CompletionKind.Function, "method exec(string command): integer", "5"), caItem("exec", CompletionKind.Snippet, "Run a shell command", "6"), caItem("exec", CompletionKind.Function, "method exec(): integer", "2")]
+    for (item in rankItems(builtin, "")) {
+        println("  " + item.sortText + " " + item.label + " (" + item.kind + ") " + item.detail)
+    }
+    var exact = rankItems(exactInput(), "sout")
+    println("exact snippet prefix first: " + caLabels(exact) + " | " + sortTexts(exact))
+}
+
+method exactInput(): array<CompletionItem> {
+    return [caItem("sout", CompletionKind.Snippet, "", "6"), caItem("sort", CompletionKind.Function, "", "2"), caItem("soutv", CompletionKind.Snippet, "", "6"), caItem("SOUT", CompletionKind.Snippet, "", "6")]
+}
+
+method runDuplicateCases() {
+    println("#### duplicates and stable order")
+    var one = caItem("area", CompletionKind.Method, "method area(): float", "1")
+    var again = caItem("area", CompletionKind.Method, "method area(): float", "1")
+    var other = caItem("area", CompletionKind.Method, "method area(integer n): float", "1")
+    var field = caItem("area", CompletionKind.Field, "method area(): float", "1")
+    var ranked = rankItems([one, again, other, field], "")
+    println("kept " + ranked.length() + ": " + sortTexts(ranked))
+    println("the first of equal items stays: " + (ranked[0] == one))
+    var ties = [caItem("b", CompletionKind.Field, "x", "1"), caItem("a", CompletionKind.Field, "x", "1"), caItem("b", CompletionKind.Method, "x", "1")]
+    var order = []
+    for (item in rankItems(ties, "")) {
+        order.append(item.label + ":" + item.kind)
+    }
+    println("equal sort texts keep the input order: " + order.join(" "))
+    var many = []
+    var index = 0
+    while (index < 1200) {
+        many.append(caItem("item" + index, CompletionKind.Variable, "", "0"))
+        index = index + 1
+    }
+    var rankedMany = rankItems(many, "item11")
+    println("a list of 1200: " + rankedMany.length() + " match item11, first " + rankedMany[0].label + ", last " + rankedMany[rankedMany.length() - 1].label)
+    println("the separator is chr(1): " + (SORT_KEY_SEPARATOR == chr(1)) + ", index width " + SORT_INDEX_WIDTH)
+}

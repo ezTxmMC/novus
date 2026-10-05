@@ -1,0 +1,2 @@
+project "act"
+main "main.nv"

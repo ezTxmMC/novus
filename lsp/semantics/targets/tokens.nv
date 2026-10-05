@@ -1,0 +1,57 @@
+package targets
+
+import base/maybe
+import syntax/lexing
+import syntax/outline
+
+// Index of the first token that ends after the offset, the token count when there is none.
+method targetsFirstTokenEndingAfter(array<Token> tokens, integer offset): integer {
+    var low = 0
+    var high = tokens.length()
+    while (low < high) {
+        var middle = (low + high) / 2
+        if (tokens[middle].end > offset) {
+            high = middle
+            continue
+        }
+        low = middle + 1
+    }
+    return low
+}
+
+// The identifier at the offset, or the one that ends exactly there; -1 when the offset is on anything else.
+method targetsIdentifierIndex(array<Token> tokens, integer offset): integer {
+    var index = targetsFirstTokenEndingAfter(tokens, offset)
+    if (index < tokens.length() && tokens[index].start <= offset && tokens[index].kind == TokenKind.Ident) {
+        return index
+    }
+    if (index > 0 && tokens[index - 1].end == offset && tokens[index - 1].kind == TokenKind.Ident) {
+        return index - 1
+    }
+    return -1
+}
+
+// The tokens of the expression inside one `${...}` of a string token, with absolute offsets.
+method targetsIslandTokens(Token stringToken, Span island): array<Token> {
+    var inner = stringToken.text.substring(island.start - stringToken.start, island.end - stringToken.start)
+    var tokens = lexText(inner).tokens
+    for (token in tokens) {
+        token.start = token.start + island.start
+        token.end = token.end + island.start
+    }
+    return tokens
+}
+
+// The tokens of the interpolation that holds the offset; nil when the offset is in no `${...}`.
+method targetsIslandAt(array<Token> tokens, integer offset): array<Token> {
+    var index = targetsFirstTokenEndingAfter(tokens, offset)
+    if (index >= tokens.length() || tokens[index].kind != TokenKind.String || tokens[index].start > offset) {
+        return nothing()
+    }
+    for (island in tokens[index].interpolations) {
+        if (island.touches(offset)) {
+            return targetsIslandTokens(tokens[index], island)
+        }
+    }
+    return nothing()
+}

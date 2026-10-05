@@ -1,0 +1,25 @@
+echo code: 0
+echo output: hello
+keys: [code, output]
+exit code: 3
+silent output [] code: 0
+missing command fails: true
+redirect code: 0
+redirect output [] file exists: true
+stdin closed: true
+realpath through ..: true
+realpath of missing []: empty
+realpath is absolute: true
+realpath keeps the name: true
+isSymlink file: false
+isSymlink dir: false
+isSymlink missing: false
+link is symlink: true
+link is file: true
+realpath of link is the target: true
+dangling is symlink: true
+dangling exists: false
+dangling realpath []: empty
+millis plausible: true
+millis match seconds: true
+missing: -1

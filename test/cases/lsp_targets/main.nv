@@ -1,0 +1,88 @@
+package main
+
+import "novus/lsp/base/maybe"
+import "novus/lsp/base/model"
+import "novus/lsp/base/platform"
+import "novus/lsp/projects/stdlib"
+import "novus/lsp/projects/workspace"
+import "novus/lsp/semantics/targets"
+import "novus/lsp/syntax/lexing"
+
+// Golden case of the package `targets` (Amendment 7, V138): the identifier resolution that navigation and hover share.
+
+private final TARGETS_CASE_OPEN = "$" + "{"
+private final TARGETS_CASE_PROGRAM = "define class Point {\n    integer x\n\n    construct(integer x) {\n        this.x = x\n    }\n\n    method moved(integer by): Point {\n        return Point(x + by)\n    }\n}\n\nmethod scaled(integer factor): integer {\n    return factor\n}\n\nmethod main() {\n    var origin = Point(1)\n    var text = \"abc\"\n    var data = json.parse(\"[1]\")\n    println(scaled(1))\n    println(scaled(1, 2))\n    println(origin.moved(1))\n    println(origin.missing)\n    println(text.trim())\n    println(data.size)\n    println(exit(0))\n    println(\"v " + TARGETS_CASE_OPEN + "origin.x}\")\n    var made = Point{ x = 3 }\n}\n"
+
+method showTarget(string label, string needle, integer shift, bool lenient) {
+    var at = TARGETS_CASE_PROGRAM.indexOf(needle) + shift
+    var files = {"/p/main.nv": TARGETS_CASE_PROGRAM}
+    var cache = FileCache(MemoryTextSource(files))
+    var space = Workspace(cache, standardLibrary())
+    var context = space.contextFor(Document(filePathToUri("/p/main.nv"), "novus", 1, TARGETS_CASE_PROGRAM))
+    var target = TargetFinder(context.resolver()).targetAt(context.closureFile, context.syntax, at, lenient)
+    println(label + ": " + describeTarget(target))
+}
+
+method describeTarget(IdentifierTarget target): string {
+    if (isNone(target)) {
+        return "none"
+    }
+    var keys = []
+    for (symbol in target.symbols) {
+        keys.append(symbol.key)
+    }
+    return target.kind + " " + target.status + " name=" + target.name + " keys=[" + keys.join(",") + "] declaration=" + target.declaration + " receiverKnown=" + target.receiverKnown + " receiver=[" + target.receiver + "] builtin=" + target.isBuiltin() + " scoped=" + isSome(target.scope)
+}
+
+method showShapes() {
+    var tokens = lexText("f(a, [1, 2], g(x),)\nh(\nk()\nPoint{ x = 1, y = 2 }\nmethod m(): Point { z = 1 }").tokens
+    println("arity of f(a, [1, 2], g(x),): " + targetsCallArity(tokens, 0))
+    println("arity of the unclosed h(: " + targetsCallArity(tokens, indexOfWord(tokens, "h", 0)))
+    println("arity of k(): " + targetsCallArity(tokens, indexOfWord(tokens, "k", 0)))
+    println("no call after Point: " + targetsCallArity(tokens, indexOfWord(tokens, "Point", 0)))
+    println("owner of key x: [" + targetsLiteralOwner(tokens, indexOfWord(tokens, "x", 0)) + "]")
+    println("owner of key y: [" + targetsLiteralOwner(tokens, indexOfWord(tokens, "y", 0)) + "]")
+    println("a body after a return type is no literal: [" + targetsLiteralOwner(tokens, indexOfWord(tokens, "z", 0)) + "]")
+    println("island of plain text: " + isNone(targetsIslandAt(tokens, 0)))
+}
+
+method indexOfWord(array<Token> tokens, string word, integer from): integer {
+    var i = from
+    while (i < tokens.length()) {
+        if (tokens[i].text == word) {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+method showTokenHelpers() {
+    var tokens = lexText("ab.cd(1)").tokens
+    println("identifier at 0: " + targetsIdentifierIndex(tokens, 0) + ", at the end of ab: " + targetsIdentifierIndex(tokens, 2) + ", on the dot: " + targetsIdentifierIndex(tokens, 3) + ", on the 1: " + targetsIdentifierIndex(tokens, 6))
+    println("first token ending after 2: " + targetsFirstTokenEndingAfter(tokens, 2) + ", after everything: " + targetsFirstTokenEndingAfter(tokens, 100))
+}
+
+method main() {
+    println("== shapes")
+    showShapes()
+    showTokenHelpers()
+    println("== targets")
+    showTarget("a function declaration", "scaled(integer", 0, false)
+    showTarget("a call with a matching number of arguments", "scaled(1))", 0, false)
+    showTarget("a call with the wrong arity, strict", "scaled(1, 2)", 0, false)
+    showTarget("the same call, lenient", "scaled(1, 2)", 0, true)
+    showTarget("a local", "origin.moved", 0, false)
+    showTarget("a method of a typed local", "moved(1)", 0, false)
+    showTarget("a field", "origin.x", 7, false)
+    showTarget("a member the type does not have", "missing", 0, false)
+    showTarget("a method of a string", "trim()", 0, false)
+    showTarget("a member of a local that holds a std result (the light inference cannot type it)", "size)", 0, false)
+    showTarget("a free built-in", "exit(0)", 0, false)
+    showTarget("a std module", "json.parse", 0, false)
+    showTarget("a std function", "parse(\"[1]\")", 0, false)
+    showTarget("a type", "Point(1)", 0, false)
+    showTarget("a key of a typed literal", "x = 3", 0, false)
+    showTarget("inside an interpolation", "x}\")", 0, false)
+    showTarget("on a number", "(1)\n    var text", 1, false)
+}

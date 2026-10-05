@@ -1,0 +1,114 @@
+package main
+
+import strings
+import "novus/lsp/base/model"
+import "novus/lsp/base/platform"
+import "novus/lsp/services/pureline"
+
+// A class whose lines run from `define` to the closing brace: `lines` lines in all.
+method classWithLines(string name, integer lines): string {
+    return "define class " + name + " {\n" + strings.repeat("    integer field\n", lines - 2) + "}\n"
+}
+
+method runClassCases() {
+    showText("a class of exactly two hundred lines", classWithLines("Exact", 200))
+    showText("a class of two hundred and one lines", classWithLines("Over", 201))
+    showText("an enum above the limit", "define enum Big {\n    A, B;\n" + strings.repeat("    integer field\n", 200) + "}\n")
+    showText("an interface is not measured", "define interface Wide {\n" + strings.repeat("    f(): integer\n", 205) + "}\n")
+    showText("a class that never closes is skipped", "define class Open {\n" + strings.repeat("    integer field\n", 210))
+    var small = PurelineSettings()
+    small.maxLinesPerFile = 10
+    showWith("a lower limit", small, classWithLines("Small", 11))
+}
+
+method runFileCases() {
+    showText("a file of exactly two hundred lines", "// header\n" + strings.repeat("x = 1\n", 199))
+    showText("a file of two hundred and one lines", "// header\n" + strings.repeat("x = 1\n", 200))
+    showText("a file without a final line break", "// header\n" + strings.repeat("x = 1\n", 199) + "y = 2")
+    showText("blank lines count", strings.repeat("\n", 201))
+    var small = PurelineSettings()
+    small.maxLinesPerFile = 3
+    showWith("a lower file limit", small, "a = 1\nb = 2\nc = 3\nd = 4\n")
+    showWith("a lower limit hits class and file", small, "define class A {\n    integer x\n    integer y\n}\n")
+}
+
+method nvFiles(integer count, string directory): map<string, string> {
+    var files = {}
+    var index = 0
+    while (index < count) {
+        files[directory + "/file" + index + ".nv"] = "package pkg\n"
+        index = index + 1
+    }
+    return files
+}
+
+method lintFolder(PurelineSettings settings, map<string, string> files, string filePath, string source): array<string> {
+    files[filePath] = source
+    return lintWith(settings, filePath, source, MemoryTextSource(files))
+}
+
+method runFolderCases() {
+    var source = "package pkg\n\nmethod f() {\n}\n"
+    show("a folder of ten files", lintFolder(PurelineSettings(), nvFiles(9, "/work/pkg"), "/work/pkg/main.nv", source))
+    show("a folder of eleven files", lintFolder(PurelineSettings(), nvFiles(10, "/work/pkg"), "/work/pkg/main.nv", source))
+    show("the document counts even when it is not on disk", lintWith(PurelineSettings(), "/work/pkg/main.nv", source, MemoryTextSource(nvFiles(10, "/work/pkg"))))
+    var withManifest = nvFiles(9, "/work/pkg")
+    withManifest["/work/pkg/project.nv"] = "project \"x\"\n"
+    withManifest["/work/pkg/notes.golden"] = "text\n"
+    withManifest["/work/pkg/readme.md"] = "text\n"
+    show("project.nv and other files do not count", lintFolder(PurelineSettings(), withManifest, "/work/pkg/main.nv", source))
+    var components = nvFiles(9, "/work/pkg")
+    components["/work/pkg/page.nvh"] = "<div></div>\n"
+    show("an nvh file counts", lintFolder(PurelineSettings(), components, "/work/pkg/main.nv", source))
+    var other = nvFiles(30, "/work/other")
+    show("files of another folder do not count", lintFolder(PurelineSettings(), other, "/work/pkg/main.nv", source))
+    var nested = nvFiles(5, "/work/pkg")
+    var deeper = nvFiles(30, "/work/pkg/deeper")
+    for (name in deeper) {
+        nested[name] = deeper[name]
+    }
+    show("files of a sub folder do not count", lintFolder(PurelineSettings(), nested, "/work/pkg/main.nv", source))
+}
+
+method runFolderExemptionCases() {
+    var source = "package pkg\n"
+    show("a test folder is exempt", lintFolder(PurelineSettings(), nvFiles(20, "/work/test/pkg"), "/work/test/pkg/main.nv", source))
+    show("a tests folder is exempt", lintFolder(PurelineSettings(), nvFiles(20, "/work/tests"), "/work/tests/main.nv", source))
+    show("a folder that only looks like a test folder", lintFolder(PurelineSettings(), nvFiles(20, "/work/testing"), "/work/testing/main.nv", source))
+    show("a project below a folder named test is not exempt", lintFolder(PurelineSettings(), nvFiles(10, "/home/test/proj/src"), "/home/test/proj/src/main.nv", source))
+    var rooted = nvFiles(10, "/home/test/proj/src")
+    rooted["/home/test/proj/project.nv"] = "project \"x\"\n"
+    show("the same with a manifest above the folder", lintFolder(PurelineSettings(), rooted, "/home/test/proj/src/main.nv", source))
+    var inside = nvFiles(20, "/home/test/proj/test/unit")
+    inside["/home/test/proj/project.nv"] = "project \"x\"\n"
+    show("a test folder inside the project is exempt", lintFolder(PurelineSettings(), inside, "/home/test/proj/test/unit/main.nv", source))
+    var generated = nvFiles(8, "/work/pkg")
+    generated["/work/pkg/gen1.nv"] = "// GENERATED by a tool\npackage pkg\n"
+    generated["/work/pkg/gen2.nv"] = "// do not edit\npackage pkg\n"
+    generated["/work/pkg/gen3.nv"] = "package pkg\n\n\n\n// generated code\n"
+    show("generated files do not count", lintFolder(PurelineSettings(), generated, "/work/pkg/main.nv", source))
+    var late = nvFiles(10, "/work/pkg")
+    late["/work/pkg/late.nv"] = "package pkg\n\n\n\n\n\n// generated much later\n"
+    show("a marker after the fifth line does not count", lintFolder(PurelineSettings(), late, "/work/pkg/main.nv", source))
+    var small = PurelineSettings()
+    small.maxFilesPerFolder = 3
+    show("a lower folder limit", lintFolder(small, nvFiles(3, "/work/pkg"), "/work/pkg/main.nv", source))
+}
+
+method runFolderPlacementCases() {
+    var files = nvFiles(12, "/work/pkg")
+    show("reported at the package line", lintFolder(PurelineSettings(), files, "/work/pkg/main.nv", "// header\n\npackage pkg\n"))
+    show("reported at the first line without a package", lintFolder(PurelineSettings(), nvFiles(12, "/work/pkg"), "/work/pkg/main.nv", "x = 1\n"))
+    show("an untitled document has no folder", lintWith(PurelineSettings(), "", "package pkg\n", MemoryTextSource(nvFiles(12, ""))))
+    show("a project manifest is not linted", lintWith(PurelineSettings(), "/work/pkg/project.nv", "project \"x\"\n", MemoryTextSource(nvFiles(12, "/work/pkg"))))
+    show("a component is not linted", lintWith(PurelineSettings(), "/work/pkg/page.nvh", "<div></div>\n", MemoryTextSource(nvFiles(12, "/work/pkg"))))
+}
+
+method runStructureCases() {
+    println("--- PL-STRUCT")
+    runClassCases()
+    runFileCases()
+    runFolderCases()
+    runFolderExemptionCases()
+    runFolderPlacementCases()
+}

@@ -1,0 +1,91 @@
+package main
+
+import json
+import unicode
+
+// json.isValid is strict RFC 8259; json.parse / json.tryParse are lenient in
+// documented places. Here: whitespace, text after a NUL byte, NUL in keys and
+// what the lenient reader accepts.
+
+define class ParseTask {
+    private string text: get, set
+    method run(): object {
+        return json.parse(text)
+    }
+}
+
+method tryRun(object task): object native "nv_try_run"
+method tryFailed(): bool native "nv_try_failed"
+method tryError(): string native "nv_try_error"
+
+method nul(): string {
+    return chr(0)
+}
+
+method check(string label, string text) {
+    var parsed = json.tryParse(text)
+    println "${label}: isValid ${json.isValid(text)}, tryParse ${typeOf(parsed)}"
+}
+
+// Only space, tab, LF and CR separate tokens: not \f, not \v, not U+00A0.
+method printWhitespace() {
+    check("space tab cr lf", " \t\r\n[1]\r\n\t ")
+    check("form feed before", chr(12) + "1")
+    check("form feed after", "1" + chr(12))
+    check("form feed inside", "[1," + chr(12) + "2]")
+    check("vertical tab before", chr(11) + "1")
+    check("vertical tab inside", "[1," + chr(11) + "2]")
+    check("no-break space", unicode.fromCodePoint(160) + "1")
+    check("ideographic space", "[1," + unicode.fromCodePoint(12288) + "2]")
+}
+
+// The text is compared by its real length: nothing may follow the value,
+// not even after a NUL byte (a C string would have ended there).
+method printTrailingNul() {
+    check("value, NUL, garbage", "[1]" + nul() + "garbage")
+    check("value, NUL", "[1]" + nul())
+    check("NUL, value", nul() + "[1]")
+    check("object, NUL, garbage", "{\"a\":1}" + nul() + "x")
+    check("NUL inside an array", "[1," + nul() + "2]")
+    check("NUL inside a string", "\"a" + nul() + "b\"")
+}
+
+method printKey(string label, string text) {
+    tryRun(ParseTask{text=text})
+    if (!tryFailed()) {
+        println "${label}: parsed"
+        return
+    }
+    println "${label}: ${tryError()}"
+}
+
+// Object keys are C strings in the map: a NUL would cut the key short and
+// let two different keys collide.
+method printKeys() {
+    printKey("escaped NUL in a key", "{\"a\\u0000b\": 1, \"a\": 2}")
+    printKey("escaped NUL as the whole key", "{\"\\u0000\": 1}")
+    printKey("raw NUL in a key", "{\"a" + nul() + "b\": 1}")
+    printKey("NUL in a value", "{\"k\": \"x\\u0000y\"}")
+    var map = json.parse("{\"k\": \"x\\u0000y\"}")
+    var value = map["k"]
+    println "value keeps its NUL: ${value.length()}"
+}
+
+// What parse reads although isValid refuses it (and what tryParse gives).
+method printLenient() {
+    check("leading zero", "[01]")
+    check("trailing dot", "[1.]")
+    check("bare minus", "[-]")
+    check("empty exponent", "[1e]")
+    check("unknown escape", "\"\\q\"")
+    check("raw tab in a string", "\"a\tb\"")
+    println json.tryParse("[01, 1., -, 1e]")
+    println json.tryParse("\"\\q\"")
+}
+
+method main {
+    printWhitespace()
+    printTrailingNul()
+    printKeys()
+    printLenient()
+}

@@ -1,0 +1,108 @@
+--- diagnostic store
+empty merged: []
+empty urisOf: []
+merged sources ascending, producer order kept: [novus:first novus:second novusc:compile-error pureline:PL-NAME-001]
+urisOf novusc includes the explicit empty list: [file:///a.nv file:///b.nv file:///c.nv]
+urisOf novus: [file:///a.nv]
+an empty list holds no diagnostic: []
+replace overwrites one source: [novusc:compile-error pureline:PL-NAME-001]
+the emptied source still counts as a holder: [file:///a.nv]
+clear drops every source: [] []
+other files stay: [file:///b.nv file:///c.nv]
+clear of an unknown uri is harmless: [file:///b.nv file:///c.nv]
+--- settings defaults and the full set of keys
+defaults:
+    pureline false plain=false
+    lines 30/50/200/10
+    names i,j,k
+    check onSave '' 60 1500
+    format 4 true 1
+    own=true explicit=true indent='    ' max=200
+settingsFromOptions of an empty map:
+    pureline false plain=false
+    lines 30/50/200/10
+    names i,j,k
+    check onSave '' 60 1500
+    format 4 true 1
+    own=true explicit=true indent='    ' max=200
+every key:
+    pureline true plain=true
+    lines 20/40/150/8
+    names i,n
+    check onType '/opt/novusc' 120 1500
+    format 2 false 2
+    own=false explicit=false indent='  ' max=25
+the same keys with dots:
+    pureline true plain=false
+    lines 30/50/200/10
+    names i,j,k
+    check off '' 60 1500
+    format 4 true 1
+    own=true explicit=true indent='    ' max=7
+the section wrapped in novus:
+    pureline true plain=false
+    lines 30/50/200/10
+    names i,j,k
+    check onSave '' 60 1500
+    format 4 true 1
+    own=true explicit=true indent='    ' max=200
+a list of settings is no map:
+    pureline false plain=false
+    lines 30/50/200/10
+    names i,j,k
+    check onSave '' 60 1500
+    format 4 true 1
+    own=true explicit=true indent='    ' max=200
+--- text settings: a path may be as long as PATH_MAX, other texts are short
+path of 300 bytes: 300
+path of 4096 bytes: 4096
+path of 4097 bytes is ignored: 0
+executablePath takes the same limit: 1000
+indent of 300 bytes is ignored: 4
+--- merge writes into the existing object
+returns current itself: true
+nested objects are kept: true true true
+seen through the old references: true off 8
+a later merge keeps earlier keys: true true off
+--- wrong types and out of range values are ignored
+after the odd values:
+    pureline false plain=false
+    lines 30/50/200/10
+    names i,j,k
+    check onSave '' 60 1500
+    format 4 true 1
+    own=true explicit=true indent='    ' max=200
+a float is cut: 12 3
+only text names are kept: a,b
+an empty list clears the names: 0
+--- the novusc path has two spellings (V103)
+novuscPath alone: '/a/novusc'
+executablePath alone: '/b/novusc'
+both: the first wins: '/a/novusc'
+empty novuscPath falls back: '/b/novusc'
+both empty clear it: ''
+dotted spellings: '/c/novusc'
+a merge without either key keeps it: /kept
+a wrong type does not clear it: /kept
+--- session
+initialized false, shutdown false
+placeholder codec utf-16
+lists start empty: 0 0 0 0
+settings are created once: true onSave
+a closed document: true
+no context without a document: true
+an open document is found: true
+the context carries it: true
+another uri is still unknown: true true
+after close: true true
+--- locations
+open file: file:///proj/open.nv 4
+file on disk: file:///proj/main.nv 2
+missing file: file:///proj/none.nv 1
+no path: '' 1
+std key: true true
+--- targets
+open document: true offset 18
+another position: 8
+unknown uri: true
+no parameters: true

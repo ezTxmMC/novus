@@ -1,0 +1,4 @@
+packages.txt: [rule 5] package a is part of a dependency cycle
+packages.txt: [rule 5] package b is part of a dependency cycle
+packages.txt: [rule 5] package c is part of a dependency cycle
+lsp_lint: FAILED

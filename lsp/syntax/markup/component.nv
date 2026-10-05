@@ -1,0 +1,140 @@
+package markup
+
+import base/maybe
+import base/text
+import syntax/lexing
+import syntax/outline
+import syntax/parsing
+
+private final MARKUP_BASE_CLASS = "NvhComponent"
+private final MARKUP_UNCLOSED_MESSAGE = "unclosed <?nv (missing ?>)"
+
+// The class name of a component: the file name without `.nvh`, every byte that is no ASCII letter or digit turned
+// into `_`, and a `_` in front of a leading digit (nvhClassName of the compiler).
+method componentClassName(string filePath): string {
+    var start = filePath.length()
+    while (start > 0 && markupIsPathSeparator(filePath.charAt(start - 1)) == false) {
+        start = start - 1
+    }
+    var base = filePath.substring(start, filePath.length())
+    if (base.endsWith(".nvh")) {
+        base = base.substring(0, base.length() - 4)
+    }
+    return markupSafeName(base)
+}
+
+method markupIsPathSeparator(string character): bool {
+    return character == "/" || character == "\\"
+}
+
+method markupSafeName(string base): string {
+    var letters = []
+    var index = 0
+    while (index < base.length()) {
+        letters.append(markupNameCharacter(base.charAt(index)))
+        index = index + 1
+    }
+    var name = letters.join("")
+    if (name == "" || markupIsDigit(name.charAt(0))) {
+        return "_" + name
+    }
+    return name
+}
+
+method markupNameCharacter(string character): string {
+    if (markupIsAlpha(character) || markupIsDigit(character)) {
+        return character
+    }
+    return "_"
+}
+
+// A .nvh file as the outline of its compiled class: one synthetic class named after the file (zero-length name span
+// at offset 0, `based NvhComponent`) that spans the header island and holds the header's fields and members, plus
+// the header's `define` blocks as ordinary top-level declarations. The template is not parsed (5.7).
+method parseComponentText(string filePath, string text, ParseOptions options): SourceFile {
+    return MarkupComponentParser(filePath, text, options).parse()
+}
+
+define class MarkupComponentParser {
+    string filePath
+    string text
+    ParseOptions options
+    string className
+
+    construct(string filePath, string text, ParseOptions options) {
+        this.filePath = filePath
+        this.text = text
+        this.options = options
+        this.className = componentClassName(filePath)
+    }
+
+    method parse(): SourceFile {
+        var file = SourceFile(this.filePath, fileKindOf(this.filePath), textHashOf(this.text))
+        file.lineCount = LineIndex(this.text).lineCount()
+        var header = markupLocateHeader(this.text)
+        var componentClass = this.classDeclaration(header)
+        file.decls = [componentClass]
+        if (isSome(header)) {
+            this.readHeader(file, header, componentClass)
+        }
+        file.declSignature = parsingDeclSignature(file)
+        return file
+    }
+
+    method classDeclaration(MarkupHeader header): Decl {
+        var fullEnd = 0
+        if (isSome(header)) {
+            fullEnd = header.contentEnd
+        }
+        var declaration = Decl(DeclKind.Class, this.className, Span(0, 0), Span(0, fullEnd))
+        declaration.baseName = MARKUP_BASE_CLASS
+        declaration.baseSpan = Span(0, 0)
+        if (isSome(header)) {
+            declaration.bodySpan = header.content()
+        }
+        return declaration
+    }
+
+    method readHeader(SourceFile file, MarkupHeader header, Decl componentClass) {
+        var reading = MarkupHeaderReader(this.text, header.content(), this.className).read()
+        var lexed = lexRange(this.text, header.contentStart, header.contentEnd)
+        var members = this.parseMembers(lexed, reading)
+        var defines = markupParseDefines(this.text, reading.defineSpans, this.options)
+        componentClass.members = markupMergeDecls(reading.fields, members.decls)
+        file.decls = markupConcat(defines.decls, [componentClass])
+        file.imports = reading.imports
+        file.issues = this.allIssues(header, reading, members, defines)
+        if (this.options.keepTokens) {
+            file.tokens = lexed.tokens
+            file.comments = lexed.comments
+        }
+    }
+
+    // The member grammar sees the header without the statements markup read itself.
+    method parseMembers(LexResult lexed, MarkupHeaderResult reading): SourceFile {
+        var rest = LexResult(markupUnclaimedTokens(lexed.tokens, reading.claimed), lexed.comments, this.lexIssuesOutside(lexed, reading.defineSpans))
+        return SourceParser(this.options).parseMembers(this.filePath, this.text, rest, this.className)
+    }
+
+    // Lexer problems inside a define block come back from the define parse, so they are not reported twice.
+    method lexIssuesOutside(LexResult lexed, array<Span> spans): array<LexIssue> {
+        var kept = []
+        for (issue in lexed.issues) {
+            if (markupSpansTouch(spans, issue.span.start) == false) {
+                kept.append(issue)
+            }
+        }
+        return kept
+    }
+
+    method allIssues(MarkupHeader header, MarkupHeaderResult reading, SourceFile members, SourceFile defines): array<SyntaxIssue> {
+        var issues = []
+        if (header.closed == false) {
+            issues.append(SyntaxIssue(Span(header.start, header.contentStart), "unterminated-block", MARKUP_UNCLOSED_MESSAGE, false))
+        }
+        issues = markupConcat(issues, reading.issues)
+        issues = markupConcat(issues, members.issues)
+        issues = markupConcat(issues, defines.issues)
+        return markupSortIssues(issues)
+    }
+}

@@ -1,0 +1,69 @@
+package main
+
+// A field declared integer or float holds a number of that kind whichever way
+// it is stored into: the constructor, a setter, `this.f = v`, a bare `f = v`
+// inside the class, `p.f = v` from outside and an object literal.
+
+define class P {
+    private integer count: get, set
+    private float ratio: get, set
+    private string label: get, set
+    private object any: get, set
+
+    construct(integer count, float ratio) {
+        this.count = count
+        this.ratio = ratio
+        this.label = "p"
+    }
+
+    method fromThis(object v) {
+        this.count = v
+        this.ratio = v
+    }
+
+    method fromBare(object v) {
+        count = v
+        ratio = v
+    }
+
+    method show(): string {
+        return count + " " + ratio + " " + label
+    }
+}
+
+define class Q {
+    private integer n: get, set
+    private float f: get, set
+}
+
+method main {
+    var p = P(2.9, 3)
+    println p.show()
+    p.count(5.5)
+    p.ratio(4)
+    println p.show()
+    p.fromThis(7.9)
+    println p.show()
+    p.fromThis(8)
+    println p.show()
+    p.fromBare(9.9)
+    println p.show()
+    p.fromBare(10)
+    println p.show()
+    p.count = 11.7
+    p.ratio = 12
+    println p.show()
+    p.label = 13
+    p.any = 14.5
+    println p.label() + " " + p.any()
+
+    var q = Q{n = 3.9, f = 2}
+    println q.n() + " " + q.f()
+    q.n = "x"
+    q.f = "y"
+    println q.n() + " " + q.f()
+
+    // what is no number stays what it is
+    p.fromThis("seven")
+    println p.show()
+}

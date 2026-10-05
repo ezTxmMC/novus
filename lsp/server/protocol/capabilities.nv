@@ -1,0 +1,123 @@
+package protocol
+
+import base/text
+
+// The initialize result, derived from the handlers that are actually registered.
+private final SERVER_NAME = "novus-lsp"
+private final SERVER_VERSION = "0.1.0"
+private final PROTOCOL_SYNC_INCREMENTAL = 2
+private final PROTOCOL_COMPLETION_TRIGGERS = [".", "@", "\"", "/", "<", ":"]
+private final PROTOCOL_SIGNATURE_TRIGGERS = ["(", ","]
+private final PROTOCOL_SIGNATURE_RETRIGGERS = [","]
+private final PROTOCOL_CODE_ACTION_KINDS = ["quickfix", "source.organizeImports"]
+
+// LSP method that must be registered, capability key it switches on (value true).
+private final PROTOCOL_PLAIN_PROVIDERS = [
+    ["textDocument/hover", "hoverProvider"],
+    ["textDocument/definition", "definitionProvider"],
+    ["textDocument/references", "referencesProvider"],
+    ["textDocument/documentHighlight", "documentHighlightProvider"],
+    ["textDocument/documentSymbol", "documentSymbolProvider"],
+    ["workspace/symbol", "workspaceSymbolProvider"],
+    ["textDocument/foldingRange", "foldingRangeProvider"],
+    ["textDocument/formatting", "documentFormattingProvider"],
+    ["textDocument/rangeFormatting", "documentRangeFormattingProvider"]
+]
+
+method protocolSyncCapability(array<string> registered): map<string, object> {
+    return {
+        "openClose": registered.contains("textDocument/didOpen") && registered.contains("textDocument/didClose"),
+        "change": PROTOCOL_SYNC_INCREMENTAL,
+        "save": {"includeText": false}
+    }
+}
+
+method protocolCompletionCapability(ClientInfo client, array<string> registered): map<string, object> {
+    var provider = {
+        "triggerCharacters": PROTOCOL_COMPLETION_TRIGGERS,
+        "resolveProvider": registered.contains("completionItem/resolve")
+    }
+    if (client.labelDetailsSupport) {
+        provider["completionItem"] = {"labelDetailsSupport": true}
+    }
+    return provider
+}
+
+method protocolSemanticTokensCapability(array<string> registered, array<string> tokenTypes, array<string> tokenModifiers): map<string, object> {
+    return {
+        "legend": {"tokenTypes": tokenTypes, "tokenModifiers": tokenModifiers},
+        "full": registered.contains("textDocument/semanticTokens/full"),
+        "range": registered.contains("textDocument/semanticTokens/range")
+    }
+}
+
+method protocolRenameCapability(array<string> registered): object {
+    if (registered.contains("textDocument/prepareRename")) {
+        return {"prepareProvider": true}
+    }
+    return true
+}
+
+method protocolAddPlainProviders(map<string, object> capabilities, array<string> registered) {
+    for (row in PROTOCOL_PLAIN_PROVIDERS) {
+        if (registered.contains(row[0])) {
+            capabilities[row[1]] = true
+        }
+    }
+}
+
+method protocolAddNavigationProviders(map<string, object> capabilities, array<string> registered) {
+    if (registered.contains("textDocument/signatureHelp")) {
+        capabilities["signatureHelpProvider"] = {
+            "triggerCharacters": PROTOCOL_SIGNATURE_TRIGGERS,
+            "retriggerCharacters": PROTOCOL_SIGNATURE_RETRIGGERS
+        }
+    }
+    if (registered.contains("textDocument/documentLink")) {
+        capabilities["documentLinkProvider"] = {"resolveProvider": false}
+    }
+    if (registered.contains("textDocument/rename")) {
+        capabilities["renameProvider"] = protocolRenameCapability(registered)
+    }
+    if (registered.contains("textDocument/codeAction")) {
+        capabilities["codeActionProvider"] = {"codeActionKinds": PROTOCOL_CODE_ACTION_KINDS}
+    }
+}
+
+method protocolAddWorkspaceProviders(map<string, object> capabilities, array<string> registered, array<string> commandIds) {
+    if (registered.contains("workspace/executeCommand")) {
+        capabilities["executeCommandProvider"] = {"commands": commandIds}
+    }
+    if (registered.contains("workspace/didChangeWorkspaceFolders")) {
+        capabilities["workspace"] = {"workspaceFolders": {"supported": true, "changeNotifications": true}}
+    }
+}
+
+// A half-built server never over-promises: a capability appears only when its handler is registered.
+method buildServerCapabilities(ClientInfo client, PositionCodec codec, array<string> registeredMethods, array<string> tokenTypes, array<string> tokenModifiers, array<string> commandIds): map<string, object> {
+    var capabilities = {"positionEncoding": codec.encoding}
+    if (registeredMethods.contains("textDocument/didChange")) {
+        capabilities["textDocumentSync"] = protocolSyncCapability(registeredMethods)
+    }
+    if (registeredMethods.contains("textDocument/completion")) {
+        capabilities["completionProvider"] = protocolCompletionCapability(client, registeredMethods)
+    }
+    if (registeredMethods.contains("textDocument/semanticTokens/full")) {
+        capabilities["semanticTokensProvider"] = protocolSemanticTokensCapability(registeredMethods, tokenTypes, tokenModifiers)
+    }
+    protocolAddPlainProviders(capabilities, registeredMethods)
+    protocolAddNavigationProviders(capabilities, registeredMethods)
+    protocolAddWorkspaceProviders(capabilities, registeredMethods, commandIds)
+    return capabilities
+}
+
+method buildInitializeResult(map<string, object> capabilities): map<string, object> {
+    return {
+        "capabilities": capabilities,
+        "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION}
+    }
+}
+
+method serverVersionText(): string {
+    return SERVER_NAME + " " + SERVER_VERSION
+}

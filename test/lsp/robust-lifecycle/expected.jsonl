@@ -1,0 +1,9 @@
+{"error":{"code":-32002,"message":"the server is not initialized: send initialize first"},"id":1,"jsonrpc":"2.0"}
+{"error":{"code":-32002,"message":"the server is not initialized: send initialize first"},"id":2,"jsonrpc":"2.0"}
+{"id":3,"jsonrpc":"2.0","result":{"capabilities":"@CAPABILITIES@","serverInfo":{"name":"novus-lsp","version":"0.1.0"}}}
+{"error":{"code":-32600,"message":"the request is not allowed in the current state of the server"},"id":4,"jsonrpc":"2.0"}
+{"error":{"code":-32601,"message":"method not found: nope/unknown"},"id":5,"jsonrpc":"2.0"}
+{"id":6,"jsonrpc":"2.0","result":null}
+{"error":{"code":-32600,"message":"the request is not allowed in the current state of the server"},"id":7,"jsonrpc":"2.0"}
+{"error":{"code":-32600,"message":"the request is not allowed in the current state of the server"},"id":8,"jsonrpc":"2.0"}
+{"error":{"code":-32600,"message":"the request is not allowed in the current state of the server"},"id":9,"jsonrpc":"2.0"}

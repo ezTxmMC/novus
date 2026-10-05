@@ -1,0 +1,106 @@
+package main
+
+import "novus/lsp/base/maybe"
+import "novus/lsp/base/model"
+import "novus/lsp/base/text"
+import @support
+
+method runImportCases() {
+    println("== unresolved-import and package-folder-mismatch come from the closure")
+    var world = DgWorld({
+        "/p/project.nv": "project \"p\"\n",
+        "/p/main.nv": "import missing/folder\nimport geo\n\nmethod main() {\n    println(area())\n}\n",
+        "/p/geo/shape.nv": "package wrong\n\nmethod area(): integer {\n    return 1\n}\n"
+    })
+    dgShow("main.nv", world.ownOf("/p/main.nv"))
+    dgShow("geo/shape.nv", world.ownOf("/p/geo/shape.nv"))
+    runManifestlessImportCases()
+    runModuleCases()
+    runUnusedImportCases()
+    runDependencyImportCases()
+}
+
+// Amendment 7 (V135): without a manifest only an entry file is certain to fail on an import that leads nowhere.
+method runManifestlessImportCases() {
+    println("== unresolved-import without a manifest: an error for an entry file, a warning for a part of a program")
+    var world = DgWorld({
+        "/q/part.nv": "import missing/folder\n\nmethod helper(): integer {\n    return 1\n}\n",
+        "/r/main.nv": "import missing/folder\n\nmethod main() {\n    println(1)\n}\n"
+    })
+    dgShow("a file without method main", world.ownOf("/q/part.nv"))
+    dgShow("an entry file", world.ownOf("/r/main.nv"))
+}
+
+method runModuleCases() {
+    println("== module-not-imported: a std module that no loaded file imports")
+    var world = DgWorld({
+        "/p/project.nv": "project \"p\"\n",
+        "/p/main.nv": "method main() {\n    println(strings.repeat(\"a\", 2))\n    println(strings.repeat(\"b\", 2))\n    println(math.floor(1.5))\n}\n"
+    })
+    dgShow("two modules, the first use of each", world.ownOf("/p/main.nv"))
+    var flat = DgWorld({
+        "/p/project.nv": "project \"p\"\n",
+        "/p/main.nv": "import helper\n\nmethod main() {\n    println(strings.repeat(\"a\", 2))\n}\n",
+        "/p/helper/helper.nv": "import strings\n\nmethod shout(string text): string {\n    return strings.repeat(text, 2)\n}\n"
+    })
+    dgShow("another file imports it: visibility is flat, nothing to report", flat.ownOf("/p/main.nv"))
+    var shadow = DgWorld({
+        "/p/project.nv": "project \"p\"\n",
+        "/p/main.nv": "method main() {\n    var strings = [\"a\"]\n    println(strings.length())\n}\n"
+    })
+    dgShow("a variable of that name is no module", shadow.ownOf("/p/main.nv"))
+    var folder = DgWorld({
+        "/p/project.nv": "project \"p\"\n",
+        "/p/main.nv": "import strings\n\nmethod main() {\n    println(strings.size())\n}\n",
+        "/p/strings/own.nv": "package strings\n\nmethod size(): integer {\n    return 3\n}\n"
+    })
+    dgShow("a local folder wins over the std module", folder.ownOf("/p/main.nv"))
+    var text = DgWorld({
+        "/p/project.nv": "project \"p\"\n",
+        "/p/main.nv": "method main() {\n    var s = \"x\"\n    println(\"value " + dgInterp() + "strings.repeat(s, 2)}\")\n}\n"
+    })
+    dgShow("a use inside an interpolation is not scanned", text.ownOf("/p/main.nv"))
+}
+
+method runUnusedImportCases() {
+    println("== import-not-used-here: a std import that this file never writes (explicitImports)")
+    var files = {
+        "/p/project.nv": "project \"p\"\n",
+        "/p/main.nv": "import arrays\nimport json\nimport strings\nimport thread\n\nmethod main() {\n    println(strings.repeat(\"a\", 2))\n    println(\"sum " + dgInterp() + "thread.mutex()}\")\n}\n"
+    }
+    var world = DgWorld(files)
+    dgShow("arrays and json are unused, strings and thread are used", world.ownOf("/p/main.nv"))
+    world.settings.explicitImports = false
+    dgShow("with explicitImports off", world.ownOf("/p/main.nv"))
+    runStdClassImportCases()
+}
+
+// A std import is used by the types it declares and by the modules it loads, not only by a qualifier.
+method runStdClassImportCases() {
+    println("== import-not-used-here: the classes of a std module and the modules it brings along are uses")
+    var classes = DgWorld({
+        "/p/project.nv": "project \"p\"\n",
+        "/p/main.nv": "import web\nimport toml\nimport yaml\n\ndefine class Panel based NvhComponent {\n}\n\nmethod handle(NvhConn conn): integer {\n    return 0\n}\n\nmethod main() {\n    var parser = TomlParser(\"a = 1\")\n}\n"
+    })
+    dgShow("web by NvhComponent and NvhConn, toml by TomlParser, yaml is unused", classes.ownOf("/p/main.nv"))
+    var brought = DgWorld({
+        "/p/project.nv": "project \"p\"\n",
+        "/p/main.nv": "import web\nimport math\n\nmethod main() {\n    println(json.stringify([1]))\n}\n"
+    })
+    dgShow("web is used because it loads json; math is unused", brought.ownOf("/p/main.nv"))
+}
+
+method runDependencyImportCases() {
+    println("== a dependency that is not fetched belongs to project.nv")
+    var gone = DgWorld({
+        "/p/project.nv": "project \"p\"\nrequire \"github.com/x/gone\" \"v1\"\n",
+        "/p/main.nv": "import \"github.com/x/gone\"\n\nmethod main() {\n    println(strings.repeat(\"a\", 2))\n}\n"
+    })
+    dgShow("main.nv: no unresolved-import, and no judgement of names", gone.ownOf("/p/main.nv"))
+    var ready = DgWorld({
+        "/p/project.nv": "project \"p\"\nrequire \"github.com/x/dep\" \"v1\"\nreplace \"github.com/x/dep\" \"../dep\"\n",
+        "/p/main.nv": "import \"github.com/x/dep/nothing\"\n\nmethod main() {\n    return\n}\n",
+        "/dep/lib.nv": "method depHelper() {\n    return\n}\n"
+    })
+    dgShow("a ready dependency without that path is an unresolved-import", ready.ownOf("/p/main.nv"))
+}

@@ -1,0 +1,159 @@
+package main
+
+// A field declared integer or float is read unboxed where it is computed
+// with. Where it is only passed on, compared for equality, kept in a local or
+// returned, the value is whatever was stored - a string or nothing included -
+// and nothing is reported. The same expression gives the same result with or
+// without a neighbour that has effects.
+
+method tryRun(object task): object native "nv_try_run"
+method tryFailed(): bool native "nv_try_failed"
+method tryError(): string native "nv_try_error"
+
+define class Node {
+    private integer value: get, set
+    private float weight: get, set
+
+    construct(object v, object w) {
+        this.value = v
+        this.weight = w
+    }
+
+    method cachedValue(): string {
+        var v = value
+        if (v == nothing()) {
+            return "unset"
+        }
+        return "value " + v
+    }
+
+    method cachedByCall(): string {
+        var v = this.value()
+        if (v == nothing()) {
+            return "unset"
+        }
+        return "value " + v
+    }
+}
+
+method nothing() {
+}
+
+method side(): integer {
+    println("side")
+    return 1
+}
+
+method show(object a, object b) {
+    println("show " + a + " " + b)
+}
+
+method takesInt(integer x): string {
+    return "takesInt " + x
+}
+
+method takesFloat(float x): string {
+    return "takesFloat " + x
+}
+
+method passAround(Node n) {
+    show(n.value(), side())
+    show(side(), n.weight())
+}
+
+method describe(Node n): string {
+    var v = n.value()
+    if (v == nothing()) {
+        return "unset"
+    }
+    return "value " + v
+}
+
+method isNone(Node n): bool {
+    return n.value() == nothing()
+}
+
+method isNoneByCondition(Node n): string {
+    if (n.value() == nothing()) {
+        return "none"
+    }
+    return "some"
+}
+
+method differs(Node n): string {
+    if (n.value() != side()) {
+        return "differs"
+    }
+    return "equal"
+}
+
+method give(Node n): integer {
+    return n.value()
+}
+
+method keepWeight(Node n): float {
+    var w = n.weight()
+    return w
+}
+
+define class PassAround {
+    method run() { passAround(Node("text", 2.5)) }
+}
+
+define class Describe {
+    method run() {
+        println describe(Node(4, 1.0))
+        println describe(Node(nothing(), 1.0))
+        println describe(Node("text", 1.0))
+    }
+}
+
+define class IsNone {
+    method run() {
+        println isNone(Node(nothing(), 1.0))
+        println isNone(Node(3, 1.0))
+        println isNoneByCondition(Node(nothing(), 1.0))
+        println isNoneByCondition(Node(3, 1.0))
+    }
+}
+
+define class Differs {
+    method run() {
+        println differs(Node(1, 1.0))
+        println differs(Node("one", 1.0))
+        println differs(Node(nothing(), 1.0))
+    }
+}
+
+define class Cached {
+    method run() {
+        println Node(nothing(), 1.0).cachedValue()
+        println Node(5, 1.0).cachedValue()
+        println Node(nothing(), 1.0).cachedByCall()
+        println Node("text", 1.0).cachedByCall()
+    }
+}
+
+define class Returned {
+    method run() {
+        println give(Node("text", 1.0))
+        println give(Node(7, 1.0))
+        println keepWeight(Node(1, "heavy"))
+    }
+}
+
+define class Arguments {
+    method run() {
+        println takesInt(Node(3, 1.0).value())
+        println takesFloat(Node(3, 2.5).weight())
+    }
+}
+
+method main {
+    for (task in [PassAround(), Describe(), IsNone(), Differs(), Cached(), Returned(), Arguments()]) {
+        tryRun(task)
+        if (tryFailed()) {
+            println "error: " + tryError()
+        }
+    }
+}

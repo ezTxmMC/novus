@@ -1,0 +1,115 @@
+package platform
+
+import arrays
+import os
+
+private final PLATFORM_PATH_SEPARATOR = "/"
+private final PLATFORM_MEMORY_MODIFIED = 0
+private final PLATFORM_MISSING_MILLIS = -1
+
+// The one abstraction over "where file text comes from". Missing paths never raise:
+// textOf gives "", entriesOf gives [], modifiedMillis gives -1.
+define interface TextSource {
+    exists(string filePath): bool
+    isDirectory(string dirPath): bool
+    textOf(string filePath): string
+    entriesOf(string dirPath): array<string>
+    modifiedMillis(string filePath): integer
+}
+
+define class DiskTextSource based TextSource {
+    construct() {
+    }
+
+    method exists(string filePath): bool {
+        return os.exists(filePath)
+    }
+
+    method isDirectory(string dirPath): bool {
+        return os.isDir(dirPath)
+    }
+
+    method textOf(string filePath): string {
+        return readTextFile(filePath)
+    }
+
+    method entriesOf(string dirPath): array<string> {
+        return listDirectoryEntries(dirPath)
+    }
+
+    method modifiedMillis(string filePath): integer {
+        return os.modifiedMillis(filePath)
+    }
+}
+
+define class MemoryTextSource based TextSource {
+    map<string, string> files
+
+    construct(map<string, string> files) {
+        this.files = files
+    }
+
+    method exists(string filePath): bool {
+        return this.files.has(filePath) || this.isDirectory(filePath)
+    }
+
+    method isDirectory(string dirPath): bool {
+        return this.firstKeyBelow(platformDirectoryPrefix(dirPath)) != ""
+    }
+
+    method textOf(string filePath): string {
+        return this.files.get(filePath, "")
+    }
+
+    // The distinct first path segment below dirPath, files and folders alike, ascending.
+    method entriesOf(string dirPath): array<string> {
+        var prefix = platformDirectoryPrefix(dirPath)
+        var names = {}
+        for (key in this.files) {
+            this.collectEntry(key, prefix, names)
+        }
+        return arrays.sort(names.keys())
+    }
+
+    method modifiedMillis(string filePath): integer {
+        if (this.exists(filePath)) {
+            return PLATFORM_MEMORY_MODIFIED
+        }
+        return PLATFORM_MISSING_MILLIS
+    }
+
+    method collectEntry(string key, string prefix, map<string, bool> names) {
+        if (key.startsWith(prefix) == false) {
+            return
+        }
+        var rest = key.substring(prefix.length(), key.length())
+        if (rest == "") {
+            return
+        }
+        var slash = rest.indexOf(PLATFORM_PATH_SEPARATOR)
+        if (slash < 0) {
+            names[rest] = true
+            return
+        }
+        if (slash > 0) {
+            names[rest.substring(0, slash)] = true
+        }
+    }
+
+    method firstKeyBelow(string prefix): string {
+        for (key in this.files) {
+            if (key.startsWith(prefix)) {
+                return key
+            }
+        }
+        return ""
+    }
+}
+
+// "dir" and "dir/" name the same directory.
+method platformDirectoryPrefix(string dirPath): string {
+    if (dirPath.endsWith(PLATFORM_PATH_SEPARATOR)) {
+        return dirPath
+    }
+    return dirPath + PLATFORM_PATH_SEPARATOR
+}

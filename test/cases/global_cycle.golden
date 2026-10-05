@@ -1,0 +1,1 @@
+error: constant FIRST: initialisers use each other: global FIRST -> global SECOND -> global THIRD -> global FIRST

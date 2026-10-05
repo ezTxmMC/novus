@@ -1,0 +1,3 @@
+method helper(integer count): integer {
+    return count + 1
+}

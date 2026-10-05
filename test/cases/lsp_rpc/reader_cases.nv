@@ -1,0 +1,34 @@
+package main
+
+import "novus/lsp/server/rpc"
+import json
+import log
+
+method describeEnvelope(Envelope envelope): string {
+    if (envelope.kind == "frameError") {
+        return "frameError code=" + envelope.payload["code"] + " message=[" + envelope.payload["message"] + "]"
+    }
+    if (envelope.kind == "message") {
+        return "message " + json.stringify(envelope.payload)
+    }
+    return envelope.kind
+}
+
+// main.stdin.sh writes the frames this reads; the reader thread owns stdin from here on.
+method runReaderCases() {
+    say("--- reader thread (main.stdin)")
+    log.setLevel("error")
+    var inbox = InboxChannel(INBOX_CAPACITY)
+    var cancellations = CancelRegistry()
+    startReaderThread(inbox, cancellations)
+    var running = true
+    while (running) {
+        var envelope = inbox.receive()
+        say(describeEnvelope(envelope))
+        running = envelope.kind != "eof"
+    }
+    sayCase("tracked after reading", cancellations.cancelled)
+    sayCase("integer 1 cancelled while the request was queued", cancellations.isCancelled(1))
+    sayCase("string 1 is another request", cancellations.isCancelled("1"))
+    sayCase("nothing else is pending", inbox.pendingCount())
+}

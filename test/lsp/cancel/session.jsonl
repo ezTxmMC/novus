@@ -1,0 +1,13 @@
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"rootUri":"@ROOTURI@","capabilities":{}}}
+{"jsonrpc":"2.0","method":"initialized","params":{}}
+{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"@ROOTURI@/main.nv","languageId":"novus","version":1,"text":"package main\n\nmethod main() {\n    println(\"a\")\n}\n"}}}
+{"jsonrpc":"2.0","id":2,"method":"novus/test/sleep","params":{"millis":600}}
+{"jsonrpc":"2.0","id":3,"method":"nope/withDocument","params":{"textDocument":{"uri":"@ROOTURI@/main.nv"}}}
+{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"@ROOTURI@/main.nv","version":2},"contentChanges":[{"text":"package main\n\nmethod main() {\n    println(\"b\"\n}\n"}]}}
+{"jsonrpc":"2.0","id":4,"method":"nope/withDocument","params":{"textDocument":{"uri":"@ROOTURI@/main.nv"}}}
+{"jsonrpc":"2.0","id":5,"method":"nope/withDocument","params":{"textDocument":{"uri":"@ROOTURI@/main.nv"}}}
+{"jsonrpc":"2.0","method":"$/cancelRequest","params":{"id":4}}
+{"jsonrpc":"2.0","method":"$/cancelRequest","params":{"id":99}}
+{"jsonrpc":"2.0","id":6,"method":"nope/withDocument","params":{}}
+{"jsonrpc":"2.0","id":99,"method":"shutdown"}
+{"jsonrpc":"2.0","method":"exit"}

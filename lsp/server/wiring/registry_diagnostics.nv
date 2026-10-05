@@ -1,0 +1,17 @@
+package wiring
+
+import server/jobs
+import services/diagnostics
+import services/pureline
+
+// The own layer (syntax issues and the semantic rules, source `novus`), the manifest layer (also `novus`) and the style
+// layer, which stays last. `OwnDiagnostics` subsumes `SyntaxIssueProducer`, so that one is no longer pushed (9.9.4).
+// Every producer shares the settings object of the session, so a configuration change reaches it (6.30).
+method registerDiagnosticProducers(ServerParts parts) {
+    var session = parts.session
+    parts.scheduler.producers.push(OwnDiagnostics(session.workspace, session.settings))
+    var manifest = ManifestDiagnostics(session.workspace)
+    manifest.settings = session.settings
+    parts.scheduler.producers.push(manifest)
+    parts.scheduler.producers.push(LintCoordinator(session, PurelineLinter(session.settings.pureline)))
+}

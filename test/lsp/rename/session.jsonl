@@ -1,0 +1,24 @@
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"rootUri":"@ROOTURI@","capabilities":{}}}
+{"jsonrpc":"2.0","method":"initialized","params":{}}
+{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"@ROOTURI@/main.nv","languageId":"novus","version":1,"text":"import geo\nimport strings\nimport util\n\nmethod helper(integer value): integer {\n    var doubled = value * 2\n    return doubled + other()\n}\n\nmethod other(): integer {\n    return 1\n}\n\nmethod main() {\n    var total = helper(2)\n    var shape = Circle(1.0)\n    println(total + shape.area())\n    println(strings.repeat(\"a\", 2))\n    println(util.twice())\n}\n"}}}
+{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"@ROOTURI@/geo/shape.nv","languageId":"novus","version":1,"text":"package geo\n\ndefine class Circle {\n    float radius\n\n    construct(float radius) {\n        this.radius = radius\n    }\n\n    method area(): float {\n        return this.radius * this.radius\n    }\n}\n\ndefine class Square {\n    float side\n\n    method area(): float {\n        return this.side * this.side\n    }\n}\n\nmethod make(): Circle {\n    return Circle(2.0)\n}\n"}}}
+{"jsonrpc":"2.0","id":2,"method":"textDocument/prepareRename","params":{"textDocument":{"uri":"@ROOTURI@/main.nv"},"position":{"line":5,"character":8}}}
+{"jsonrpc":"2.0","id":3,"method":"textDocument/rename","params":{"textDocument":{"uri":"@ROOTURI@/main.nv"},"position":{"line":5,"character":8},"newName":"scaled"}}
+{"jsonrpc":"2.0","id":4,"method":"textDocument/rename","params":{"textDocument":{"uri":"@ROOTURI@/main.nv"},"position":{"line":5,"character":8},"newName":"value"}}
+{"jsonrpc":"2.0","id":5,"method":"textDocument/rename","params":{"textDocument":{"uri":"@ROOTURI@/main.nv"},"position":{"line":5,"character":8},"newName":"1scaled"}}
+{"jsonrpc":"2.0","id":6,"method":"textDocument/rename","params":{"textDocument":{"uri":"@ROOTURI@/main.nv"},"position":{"line":5,"character":8},"newName":"while"}}
+{"jsonrpc":"2.0","id":7,"method":"textDocument/rename","params":{"textDocument":{"uri":"@ROOTURI@/main.nv"},"position":{"line":5,"character":8},"newName":""}}
+{"jsonrpc":"2.0","id":8,"method":"textDocument/prepareRename","params":{"textDocument":{"uri":"@ROOTURI@/main.nv"},"position":{"line":14,"character":16}}}
+{"jsonrpc":"2.0","id":9,"method":"textDocument/rename","params":{"textDocument":{"uri":"@ROOTURI@/main.nv"},"position":{"line":14,"character":16},"newName":"assist"}}
+{"jsonrpc":"2.0","id":10,"method":"textDocument/rename","params":{"textDocument":{"uri":"@ROOTURI@/main.nv"},"position":{"line":15,"character":16},"newName":"Disc"}}
+{"jsonrpc":"2.0","id":11,"method":"textDocument/prepareRename","params":{"textDocument":{"uri":"@ROOTURI@/main.nv"},"position":{"line":16,"character":26}}}
+{"jsonrpc":"2.0","id":12,"method":"textDocument/rename","params":{"textDocument":{"uri":"@ROOTURI@/main.nv"},"position":{"line":16,"character":26},"newName":"surface"}}
+{"jsonrpc":"2.0","id":13,"method":"textDocument/rename","params":{"textDocument":{"uri":"@ROOTURI@/geo/shape.nv"},"position":{"line":3,"character":10},"newName":"size"}}
+{"jsonrpc":"2.0","id":14,"method":"textDocument/prepareRename","params":{"textDocument":{"uri":"@ROOTURI@/main.nv"},"position":{"line":17,"character":12}}}
+{"jsonrpc":"2.0","id":15,"method":"textDocument/prepareRename","params":{"textDocument":{"uri":"@ROOTURI@/main.nv"},"position":{"line":17,"character":20}}}
+{"jsonrpc":"2.0","id":16,"method":"textDocument/rename","params":{"textDocument":{"uri":"@ROOTURI@/main.nv"},"position":{"line":17,"character":20},"newName":"again"}}
+{"jsonrpc":"2.0","id":17,"method":"textDocument/prepareRename","params":{"textDocument":{"uri":"@ROOTURI@/main.nv"},"position":{"line":3,"character":0}}}
+{"jsonrpc":"2.0","id":18,"method":"textDocument/rename","params":{"textDocument":{"uri":"@ROOTURI@/main.nv"},"position":{"line":3,"character":0},"newName":"nothing"}}
+{"jsonrpc":"2.0","id":19,"method":"textDocument/rename","params":{"textDocument":{"uri":"@ROOTURI@/closed.nv"},"position":{"line":0,"character":0},"newName":"x"}}
+{"jsonrpc": "2.0", "id": 900, "method": "shutdown"}
+{"jsonrpc": "2.0", "method": "exit"}

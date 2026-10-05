@@ -1,0 +1,155 @@
+package main
+
+import math
+
+// Methods with numbers in their signature are compiled twice - an unboxed
+// worker for the calls that know what they pass, and the boxed method every
+// other call reaches. Both must give what the boxed code always gave.
+
+method fact(integer n): integer {
+    if (n <= 1) {
+        return 1
+    }
+    return n * fact(n - 1)
+}
+
+method isEven(integer n): bool {
+    if (n == 0) {
+        return true
+    }
+    return isOdd(n - 1)
+}
+
+method isOdd(integer n): bool {
+    if (n == 0) {
+        return false
+    }
+    return isEven(n - 1)
+}
+
+// integer division first, widening after
+method half(integer n): float {
+    return n / 2
+}
+
+// a float returned from an integer method is truncated
+method third(float x): integer {
+    return x / 3
+}
+
+// an integer returned from a float method is widened
+method pick(integer n): float {
+    if (n > 0) {
+        return 1
+    }
+    return 2.5
+}
+
+method label(integer n): string {
+    return n
+}
+
+// returns something that is no number: no unboxed result
+method sneaky(integer n): integer {
+    if (n > 5) {
+        return "big"
+    }
+    return n
+}
+
+// the parameter is assigned a float: it is no integer any more
+method bump(integer n): integer {
+    n = n + 0.5
+    return n
+}
+
+method grow(float x, integer n): float {
+    var s = x
+    var i = 0
+    while (i < n) {
+        s = s * 1.5 + i
+        i = i + 1
+    }
+    return s
+}
+
+// a bare return, a missing return
+method noValue(integer n): float {
+    if (n > 0) {
+        return
+    }
+    return 1.5
+}
+
+method fallsOff(integer n): float {
+    if (n > 0) {
+        return 1.25
+    }
+}
+
+method intFallsOff(integer n): integer {
+    if (n > 0) {
+        return n
+    }
+}
+
+method scale(integer n, float k): float {
+    return n * k
+}
+
+method mixed(integer a, float b, object c, string d): float {
+    return a + b
+}
+
+method countDown(integer n): integer {
+    var total = 0
+    while (n > 0) {
+        total = total + n
+        n = n - 1
+    }
+    return total
+}
+
+method big(integer a): integer {
+    return a * a * a * a
+}
+
+method divide(integer a, integer b): integer {
+    return a / b + a % b
+}
+
+method fdivide(float a, float b): float {
+    return a / b + a % b
+}
+
+method main {
+    println fact(10)
+    println fact("5")
+    println fact(5.9)
+    println fact(-3)
+    println isEven(10) + " " + isOdd(7) + " " + isEven(7)
+    println half(7) + " " + half(8) + " " + half(-7)
+    println third(10) + " " + third(10.5) + " " + third(-10) + " " + third("9")
+    println pick(1) + " " + pick(-1) + " " + pick("3")
+    println label(42) + "!"
+    println sneaky(3) + " " + sneaky(9)
+    println bump(3)
+    println grow(2, 3) + " " + grow("2", "3") + " " + grow(1.5, 0)
+    println noValue(1) + " " + noValue(-1)
+    println fallsOff(1) + " " + fallsOff(-1)
+    println intFallsOff(4) + " " + intFallsOff(-4)
+    println scale(3, 0.5) + " " + scale(3, 2) + " " + scale("3", "0.5")
+    println mixed(1, 2, "c", "d") + " " + mixed(1.9, 2, 3, 4)
+    println countDown(10) + " " + countDown(0) + " " + countDown(-5)
+    println big(30000) + " " + big(100000) + " " + big(3037000500)
+    println divide(7, 2) + " " + divide(-7, 2) + " " + divide(7, 0) + " " + divide(-9223372036854775807 - 1, -1)
+    println fdivide(7, 2) + " " + fdivide(7.5, 0) + " " + fdivide(-7, 2)
+    var results = []
+    var i = 0
+    while (i < 5) {
+        results.append(fact(i) + half(i))
+        i = i + 1
+    }
+    println results
+    println math.isPrime(97) + " " + math.gcd(84, 36) + " " + math.powInt(3, 4) + " " + math.roundTo(2.71828, 2)
+}

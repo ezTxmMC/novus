@@ -1,0 +1,193 @@
+package workspace
+
+import base/maybe
+import base/text
+import projects/closure
+import projects/manifest
+import projects/stdlib
+import syntax/outline
+
+private final WORKSPACE_SCRATCH_KEY = ""
+
+// Owner of all projects, the file cache and invalidation. `projects` is keyed by `ProjectModel.key()` (V99): the
+// manifest path, or the file that is its own program when there is no manifest, or `""` for scratch buffers. Models
+// are created on demand, invalidated by events and rebuilt lazily by the next request that needs them.
+define class Workspace {
+    array<string> folders
+    FileCache files
+    map<string, ProjectModel> projects
+    StdLibrary library
+    StdSourceStore stdSources
+    Revalidator revalidator
+
+    construct(FileCache files, StdLibrary library) {
+        this.folders = []
+        this.files = files
+        this.projects = {}
+        this.library = library
+        this.stdSources = StdSourceStore(library)
+        this.revalidator = Revalidator()
+    }
+
+    // Remembers the workspace folders (normalised) and creates the models of the manifests above them.
+    method setFolders(array<string> folders) {
+        this.folders = []
+        for (folder in folders) {
+            this.folders.append(manifestNormalizePath(folder))
+        }
+        for (folder in this.folders) {
+            var layout = findProjectLayout(this.files, folder)
+            if (layout.hasManifest() && this.projects.has(layout.manifestPath) == false) {
+                this.projects[layout.manifestPath] = ProjectModel(layout)
+            }
+        }
+    }
+
+    // Everything a feature needs for one open document. A file that no import reaches is added to the program as an
+    // orphan; a scratch buffer (no path) gets a program of its own that holds only that buffer.
+    method contextFor(Document document): FileContext {
+        var filePath = manifestNormalizePath(document.filePath)
+        if (filePath == "") {
+            return WorkspaceScratch(this).contextFor(document)
+        }
+        if (this.isCurrent(filePath, document) == false) {
+            this.onDocumentChanged(document)
+        }
+        return this.contextOf(document, filePath)
+    }
+
+    // Whether the overlay holds the text of the document: compared by hash, because `==` on strings stops at a NUL byte.
+    method isCurrent(string filePath, Document document): bool {
+        return this.files.hasOverlay(filePath) && textHashOf(this.files.textOf(filePath)) == document.textHash
+    }
+
+    method contextOf(Document document, string filePath): FileContext {
+        var model = this.projectFor(filePath)
+        var syntax = this.files.syntaxOf(filePath)
+        if (document.fileKind() == FILE_KIND_MANIFEST) {
+            return FileContext(document, syntax, model, nothing()).withLookup(this.files, this.library)
+        }
+        var closureFile = this.closureFileOf(model, filePath, syntax)
+        return FileContext(document, syntax, model, closureFile).withLookup(this.files, this.library)
+    }
+
+    // The closure file of an open document, made current: an unreached file triggers a rebuild that adds it, and a
+    // closure file that still holds an older parse is pointed at the newest one.
+    method closureFileOf(ProjectModel model, string filePath, SourceFile syntax): ClosureFile {
+        var closureFile = model.closure.fileAt(filePath)
+        if (isNone(closureFile) && workspaceIsNovusSource(filePath)) {
+            model.invalidate()
+            this.rebuildModel(model)
+            closureFile = model.closure.fileAt(filePath)
+        }
+        if (isNone(closureFile)) {
+            return ClosureFile(filePath, FileOrigin.Project, model.layout.root, "", syntax)
+        }
+        WorkspaceEvents(this).applyChange(model, closureFile, syntax)
+        return closureFile
+    }
+
+    // The context of a file that is not open (a path from the closure, a search result); nil for a path that is no file.
+    method contextForPath(string filePath): FileContext {
+        var key = manifestNormalizePath(filePath)
+        if (key == "" || this.files.exists(key) == false || this.files.isDirectory(key)) {
+            return nothing()
+        }
+        var document = Document(filePathToUri(key), "novus", 0, this.files.textOf(key))
+        return this.contextOf(document, key)
+    }
+
+    // The model of the program the file belongs to, rebuilt when it is stale; created on first use. A logical std key
+    // (`std:<module>`) belongs to no project: nil.
+    method projectFor(string filePath): ProjectModel {
+        var key = manifestNormalizePath(filePath)
+        if (stdModuleOfKey(key) != "") {
+            return nothing()
+        }
+        var model = this.modelFor(key)
+        this.rebuildModel(model)
+        return model
+    }
+
+    method modelFor(string filePath): ProjectModel {
+        if (filePath == WORKSPACE_SCRATCH_KEY) {
+            return WorkspaceScratch(this).model()
+        }
+        var known = this.knownModel(filePath)
+        if (isSome(known)) {
+            return known
+        }
+        var candidate = ProjectModel(findProjectLayout(this.files, filePath))
+        if (this.projects.has(candidate.key()) == false) {
+            this.projects[candidate.key()] = candidate
+        }
+        return this.projects[candidate.key()]
+    }
+
+    // A model that the path names (its manifest or its own file) or, for a project with a manifest, that has it loaded.
+    method knownModel(string filePath): ProjectModel {
+        if (this.projects.has(filePath)) {
+            return this.projects[filePath]
+        }
+        for (key in this.projects.keys()) {
+            var model = this.projects[key]
+            if (model.layout.hasManifest() && model.closure.has(filePath)) {
+                return model
+            }
+        }
+        return nothing()
+    }
+
+    // Rebuilds a stale model; the open files that belong to the project but are not reached by any import join it.
+    method rebuildModel(ProjectModel model) {
+        if (model.valid || model.key() == WORKSPACE_SCRATCH_KEY) {
+            return
+        }
+        model.rebuild(this.files, this.library, [])
+        var orphans = WorkspaceOrphans(this).entriesFor(model)
+        if (orphans.length() > 0) {
+            model.rebuild(this.files, this.library, orphans)
+        }
+    }
+
+    method onDocumentChanged(Document document) {
+        WorkspaceEvents(this).documentChanged(document)
+    }
+
+    method onDocumentClosed(string filePath) {
+        WorkspaceEvents(this).documentClosed(manifestNormalizePath(filePath))
+    }
+
+    method onFilesChangedOnDisk(array<string> filePaths) {
+        WorkspaceEvents(this).filesChanged(filePaths)
+    }
+
+    method revalidate(integer nowMillis) {
+        this.revalidator.run(this, nowMillis)
+    }
+
+    // Every project except the scratch program, in key order, all of them current.
+    method allProjects(): array<ProjectModel> {
+        var found = []
+        for (key in this.projects.keys()) {
+            if (key != WORKSPACE_SCRATCH_KEY) {
+                this.rebuildModel(this.projects[key])
+                found.append(this.projects[key])
+            }
+        }
+        return found
+    }
+
+    method stdSourcePath(string moduleName): string {
+        return this.stdSources.pathOf(moduleName)
+    }
+
+    // What an editor can open: the materialised copy for the logical key `std:<module>`, every other path unchanged.
+    method editorPathOf(string filePath): string {
+        var moduleName = stdModuleOfKey(filePath)
+        if (moduleName == "") {
+            return filePath
+        }
+        return this.stdSourcePath(moduleName)
+    }
+}

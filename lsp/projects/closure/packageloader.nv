@@ -1,0 +1,91 @@
+package closure
+
+import base/maybe
+import base/platform
+import projects/manifest
+import projects/stdlib
+import syntax/outline
+
+// Reads files the way the compiler's loadFile does: the qualifier comes from the folder below the root, a
+// `package main` line makes a file root level wherever it lives, and a std module is its own qualifier.
+define class PackageLoader {
+    ProjectLayout layout
+    TextSource source
+    SourceProvider provider
+    StdLibrary library
+
+    construct(ProjectLayout layout, TextSource source, SourceProvider provider, StdLibrary library) {
+        this.layout = layout
+        this.source = source
+        this.provider = provider
+        this.library = library
+    }
+
+    // Every .nv and .nvh file of the folder, in name order.
+    method loadFolder(string folder, string qualifier, FileOrigin origin, string root): array<ClosureFile> {
+        var files = []
+        for (filePath in this.sourceFilesOf(folder)) {
+            var file = this.loadFile(filePath, qualifier, origin, root)
+            if (isSome(file)) {
+                files.append(file)
+            }
+        }
+        return files
+    }
+
+    // nil when the file does not exist or the provider has no syntax for it.
+    method loadFile(string filePath, string qualifier, FileOrigin origin, string root): ClosureFile {
+        var key = manifestNormalizePath(filePath)
+        if (this.source.exists(key) == false || this.source.isDirectory(key)) {
+            return nothing()
+        }
+        var syntax = this.provider.syntaxOf(key)
+        if (isNone(syntax)) {
+            return nothing()
+        }
+        var file = ClosureFile(key, origin, root, this.qualifierOf(syntax, qualifier), syntax)
+        file.packageName = this.packageOf(root, key)
+        return file
+    }
+
+    // nil for a name that is no std module.
+    method loadStandard(string moduleName): ClosureFile {
+        var module = this.library.module(moduleName)
+        if (isNone(module)) {
+            return nothing()
+        }
+        var file = ClosureFile(stdFileKey(moduleName), FileOrigin.Standard, "", moduleName, module.syntax)
+        file.moduleName = moduleName
+        return file
+    }
+
+    // Full paths of the source files of a folder, sorted; [] when it is not a folder.
+    method sourceFilesOf(string folder): array<string> {
+        var found = []
+        if (this.source.isDirectory(folder) == false) {
+            return found
+        }
+        for (entry in this.source.entriesOf(folder)) {
+            var entryPath = closureJoin(folder, entry)
+            if (closureIsSourceName(entry) && this.source.isDirectory(entryPath) == false) {
+                found.append(entryPath)
+            }
+        }
+        return found
+    }
+
+    method qualifierOf(SourceFile syntax, string folderQualifier): string {
+        if (syntax.packageName == "main") {
+            return ""
+        }
+        return folderQualifier
+    }
+
+    method packageOf(string root, string filePath): string {
+        var folder = closurePackagePath(root, manifestDirectoryOf(filePath))
+        if (folder == "?") {
+            return ""
+        }
+        return folder
+    }
+}

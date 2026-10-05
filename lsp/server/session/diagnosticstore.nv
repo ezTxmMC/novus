@@ -1,0 +1,50 @@
+package session
+
+import base/model
+
+// Diagnostics per file and per source ("novus", "novusc", "pureline"), merged on publish.
+define class DiagnosticStore {
+    map<string, map<string, array<Diagnostic>>> bySource
+
+    construct() {
+        this.bySource = {}
+    }
+
+    // An empty list is stored on purpose: the uri then still counts as a holder of the source (urisOf).
+    method replace(string uri, string source, array<Diagnostic> diagnostics) {
+        if (this.bySource.has(uri) == false) {
+            this.bySource[uri] = {}
+        }
+        this.bySource[uri][source] = diagnostics
+    }
+
+    // Sources in ascending order of their name, each in the order its producer gave.
+    method merged(string uri): array<Diagnostic> {
+        var combined = []
+        if (this.bySource.has(uri) == false) {
+            return combined
+        }
+        var perSource = this.bySource[uri]
+        for (source in perSource.keys()) {
+            for (diagnostic in perSource[source]) {
+                combined.push(diagnostic)
+            }
+        }
+        return combined
+    }
+
+    // Every URI that holds the source, an explicitly stored empty list included, ascending.
+    method urisOf(string source): array<string> {
+        var holders = []
+        for (uri in this.bySource.keys()) {
+            if (this.bySource[uri].has(source)) {
+                holders.push(uri)
+            }
+        }
+        return holders
+    }
+
+    method clear(string uri) {
+        this.bySource.remove(uri)
+    }
+}

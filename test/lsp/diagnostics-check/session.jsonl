@@ -1,0 +1,16 @@
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"rootUri":"@ROOTURI@","capabilities":{},"initializationOptions":{"novus":{"check":{"novuscPath":"@ROOT@/fake-novusc.sh"}}}}}
+{"jsonrpc":"2.0","method":"initialized","params":{}}
+{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"@ROOTURI@/main.nv","languageId":"novus","version":1,"text":"package main\n\nmethod main() {\n    return\n}\n"}}}
+{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"@ROOTURI@/main.nv","version":2},"contentChanges":[{"text":"package main\n\nmethod main() {\n    // BROKEN\n}\n"}]}}
+{"jsonrpc":"2.0","method":"textDocument/didSave","params":{"textDocument":{"uri":"@ROOTURI@/main.nv"}}}
+{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"@ROOTURI@/main.nv","version":3},"contentChanges":[{"text":"package main\n\nmethod main() {\n    // BROKEN\n    // WEIRD\n}\n"}]}}
+{"jsonrpc":"2.0","method":"textDocument/didSave","params":{"textDocument":{"uri":"@ROOTURI@/main.nv"}}}
+{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"@ROOTURI@/main.nv","version":4},"contentChanges":[{"text":"package main\n\nmethod main() {\n    return\n}\n"}]}}
+{"jsonrpc":"2.0","method":"textDocument/didSave","params":{"textDocument":{"uri":"@ROOTURI@/main.nv"}}}
+{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"@ROOTURI@/main.nv","version":5},"contentChanges":[{"text":"package main\n\nmethod main() {\n    // LIBBROKEN\n}\n"}]}}
+{"jsonrpc":"2.0","method":"textDocument/didSave","params":{"textDocument":{"uri":"@ROOTURI@/main.nv"}}}
+{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"@ROOTURI@/main.nv","version":6},"contentChanges":[{"text":"package main\n\nmethod main() {\n    return\n}\n"}]}}
+{"jsonrpc":"2.0","method":"textDocument/didSave","params":{"textDocument":{"uri":"@ROOTURI@/main.nv"}}}
+{"jsonrpc":"2.0","method":"textDocument/didClose","params":{"textDocument":{"uri":"@ROOTURI@/main.nv"}}}
+{"jsonrpc":"2.0","id":99,"method":"shutdown"}
+{"jsonrpc":"2.0","method":"exit"}

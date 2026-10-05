@@ -1,0 +1,154 @@
+package scanning
+
+import base/text
+import syntax/lexing
+import syntax/outline
+
+// Walks the statements of one body the way the compiler's parser does, to find locals and statement-level mistakes.
+// It never builds a tree; expressions are skipped by `ScanningExpressions`.
+define class ScanningWalker {
+    ScanningCursor cursor
+    ScanningExpressions expressions
+    ScanningTypes types
+    ScanningScopes scopes
+    ScanningControl control
+    ScanningDeclarations declarations
+    array<ScanningProblem> problems
+    integer pos
+    integer depth
+    integer unclosedEnd
+
+    construct(ScanningCursor cursor, array<ScanningProblem> problems, ScanningScopes scopes) {
+        this.cursor = cursor
+        this.problems = problems
+        this.scopes = scopes
+        this.expressions = ScanningExpressions(cursor, problems)
+        this.types = ScanningTypes(cursor, problems)
+        this.control = ScanningControl(this)
+        this.declarations = ScanningDeclarations(this)
+        this.pos = 0
+        this.depth = 0
+        this.unclosedEnd = cursor.endOffset()
+    }
+
+    method report(Span span, string code, string message) {
+        this.problems.append(ScanningProblem(span, code, message, false))
+    }
+
+    method statement() {
+        var start = this.pos
+        this.dispatch()
+        if (this.pos <= start) {
+            this.pos = start + 1
+        }
+    }
+
+    method dispatch() {
+        if (this.cursor.isPunct(this.pos, ";")) {
+            this.pos = this.pos + 1
+            return
+        }
+        if (this.cursor.isKind(this.pos, TokenKind.Keyword)) {
+            this.keywordStatement(this.cursor.tokens[this.pos].text)
+            return
+        }
+        if (this.cursor.isIdentWord(this.pos, "sync") && (this.cursor.isPunct(this.pos + 1, "{") || this.cursor.isPunct(this.pos + 1, "("))) {
+            this.control.walkSync()
+            return
+        }
+        this.assignmentOrExpression()
+    }
+
+    method keywordStatement(string word) {
+        if (word == "var") {
+            this.declarations.walkVar()
+            return
+        }
+        if (word == "return") {
+            this.walkReturn()
+            return
+        }
+        if (this.control.handles(word)) {
+            this.control.walkKeyword(word)
+            return
+        }
+        this.simpleKeyword(word)
+    }
+
+    method simpleKeyword(string word) {
+        if (word == "println" || word == "print" || word == "eprintln") {
+            this.pos = this.expressionAfter(this.pos + 1, word)
+            return
+        }
+        if (word == "break" || word == "continue") {
+            this.pos = this.pos + 1
+            return
+        }
+        if (word == "package") {
+            this.pos = this.pos + 2
+            return
+        }
+        this.report(this.cursor.spanAt(this.pos), "unexpected-token", "unexpected keyword '" + word + "'")
+        this.pos = this.pos + 1
+    }
+
+    // Index after the expression that starts at `from`; reports when none does (`what` names the owner).
+    method expressionAfter(integer from, string what): integer {
+        var end = this.expressions.endOf(from)
+        if (this.cursor.isPunct(end, "=") && end == from + 1 && this.cursor.isIdent(from) && this.cursor.tokens[from].firstOnLine) {
+            this.report(this.cursor.spanAt(from - 1), "expected-token", "expected an expression after '" + what + "'")
+            return from
+        }
+        if (end > from) {
+            return end
+        }
+        if (this.cursor.has(from)) {
+            this.report(this.cursor.spanAt(from), "unexpected-token", "unexpected " + this.cursor.describeAt(from) + " in expression")
+            return from + 1
+        }
+        this.report(this.cursor.spanAt(from - 1), "expected-token", "expected an expression after '" + what + "'")
+        return from
+    }
+
+    method walkReturn() {
+        var keyword = this.pos
+        this.pos = this.pos + 1
+        var hasValue = this.cursor.has(this.pos) && this.cursor.sameLine(keyword, this.pos) && this.cursor.isPunct(this.pos, "}") == false
+        if (hasValue == false) {
+            return
+        }
+        if (this.cursor.isPunct(this.pos, ";")) {
+            this.report(this.cursor.spanAt(this.pos), "return-semicolon", "'return' takes no ';': write 'return' or 'return value'")
+            this.pos = this.pos + 1
+            return
+        }
+        this.pos = this.expressionAfter(this.pos, "return")
+    }
+
+    // `name = value`, `Type name = value`, or an expression statement that may itself be an assignment target.
+    method assignmentOrExpression() {
+        if (this.cursor.isIdent(this.pos) && this.cursor.isPunct(this.pos + 1, "=")) {
+            this.pos = this.expressionAfter(this.pos + 2, "=")
+            return
+        }
+        var nameIndex = this.declarations.typedDeclarationName()
+        if (nameIndex >= 0) {
+            this.declarations.walkTyped(nameIndex)
+            return
+        }
+        this.expressionStatement()
+    }
+
+    method expressionStatement() {
+        var end = this.expressions.endOf(this.pos)
+        if (end == this.pos) {
+            this.report(this.cursor.spanAt(this.pos), "unexpected-token", "unexpected " + this.cursor.describeAt(this.pos) + " in expression")
+            this.pos = this.pos + 1
+            return
+        }
+        this.pos = end
+        if (this.cursor.isPunct(this.pos, "=")) {
+            this.pos = this.expressionAfter(this.pos + 1, "=")
+        }
+    }
+}

@@ -1,0 +1,167 @@
+package scanning
+
+import base/text
+import syntax/lexing
+
+private final SCANNING_BINARY_OPERATORS = { "||": true, "&&": true, "|": true, "^": true, "&": true, "==": true,
+    "!=": true, "<": true, ">": true, "<=": true, ">=": true, "<<": true, ">>": true, "+": true, "-": true,
+    "*": true, "/": true, "%": true }
+
+// Finds where an expression ends, with the compiler's grammar but without building a tree: newlines are not
+// terminators, so the end of a statement is the first token that cannot continue the expression.
+define class ScanningExpressions {
+    ScanningCursor cursor
+    array<ScanningProblem> problems
+
+    construct(ScanningCursor cursor, array<ScanningProblem> problems) {
+        this.cursor = cursor
+        this.problems = problems
+    }
+
+    method report(Span span, string code, string message) {
+        this.problems.append(ScanningProblem(span, code, message, false))
+    }
+
+    // Index after the expression that starts at `from`; `from` itself when no expression starts there.
+    method endOf(integer from): integer {
+        var index = this.unaryEnd(from)
+        if (index == from) {
+            return from
+        }
+        while (this.isBinaryOperator(index)) {
+            var next = this.unaryEnd(index + 1)
+            if (next == index + 1) {
+                this.report(this.cursor.spanAt(index), "expected-token", "expected an expression after '" + this.cursor.tokens[index].text + "'")
+                return next
+            }
+            index = next
+        }
+        return index
+    }
+
+    method isBinaryOperator(integer index): bool {
+        return this.cursor.isKind(index, TokenKind.Punct) && SCANNING_BINARY_OPERATORS.has(this.cursor.tokens[index].value)
+    }
+
+    method startsExpression(integer index): bool {
+        if (this.cursor.has(index) == false) {
+            return false
+        }
+        var token = this.cursor.tokens[index]
+        if (token.kind == TokenKind.Ident || token.kind == TokenKind.Integer || token.kind == TokenKind.Float) {
+            return true
+        }
+        if (token.kind == TokenKind.String) {
+            return true
+        }
+        if (token.kind == TokenKind.Keyword) {
+            return token.text == "true" || token.text == "false"
+        }
+        return token.isPunct("(") || token.isPunct("[") || token.isPunct("{") || token.isPunct("-") || token.isPunct("!")
+    }
+
+    // Prefix operators (`-`, `!`, `await`, `thread`, `virtual`) and then a primary with its postfix chain.
+    method unaryEnd(integer from): integer {
+        var index = from
+        while (this.isPrefixAt(index)) {
+            index = index + 1
+        }
+        var primary = this.primaryEnd(index)
+        if (primary == index) {
+            if (index > from) {
+                this.report(this.cursor.spanAt(index - 1), "expected-token", "expected an expression after '" + this.cursor.tokens[index - 1].text + "'")
+            }
+            return index
+        }
+        if (this.cursor.isKind(index, TokenKind.Keyword)) {
+            return primary
+        }
+        return this.postfixEnd(primary)
+    }
+
+    method isPrefixAt(integer index): bool {
+        if (this.cursor.isPunct(index, "-") || this.cursor.isPunct(index, "!")) {
+            return true
+        }
+        if (this.cursor.isIdentWord(index, "await")) {
+            return this.startsExpression(index + 1)
+        }
+        if (this.cursor.isIdentWord(index, "thread") || this.cursor.isIdentWord(index, "virtual")) {
+            return this.cursor.isIdent(index + 1)
+        }
+        return false
+    }
+
+    method primaryEnd(integer index): integer {
+        if (this.cursor.has(index) == false) {
+            return index
+        }
+        var token = this.cursor.tokens[index]
+        if (token.kind == TokenKind.Punct && scanningIsOpener(token.value)) {
+            return this.groupEnd(index)
+        }
+        if (token.kind == TokenKind.Ident) {
+            return this.identifierEnd(index)
+        }
+        if (this.startsExpression(index) && token.kind != TokenKind.Punct) {
+            return index + 1
+        }
+        return index
+    }
+
+    // A name, a call `name(...)` or an object literal `Name{...}` (any identifier directly before `{` is one).
+    method identifierEnd(integer index): integer {
+        if (this.cursor.isPunct(index + 1, "(") || this.cursor.isPunct(index + 1, "{")) {
+            return this.groupEnd(index + 1)
+        }
+        return index + 1
+    }
+
+    // `[index]`, `.member` and `.member(args)` after a primary.
+    method postfixEnd(integer from): integer {
+        var index = from
+        while (true) {
+            if (this.cursor.isPunct(index, "[")) {
+                index = this.groupEnd(index)
+                continue
+            }
+            if (this.cursor.isPunct(index, ".") == false) {
+                return index
+            }
+            index = this.memberEnd(index + 1)
+        }
+        return index
+    }
+
+    method memberEnd(integer nameIndex): integer {
+        if (this.cursor.isIdent(nameIndex) == false) {
+            this.reportBadMember(nameIndex)
+            if (this.cursor.isKind(nameIndex, TokenKind.Keyword)) {
+                return nameIndex + 1
+            }
+            return nameIndex
+        }
+        if (this.cursor.isPunct(nameIndex + 1, "(")) {
+            return this.groupEnd(nameIndex + 1)
+        }
+        return nameIndex + 1
+    }
+
+    method reportBadMember(integer nameIndex) {
+        if (this.cursor.isKind(nameIndex, TokenKind.Keyword)) {
+            this.report(this.cursor.spanAt(nameIndex), "keyword-as-name", "expected member name after '.' but found keyword " + this.cursor.describeAt(nameIndex))
+            return
+        }
+        this.report(this.cursor.spanAt(nameIndex - 1), "expected-token", "expected member name after '.'")
+    }
+
+    // Index after the bracket group that opens at `open`; an unclosed group runs to the end of the range.
+    method groupEnd(integer open): integer {
+        var close = this.cursor.matchingClose(open)
+        if (close >= 0) {
+            return close + 1
+        }
+        this.report(this.cursor.spanAt(open), "unterminated-list", "unterminated '" + this.cursor.tokens[open].text + "': the closing bracket is missing")
+        return this.cursor.stopIndex
+    }
+}

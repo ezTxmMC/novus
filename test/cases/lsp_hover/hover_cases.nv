@@ -1,0 +1,75 @@
+package main
+
+import "novus/lsp/features/hover"
+import "novus/lsp/base/maybe"
+import "novus/lsp/base/model"
+import @support
+import @fixtures
+
+method hoverCase(string label, NavWorld world) {
+    var info = HoverEngine().hover(world.context(), world.cursorOffset)
+    if (isNone(info)) {
+        navCheck(label, "(none)")
+        return
+    }
+    var shown = world.cache.textOf(world.cursorPath).substring(info.span.start, info.span.end)
+    println("-- " + label + " [" + shown + "]")
+    println(info.markdown)
+}
+
+method runSymbolHoverCases() {
+    println("== symbols")
+    hoverCase("class at a constructor call", NavWorld(hoverMain("Circle(2.0)", 1)))
+    hoverCase("method of a typed local", NavWorld(hoverMain("area()", 1)))
+    hoverCase("module function", NavWorld(hoverMain("describe(circle)", 2)))
+    hoverCase("std function with its documentation", NavWorld(hoverMain("repeat(", 1)))
+    hoverCase("std function documented by the comment above it", NavWorld(hoverMain("words(", 1)))
+    hoverCase("enum constant", NavWorld(hoverMain("Red\n", 1)))
+    hoverCase("local variable with an inferred type", NavWorld(hoverMain("total = total", 1)))
+    hoverCase("local declaration", NavWorld(hoverMain("circle = ", 1)))
+    hoverCase("loop variable", NavWorld(hoverMain("word in", 1)))
+    hoverCase("overloaded function", NavWorld(hoverMain("scaled(1.0) +", 1)))
+    hoverCase("parameter", NavWorld(hoverShape("by\n", 0)))
+    hoverCase("field through implicit this", NavWorld(hoverShape("radius * radius", 1)))
+    hoverCase("deprecated method", NavWorld(hoverShape("grow(float", 1)))
+    hoverCase("constructor declaration keyword", NavWorld(hoverShape("construct(float", 2)))
+    hoverCase("parameter type is a class", NavWorld(hoverShape("Shape shape", 1)))
+}
+
+method runWordHoverCases() {
+    println("== words")
+    hoverCase("builtin member of an array", NavWorld(hoverMain("length()", 1)))
+    hoverCase("free builtin function", NavWorld(hoverMain("readFile(", 1)))
+    hoverCase("keyword", NavWorld(hoverMain("method main", 2)))
+    hoverCase("keyword var", NavWorld(hoverMain("var circle", 1)))
+    hoverCase("primitive type", NavWorld(hoverShape("float radius\n", 1)))
+    hoverCase("annotation", NavWorld(hoverShape("Deprecated", 1)))
+    hoverCase("std module name", NavWorld(hoverMain("strings.repeat", 2)))
+    hoverCase("package name", NavWorld(hoverMain("geo.describe", 1)))
+    hoverCase("whitespace", NavWorld(hoverMain("    var circle", 1)))
+}
+
+method runAmbiguityCases() {
+    println("== ambiguity")
+    var files = {
+        "/m/project.nv": "project \"m\"\nmain \"main.nv\"\n",
+        "/m/main.nv": hoverMarked("import left\nimport right\n\nmethod main() {\n    println(shared())\n}\n", "shared()", 1),
+        "/m/left/a.nv": "package left\n\n// From the left.\nmethod shared(): integer {\n    return 1\n}\n",
+        "/m/right/b.nv": "package right\n\nmethod shared(): integer {\n    return 2\n}\n"
+    }
+    hoverCase("a call defined in two packages", NavWorld(files))
+}
+
+private final HOVER_OPEN = "$" + "{"
+
+method hoverInterpolated(string needle, integer shift): NavWorld {
+    var main = "import geo\n\nmethod main() {\n    var circle = Circle(2.0)\n    var total = 1\n    println(\"area " + HOVER_OPEN + "circle.area()} of " + HOVER_OPEN + "total}\")\n}\n"
+    return NavWorld(hoverProject(hoverMarked(main, needle, shift), HOVER_SHAPE_TEXT))
+}
+
+method runInterpolationHoverCases() {
+    println("== string interpolation")
+    hoverCase("method inside an interpolation", hoverInterpolated("area()}", 1))
+    hoverCase("local inside an interpolation", hoverInterpolated("total}", 1))
+    hoverCase("the text of the string around it", hoverInterpolated("area ", 1))
+}

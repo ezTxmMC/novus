@@ -1,0 +1,62 @@
+package main
+
+import "novus/lsp/base/model"
+import "novus/lsp/base/text"
+import "novus/lsp/syntax/parsing"
+import "novus/lsp/services/pureline"
+
+private final ELSE_ONLY_RULES = "method f(a) {\n    if (a) {\n        return 1\n    } else {\n        x = 2\n    }\n}\n"
+
+method runBadElseCases() {
+    showText("else after return", ELSE_ONLY_RULES)
+    showText("else if after return", "method f(a) {\n    if (a) {\n        return 1\n    } else if (b) {\n        return 2\n    } else {\n        return 3\n    }\n}\n")
+    showText("else after break", "method f() {\n    while (a) {\n        if (b) {\n            break\n        } else {\n            c()\n        }\n    }\n}\n")
+    showText("else after continue", "method f() {\n    while (a) {\n        if (b) {\n            continue\n        } else {\n            c()\n        }\n    }\n}\n")
+    showText("else after a one line block", "method f(a) {\n    if (a) { return 1 } else { x = 2 }\n}\n")
+    showText("return after a semicolon", "method f(a) {\n    if (a) { x = 1; return } else { x = 2 }\n}\n")
+    showText("return with a multi line value", "method f(a) {\n    if (a) {\n        return foo(\n            a,\n            b\n        )\n    } else {\n        x = 2\n    }\n}\n")
+    showText("return whose value goes on after an operator", "method f(integer count): integer {\n    if (count > 1) {\n        return count +\n            1\n    } else {\n        return 2\n    }\n}\n")
+    showText("return whose value goes on with a leading operator", "method f(integer count): integer {\n    if (count > 1) {\n        return count\n            + 1\n    } else {\n        return 2\n    }\n}\n")
+    showText("return whose call continues after a dot", "method f(a) {\n    if (a) {\n        return a\n            .size()\n    } else {\n        x = 2\n    }\n}\n")
+    showText("a declaration with a generic type before the return", "method f(a) {\n    if (a) {\n        var xs: array<string>\n        return xs\n    } else {\n        x = 2\n    }\n}\n")
+    showText("else on its own line", "method f(a) {\n    if (a) {\n        return 1\n    }\n    else {\n        x = 2\n    }\n}\n")
+}
+
+method runGoodElseCases() {
+    showText("guard clause", "method f(a) {\n    if (a) {\n        return 1\n    }\n    x = 2\n}\n")
+    showText("plain else is not reported by default", "method f(a) {\n    if (a) {\n        x = 1\n    } else {\n        x = 2\n    }\n}\n")
+    showText("a nested if is no jump", "method f(a) {\n    if (a) {\n        if (b) {\n            return 1\n        }\n    } else {\n        x = 2\n    }\n}\n")
+    showText("return in the middle of the block", "method f(a) {\n    if (a) {\n        return 1\n        x = 2\n    } else {\n        x = 3\n    }\n}\n")
+    showText("a return inside a nested block that closes the outer block", "method f(a) {\n    if (a) {\n        while (b) {\n            return 1\n        }\n    } else {\n        x = 2\n    }\n}\n")
+    showText("no else at all", "method f() {\n    x = 1\n}\n")
+    showText("the word else in a string and a comment", "method f() {\n    x = \"} else {\" // else\n}\n")
+}
+
+method runFlagPlainElseCases() {
+    var flag = PurelineSettings()
+    flag.flagPlainElse = true
+    showWith("plain else with the flag", flag, "method f(a) {\n    if (a) {\n        x = 1\n    } else {\n        x = 2\n    }\n}\n")
+    showWith("else after return with the flag stays a warning", flag, ELSE_ONLY_RULES)
+    showWith("else if with the flag", flag, "method f(a) {\n    if (a) {\n        x = 1\n    } else if (b) {\n        x = 2\n    }\n}\n")
+}
+
+method runElseRecoveryCases() {
+    showText("an else without a block before it", "method f() {\n    else {\n        x = 1\n    }\n}\n")
+    showText("an else after a closing brace that never opened", "method f() {\n}\n} else {\n}\n")
+    showText("a block that never closes", "method f(a) {\n    if (a) {\n        return 1\n    } else {\n        x = 2\n")
+    showText("unknown bytes between the tokens", "method f(a) {\n    if (a) {\n        return 1 # ?\n    } else {\n        x = 2\n    }\n}\n")
+    var source = ELSE_ONLY_RULES
+    var document = documentFor("/work/pkg/main.nv", source)
+    var withoutTokens = parseSourceText(document.filePath, source, indexParseOptions())
+    println("index parse without tokens: " + PurelineElseRule(PurelineSettings()).check(document, withoutTokens, MemoryTextSource({})).length() + " finding(s)")
+    var empty = parseSourceText(document.filePath, "", editorParseOptions())
+    println("empty file: " + PurelineElseRule(PurelineSettings()).check(documentFor("/work/pkg/main.nv", ""), empty, MemoryTextSource({})).length() + " finding(s)")
+}
+
+method runElseCases() {
+    println("--- PL-CF-002")
+    runBadElseCases()
+    runGoodElseCases()
+    runFlagPlainElseCases()
+    runElseRecoveryCases()
+}

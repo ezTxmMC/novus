@@ -1,0 +1,32 @@
+import strings
+import geo
+
+/* A registry of
+   shapes. */
+private final LIMIT = 3
+
+define enum Kind {
+    Round, Square
+}
+
+define class Registry {
+    array<Shape> shapes: get, set
+
+    construct() {
+        this.shapes = []
+    }
+
+    method add(Shape shape): integer {
+        this.shapes.append(shape)
+        return this.shapes.length()
+    }
+}
+
+method main() {
+    var registry = Registry{}
+    var kind = Kind.Round
+    var shape = Shape{name="a", sides=4}
+    var count = registry.add(shape)
+    println("count ${registry.add(shape)} of ${LIMIT}")
+    println(geo.describe(shape) + strings.repeat("-", count))
+}

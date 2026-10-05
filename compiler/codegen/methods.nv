@@ -115,55 +115,134 @@ method genFreeMethod(string m, string cname, map<string, string> prog): string {
     return out + ");" + nl() + "}" + nl()
 }
 
-method genFreeMethodBody(string m, string cname, map<string, string> prog): string {
+// The context a free method is generated in.
+method freeMethodContext(string m): map<string, string> {
     var name = methodName(m)
-    var ctx = {"class": "", "pkg": packageOf(name), "func": name, "ret": methodRet(m), "pos": "method " + name}
+    return {"class": "", "pkg": packageOf(name), "func": name, "ret": methodRet(m), "pos": "method " + name}
+}
+
+// The locals of a free method: its parameters, bound to the C names they are
+// given, and the marks of the inference. `returnKinds` collects the kinds of
+// what the body returns.
+method freeMethodLocals(string m, map<string, string> prog, map<string, string> ctx, array<string> returnKinds): map<string, string> {
     var locals = {}
     var params = paramsNode(m)
-    var parameters = {}
-    var candidates = {}
+    var i = 1
+    var paramsCount = nodeCount(params)
+    while (i < paramsCount) {
+        var pname = nodeChild(nodeChild(params, i), 2)
+        locals[pname] = "l_" + pname
+        i = i + 1
+    }
+    markLocalKinds(nodeChild(m, 5), params, true, prog, ctx, locals, returnKinds)
+    return locals
+}
+
+// The line that turns the boxed argument `index` of a method into its local:
+// a number for a parameter the inference unboxed, the coerced value otherwise.
+method paramPrologue(string param, integer index, map<string, string> locals): string {
+    var pname = nodeChild(param, 2)
+    var arg = "a" + index
+    if (isIntLocal(locals, pname)) {
+        return "    long long l_" + pname + " = nv_as_int(" + arg + ");" + nl()
+    }
+    if (isFloatLocal(locals, pname)) {
+        return "    double l_" + pname + " = nv_as_double(" + arg + ");" + nl()
+    }
+    return "    nv l_" + pname + " = " + coerceCode(arg, nodeChild(param, 1)) + ";" + nl()
+}
+
+method genFreeMethodBody(string m, string cname, map<string, string> prog): string {
+    var ctx = freeMethodContext(m)
+    var locals = freeMethodLocals(m, prog, ctx, [])
+    var descriptor = rawDescriptor(prog, methodName(m), arityOf(m))
+    if (descriptor != "") {
+        return genWorkerMethod(m, cname, descriptor, prog, ctx, locals)
+    }
+    var params = paramsNode(m)
+    var out = "static nv " + cname + "(" + cParamList(m) + ") {" + nl()
+    var i = 1
+    var paramsCount = nodeCount(params)
+    while (i < paramsCount) {
+        out = out + paramPrologue(nodeChild(params, i), i - 1, locals)
+        i = i + 1
+    }
+    var dep = deprecationCode(m, "    ", "dep_" + cname)
+    if (dep != "") {
+        out = "static int dep_" + cname + " = 0;" + nl() + out + dep
+    }
+    var body = genBlock(nodeChild(m, 5), "    ", prog, ctx, locals)
+    out = out + tempDecls(ctx, "    ") + body
+    return out + "    return " + defaultCode(methodRet(m)) + ";" + nl() + "}" + nl()
+}
+
+// The C type of what a worker returns.
+method rawResultType(string descriptor): string {
+    var kind = rawReturnKind(descriptor)
+    if (kind == KIND_INT) {
+        return "long long"
+    }
+    if (kind == KIND_FLOAT) {
+        return "double"
+    }
+    return "nv"
+}
+
+// One parameter of a worker: a C number, or the boxed argument.
+method rawParamDeclaration(string kind, string pname, integer index): string {
+    if (kind == KIND_INT) {
+        return "long long l_" + pname
+    }
+    if (kind == KIND_FLOAT) {
+        return "double l_" + pname
+    }
+    return "nv a" + index
+}
+
+// The parameter list of a worker: unboxed where the descriptor says so, the
+// boxed value otherwise.
+method rawParamList(string m, string descriptor): string {
+    var params = paramsNode(m)
+    var parts = []
+    var i = 1
+    var paramsCount = nodeCount(params)
+    while (i < paramsCount) {
+        parts.append(rawParamDeclaration(rawParamKind(descriptor, i - 1), nodeChild(nodeChild(params, i), 2), i - 1))
+        i = i + 1
+    }
+    if (parts.length() == 0) {
+        return "void"
+    }
+    return parts.join(", ")
+}
+
+// What the worker returns when the body falls off its end.
+method rawDefaultCode(string descriptor, string t): string {
+    var kind = rawReturnKind(descriptor)
+    if (kind == KIND_INT) {
+        return "0"
+    }
+    if (kind == KIND_FLOAT) {
+        return "0.0"
+    }
+    return defaultCode(t)
+}
+
+// A method with an unboxed worker (workers.nv): the worker `<name>_raw` takes
+// and returns what its descriptor says, and the function under the method's
+// own name - the one every boxed call reaches - converts the boxed arguments
+// the way the body used to, calls the worker and boxes its result.
+method genWorkerMethod(string m, string cname, string descriptor, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    var raw = cname + "_raw"
+    ctx["rawret"] = rawReturnKind(descriptor)
+    var params = paramsNode(m)
+    var out = "static " + rawResultType(descriptor) + " " + raw + "(" + rawParamList(m, descriptor) + ") {" + nl()
     var i = 1
     var paramsCount = nodeCount(params)
     while (i < paramsCount) {
         var p = nodeChild(params, i)
-        var pname = nodeChild(p, 2)
-        parameters[pname] = "1"
-        if (normType(nodeChild(p, 1)) == "integer") {
-            candidates[pname] = "1"
-        }
-        locals[pname] = "l_" + pname
-        i = i + 1
-    }
-    var ints = inferIntLocals(nodeChild(m, 5), parameters, candidates)
-    for (name in ints) {
-        markInt(locals, name)
-    }
-    var floatCandidates = {}
-    i = 1
-    var paramsCount = nodeCount(params)
-    while (i < paramsCount) {
-        var fp = nodeChild(params, i)
-        if (normType(nodeChild(fp, 1)) == "float") {
-            floatCandidates[nodeChild(fp, 2)] = "1"
-        }
-        i = i + 1
-    }
-    var floats = inferFloatLocals(nodeChild(m, 5), parameters, floatCandidates, ints)
-    for (name in floats) {
-        markFloat(locals, name)
-    }
-    var out = "static nv " + cname + "(" + cParamList(m) + ") {" + nl()
-    i = 1
-    var paramsCount = nodeCount(params)
-    while (i < paramsCount) {
-        var p = nodeChild(params, i)
-        var pname = nodeChild(p, 2)
-        if (ints.has(pname)) {
-            out = out + "    long long l_" + pname + " = nv_as_int(a" + (i - 1) + ");" + nl()
-        } else if (floats.has(pname)) {
-            out = out + "    double l_" + pname + " = nv_as_double(a" + (i - 1) + ");" + nl()
-        } else {
-            out = out + "    nv l_" + pname + " = " + coerceCode("a" + (i - 1), nodeChild(p, 1)) + ";" + nl()
+        if (rawParamKind(descriptor, i - 1) == "n") {
+            out = out + "    nv l_" + nodeChild(p, 2) + " = " + coerceCode("a" + (i - 1), nodeChild(p, 1)) + ";" + nl()
         }
         i = i + 1
     }
@@ -171,8 +250,40 @@ method genFreeMethodBody(string m, string cname, map<string, string> prog): stri
     if (dep != "") {
         out = "static int dep_" + cname + " = 0;" + nl() + out + dep
     }
-    out = out + genBlock(nodeChild(m, 5), "    ", prog, ctx, locals)
-    return out + "    return " + defaultCode(methodRet(m)) + ";" + nl() + "}" + nl()
+    var body = genBlock(nodeChild(m, 5), "    ", prog, ctx, locals)
+    out = out + tempDecls(ctx, "    ") + body
+    out = out + "    return " + rawDefaultCode(descriptor, methodRet(m)) + ";" + nl() + "}" + nl()
+    return out + genWorkerEntry(m, cname, raw, descriptor)
+}
+
+// A boxed argument as the worker takes it.
+method unboxedArgument(string kind, string arg): string {
+    if (kind == KIND_INT) {
+        return "nv_as_int(" + arg + ")"
+    }
+    if (kind == KIND_FLOAT) {
+        return "nv_as_double(" + arg + ")"
+    }
+    return arg
+}
+
+// The boxed function of a method that has a worker.
+method genWorkerEntry(string m, string cname, string raw, string descriptor): string {
+    var args = []
+    var i = 0
+    while (i < arityOf(m)) {
+        args.append(unboxedArgument(rawParamKind(descriptor, i), "a" + i))
+        i = i + 1
+    }
+    var call = raw + "(" + args.join(", ") + ")"
+    var kind = rawReturnKind(descriptor)
+    if (kind == KIND_INT) {
+        call = "nv_int(" + call + ")"
+    }
+    if (kind == KIND_FLOAT) {
+        call = "nv_float(" + call + ")"
+    }
+    return "static nv " + cname + "(" + cParamList(m) + ") {" + nl() + "    return " + call + ";" + nl() + "}" + nl()
 }
 
 method genDispatcher(string name, integer arity, integer variants, map<string, string> prog): string {
@@ -215,19 +326,14 @@ method genClassMethod(string cls, string m, string cname, map<string, string> pr
     var locals = {}
     var out = "static nv " + cname + "(nv self, nv *args, int n) {" + nl()
     out = out + bindArrayParams(m, "    ", locals)
-    var ints = inferIntLocals(nodeChild(m, 5), locals, {})
-    for (name in ints) {
-        markInt(locals, name)
-    }
-    for (name in inferFloatLocals(nodeChild(m, 5), locals, {}, ints)) {
-        markFloat(locals, name)
-    }
+    markLocalKinds(nodeChild(m, 5), paramsNode(m), false, prog, ctx, locals, [])
     var dep = deprecationCode(m, "    ", "dep_" + cname)
     if (dep != "") {
         out = "static int dep_" + cname + " = 0;" + nl() + out + dep
     }
     out = out + "    (void)n;" + nl()
-    out = out + genBlock(nodeChild(m, 5), "    ", prog, ctx, locals)
+    var body = genBlock(nodeChild(m, 5), "    ", prog, ctx, locals)
+    out = out + tempDecls(ctx, "    ") + body
     return out + "    return " + defaultCode(methodRet(m)) + ";" + nl() + "}" + nl()
 }
 
@@ -247,14 +353,9 @@ method genCtor(string cls, string ctor, map<string, string> prog): string {
         i = i + 1
     }
     out = out + "    (void)n;" + nl()
-    var ctorInts = inferIntLocals(nodeChild(ctor, 2), locals, {})
-    for (name in ctorInts) {
-        markInt(locals, name)
-    }
-    for (name in inferFloatLocals(nodeChild(ctor, 2), locals, {}, ctorInts)) {
-        markFloat(locals, name)
-    }
-    out = out + genBlock(nodeChild(ctor, 2), "    ", prog, ctx, locals)
+    markLocalKinds(nodeChild(ctor, 2), params, false, prog, ctx, locals, [])
+    var body = genBlock(nodeChild(ctor, 2), "    ", prog, ctx, locals)
+    out = out + tempDecls(ctx, "    ") + body
     return out + "    return nv_nil;" + nl() + "}" + nl()
 }
 

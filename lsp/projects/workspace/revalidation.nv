@@ -1,0 +1,68 @@
+package workspace
+
+import projects/closure
+
+private final WORKSPACE_REVALIDATE_INTERVAL_MILLIS = 1000
+private final WORKSPACE_RUN_MARK = "@run:"
+private final WORKSPACE_STAMP_SEPARATOR = "|"
+
+// Stat-based revalidation of disk files: the modification time of every file of a project is compared with the one
+// seen last time, at most once per second per project. The `TextSource` offers no size, so the modification time is
+// all there is (V102); an edit that keeps the millisecond is caught by the text hash of the next parse. Files that
+// have an overlay (open documents) are never looked at: the editor is their truth. `lastChecked` holds, besides the
+// stamps `<project key>|<path>`, the time of the last run per project under `@run:<project key>`.
+define class Revalidator {
+    map<string, integer> lastChecked
+
+    construct() {
+        this.lastChecked = {}
+    }
+
+    method run(Workspace workspace, integer nowMillis) {
+        for (key in workspace.projects.keys()) {
+            var model = workspace.projects[key]
+            if (key != WORKSPACE_SCRATCH_KEY && model.valid && this.isDue(key, nowMillis)) {
+                this.checkProject(workspace, key, model)
+            }
+        }
+    }
+
+    // A clock that went backwards (elapsed < 0) counts as due, so that a stalled stamp cannot stop the revalidation.
+    method isDue(string key, integer nowMillis): bool {
+        var runKey = WORKSPACE_RUN_MARK + key
+        var elapsed = nowMillis - this.lastChecked.get(runKey, nowMillis - WORKSPACE_REVALIDATE_INTERVAL_MILLIS)
+        if (this.lastChecked.has(runKey) && elapsed >= 0 && elapsed < WORKSPACE_REVALIDATE_INTERVAL_MILLIS) {
+            return false
+        }
+        this.lastChecked[runKey] = nowMillis
+        return true
+    }
+
+    method checkProject(Workspace workspace, string key, ProjectModel model) {
+        var changed = []
+        for (file in model.closure.files) {
+            if (file.origin != FileOrigin.Standard && this.hasChanged(workspace, key, file.filePath)) {
+                changed.append(file.filePath)
+            }
+        }
+        if (model.layout.hasManifest() && this.hasChanged(workspace, key, model.layout.manifestPath)) {
+            changed.append(model.layout.manifestPath)
+        }
+        if (changed.length() > 0) {
+            workspace.onFilesChangedOnDisk(changed)
+        }
+    }
+
+    // True when the modification time differs from the stamp of the last run; the first sight only records the stamp.
+    method hasChanged(Workspace workspace, string key, string filePath): bool {
+        if (workspace.files.hasOverlay(filePath)) {
+            return false
+        }
+        var stampKey = key + WORKSPACE_STAMP_SEPARATOR + filePath
+        var millis = workspace.files.modifiedMillis(filePath)
+        var known = this.lastChecked.has(stampKey)
+        var before = this.lastChecked.get(stampKey, millis)
+        this.lastChecked[stampKey] = millis
+        return known && before != millis
+    }
+}

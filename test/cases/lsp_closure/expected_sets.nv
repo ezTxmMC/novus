@@ -1,0 +1,40 @@
+package main
+
+// Instrumented expectations: the .nv files the compiler's loader opened (recorded with a preloaded fopen shim around
+// `novusc check`, sorted, relative to the repository) and the std modules whose functions its generated C holds
+// (`novusc emit`), for the frozen programs of this repository (test cases and examples; the compiler and the language server grow, so
+// real_cases.nv checks those two by invariants, not by a set). The closure builder has to give exactly these sets.
+method expectedLoads(): map<string, array<string>> {
+    var sets = {}
+    sets["test/cases/packages/main.nv"] = ["test/cases/packages/draw/canvas.nv", "test/cases/packages/draw/shapes/square.nv", "test/cases/packages/geo/circle.nv", "test/cases/packages/geo/units.nv", "test/cases/packages/helpers.nv", "test/cases/packages/main.nv"]
+    sets["test/cases/imports/main.nv"] = ["test/cases/imports/lib/greet.nv", "test/cases/imports/lib/math.nv", "test/cases/imports/lib/vec.nv", "test/cases/imports/main.nv"]
+    sets["test/cases/project/main.nv"] = ["test/cases/project/lib/lib.nv", "test/cases/project/lib/shapes/circle.nv", "test/cases/project/main.nv"]
+    sets["examples/web/main.nv"] = [
+        "examples/web/components/Clock.nvh",
+        "examples/web/components/Counter.nvh",
+        "examples/web/components/Layout.nvh",
+        "examples/web/components/TodoItem.nvh",
+        "examples/web/main.nv",
+        "examples/web/pages/Chat.nvh",
+        "examples/web/pages/Hello.nvh",
+        "examples/web/pages/Home.nvh",
+        "examples/web/pages/Todos.nvh",
+        "examples/web/state.nv"
+    ]
+    sets["examples/mccloud/main.nv"] = ["examples/mccloud/cloud.nv", "examples/mccloud/files.nv", "examples/mccloud/main.nv", "examples/mccloud/process.nv"]
+    sets["examples/shapes/main.nv"] = ["examples/shapes/main.nv"]
+    sets["test/cases/web/main.nv"] = ["test/cases/web/Card.nvh", "test/cases/web/Fragile.nvh", "test/cases/web/Item.nvh", "test/cases/web/Page.nvh", "test/cases/web/Pair.nvh", "test/cases/web/main.nv"]
+    return sets
+}
+
+method expectedStdModules(): map<string, array<string>> {
+    var sets = {}
+    sets["test/cases/packages/main.nv"] = []
+    sets["test/cases/imports/main.nv"] = ["json"]
+    sets["test/cases/project/main.nv"] = []
+    sets["examples/web/main.nv"] = ["bytes", "crypto", "io", "json", "math", "net", "os", "path", "strings", "time", "web"]
+    sets["examples/mccloud/main.nv"] = ["json", "os", "path"]
+    sets["examples/shapes/main.nv"] = []
+    sets["test/cases/web/main.nv"] = ["bytes", "crypto", "io", "json", "math", "net", "os", "path", "strings", "web"]
+    return sets
+}

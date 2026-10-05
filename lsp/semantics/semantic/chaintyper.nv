@@ -1,0 +1,187 @@
+package semantic
+
+import base/maybe
+import semantics/builtins
+import syntax/outline
+import syntax/scanning
+
+private final SEMANTIC_MODE_VALUE = "value"
+private final SEMANTIC_MODE_MODULE = "module"
+private final SEMANTIC_MODE_ENUM = "enum"
+private final SEMANTIC_MODE_NONE = "none"
+private final SEMANTIC_STEP_NAME = "name"
+private final SEMANTIC_STEP_CALL = "call"
+private final SEMANTIC_STEP_INDEX = "index"
+private final SEMANTIC_STEP_LITERAL = "literal"
+private final SEMANTIC_ENUM_VALUES = "values"
+private final SEMANTIC_ARRAY_LITERAL = "[]"
+private final SEMANTIC_MAP_LITERAL = "{}"
+private final SEMANTIC_QUOTE = "\""
+private final SEMANTIC_DECIMAL_POINT = "."
+private final SEMANTIC_DIGITS = "0123456789"
+
+// Types a receiver chain `a.b(c).d[0]` (8.4): the first step is a literal, a name (local, `this`, field, global,
+// module, enum) or a call (function, class, built-in); every later step is a member, a call or an index of the type
+// reached so far. Whatever cannot be followed ends in an unknown type, never in a failure.
+define class SemanticChainTyper {
+    Resolver resolver
+    Scope scope
+    integer depth
+
+    construct(Resolver resolver, Scope scope, integer depth) {
+        this.resolver = resolver
+        this.scope = scope
+        this.depth = depth
+    }
+
+    method typeOf(array<ChainStep> chain): TypeRef {
+        if (chain.length() == 0 || this.depth > SEMANTIC_INFERENCE_DEPTH) {
+            return unknownType()
+        }
+        var receiver = this.firstReceiver(chain[0])
+        var i = 1
+        while (i < chain.length()) {
+            receiver = this.advance(receiver, chain[i])
+            i = i + 1
+        }
+        return receiver.valueType()
+    }
+
+    method firstReceiver(ChainStep step): SemanticReceiver {
+        if (step.kind == SEMANTIC_STEP_LITERAL) {
+            return semanticValueReceiver(this.literalType(step.text))
+        }
+        if (step.kind == SEMANTIC_STEP_NAME) {
+            return this.nameReceiver(step.text)
+        }
+        if (step.kind == SEMANTIC_STEP_CALL) {
+            return this.callReceiver(step)
+        }
+        return semanticNoReceiver()
+    }
+
+    // `Circle{...}` is a literal step named after the class; every other literal is spelled by its token.
+    method literalType(string literalText): TypeRef {
+        if (isSome(this.resolver.lookupType(literalText))) {
+            return semanticNamedType(literalText)
+        }
+        return semanticTypeOfLiteral(literalText)
+    }
+
+    method nameReceiver(string name): SemanticReceiver {
+        var resolution = this.resolver.lookupName(this.scope, name)
+        if (resolution.status != "unknown") {
+            return semanticValueReceiver(this.typeOfSymbol(resolution.candidates[0]))
+        }
+        if (this.resolver.isModuleQualifier(name)) {
+            return SemanticReceiver(SEMANTIC_MODE_MODULE, unknownType(), name)
+        }
+        var type = this.resolver.lookupType(name)
+        if (isSome(type) && type.decl.kind == DeclKind.Enum) {
+            return SemanticReceiver(SEMANTIC_MODE_ENUM, unknownType(), name)
+        }
+        return semanticNoReceiver()
+    }
+
+    method typeOfSymbol(Symbol symbol): TypeRef {
+        if (symbol.isLocal()) {
+            var local = this.resolver.localNamed(this.scope, symbol.name())
+            return SemanticLocalTyper(this.resolver, this.depth + 1).typeOf(this.scope, local)
+        }
+        if (symbol.decl.isType()) {
+            return semanticNamedType(symbol.decl.name)
+        }
+        if (symbol.decl.kind == DeclKind.EnumConstant) {
+            return semanticNamedType(symbol.container)
+        }
+        return typeFromText(symbol.decl.typeText)
+    }
+
+    method callReceiver(ChainStep step): SemanticReceiver {
+        var resolution = this.resolver.lookupCall(this.scope, step.text, step.argCount)
+        if (resolution.status != "unknown") {
+            return semanticValueReceiver(this.typeOfCallee(resolution.candidates[0]))
+        }
+        if (this.resolver.isBuiltinCall(step.text)) {
+            return semanticValueReceiver(this.builtinFunctionType(step.text))
+        }
+        return semanticNoReceiver()
+    }
+
+    method typeOfCallee(Symbol callee): TypeRef {
+        if (callee.decl.isType()) {
+            return semanticNamedType(callee.decl.name)
+        }
+        return typeFromText(callee.decl.typeText)
+    }
+
+    method builtinFunctionType(string name): TypeRef {
+        for (member in freeBuiltins()) {
+            if (member.name == name) {
+                return typeFromText(member.returnType)
+            }
+        }
+        return unknownType()
+    }
+
+    method advance(SemanticReceiver receiver, ChainStep step): SemanticReceiver {
+        var members = SemanticMemberTyper(this.resolver)
+        if (receiver.mode == SEMANTIC_MODE_VALUE) {
+            return members.valueMember(receiver.type, step)
+        }
+        if (receiver.mode == SEMANTIC_MODE_MODULE) {
+            return members.moduleMember(receiver.target, step)
+        }
+        if (receiver.mode == SEMANTIC_MODE_ENUM) {
+            return members.enumMember(receiver.target, step)
+        }
+        return semanticNoReceiver()
+    }
+}
+
+// The type of a literal as the chain reader spells it: a string, a number, `true`/`false`, `[]` or `{}`.
+method semanticTypeOfLiteral(string literalText): TypeRef {
+    if (literalText == "") {
+        return unknownType()
+    }
+    if (literalText.startsWith(SEMANTIC_QUOTE)) {
+        return TypeRef(SEMANTIC_TYPE_STRING, "", true)
+    }
+    if (literalText == "true" || literalText == "false") {
+        return TypeRef(SEMANTIC_TYPE_BOOL, "", true)
+    }
+    if (literalText == SEMANTIC_ARRAY_LITERAL) {
+        return TypeRef(SEMANTIC_TYPE_ARRAY, "", true)
+    }
+    if (literalText == SEMANTIC_MAP_LITERAL) {
+        return TypeRef(SEMANTIC_TYPE_MAP, "", true)
+    }
+    return semanticTypeOfNumber(literalText)
+}
+
+// Digits with at most one inner decimal point, or a hex literal; `1e5`, `1.2.3` and `-5` are not lexer literals.
+method semanticTypeOfNumber(string literalText): TypeRef {
+    if (literalText.length() > 2 && (literalText.startsWith("0x") || literalText.startsWith("0X"))) {
+        return TypeRef(SEMANTIC_TYPE_INTEGER, "", true)
+    }
+    var parts = literalText.split(SEMANTIC_DECIMAL_POINT)
+    if (parts.length() > 2 || semanticIsDigits(parts[0]) == false) {
+        return unknownType()
+    }
+    if (parts.length() == 1) {
+        return TypeRef(SEMANTIC_TYPE_INTEGER, "", true)
+    }
+    if (semanticIsDigits(parts[1])) {
+        return TypeRef(SEMANTIC_TYPE_FLOAT, "", true)
+    }
+    return unknownType()
+}
+
+method semanticIsDigits(string text): bool {
+    for (character in text) {
+        if (SEMANTIC_DIGITS.contains(character) == false) {
+            return false
+        }
+    }
+    return text != ""
+}

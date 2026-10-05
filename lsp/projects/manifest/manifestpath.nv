@@ -1,0 +1,92 @@
+package manifest
+
+import path
+import strings
+
+private final MANIFEST_SLASH = "/"
+private final MANIFEST_BACKSLASH = "\\"
+private final MANIFEST_CURRENT_DIRECTORY = "."
+private final MANIFEST_PARENT_SEGMENT = ".."
+private final MANIFEST_DRIVE_COLON = ":"
+private final MANIFEST_DRIVE_ROOT_LENGTH = 3
+
+// The folder of a file path, the way dirOf of compiler/project/manifest.nv cuts it: "." for a bare name.
+// "" stays "" because a scratch buffer has no folder at all.
+method manifestDirectoryOf(string filePath): string {
+    if (filePath == "") {
+        return ""
+    }
+    var cut = filePath.length()
+    while (cut > 0 && manifestIsSeparator(filePath.charAt(cut - 1)) == false) {
+        cut = cut - 1
+    }
+    if (cut == 0) {
+        return MANIFEST_CURRENT_DIRECTORY
+    }
+    if (cut > 1) {
+        return filePath.substring(0, cut - 1)
+    }
+    return filePath.substring(0, cut)
+}
+
+method manifestIsSeparator(string character): bool {
+    return character == MANIFEST_SLASH || character == MANIFEST_BACKSLASH
+}
+
+// `dir/rel` with "." and ".." segments collapsed. An absolute `rel` is not special: that is what novusc does
+// with an absolute `replace` target (path.join), which is why such a target never exists.
+method manifestJoinPath(string dir, string rel): string {
+    if (dir == "") {
+        return manifestNormalizePath(rel)
+    }
+    if (rel == "") {
+        return manifestNormalizePath(dir)
+    }
+    return manifestNormalizePath(dir + MANIFEST_SLASH + rel)
+}
+
+method manifestNormalizePath(string target): string {
+    if (target == "") {
+        return ""
+    }
+    return path.normalize(target)
+}
+
+// The folder above `dir`; a relative path ends at ".", and "" means there is nothing above (a root, "." or "").
+// A path that ends in ".." climbs by one more "..": the working folder is below it, not above.
+method manifestParentDirectory(string dir): string {
+    if (dir == "" || dir == MANIFEST_SLASH || dir == MANIFEST_CURRENT_DIRECTORY) {
+        return ""
+    }
+    if (manifestEndsInParentSegment(dir)) {
+        return manifestNormalizePath(dir + MANIFEST_SLASH + MANIFEST_PARENT_SEGMENT)
+    }
+    if (manifestIsDriveRoot(dir)) {
+        return ""
+    }
+    var slash = strings.lastIndexOf(dir, MANIFEST_SLASH)
+    if (slash < 0) {
+        return MANIFEST_CURRENT_DIRECTORY
+    }
+    if (slash == 0) {
+        return MANIFEST_SLASH
+    }
+    if (manifestIsDriveRoot(dir.substring(0, slash + 1))) {
+        return dir.substring(0, slash + 1)
+    }
+    return dir.substring(0, slash)
+}
+
+method manifestEndsInParentSegment(string dir): bool {
+    return dir == MANIFEST_PARENT_SEGMENT || dir.endsWith(MANIFEST_SLASH + MANIFEST_PARENT_SEGMENT)
+}
+
+method manifestIsDriveRoot(string dir): bool {
+    if (dir.length() > MANIFEST_DRIVE_ROOT_LENGTH || dir.length() < MANIFEST_DRIVE_ROOT_LENGTH - 1) {
+        return false
+    }
+    if (dir.charAt(1) != MANIFEST_DRIVE_COLON) {
+        return false
+    }
+    return dir.length() == MANIFEST_DRIVE_ROOT_LENGTH - 1 || dir.charAt(2) == MANIFEST_SLASH
+}

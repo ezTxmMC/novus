@@ -1,0 +1,46 @@
+package main
+
+import "novus/lsp/features/structure"
+import "novus/lsp/base/model"
+import @support
+import @fixtures
+
+method structFolds(string label, string content) {
+    println("-- " + label)
+    structNumbered(content)
+    var world = StructWorld({"/f/project.nv": "project \"f\"\nmain \"main.nv\"\n", "/f/main.nv": content})
+    var parts = []
+    for (entry in FoldingBuilder().ranges(world.context("/f/main.nv"))) {
+        parts.append((entry.startLine + 1) + "-" + (entry.endLine + 1) + " " + entry.kind)
+    }
+    println("folds: " + parts.join(", "))
+}
+
+method runFoldingCases() {
+    println("== folding")
+    structFolds("declarations, bodies, comments and imports", structMainText())
+    structFolds("class with a global list and regions", structLines([
+        "// region helpers",
+        "private final NAMES = [",
+        "    \"a\",",
+        "    \"b\"",
+        "]",
+        "// endregion",
+        "",
+        "define class Box {",
+        "    float width",
+        "",
+        "    method area(): float {",
+        "        return width",
+        "    }",
+        "}"
+    ]))
+    structFolds("single lines and empty blocks fold nothing", structLines([
+        "method one() { return 1 }",
+        "method two() {",
+        "}",
+        "// lonely comment",
+        "var x = 1"
+    ]))
+    structFolds("unterminated block", "method broken() {\n    println(1)\n    println(2)\n")
+}

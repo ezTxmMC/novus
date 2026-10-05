@@ -1,0 +1,55 @@
+package main
+
+import "novus/lsp/projects/manifest"
+import @show
+
+method runAllDirectives() {
+    var text = "// the app\nproject \"github.com/user/app\"\nversion \"0.1.0\"\nmain \"cmd/main.nv\"\nlib \"lib.nv\"\noutput \"tool\"\nnovus \"0.1.0-pre.alpha.2\"\nrequire \"github.com/user/lib\" \"v1.2.0\"\nreplace \"github.com/user/lib\" \"../lib\"\n"
+    showManifest("all directives", "/work/app/project.nv", text)
+}
+
+method runDefaults() {
+    showManifest("empty text", "/work/app/project.nv", "")
+    showManifest("only a comment", "project.nv", "/* nothing */ // here\n")
+    showManifest("name only, entry is main", "/w/project.nv", "project \"example.com/a/b/tool\"\n")
+    showManifest("name ends with a slash", "/w/project.nv", "project \"example.com/a/\"\n")
+    showManifest("lib wins as entry", "/w/project.nv", "main \"m.nv\"\nlib \"l.nv\"\n")
+    showManifest("root folder file", "/project.nv", "project \"x\"\n")
+    showManifest("relative bare name", "project.nv", "project \"x\"\n")
+}
+
+method runRequires() {
+    showManifest("require without version, duplicates, replace overwrite", "/w/project.nv", "require \"a/b\"\nrequire \"a/b\" \"v2\"\nrequire \"c/d\" \"main\"\nreplace \"a/b\" \"../one\"\nreplace \"a/b\" \"../two\"\nreplace \"unused/x\" \"../x\"\n")
+}
+
+method runErrors() {
+    showManifest("unknown setting", "/w/project.nv", "project \"a\"\nfoo \"bar\"\n")
+    showManifest("unquoted value", "/w/project.nv", "version 1.0\nmain main.nv\nproject \"ok\"\n")
+    showManifest("wrong arity", "/w/project.nv", "project\nversion \"1\" \"2\"\nrequire\nrequire \"a\" \"b\" \"c\"\nreplace \"a\"\nreplace \"a\" \"b\" \"c\"\n")
+    showManifest("not a setting", "/w/project.nv", "import \"x\"\n\"str\" \"v\"\n42\nproject \"after\"\n")
+    showManifest("two settings on one line", "/w/project.nv", "project \"a\" version \"1\"\n")
+    showManifest("an unknown setting with two values counts the values first", "/w/project.nv", "foo \"a\" \"b\"\n")
+    showManifest("an unknown setting without a value counts the values first", "/w/project.nv", "foo\n")
+    showManifest("a string in key position is named by its value", "/w/project.nv", "\"x\"\n")
+    showManifest("unterminated string", "/w/project.nv", "version \"1\"\nproject \"a\n")
+    showManifest("unknown bytes are skipped like novusc does", "/w/project.nv", "# note\nproject \"a\" ~\n")
+    showManifest("NUL byte", "/w/project.nv", "project \"a\"\n" + chr(0) + "\nversion \"2\"\n")
+}
+
+method runLayoutOfManifestText() {
+    showManifest("utf-8 spans are byte offsets", "/w/project.nv", "project \"héllo\"\nversion \"2\"\n")
+    showManifest("crlf line ends", "/w/project.nv", "project \"a\"\r\nversion \"1\"\r\n")
+}
+
+method runKeyList() {
+    println("== keys " + manifestKeys())
+}
+
+method runParseCases() {
+    runAllDirectives()
+    runDefaults()
+    runRequires()
+    runErrors()
+    runLayoutOfManifestText()
+    runKeyList()
+}

@@ -1,0 +1,130 @@
+package main
+
+import strings
+import "novus/lsp/base/model"
+import "novus/lsp/syntax/lexing"
+import "novus/lsp/services/format"
+
+method runBlockCases() {
+    expectText("nested blocks", "method f(){\nif(a){\nwhile(b){\nx=1\n}\n}\n}\n", "method f() {\n    if (a) {\n        while (b) {\n            x = 1\n        }\n    }\n}\n")
+    expectText("else on the closing line", "method f(){\nif(a){\nx=1\n}else if(b){\nx=2\n}else{\nx=3\n}\n}\n", "method f() {\n    if (a) {\n        x = 1\n    } else if (b) {\n        x = 2\n    } else {\n        x = 3\n    }\n}\n")
+    expectText("else on its own line", "method f(){\nif(a){\nx=1\n}\nelse{\nx=2\n}\n}\n", "method f() {\n    if (a) {\n        x = 1\n    }\n    else {\n        x = 2\n    }\n}\n")
+    expectText("class members", "define class A{\nint x\nmethod f(){\nreturn 1\n}\n}\n", "define class A {\n    int x\n    method f() {\n        return 1\n    }\n}\n")
+    expectText("wrong indentation is replaced", "method f() {\n        x = 1\n  y = 2\n\t\tz = 3\n}\n", "method f() {\n    x = 1\n    y = 2\n    z = 3\n}\n")
+    expectText("top level code stays at the left", "   x = 1\n      y = 2\n", "x = 1\ny = 2\n")
+}
+
+method runBracketCases() {
+    expectText("array over several lines", "x=[\n1,\n2\n]\n", "x = [\n    1,\n    2\n]\n")
+    expectText("call over several lines", "foo(\na,\nb\n)\n", "foo(\n    a,\n    b\n)\n")
+    expectText("map over several lines", "x={\n\"a\": 1,\n\"b\": 2\n}\n", "x = {\n    \"a\": 1,\n    \"b\": 2\n}\n")
+    expectText("several openers on one line indent once", "foo(bar({\n\"a\": 1\n}))\n", "foo(bar({\n    \"a\": 1\n}))\n")
+    expectText("closers returning to the opening line", "foo(bar(\n1\n),\n2\n)\n", "foo(bar(\n    1\n),\n    2\n)\n")
+    expectText("a block opened after a closed bracket", "method f(){\nif(a&&\nb){\nx=1\n}\n}\n", "method f() {\n    if (a &&\n        b) {\n        x = 1\n    }\n}\n")
+    expectText("brackets inside a block", "method f(){\nx=foo(\n1,\n2)\ny=3\n}\n", "method f() {\n    x = foo(\n        1,\n        2)\n    y = 3\n}\n")
+    expectText("a list continued after a comma", "private final A = [1, 2,\n3, 4]\n", "private final A = [1, 2,\n    3, 4]\n")
+}
+
+method runContinuationCases() {
+    expectText("operator at the end of a line", "method f(){\nx=a+\nb\ny=1\n}\n", "method f() {\n    x = a +\n        b\n    y = 1\n}\n")
+    expectText("assignment at the end of a line", "method f(){\nx=\n1\n}\n", "method f() {\n    x =\n        1\n}\n")
+    expectText("chained calls with leading dots", "method f(){\nx=a\n.b()\n.c()\ny=1\n}\n", "method f() {\n    x = a\n        .b()\n        .c()\n    y = 1\n}\n")
+    expectText("logical operators at the start of a line", "method f(){\nx=a\n&&b\n||c\n}\n", "method f() {\n    x = a\n        && b\n        || c\n}\n")
+    expectText("a comment between a continued line", "method f(){\nx=a+\n// note\nb\n}\n", "method f() {\n    x = a +\n    // note\n        b\n}\n")
+    expectText("continuation inside parentheses is flat", "method f(){\nx=foo(a+\nb)\n}\n", "method f() {\n    x = foo(a +\n        b)\n}\n")
+    expectText("a closing brace after an operator line", "method f(){\nx=a+\n}\n", "method f() {\n    x = a +\n}\n")
+}
+
+method runCommentIndentCases() {
+    expectText("comment lines follow the block", "// top\nmethod f(){\n// one\nx=1\n// two\n}\n// end\n", "// top\nmethod f() {\n    // one\n    x = 1\n    // two\n}\n// end\n")
+    expectText("block comment line", "method f(){\n/* a */\nx=1\n}\n", "method f() {\n    /* a */\n    x = 1\n}\n")
+    expectText("comment after an opener", "method f(){ // c\nx=1\n}\n", "method f() { // c\n    x = 1\n}\n")
+}
+
+method runRecoveryIndentCases() {
+    expectText("extra closing brace", "method f(){\n}\n}\nx=1\n", "method f() {\n}\n}\nx = 1\n")
+    expectText("extra closing parenthesis", "x=1)\ny=2\n", "x = 1)\ny = 2\n")
+    expectText("a brace closes unclosed parentheses", "method f(){\nx=foo(1,\ny=2\n}\nz=3\n", "method f() {\n    x = foo(1,\n        y = 2\n}\nz = 3\n")
+    expectText("mismatched closer", "method f(){\nx=[1,2)\ny=3\n}\n", "method f() {\n    x = [1, 2)\n        y = 3\n}\n")
+    expectText("never closed block", "method f(){\nif(a){\nx=1\n", "method f() {\n    if (a) {\n        x = 1\n")
+}
+
+method longestLine(string source): integer {
+    var longest = 0
+    for (line in source.split("\n")) {
+        if (line.length() > longest) {
+            longest = line.length()
+        }
+    }
+    return longest
+}
+
+method runDepthCases() {
+    var deep = strings.repeat("x = [\n", 100)
+    expectTrue("indentation stops at sixty four levels", longestLine(formatted(deep)) == 64 * 4 + 5)
+    expectStable("a file of unclosed brackets", deep)
+    var unmatched = strings.repeat("(", 600) + strings.repeat("]", 600) + "\n"
+    expectTrue("unmatched closers are copied", formatted(unmatched).length() == 1201)
+    expectStable("unmatched closers", unmatched)
+    var matched = strings.repeat("[", 300) + strings.repeat("]", 300) + "\n"
+    expectStable("brackets nested deeper than the match limit", matched)
+}
+
+method runSettingCases() {
+    var tabs = FormatSettings()
+    tabs.insertSpaces = false
+    expectWith("tab indentation", tabs, "method f(){\nif(a){\nx=1\n}\n}\n", "method f() {\n\tif (a) {\n\t\tx = 1\n\t}\n}\n")
+    var two = FormatSettings()
+    two.tabSize = 2
+    expectWith("two spaces", two, "method f(){\nx=1\n}\n", "method f() {\n  x = 1\n}\n")
+    var eight = FormatSettings()
+    eight.tabSize = 8
+    expectWith("eight spaces", eight, "method f(){\nx=1\n}\n", "method f() {\n        x = 1\n}\n")
+    var zero = FormatSettings()
+    zero.tabSize = 0
+    expectWith("a tab size below one is one", zero, "method f(){\nx=1\n}\n", "method f() {\n x = 1\n}\n")
+    var huge = FormatSettings()
+    huge.tabSize = 1000
+    expectWith("a huge tab size is capped at sixteen", huge, "method f(){\nx=1\n}\n", "method f() {\n                x = 1\n}\n")
+}
+
+method runTrackerCases() {
+    var tracker = IndentTracker(FormatSettings())
+    var tokens = lexText("method f() {\n  if (a) {\n  x\n  }\n  y\n}\n").tokens
+    var lines = []
+    for (token in tokens) {
+        if (token.firstOnLine && token.isEnd() == false) {
+            lines.append("[" + tracker.indentOf(token) + "]" + token.text + " depth=" + tracker.depth)
+        }
+        tracker.advance(token)
+    }
+    println("tracker lines: " + lines.join(" "))
+    println("tracker depth at the end: " + tracker.depth)
+}
+
+method runSpacingRulesCases() {
+    var rules = SpacingRules()
+    var tokens = lexText("a + b ( c ) [ d ] , e : f").tokens
+    var parts = []
+    var index = 1
+    while (index < tokens.length() - 1) {
+        parts.append("[" + rules.gapBetween(tokens[index - 1], tokens[index]) + "]")
+        index = index + 1
+    }
+    println("gapBetween: " + parts.join(""))
+    var pair = lexText("x = -1").tokens
+    println("gapBetween of a minus after a bare equal sign: [" + rules.gapBetween(pair[1], pair[2]) + "][" + rules.gapBetween(pair[2], pair[3]) + "]")
+}
+
+method runIndentCases() {
+    println("--- indentation")
+    runBlockCases()
+    runBracketCases()
+    runContinuationCases()
+    runCommentIndentCases()
+    runRecoveryIndentCases()
+    runDepthCases()
+    runSettingCases()
+    runTrackerCases()
+    runSpacingRulesCases()
+}

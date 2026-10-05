@@ -1,0 +1,151 @@
+package main
+
+import path
+import "novus/lsp/base/platform"
+import "novus/lsp/services/checker"
+
+private final SHADOW_REQUEST_ID = 7771
+private final SHADOW_MANIFEST = "project \"x/y\"\nversion \"0.1.0\"\nmain \"main.nv\"\n\nrequire \"novus/lib\"\nreplace \"novus/lib\" \"../lib\"\nreplace \"novus/abs\" \"/abs/dir\"\nreplace \"novus/here\" \"./vendor/here\"\n"
+
+// Every file below dir as `relative/path`, folders first-level sorted, recursion depth is tiny in these trees.
+method listTree(string dirPath, string prefix): array<string> {
+    var found = []
+    for (name in listDirectoryEntries(dirPath)) {
+        var child = dirPath + "/" + name
+        if (DiskTextSource().isDirectory(child)) {
+            for (inner in listTree(child, prefix + name + "/")) {
+                found.append(inner)
+            }
+            continue
+        }
+        found.append(prefix + name)
+    }
+    return found
+}
+
+method leftoverShadows(): integer {
+    var count = 0
+    for (name in listDirectoryEntries(temporaryDirectory())) {
+        if (name.startsWith("novus-lsp-" + SHADOW_REQUEST_ID + "-")) {
+            count = count + 1
+        }
+    }
+    return count
+}
+
+method makeProject(string container): string {
+    var root = container + "/proj"
+    makeDirectories(root + "/geo")
+    writeTextFile(root + "/project.nv", SHADOW_MANIFEST)
+    writeTextFile(root + "/main.nv", "disk main\n")
+    writeTextFile(root + "/geo/geo.nv", "package geo\n")
+    return root
+}
+
+method requestFor(string root, string entry): CheckRequest {
+    return CheckRequest(SHADOW_REQUEST_ID, "novusc", entry, root, 5)
+}
+
+method showManifest(string label, string manifestPath, string container) {
+    var shown = readTextFile(manifestPath).replace(path.basename(container), "<container>")
+    println("manifest " + label + ":")
+    for (line in shown.split("\n")) {
+        println("  | " + line)
+    }
+}
+
+method runBuildCases() {
+    var container = createTempDirectory("lsp-shadow-")
+    var root = makeProject(container)
+    var request = requestFor(root, root + "/main.nv")
+    request.overlays[root + "/main.nv"] = "buffer main\n"
+    request.overlays[root + "/geo/geo.nv"] = "package geo\n// disk text\n"
+    request.overlays[container + "/elsewhere/outside.nv"] = "not shadowed\n"
+    var tree = buildShadowTree(request, DiskTextSource())
+    println("shadow has a directory: " + (tree.directory != ""))
+    println("shadow entry is the entry inside the tree: " + (tree.entryFile == tree.directory + "/main.nv"))
+    println("shadow files: " + listTree(tree.directory, "").join(", "))
+    println("shadow main text: [" + readTextFile(tree.directory + "/main.nv").trim() + "]")
+    println("shadow geo text: [" + readTextFile(tree.directory + "/geo/geo.nv").trim().replace("\n", "|") + "]")
+    showManifest("moved replace targets", tree.directory + "/project.nv", container)
+    println("real tree untouched: " + readTextFile(root + "/main.nv").trim())
+    tree.cleanup()
+    println("cleanup removes the shadow tree: " + (DiskTextSource().exists(tree.directory) == false))
+    tree.cleanup()
+    println("second cleanup is harmless: " + (DiskTextSource().exists(root + "/main.nv")))
+    println("no shadow directory left over: " + leftoverShadows())
+    removeTree(container)
+}
+
+method runManifestCases() {
+    var container = createTempDirectory("lsp-shadow-")
+    var root = makeProject(container)
+    var request = requestFor(root, root + "/main.nv")
+    request.overlays[root + "/project.nv"] = "project \"buffer/manifest\"\nmain \"main.nv\"\nreplace \"a/b\" \"../b\"\n"
+    var tree = buildShadowTree(request, DiskTextSource())
+    showManifest("buffer manifest wins over the disk one", tree.directory + "/project.nv", container)
+    tree.cleanup()
+    var bare = container + "/bare"
+    makeDirectories(bare)
+    writeTextFile(bare + "/main.nv", "disk\n")
+    var bareRequest = requestFor(bare, bare + "/main.nv")
+    bareRequest.overlays[bare + "/main.nv"] = "buffer\n"
+    var bareTree = buildShadowTree(bareRequest, DiskTextSource())
+    println("project without manifest has none in the shadow: " + listTree(bareTree.directory, "").join(", "))
+    bareTree.cleanup()
+    removeTree(container)
+}
+
+method runFailureCases() {
+    var container = createTempDirectory("lsp-shadow-")
+    var root = makeProject(container)
+    var outside = requestFor(root, container + "/elsewhere/main.nv")
+    outside.overlays[root + "/main.nv"] = "x\n"
+    var outsideTree = buildShadowTree(outside, DiskTextSource())
+    println("entry outside the project root: [" + outsideTree.directory + "][" + outsideTree.entryFile + "]")
+    var rootless = requestFor("", root + "/main.nv")
+    println("empty project root: [" + buildShadowTree(rootless, DiskTextSource()).directory + "]")
+    var blocked = requestFor(root, root + "/main.nv")
+    blocked.overlays[root + "/main.nv"] = "a file\n"
+    blocked.overlays[root + "/main.nv/inner.nv"] = "below a file\n"
+    var blockedTree = buildShadowTree(blocked, DiskTextSource())
+    println("a path below a file cannot be written: [" + blockedTree.directory + "]")
+    println("a failed build leaves no directory: " + leftoverShadows())
+    ShadowTree("", "").cleanup()
+    println("cleanup of an empty tree does nothing")
+    removeTree(container)
+}
+
+method runTraversalCases() {
+    var container = createTempDirectory("lsp-shadow-")
+    var root = makeProject(container)
+    var request = requestFor(root, root + "/main.nv")
+    request.overlays[root + "/main.nv"] = "x\n"
+    request.overlays[root + "/../escaped.nv"] = "ESCAPED\n"
+    request.overlays[root + "/geo/../../escaped2.nv"] = "ESCAPED\n"
+    request.overlays[root + "/geo/../kept.nv"] = "stays inside\n"
+    request.overlays[root + "/./dot.nv"] = "dot\n"
+    var tree = buildShadowTree(request, DiskTextSource())
+    var shadowParent = path.dirname(tree.directory)
+    println("traversal: shadow files: " + listTree(tree.directory, "").join(", "))
+    println("traversal: skipped overlays: " + tree.skippedOverlays)
+    println("traversal: nothing written next to the shadow: " + (DiskTextSource().exists(shadowParent + "/escaped.nv") == false && DiskTextSource().exists(shadowParent + "/escaped2.nv") == false))
+    tree.cleanup()
+    var climbing = requestFor(root, root + "/../proj/../../main.nv")
+    climbing.overlays[root + "/main.nv"] = "x\n"
+    println("traversal: an entry that climbs out of the root: [" + buildShadowTree(climbing, DiskTextSource()).directory + "]")
+    println("traversal: below: [" + checkerRelativeBelow("/r", "/r/a/../b.nv") + "][" + checkerRelativeBelow("/r", "/r/../x.nv") + "][" + checkerRelativeBelow("/r/", "/r//a/./b.nv") + "][" + checkerRelativeBelow("/", "/b.nv") + "]")
+    removeTree(container)
+}
+
+method runShadowCases() {
+    println("--- shadow")
+    if (operatingSystem() == "windows") {
+        println("shadow cases: skipped on windows")
+        return
+    }
+    runBuildCases()
+    runManifestCases()
+    runFailureCases()
+    runTraversalCases()
+}

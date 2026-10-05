@@ -1,0 +1,140 @@
+package workspace
+
+import base/maybe
+import base/platform
+import base/text
+import projects/closure
+import projects/manifest
+import syntax/markup
+import syntax/outline
+import syntax/parsing
+
+// Parse cache keyed by path and text hash; editor overlays (open documents) shadow the disk. It is the TextSource of
+// every project: the closure, the module table and the scanner read files through it, so an unsaved buffer counts.
+// Paths are normalised with `manifestNormalizePath` on the way in, like `ClosureFile.filePath` (V99).
+define class FileCache based TextSource {
+    map<string, string> overlays
+    map<string, SourceFile> parsed
+    TextSource disk
+    TokenCache tokens
+
+    construct(TextSource disk) {
+        this.overlays = {}
+        this.parsed = {}
+        this.disk = disk
+        this.tokens = TokenCache(TOKEN_CACHE_CAPACITY)
+    }
+
+    method setOverlay(string filePath, string text) {
+        this.overlays[manifestNormalizePath(filePath)] = text
+    }
+
+    method clearOverlay(string filePath) {
+        this.overlays.remove(manifestNormalizePath(filePath))
+    }
+
+    // Drops what is cached for the file (it changed on disk); an overlay stays.
+    method forget(string filePath) {
+        var key = manifestNormalizePath(filePath)
+        this.parsed.remove(key)
+        this.tokens.drop(key)
+    }
+
+    method hasOverlay(string filePath): bool {
+        return this.overlays.has(manifestNormalizePath(filePath))
+    }
+
+    // Additive: the paths of all open documents, sorted.
+    method overlayPaths(): array<string> {
+        return this.overlays.keys()
+    }
+
+    method exists(string filePath): bool {
+        var key = manifestNormalizePath(filePath)
+        return this.overlays.has(key) || this.disk.exists(key)
+    }
+
+    method isDirectory(string dirPath): bool {
+        return this.disk.isDirectory(manifestNormalizePath(dirPath))
+    }
+
+    // The overlay text when the file is open, else the text on disk (`""` for a missing file).
+    method textOf(string filePath): string {
+        var key = manifestNormalizePath(filePath)
+        if (this.overlays.has(key)) {
+            return this.overlays[key]
+        }
+        return this.disk.textOf(key)
+    }
+
+    method entriesOf(string dirPath): array<string> {
+        return this.disk.entriesOf(manifestNormalizePath(dirPath))
+    }
+
+    // -1 when the file is missing on disk, also for a file that only exists as an overlay.
+    method modifiedMillis(string filePath): integer {
+        return this.disk.modifiedMillis(manifestNormalizePath(filePath))
+    }
+
+    // The parse of the current text: with the editor options for a path that has an overlay (tokens and locals), with
+    // the index options otherwise. A cached parse is served when its text hash is the current one and it has the
+    // tokens that the path needs now; the newest parse always replaces the stored one (V59, V100).
+    method syntaxOf(string filePath): SourceFile {
+        var key = manifestNormalizePath(filePath)
+        var content = this.textOf(key)
+        var open = this.overlays.has(key)
+        if (this.parsed.has(key) && this.serves(this.parsed[key], textHashOf(content), open)) {
+            return this.parsed[key]
+        }
+        var syntax = this.parse(key, content, open)
+        this.parsed[key] = syntax
+        return syntax
+    }
+
+    method serves(SourceFile cached, integer hash, bool needsTokens): bool {
+        if (cached.textHash != hash) {
+            return false
+        }
+        return needsTokens == false || cached.tokens.length() > 0
+    }
+
+    // A parse that keeps its tokens, for references, rename and resolved semantic tokens of a file nobody opened.
+    method syntaxWithTokens(string filePath): SourceFile {
+        var key = manifestNormalizePath(filePath)
+        if (this.overlays.has(key)) {
+            return this.syntaxOf(key)
+        }
+        var content = this.disk.textOf(key)
+        var found = this.tokens.find(key, textHashOf(content))
+        if (isSome(found)) {
+            return found
+        }
+        var syntax = this.parse(key, content, true)
+        this.tokens.store(key, syntax)
+        return syntax
+    }
+
+    method parse(string filePath, string content, bool withTokens): SourceFile {
+        var options = indexParseOptions()
+        if (withTokens) {
+            options = editorParseOptions()
+        }
+        if (fileKindOf(filePath) == FILE_KIND_NVH) {
+            return parseComponentText(filePath, content, options)
+        }
+        return parseSourceText(filePath, content, options)
+    }
+}
+
+// Adapts the cache to the closure builder, which asks for parsed files only.
+define class CacheSourceProvider based SourceProvider {
+    FileCache cache
+
+    construct(FileCache cache) {
+        this.cache = cache
+    }
+
+    method syntaxOf(string filePath): SourceFile {
+        return this.cache.syntaxOf(filePath)
+    }
+}

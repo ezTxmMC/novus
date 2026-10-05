@@ -1,0 +1,89 @@
+package targets
+
+import base/maybe
+import projects/closure
+import semantics/semantic
+import syntax/lexing
+import syntax/outline
+
+// The declaration whose name is the identifier: a local, a parameter or a declaration of the file.
+define class TargetsDeclarations {
+    Resolver resolver
+
+    construct(Resolver resolver) {
+        this.resolver = resolver
+    }
+
+    method symbolAt(ClosureFile file, Scope scope, Token token): Symbol {
+        var local = this.localAt(scope, token)
+        if (isSome(local)) {
+            return targetsLocalSymbol(file, local)
+        }
+        for (symbol in this.resolver.index.symbolsInFile(file.filePath)) {
+            if (symbol.decl.nameSpan.start == token.start && symbol.decl.name == token.text) {
+                return symbol
+            }
+        }
+        return nothing()
+    }
+
+    method localAt(Scope scope, Token token): Local {
+        if (isNone(scope.enclosingCallable)) {
+            return nothing()
+        }
+        for (local in scope.enclosingCallable.locals) {
+            if (local.nameSpan.start == token.start && local.name == token.text) {
+                return local
+            }
+        }
+        return nothing()
+    }
+}
+
+// Resolves identifier tokens: first as a declaration, then as a reference (`TargetsRules`). The tokens are those of a file
+// or the tokens of one `${...}` expression of a string.
+define class TargetFinder {
+    Resolver resolver
+
+    construct(Resolver resolver) {
+        this.resolver = resolver
+    }
+
+    method targetAt(ClosureFile file, SourceFile syntax, integer offset, bool lenient): IdentifierTarget {
+        if (isNone(file) || isNone(syntax)) {
+            return nothing()
+        }
+        var tokens = targetsIslandAt(syntax.tokens, offset)
+        if (isNone(tokens)) {
+            tokens = syntax.tokens
+        }
+        var index = targetsIdentifierIndex(tokens, offset)
+        if (index < 0) {
+            return nothing()
+        }
+        return this.targetOfToken(file, tokens, index, lenient)
+    }
+
+    method targetOfToken(ClosureFile file, array<Token> tokens, integer index, bool lenient): IdentifierTarget {
+        var token = tokens[index]
+        var scope = this.resolver.scopeAt(file, token.start)
+        var target = this.declarationTarget(file, scope, token)
+        if (isNone(target)) {
+            target = TargetsRules(this.resolver, file, tokens, scope, lenient).resolve(index)
+        }
+        if (isSome(target)) {
+            target.scope = scope
+        }
+        return target
+    }
+
+    method declarationTarget(ClosureFile file, Scope scope, Token token): IdentifierTarget {
+        var declared = TargetsDeclarations(this.resolver).symbolAt(file, scope, token)
+        if (isNone(declared)) {
+            return nothing()
+        }
+        var target = IdentifierTarget(TARGETS_KIND_SYMBOL, [declared], TARGETS_STATUS_RESOLVED, token)
+        target.declaration = true
+        return target
+    }
+}

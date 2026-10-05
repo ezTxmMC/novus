@@ -1,0 +1,64 @@
+package main
+
+import path
+import "novus/lsp/base/model"
+import "novus/lsp/base/platform"
+import "novus/lsp/projects/stdlib"
+import "novus/lsp/projects/workspace"
+import "novus/lsp/services/diagnostics"
+
+// Prints the own diagnostics (the `novus` layer and the manifest layer) of the files named on the command line, one line per
+// finding (`diagnosticReportLines`, DESIGN 6.20): the workspace is built on the disk, and every file is opened as a document.
+//   diagnose_tool <file>...        exit code 0 when every file could be read, 2 otherwise
+//   diagnose_tool corpus <root>    the corpus step (e) of test/run_lsp_corpus.sh: the report of every `.nv` and `.nvh` file below the
+//                                  root (the walker of the other corpus tools) must run to the end; prints `summary diagnose.files <n>`
+// The corpus step (b) uses the rules in-process (`syntax_tool compare`, DESIGN 9.5-4).
+private final DIAGNOSE_TOOL_USAGE = "usage: diagnose_tool <file>... | diagnose_tool corpus <root>"
+private final DIAGNOSE_TOOL_USAGE_EXIT = 2
+private final DIAGNOSE_TOOL_EXTENSIONS = [".nv", ".nvh"]
+private final DIAGNOSE_TOOL_MAX_DEPTH = 64
+
+method main(array<string> args): integer {
+    if (args.length() == 2 && args[0] == "corpus") {
+        return diagnoseToolCorpus(args[1])
+    }
+    if (args.length() == 0) {
+        eprintln(DIAGNOSE_TOOL_USAGE)
+        return DIAGNOSE_TOOL_USAGE_EXIT
+    }
+    var workspace = Workspace(FileCache(DiskTextSource()), standardLibrary())
+    var settings = Settings()
+    var status = 0
+    for (file in args) {
+        status = status + diagnoseToolReport(workspace, settings, file)
+    }
+    return status
+}
+
+method diagnoseToolReport(Workspace workspace, Settings settings, string file): integer {
+    if (path.isFile(file) == false) {
+        eprintln("diagnose_tool: " + file + " is not a file")
+        return DIAGNOSE_TOOL_USAGE_EXIT
+    }
+    for (line in diagnosticReportLines(workspace, settings, path.absolute(file))) {
+        println(line)
+    }
+    return 0
+}
+
+// Every file of the repository goes through the report, as an editor would open it; a runtime error aborts the tool, which
+// fails the step. Only the count is printed: the findings themselves are compared by the semantic step of `syntax_tool`.
+method diagnoseToolCorpus(string root): integer {
+    if (path.isDir(root) == false) {
+        eprintln("diagnose_tool: " + root + " is not a directory")
+        return DIAGNOSE_TOOL_USAGE_EXIT
+    }
+    var workspace = Workspace(FileCache(DiskTextSource()), standardLibrary())
+    var settings = Settings()
+    var files = walkSourceFiles(DiskTextSource(), root, DIAGNOSE_TOOL_EXTENSIONS, DIAGNOSE_TOOL_MAX_DEPTH)
+    for (file in files) {
+        diagnosticReportLines(workspace, settings, file)
+    }
+    println("summary diagnose.files " + files.length())
+    return 0
+}

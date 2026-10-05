@@ -1,0 +1,73 @@
+package main
+
+import "novus/lsp/services/checker"
+
+method describeFinding(CheckFinding finding): string {
+    return "[" + finding.filePath + "] line=" + finding.line + " position=" + finding.hasPosition + " message=[" + finding.message + "]"
+}
+
+method showParsed(string label, string output, string workDir, string realRoot) {
+    var findings = parseCheckOutput(output, workDir, realRoot)
+    println("parse " + label + ": " + findings.length() + " finding(s)")
+    for (finding in findings) {
+        println("  " + describeFinding(finding))
+    }
+}
+
+method runShapeCases() {
+    showParsed("success line", "ok: /work/main.nv\n", "/work", "/work")
+    showParsed("empty output", "", "/work", "/work")
+    showParsed("file and line", "error: /work/main.nv:3: unknown variable 'y'\n", "/work", "/work")
+    showParsed("file line and column one", "error: /work/main.nv:2:1: unexpected end of file in expression\n", "/work", "/work")
+    showParsed("class without position", "error: class X: duplicate definition of 'X'\n", "/work", "/work")
+    showParsed("program without position", "error: program: no 'method main' found\n", "/work", "/work")
+    showParsed("file without line", "error: /work/main.nv: no package 'nosuch': there is no folder ../nosuch\n", "/work", "/work")
+    showParsed("nvh file", "error: /work/page.nvh:12: expected '}'\n", "/work", "/work")
+}
+
+method runTrickyCases() {
+    showParsed("message with colons and a later line number", "error: /work/a.nv:5: expected 'x' but found ':12: y'\n", "/work", "/work")
+    showParsed("windows drive", "error: C:\\work\\b.nv:7: bad thing\n", "C:\\work", "/real")
+    showParsed("windows drive with column", "error: C:\\work\\geo\\c.nv:7:1: bad\n", "C:\\work", "/real")
+    showParsed("empty message", "error: /work/a.nv:4:\n", "/work", "/work")
+    showParsed("no space after the colon is no location", "error: /work/a.nv:4:x\n", "/work", "/work")
+    showParsed("a line number with ten digits is no location", "error: /work/a.nv:1234567890: x\n", "/work", "/work")
+    showParsed("colon at the start", "error: :3: x\n", "/work", "/work")
+    showParsed("bare error word", "error: \n", "/work", "/work")
+    showParsed("a message that mentions a file is no path", "error: duplicate definition of 'a.nv: x'\n", "/work", "/work")
+    showParsed("a relative name with a space is no path", "error: some file.nv: x\n", "/work", "/work")
+    showParsed("an absolute path with a space stays a path", "error: /my work/a.nv: no package 'q'\n", "/my work", "/my work")
+}
+
+method runNoiseCases() {
+    showParsed("noise lines are ignored", "fetching github.com/x/y\n\nwarning: something\nnovusc: cannot open 'x'\nerror: /work/a.nv:1: oops\n", "/work", "/work")
+    showParsed("crlf line endings", "error: /work/a.nv:1: first\r\nerror: /work/a.nv:2: second\r\n", "/work", "/work")
+    showParsed("several errors keep their order", "error: /work/b.nv:9: nine\nerror: /work/a.nv:1: one\n", "/work", "/work")
+    showParsed("no final newline", "error: /work/a.nv:8: last", "/work", "/work")
+}
+
+method runMappingCases() {
+    showParsed("shadow path moves to the real root", "error: /tmp/shadow-1/geo/geo.nv:2: unknown variable 'zzz'\n", "/tmp/shadow-1", "/home/user/proj")
+    showParsed("work directory with a trailing slash", "error: /tmp/shadow-1/main.nv:2: x\n", "/tmp/shadow-1/", "/home/user/proj/")
+    showParsed("a path outside the work directory stays", "error: /elsewhere/lib.nv:2: x\n", "/tmp/shadow-1", "/home/user/proj")
+    showParsed("a directory with the same prefix is not inside", "error: /tmp/shadow-10/main.nv:2: x\n", "/tmp/shadow-1", "/home/user/proj")
+    showParsed("relative path is read against the work directory", "error: geo/geo.nv:2: x\n", "/tmp/shadow-1", "/home/user/proj")
+    showParsed("no work directory leaves the path", "error: geo/geo.nv:2: x\n", "", "")
+    showParsed("position-less file moves too", "error: /tmp/shadow-1/main.nv: no package 'q'\n", "/tmp/shadow-1", "/home/user/proj")
+}
+
+method runAnchorCases() {
+    var findings = parseCheckOutput("error: class X: duplicate definition of 'X'\nerror: /work/b.nv:3: x\n", "/work", "/work")
+    checkerAnchorFindings(findings, "/work/main.nv")
+    println("anchor: " + describeFinding(findings[0]))
+    println("anchor: " + describeFinding(findings[1]))
+}
+
+method runOutputCases() {
+    println("--- output")
+    runShapeCases()
+    runTrickyCases()
+    runNoiseCases()
+    runMappingCases()
+    runAnchorCases()
+}

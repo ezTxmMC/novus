@@ -1,0 +1,118 @@
+package main
+
+import "novus/lsp/base/text"
+import "novus/lsp/base/model"
+
+method show(string label, object value) {
+    println label + ": " + value
+}
+
+method testSettings() {
+    println "== settings defaults"
+    var settings = Settings()
+    var pureline = settings.pureline
+    show("pureline.enabled", pureline.enabled)
+    show("pureline.flagPlainElse", pureline.flagPlainElse)
+    show("pureline.functionReviewLines", pureline.functionReviewLines)
+    show("pureline.functionMaxLines", pureline.functionMaxLines)
+    show("pureline.maxLinesPerFile", pureline.maxLinesPerFile)
+    show("pureline.maxFilesPerFolder", pureline.maxFilesPerFolder)
+    show("pureline.allowedShortNames", pureline.allowedShortNames.join(","))
+    show("check.mode", settings.check.mode)
+    show("check.novuscPath", "[" + settings.check.novuscPath + "]")
+    show("check.timeoutSeconds", settings.check.timeoutSeconds)
+    show("check.idleMillis", settings.check.idleMillis)
+    show("format.tabSize", settings.format.tabSize)
+    show("format.insertSpaces", settings.format.insertSpaces)
+    show("format.maxBlankLines", settings.format.maxBlankLines)
+    show("explicitImports", settings.explicitImports)
+    show("snippetIndent", "[" + settings.snippetIndent + "]")
+    show("ownDiagnostics", settings.ownDiagnostics)
+    show("completionMaxItems", settings.completionMaxItems)
+}
+
+method testSettingsIndependence() {
+    println "== settings are independent objects"
+    var first = Settings()
+    var second = Settings()
+    first.pureline.allowedShortNames.append("x")
+    first.completionMaxItems = 5
+    first.format.tabSize = 2
+    show("second short names", second.pureline.allowedShortNames.join(","))
+    show("second completionMaxItems", second.completionMaxItems)
+    show("second tabSize", second.format.tabSize)
+    show("third short names", PurelineSettings().allowedShortNames.join(","))
+    show("format alone", FormatSettings().tabSize + " " + FormatSettings().insertSpaces + " " + FormatSettings().maxBlankLines)
+}
+
+method testEnums() {
+    println "== enum codes"
+    show("Severity", Severity.Error.code + " " + Severity.Warning.code + " " + Severity.Information.code + " " + Severity.Hint.code)
+    show("Severity equality", Severity.Error == Severity.Error)
+    show("Severity inequality", Severity.Error == Severity.Hint)
+    var kinds = [CompletionKind.Text, CompletionKind.Method, CompletionKind.Function, CompletionKind.Constructor, CompletionKind.Field, CompletionKind.Variable, CompletionKind.Class, CompletionKind.Interface, CompletionKind.Module, CompletionKind.Property, CompletionKind.Enum, CompletionKind.Keyword, CompletionKind.Snippet, CompletionKind.File, CompletionKind.Folder, CompletionKind.EnumMember, CompletionKind.Constant, CompletionKind.Struct]
+    var codes = []
+    for (kind in kinds) {
+        codes.append(kind.code)
+    }
+    show("CompletionKind", codes.join(" "))
+    var outline = [OutlineKind.Module, OutlineKind.Namespace, OutlineKind.Class, OutlineKind.Method, OutlineKind.Property, OutlineKind.Field, OutlineKind.Constructor, OutlineKind.Enum, OutlineKind.Interface, OutlineKind.Function, OutlineKind.Variable, OutlineKind.Constant, OutlineKind.EnumMember, OutlineKind.Struct]
+    var outlineCodes = []
+    for (kind in outline) {
+        outlineCodes.append(kind.code)
+    }
+    show("OutlineKind", outlineCodes.join(" "))
+}
+
+method testRecords() {
+    println "== record defaults"
+    var diagnostic = Diagnostic(Span(1, 4), Severity.Warning, "novus", "unused", "x is unused")
+    show("diagnostic", diagnostic.span.start + "-" + diagnostic.span.end + " " + diagnostic.severity.code + " " + diagnostic.source + " " + diagnostic.code + " " + diagnostic.message)
+    show("diagnostic flags", diagnostic.unnecessary + " " + diagnostic.deprecated + " related " + diagnostic.related.length() + " data [" + diagnostic.data + "]")
+    var related = RelatedInfo("/a.nv", Span(0, 1), "see")
+    show("related", related.filePath + " " + related.span.end + " " + related.message)
+    var item = CompletionItem("name", CompletionKind.Field, "string name")
+    show("item", item.label + " " + item.kind.code + " " + item.detail)
+    show("item defaults", item.isSnippet + " " + item.deprecated + " edits " + item.additionalEdits.length() + " replace " + item.replaceSpan.length() + " [" + item.insertText + item.filterText + item.sortText + item.command + item.resolveKey + item.documentation + item.labelDescription + "]")
+    show("replaceSpan unset by default", item.hasReplaceSpan())
+    item.replaceSpan = Span(0, 0)
+    show("replaceSpan set to the empty span", item.hasReplaceSpan())
+    var list = CompletionList(true, [item])
+    show("list", list.isIncomplete + " " + list.items.length())
+    var entry = OutlineEntry("Circle", "class", OutlineKind.Class, Span(0, 40), Span(6, 12))
+    show("outline", entry.name + " " + entry.kind.code + " " + entry.fullSpan.end + " " + entry.nameSpan.start + " deprecated " + entry.deprecated + " children " + entry.children.length())
+    var symbol = WorkspaceSymbolEntry("Circle", OutlineKind.Class, "geo", Location("/a.nv", Span(1, 2)))
+    show("workspace symbol", symbol.name + " " + symbol.containerName + " " + symbol.location.filePath)
+    var action = CodeActionItem("Import 'x'", "quickfix")
+    show("code action", action.title + " " + action.kind + " preferred " + action.preferred + " edits " + action.edits.length() + " [" + action.command + "] args " + action.commandArguments.length())
+    var edit = FileEdit("/a.nv", [TextEdit(Span(0, 0), "import x\n")])
+    show("file edit", edit.filePath + " " + edit.edits.length() + " " + edit.edits[0].newText.length())
+}
+
+method testViews() {
+    println "== views and cancellation"
+    var hover = HoverInfo("**x**", Span(2, 3))
+    show("hover", hover.markdown + " " + hover.span.start)
+    var signature = SignatureInfo("f(a, b)", ["a", "b"], "doc")
+    var help = SignatureHelp([signature], 0, 1)
+    show("signature", help.signatures[0].label + " " + help.signatures[0].parameters.length() + " " + help.activeSignature + " " + help.activeParameter)
+    var folding = FoldingEntry(1, 5, "region")
+    show("folding", folding.startLine + " " + folding.endLine + " " + folding.kind)
+    var span = SemanticSpan(Span(0, 3), 2, 5)
+    show("semantic", span.span.end + " " + span.tokenType + " " + span.modifiers)
+    var link = DocumentLink(Span(7, 12), "/x/y.nv")
+    show("link", link.span.end + " " + link.targetPath)
+    var highlight = HighlightEntry(Span(1, 2), 3)
+    show("highlight", highlight.span.start + " " + highlight.kind)
+    var cancel = NeverCancelled()
+    show("NeverCancelled", cancel.isCancelled())
+    show("CANCEL_POLL_INTERVAL", CANCEL_POLL_INTERVAL)
+}
+
+method main {
+    testSettings()
+    testSettingsIndependence()
+    testEnums()
+    testRecords()
+    testViews()
+}

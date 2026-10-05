@@ -1,0 +1,63 @@
+package main
+
+// Field reads of an object next to calls that change the object.
+import math
+
+define class Vec {
+    private float x: get, set
+    private integer n: get, set
+    construct(float x) {
+        this.x = x
+        this.n = 1
+    }
+    method grow(): float {
+        this.x = this.x + 10.0
+        this.n = this.n + 1
+        return this.x
+    }
+}
+
+method bump(Vec p): float {
+    p.grow()
+    return 1.0
+}
+method bumpn(Vec p): integer {
+    p.grow()
+    return 1
+}
+
+method f1(Vec p): float {
+    return p.x() * bump(p) - p.x()
+}
+method f2(Vec p): float {
+    return p.x() - p.grow() + p.x()
+}
+method f3(Vec p): integer {
+    return p.n() * 100 + bumpn(p) * 10 + p.n()
+}
+method f4(Vec p, array<float> a): float {
+    return a[0] + p.grow() * a[0] + math.sqrt(p.x())
+}
+method f5(Vec p): float {
+    var s = p.x()
+    s = s + bump(p) + p.x()
+    return s
+}
+method f6(Vec p): bool {
+    return p.x() < bump(p) + p.x()
+}
+method f7(Vec p): float {
+    return math.pow(p.x(), bump(p) + p.x())
+}
+method main {
+    println(f1(Vec(1.0)))
+    println(f2(Vec(1.0)))
+    println(f3(Vec(1.0)))
+    println(f4(Vec(1.0), [2.0]))
+    println(f5(Vec(1.0)))
+    println(f6(Vec(1.0)))
+    println(f7(Vec(1.0)))
+    var v = Vec(3.0)
+    println(v.x() + v.grow() * v.x() - v.n())
+    println(v.n() - v.n() * bumpn(v))
+}

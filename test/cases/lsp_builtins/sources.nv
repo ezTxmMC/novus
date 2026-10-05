@@ -1,0 +1,111 @@
+package main
+
+import arrays
+
+// The three places the tables of `builtins` have to agree with: the method dispatch of the
+// runtime, the free builtins of the code generator and the keyword table of the lexer.
+
+private final RUNTIME_DISPATCH = "../../../runtime/nv_invoke.h"
+private final CODEGEN_BUILTINS = "../../../compiler/codegen/builtins.nv"
+private final LEXER_CHARS = "../../../compiler/lexer/chars.nv"
+private final DISPATCH_MARK = "strcmp(name, \""
+private final STRING_TABLE_MARK = "{\""
+private final STRING_TABLE_START = "nv_str_methods[] = {"
+private final STRING_TABLE_END = "};"
+private final MAP_BLOCK_START = "if (strcmp(name, \"has\")"
+private final MAP_BLOCK_END = "nv_error(\"unknown method '%s()'"
+private final QUOTE = "\""
+
+// The text from the first start marker up to the next end marker; "" when either is missing.
+method sourceSection(string source, string startMarker, string endMarker): string {
+    var start = source.indexOf(startMarker)
+    if (start < 0) {
+        return ""
+    }
+    var end = source.indexOf(endMarker, start + startMarker.length())
+    if (end < 0) {
+        return ""
+    }
+    return source.substring(start, end)
+}
+
+// Every quoted word that follows `marker` in the text, in order, without duplicates.
+method wordsAfter(string text, string marker): array<string> {
+    var words = []
+    var at = text.indexOf(marker)
+    while (at >= 0) {
+        var from = at + marker.length()
+        var close = text.indexOf(QUOTE, from)
+        var word = text.substring(from, close)
+        if (words.contains(word) == false) {
+            words.append(word)
+        }
+        at = text.indexOf(marker, close + 1)
+    }
+    return words
+}
+
+method dispatchNames(string receiver): array<string> {
+    var source = readFile(RUNTIME_DISPATCH)
+    if (receiver == "array") {
+        return wordsAfter(sourceSection(source, "if (strcmp(name, \"append\")", "if (nv_type_of(t) == NV_MAP) {"), DISPATCH_MARK)
+    }
+    if (receiver == "map") {
+        return wordsAfter(sourceSection(source, MAP_BLOCK_START, MAP_BLOCK_END), DISPATCH_MARK)
+    }
+    return stringTableNames(source)
+}
+
+// The string methods live in the table nv_str_methods[]; "length" is dispatched for every collection,
+// so it is not counted here, as before.
+method stringTableNames(string source): array<string> {
+    var table = sourceSection(source, STRING_TABLE_START, STRING_TABLE_END)
+    var names = wordsAfter(table, STRING_TABLE_MARK)
+    var filtered = []
+    for (name in names) {
+        if (name != "length") {
+            filtered.append(name)
+        }
+    }
+    return filtered
+}
+
+method dispatchHasLength(): bool {
+    return readFile(RUNTIME_DISPATCH).contains("strcmp(name, \"length\") == 0")
+}
+
+// Free builtins as the code generator implements them: name and the exact argument count.
+method codegenArity(string name): integer {
+    var source = readFile(CODEGEN_BUILTINS)
+    var marker = "expectArgs(\"" + name + "\", nargs, "
+    var at = source.indexOf(marker)
+    if (at < 0) {
+        return -1
+    }
+    var from = at + marker.length()
+    return parseInt(source.substring(from, source.indexOf(",", from)))
+}
+
+method codegenNames(): array<string> {
+    return wordsAfter(readFile(CODEGEN_BUILTINS), "if (name == \"")
+}
+
+method lexerKeywords(): array<string> {
+    var source = readFile(LEXER_CHARS)
+    var table = sourceSection(source, "private final KEYWORDS = {", "private final SYMBOL_CHARS")
+    return wordsAfter(table, QUOTE)
+}
+
+method sortedCopy(array<string> words): array<string> {
+    return arrays.sort(words)
+}
+
+method missingFrom(array<string> wanted, array<string> actual): array<string> {
+    var missing = []
+    for (word in wanted) {
+        if (actual.contains(word) == false) {
+            missing.append(word)
+        }
+    }
+    return missing
+}

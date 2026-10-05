@@ -1,0 +1,189 @@
+package candidates
+
+import path
+import strings
+import base/maybe
+import base/model
+import base/platform
+import projects/modules
+import projects/workspace
+
+private final CANDIDATES_SEGMENT_SEPARATOR = "/"
+private final CANDIDATES_QUOTE = "\""
+private final CANDIDATES_STRING_STOPS = ["\"", "\n", "\r"]
+private final CANDIDATES_FILE_MARK = "@"
+private final CANDIDATES_PROJECT_MANIFEST = "project.nv"
+private final CANDIDATES_SOURCE_EXTENSIONS = [".nv", ".nvh"]
+
+// The things an `import` can name, as items: the first folder level of the project, the files and folders below a
+// typed parent (`import @geo/`, `import geo/`), and the modules of the dependency table with the directories below them.
+define class CandidatesImportPaths {
+    FileContext context
+    Workspace workspace
+
+    construct(FileContext context, Workspace workspace) {
+        this.context = context
+        this.workspace = workspace
+    }
+
+    method itemsFor(CompletionContext request): array<CompletionItem> {
+        if (request.kind == CANDIDATES_KIND_IMPORT_TARGET) {
+            return this.targets()
+        }
+        if (request.kind == CANDIDATES_KIND_IMPORT_FILE) {
+            return this.filesBelow(request.typeName)
+        }
+        if (request.kind == CANDIDATES_KIND_IMPORT_NESTED) {
+            return this.foldersBelow(request.typeName)
+        }
+        if (request.kind == CANDIDATES_KIND_IMPORT_MODULE) {
+            return this.modules(request)
+        }
+        return []
+    }
+
+    // The package folders of the project that the identifier rules allow, relative to the root, sorted.
+    method folders(): array<string> {
+        var root = this.context.project.layout.root
+        if (root == "") {
+            return []
+        }
+        var found = []
+        for (folder in this.context.project.scanFor(this.workspace.files, nowMillis()).packageFolders) {
+            var relative = path.relative(root, folder)
+            if (candidatesIsImportablePath(relative)) {
+                found.append(relative)
+            }
+        }
+        return found
+    }
+
+    // `a` for the folders `a` and `a/b`: where the user can continue, `@` for files, `"` for dependency modules.
+    method targets(): array<CompletionItem> {
+        var items = this.foldersBelow("")
+        items.append(candidatesItem(CANDIDATES_FILE_MARK, CompletionKind.Keyword, "import a single file", CANDIDATES_BUCKET_KEYWORD))
+        if (this.context.project.modules.readyEntries().length() > 0) {
+            items.append(candidatesItem(CANDIDATES_QUOTE, CompletionKind.Keyword, "import a dependency module", CANDIDATES_BUCKET_KEYWORD))
+        }
+        return items
+    }
+
+    // The next folder level below `parent` (`""` or `geo/`), each segment once.
+    method foldersBelow(string parent): array<CompletionItem> {
+        var seen = {}
+        var items = []
+        for (relative in this.folders()) {
+            var segment = this.nextSegment(relative, parent)
+            if (segment != "" && seen.has(segment) == false) {
+                seen[segment] = true
+                items.append(candidatesItem(segment, CompletionKind.Folder, "package folder", CANDIDATES_BUCKET_PROJECT))
+            }
+        }
+        return items
+    }
+
+    method nextSegment(string relative, string parent): string {
+        if (relative.startsWith(parent) == false) {
+            return ""
+        }
+        return relative.substring(parent.length(), relative.length()).split(CANDIDATES_SEGMENT_SEPARATOR)[0]
+    }
+
+    // `import @geo/`: the sources directly in that folder without their extension, and the folders below it.
+    method filesBelow(string parent): array<CompletionItem> {
+        var items = this.foldersBelow(parent)
+        var root = this.context.project.layout.root
+        if (root == "") {
+            return items
+        }
+        var own = ""
+        if (isSome(this.context.closureFile)) {
+            own = this.context.closureFile.filePath
+        }
+        for (entry in this.workspace.files.entriesOf(path.join(root, parent))) {
+            var filePath = path.join(root, parent, entry)
+            if (candidatesIsSourceFile(entry) && filePath != own && candidatesIsIdentifier(path.stem(entry))) {
+                items.append(candidatesItem(path.stem(entry), CompletionKind.File, "file", CANDIDATES_BUCKET_PROJECT))
+            }
+        }
+        return items
+    }
+
+    // `import "`: the module keys that continue the typed text, and below a ready module its folders and files.
+    method modules(CompletionContext request): array<CompletionItem> {
+        var typed = request.typeName + request.prefix
+        var items = []
+        for (entry in this.context.project.modules.entries) {
+            if (entry.module.length() > typed.length() && entry.module.startsWith(typed) && entry.module.indexOf(CANDIDATES_LINE_FEED) < 0) {
+                items.append(this.moduleItem(entry, request))
+            }
+            if (entry.isReady() && typed.startsWith(entry.module + CANDIDATES_SEGMENT_SEPARATOR)) {
+                this.addModuleChildren(items, entry, typed)
+            }
+        }
+        return items
+    }
+
+    method moduleItem(ModuleEntry entry, CompletionContext request): CompletionItem {
+        var detail = "module"
+        if (entry.isReady() == false) {
+            detail = "module, not fetched"
+        }
+        var label = entry.module.substring(request.typeName.length(), entry.module.length())
+        var item = candidatesItem(label, CompletionKind.Module, detail, CANDIDATES_BUCKET_DEPENDENCY)
+        item.labelDescription = entry.version
+        if (label.indexOf(CANDIDATES_SEGMENT_SEPARATOR) >= 0) {
+            item.replaceSpan = Span(request.replaceSpan.start, this.stringEnd(request.replaceSpan.end))
+        }
+        return item
+    }
+
+    // A key of several segments replaces what is left of the string, not only the segment under the cursor.
+    method stringEnd(integer from): integer {
+        var text = this.context.document.text
+        var end = from
+        while (end < text.length() && CANDIDATES_STRING_STOPS.contains(text.charAt(end)) == false) {
+            end = end + 1
+        }
+        return end
+    }
+
+    // The direct entries of the directory that the typed text names inside the module (no dot directories).
+    method addModuleChildren(array<CompletionItem> items, ModuleEntry entry, string typed) {
+        var rest = typed.substring(entry.module.length() + 1, typed.length())
+        var slash = strings.lastIndexOf(rest, CANDIDATES_SEGMENT_SEPARATOR)
+        var below = ""
+        if (slash >= 0) {
+            below = rest.substring(0, slash)
+        }
+        var directory = path.join(entry.dir, below)
+        for (name in this.workspace.files.entriesOf(directory)) {
+            var child = path.join(directory, name)
+            if (this.workspace.files.isDirectory(child) && isSkippedDirectoryName(name) == false) {
+                items.append(candidatesItem(name, CompletionKind.Folder, "package folder", CANDIDATES_BUCKET_DEPENDENCY))
+            }
+            if (candidatesIsSourceFile(name) && name != CANDIDATES_PROJECT_MANIFEST) {
+                items.append(candidatesItem(path.stem(name), CompletionKind.File, "file", CANDIDATES_BUCKET_DEPENDENCY))
+            }
+        }
+    }
+}
+
+method candidatesIsSourceFile(string name): bool {
+    for (extension in CANDIDATES_SOURCE_EXTENSIONS) {
+        if (name.endsWith(extension) && name != CANDIDATES_PROJECT_MANIFEST) {
+            return true
+        }
+    }
+    return false
+}
+
+// A path below the project root whose every segment is an identifier, so that an `import` can name it.
+method candidatesIsImportablePath(string relative): bool {
+    for (segment in relative.split(CANDIDATES_SEGMENT_SEPARATOR)) {
+        if (candidatesIsIdentifier(segment) == false) {
+            return false
+        }
+    }
+    return relative != ""
+}

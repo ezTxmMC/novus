@@ -1,0 +1,103 @@
+package main
+
+import "novus/lsp/base/text"
+import "novus/lsp/projects/stdlib"
+import "novus/lsp/syntax/outline"
+
+method declNames(StdModule module): array<string> {
+    var names = []
+    for (decl in module.syntax.decls) {
+        names.append(decl.name)
+    }
+    return names
+}
+
+method runListing(StdLibrary library) {
+    var names = library.moduleNames()
+    println("== listing")
+    println("  at least the 30 modules of the contract: " + (names.length() >= 30) + ", first is arrays: " + (names[0] == "arrays"))
+    println("  has os " + library.has("os") + " has unicode " + library.has("unicode") + " has nope " + library.has("nope") + " has empty " + library.has(""))
+    var sorted = true
+    var i = 1
+    while (i < names.length()) {
+        if (names[i - 1] > names[i]) {
+            sorted = false
+        }
+        i = i + 1
+    }
+    println("  sorted " + sorted)
+}
+
+method runModule(StdLibrary library) {
+    println("== module strings")
+    var module = library.module("strings")
+    println("  name " + module.name + " file " + module.syntax.filePath + " kind " + module.syntax.fileKind)
+    println("  declares repeat " + declNames(module).contains("repeat") + " and compare " + declNames(module).contains("compare"))
+    println("  source starts with package line " + module.source.startsWith("package strings"))
+    println("  hash matches source " + (module.syntax.textHash == textHashOf(module.source)))
+    println("  no tokens kept " + (module.syntax.tokens.length() == 0) + " issues " + module.syntax.issues.length())
+    println("  imports " + module.imports)
+    println("  summary " + module.summary)
+    println("  log imports " + library.module("log").imports)
+    println("  json imports " + library.module("json").imports)
+}
+
+method runSummaries(StdLibrary library) {
+    println("== summaries")
+    println("  hash: " + library.module("hash").summary)
+    println("  csv: " + library.module("csv").summary)
+    println("  bits: " + library.module("bits").summary)
+    println("  config: " + library.module("config").summary)
+}
+
+method runDocs(StdLibrary library) {
+    println("== docs")
+    var fnv = library.module("hash").syntax.topLevelNamed("fnv1a")[0]
+    println("  fnv1a native " + fnv.nativeName + " doc [" + fnv.doc + "]")
+    println("  signature " + fnv.signatureText())
+}
+
+method runAllModulesParse(StdLibrary library) {
+    var issues = 0
+    var declarations = 0
+    for (name in library.moduleNames()) {
+        var module = library.module(name)
+        issues = issues + module.syntax.issues.length()
+        declarations = declarations + module.syntax.decls.length()
+    }
+    println("== every module")
+    println("  issues " + issues + " has declarations " + (declarations > 100))
+}
+
+method runCaching(StdLibrary library) {
+    var fresh = StdLibrary()
+    println("== caching")
+    println("  nothing parsed yet " + (fresh.cache.length() == 0))
+    println("  same module object " + (fresh.module("os") == fresh.module("os")))
+    println("  cache holds os " + fresh.cache.has("os") + " and not zlib " + fresh.cache.has("zlib"))
+    println("  unknown module is nothing " + (typeOf(library.module("nope")) == "unknown"))
+    println("  shared library is one object " + (standardLibrary() == standardLibrary()))
+    println("  shared library caches too " + (standardLibrary().module("math") == standardLibrary().module("math")))
+    println("  a fresh library has its own cache " + (StdLibrary().module("os") != library.module("os")))
+}
+
+method runFingerprint(StdLibrary library) {
+    var total = 0
+    for (name in library.moduleNames()) {
+        total = total + library.module(name).source.length()
+    }
+    println("== fingerprint")
+    println("  format " + (library.fingerprint() == "" + library.moduleNames().length() + "-" + total))
+    println("  stable " + (library.fingerprint() == StdLibrary().fingerprint()))
+}
+
+method main() {
+    var library = StdLibrary()
+    runListing(library)
+    runModule(library)
+    runSummaries(library)
+    runDocs(library)
+    runAllModulesParse(library)
+    runCaching(library)
+    runFingerprint(library)
+}

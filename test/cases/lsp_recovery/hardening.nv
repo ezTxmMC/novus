@@ -1,0 +1,78 @@
+package main
+
+import strings
+import "novus/lsp/syntax/outline"
+import "novus/lsp/syntax/parsing"
+
+private final CHAIN_DEPTH_BEYOND_LIMIT = 300
+private final CHAIN_DEPTH_FOR_OVERFLOW = 30000
+private final ISSUE_CAP = 2000
+private final BRACELESS_LABELS = ["if", "while", "for", "else", "sync"]
+private final BRACELESS_CHAINS = ["if (a) ", "while (a) ", "for (a in b) ", "if (a) {\n} else ", "sync (m) "]
+
+method parseEditor(string source): SourceFile {
+    return parseSourceText("h.nv", source, editorParseOptions())
+}
+
+method chainSource(string unit, integer depth): string {
+    return "method f() {\n" + strings.repeat(unit, depth) + "x = 1\n}\ny = 2\n"
+}
+
+// A braceless body is one statement that may start another one: the recursion is as deep as the text, so it is capped.
+method checkBracelessNesting() {
+    var which = 0
+    for (unit in BRACELESS_CHAINS) {
+        var label = BRACELESS_LABELS[which]
+        which = which + 1
+        var shallow = parseEditor(chainSource(unit, CHAIN_DEPTH_BEYOND_LIMIT))
+        expectEqual("nesting/" + label + "-300-levels-keep-the-outline", "f y", shallow.decls[0].name + " " + shallow.decls[1].name)
+        var deep = parseEditor(chainSource(unit, CHAIN_DEPTH_FOR_OVERFLOW))
+        expectEqual("nesting/" + label + "-30000-levels-survive", "f y", deep.decls[0].name + " " + deep.decls[1].name)
+        expectTrue("nesting/" + label + "-30000-levels-report-a-bounded-list", deep.issues.length() > 0 && deep.issues.length() <= ISSUE_CAP)
+    }
+}
+
+method checkIssueCap() {
+    var flood = parseEditor("method f() {\n" + strings.repeat("x++\n", 20000) + "}\n")
+    expectInt("cap/statement-issues-are-capped", ISSUE_CAP, flood.issues.length())
+    expectEqual("cap/the-first-ones-are-kept", "compound-assignment@2", "compound-assignment@" + (lineOfOffset("method f() {\n" + "x++\n", flood.issues[0].span.start)))
+    var lexical = parseEditor(strings.repeat("# ", 50000))
+    expectTrue("cap/lexical-issues-are-capped", lexical.issues.length() <= ISSUE_CAP)
+}
+
+method checkMixedIndentation() {
+    scenario("loose/later-member-at-column-zero", "define class A {\n    integer x\nmethod foo() {\n}\n}\nmethod main { }\n", "define class A /   integer x /   method foo() / method main()", "")
+    scenario("loose/annotation-at-column-zero", "define class A {\n    integer x\n@Note\nmethod foo() {\n}\n}\nmethod main { }\n", "define class A /   integer x /   method foo() / method main()", "")
+    scenario("loose/modifiers-at-column-zero", "define class A {\n    integer x\nprivate final method foo() {\n}\n}\nmethod main { }\n", "define class A /   integer x /   method foo() / method main()", "")
+    scenario("loose/first-member-on-the-brace-line", "define class A { integer x\nmethod foo() {\n}\n}\nmethod main { }\n", "define class A /   integer x /   method foo() / method main()", "")
+    scenario("loose/interface-entry-at-column-zero", "define interface I {\n    f()\nmethod g()\n}\nmethod main { }\n", "define interface I /   abstract method f() /   abstract method g() / method main()", "")
+    scenario("loose/really-unclosed-class-still-ends-at-the-method", "define class A {\n    integer x\nmethod m() {\n}\n", "define class A /   integer x / method m()", "unterminated-class-body@1/e")
+}
+
+method checkSkippedCharacters() {
+    scenario("skipped/dollar-in-an-expression", "method main {\n    println \"a\" $+ \"!\"\n}\n", "method main()", "unknown-character@2/w")
+    scenario("skipped/dollar-in-a-member-chain", "method main {\n    this.$mass = mass\n}\n", "method main()", "unknown-character@2/w")
+    scenario("skipped/dollar-between-top-level-items", "$ method a() {\n}\n# X = 1\n", "method a() / X", "unknown-character@1/w unknown-character@3/w")
+    scenario("skipped/define-as-a-local-type", "method main {\n    define text = \"abc\"\n    println text\n}\n", "method main()", "")
+    scenario("skipped/the-token-stream-stays-lossless", "method main {\n    x = 1 $ 2\n}\n", "method main()", "unknown-character@2/w")
+    var file = parseEditor("method main {\n    x = 1 $ 2\n}\n")
+    expectEqual("skipped/unknown-tokens-stay-in-the-source-file", "true", "" + (file.tokens[file.tokens.length() - 4].text == "$"))
+}
+
+method checkTrueAndFalseStatements() {
+    scenario("keyword/true-is-not-a-statement", "method main {\n    true\n    false\n}\n", "method main()", "unexpected-token@2/e unexpected-token@3/e")
+    scenario("keyword/true-is-fine-in-an-expression", "method main {\n    var a = true\n    if (a == false) {\n    }\n}\n", "method main()", "")
+}
+
+method checkMessages() {
+    var literal = "\"abc\ndef and a very long tail of text that goes on\""
+    var file = parseEditor(literal + "\nmethod m() {\n}\n")
+    expectEqual("message/long-literal-is-one-short-line", "unexpected '\"abc\\ndef and a very long...' at top level", file.issues[0].message)
+    var braceless = parseEditor("method m() {\n    if \"q\nr\" {\n    }\n}\n")
+    expectEqual("message/missing-parens-shows-no-raw-newline", "false", "" + braceless.issues[0].message.contains(chr(10)))
+    var multibyte = parseEditor("é" + strings.repeat("é", 40) + "\n")
+    expectEqual("message/preview-never-cuts-a-multi-byte-character", "true", "" + (multibyte.issues.length() > 0))
+    for (issue in multibyte.issues) {
+        expectTrue("message/preview-of-unknown-bytes-is-valid-utf8-length-" + issue.message.length(), issue.message.length() < 100)
+    }
+}

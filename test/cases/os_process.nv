@@ -1,0 +1,102 @@
+package main
+
+import os
+import path
+
+// os.run, os.realpath, os.isSymlink, os.modifiedMillis. The output is the same
+// on every platform: a check that only one platform can run is skipped on the
+// other by returning true (marked below), never by printing something else.
+// os.shellQuote has its own test, os_shell. The test's stdin is the file
+// os_process.stdin: a command that reads it is not detached.
+
+final WINDOWS = os.platform() == "windows"
+final SORT_INPUT = "sort"            // reads stdin until the end, and exists on unix and Windows
+final MIN_PLAUSIBLE_MILLIS = 1700000000000
+
+method say(string label, object value) {
+    println label + ": " + value
+}
+
+method printRun() {
+    var hello = os.run("echo hello")
+    say("echo code", hello["code"])
+    say("echo output", hello["output"].trim())
+    say("keys", hello.keys())
+    say("exit code", os.run("exit 3")["code"])
+    var silent = os.run("exit 0")
+    say("silent output [" + silent["output"] + "] code", silent["code"])
+    var missing = os.run("novus-surely-no-such-command 2>&1")
+    say("missing command fails", missing["code"] != 0)
+}
+
+method printRedirect() {
+    var tmp = path.join(os.temp(), "novus-os-process-" + os.pid())
+    var target = path.join(tmp, "echoed file.txt")
+    os.mkdir(tmp)
+    var result = os.run("echo hi > " + os.shellQuote(target))
+    say("redirect code", result["code"])
+    say("redirect output [" + result["output"] + "] file exists", os.exists(target))
+    os.removeAll(tmp)
+}
+
+// os_process.stdin holds a line: a command that was not detached would sort
+// it and print it.
+method printStdinIsNotInherited() {
+    var result = os.run(SORT_INPUT)
+    say("stdin closed", result["output"] == "" && result["code"] == 0)
+}
+
+method printRealpath(string root, string file) {
+    var detour = path.join(root, "real", "sub", "..", "file.txt")
+    say("realpath through ..", os.realpath(file) == os.realpath(detour))
+    say("realpath of missing [" + os.realpath(path.join(root, "nope")) + "]", "empty")
+    say("realpath is absolute", path.isAbsolute(os.realpath(file)))
+    say("realpath keeps the name", path.basename(os.realpath(file)) == "file.txt")
+}
+
+// Links need `ln` (and, on Windows, a privilege): when they cannot be made
+// here the checks that depend on them pass vacuously (skipped).
+method makeLink(string target, string link): bool {
+    if (WINDOWS) {
+        return false
+    }
+    return os.run("ln -s " + os.shellQuote(target) + " " + os.shellQuote(link) + " 2>&1")["code"] == 0
+}
+
+method printLinks(string root, string file) {
+    var link = path.join(root, "link.txt")
+    var dangling = path.join(root, "dangling")
+    var made = makeLink(file, link)
+    makeLink(path.join(root, "gone"), dangling)
+    say("link is symlink", !made || os.isSymlink(link))
+    say("link is file", !made || os.isFile(link))
+    say("realpath of link is the target", !made || os.realpath(link) == os.realpath(file))
+    say("dangling is symlink", !made || os.isSymlink(dangling))
+    say("dangling exists", os.exists(dangling))
+    say("dangling realpath [" + os.realpath(dangling) + "]", "empty")
+}
+
+method printModified(string file, string missing) {
+    var millis = os.modifiedMillis(file)
+    say("millis plausible", millis > MIN_PLAUSIBLE_MILLIS)
+    say("millis match seconds", millis / 1000 == os.modified(file))
+    say("missing", os.modifiedMillis(missing))
+}
+
+method main {
+    printRun()
+    printRedirect()
+    printStdinIsNotInherited()
+    var root = path.join(os.temp(), "novus-os-paths-" + os.pid())
+    var file = path.join(root, "real", "file.txt")
+    os.removeAll(root)
+    os.mkdir(path.join(root, "real", "sub"))
+    os.writeFile(file, "x")
+    printRealpath(root, file)
+    say("isSymlink file", os.isSymlink(file))
+    say("isSymlink dir", os.isSymlink(path.join(root, "real")))
+    say("isSymlink missing", os.isSymlink(path.join(root, "nope")))
+    printLinks(root, file)
+    printModified(file, path.join(root, "nope"))
+    os.removeAll(root)
+}

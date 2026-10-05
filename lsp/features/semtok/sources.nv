@@ -1,0 +1,98 @@
+package semtok
+
+import base/maybe
+import base/text
+import projects/workspace
+import syntax/lexing
+
+private final SEMTOK_BACKSLASH = chr(92)
+private final SEMTOK_KIND_NV = "nv"
+private final SEMTOK_KIND_MANIFEST = "manifest"
+
+method semtokOverlaps(Token token, Span range): bool {
+    return token.start < range.end && token.end > range.start
+}
+
+// Builds the source of a request. A manifest has no semantic tokens (5.7); a template file keeps only the tokens its
+// parse holds (the header island), because the markup around it is not Novus.
+define class SemtokSources {
+    FileContext context
+
+    construct(FileContext context) {
+        this.context = context
+    }
+
+    method build(Span range): SemtokSource {
+        var kind = this.context.document.fileKind()
+        if (kind == SEMTOK_KIND_MANIFEST || isNone(this.context.syntax) || range.end <= range.start) {
+            return SemtokSource([], [])
+        }
+        var lexed = this.lexedFor(kind)
+        var window = this.windowOf(lexed.tokens, range)
+        var streams = [window]
+        this.addInterpolations(streams, window, range)
+        return SemtokSource(streams, this.commentsIn(lexed.comments, range))
+    }
+
+    // The editor parse already holds the tokens of an open document; a file that was parsed without them is lexed here.
+    method lexedFor(string kind): LexResult {
+        var syntax = this.context.syntax
+        if (syntax.tokens.length() > 0 || kind != SEMTOK_KIND_NV) {
+            return LexResult(syntax.tokens, syntax.comments, [])
+        }
+        return lexText(this.context.document.text)
+    }
+
+    method windowOf(array<Token> tokens, Span range): SemtokStream {
+        var first = lexingFirstStartAtOrAfter(tokens, range.start)
+        if (first > 0 && tokens[first - 1].end > range.start) {
+            first = first - 1
+        }
+        var last = lexingFirstStartAtOrAfter(tokens, range.end)
+        return SemtokStream(tokens, first, last, false)
+    }
+
+    method commentsIn(array<Token> comments, Span range): array<Token> {
+        var found = []
+        for (comment in comments) {
+            if (semtokOverlaps(comment, range)) {
+                found.append(comment)
+            }
+        }
+        return found
+    }
+
+    method addInterpolations(array<SemtokStream> streams, SemtokStream window, Span range) {
+        var i = window.first
+        while (i < window.last) {
+            this.addInterpolationsOf(streams, window.tokens[i], range)
+            i = i + 1
+        }
+    }
+
+    method addInterpolationsOf(array<SemtokStream> streams, Token token, Span range) {
+        if (token.kind != TokenKind.String) {
+            return
+        }
+        for (inner in token.interpolations) {
+            var stream = this.streamOf(inner, range)
+            if (isSome(stream)) {
+                streams.append(stream)
+            }
+        }
+    }
+
+    // An escape inside `${...}` is decoded by the compiler before it lexes the expression, so the raw bytes do not lex
+    // the same way: such an expression stays part of the string token.
+    method streamOf(Span inner, Span range): SemtokStream {
+        var text = this.context.document.text
+        if (inner.start < 0 || inner.end > text.length() || inner.overlaps(range) == false) {
+            return nothing()
+        }
+        if (text.substring(inner.start, inner.end).contains(SEMTOK_BACKSLASH)) {
+            return nothing()
+        }
+        var lexed = lexRange(text, inner.start, inner.end)
+        return SemtokStream(lexed.tokens, 0, lexed.tokens.length(), true)
+    }
+}

@@ -1,0 +1,97 @@
+package jobs
+
+import base/maybe
+import base/model
+import base/platform
+import base/text
+import server/protocol
+import server/rpc
+import server/session
+
+private final JOBS_PUBLISH_METHOD = "textDocument/publishDiagnostics"
+private final JOBS_UNKNOWN_VERSION = -1
+
+// Encodes what the store holds for one file and writes publishDiagnostics (main thread only).
+define class JobsPublisher {
+    Session session
+    MessageWriter writer
+    WireEncoder encoder
+
+    construct(Session session, MessageWriter writer, WireEncoder encoder) {
+        this.session = session
+        this.writer = writer
+        this.encoder = encoder
+    }
+
+    // The merged diagnostics of the uri with the version of the open document (unknown for a file that is not open).
+    method send(string uri) {
+        var document = this.session.documentFor(uri)
+        if (isSome(document)) {
+            this.sendWith(uri, document.version, document.lines)
+            return
+        }
+        var lines = jobsLinesOfPath(this.session, uriToFilePath(uri))
+        this.sendWith(uri, JOBS_UNKNOWN_VERSION, lines)
+    }
+
+    method sendWith(string uri, integer version, LineIndex lines) {
+        var stored = this.session.diagnostics.merged(uri)
+        var encoded = []
+        var related = jobsRelatedLines(this.session, stored)
+        for (diagnostic in stored) {
+            encoded.push(this.encoder.diagnostic(lines, diagnostic, related))
+        }
+        this.writer.sendNotification(JOBS_PUBLISH_METHOD, this.encoder.publishParams(uri, version, encoded))
+    }
+}
+
+// The buffer of an open file, else the text on disk.
+method jobsLinesOfPath(Session session, string filePath): LineIndex {
+    var document = session.documents.findByPath(filePath)
+    if (isSome(document)) {
+        return document.lines
+    }
+    return LineIndex(session.workspace.files.textOf(filePath))
+}
+
+// Line indexes of the files that related information points to; empty when no diagnostic carries any.
+method jobsRelatedLines(Session session, array<Diagnostic> diagnostics): map<string, LineIndex> {
+    var found = {}
+    for (diagnostic in diagnostics) {
+        for (info in diagnostic.related) {
+            if (found.has(info.filePath) == false) {
+                found[info.filePath] = jobsLinesOfPath(session, info.filePath)
+            }
+        }
+    }
+    return found
+}
+
+define class JobsProduceWork based GuardedWork {
+    DiagnosticProducer producer
+    Document document
+
+    construct(DiagnosticProducer producer, Document document) {
+        this.producer = producer
+        this.document = document
+    }
+
+    method run(): object {
+        return this.producer.produce(this.document)
+    }
+}
+
+method jobsGroupAdd(map<string, array<Diagnostic>> groups, Diagnostic diagnostic) {
+    if (groups.has(diagnostic.source) == false) {
+        groups[diagnostic.source] = []
+    }
+    groups[diagnostic.source].push(diagnostic)
+}
+
+// The tick carries the time of the ticker thread; anything else falls back to the clock.
+method jobsTickTime(Envelope envelope): integer {
+    if (typeOf(envelope.payload) == "integer") {
+        return envelope.payload
+    }
+    return nowMillis()
+}

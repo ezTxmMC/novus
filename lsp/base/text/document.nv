@@ -1,0 +1,73 @@
+package text
+
+import bytes
+import hash
+import strings
+
+// One open text buffer.
+private final FILE_KIND_NV = "nv"
+private final FILE_KIND_NVH = "nvh"
+private final FILE_KIND_MANIFEST = "manifest"
+private final TEXT_MANIFEST_FILE_NAME = "project.nv"
+private final TEXT_NVH_EXTENSION = ".nvh"
+private final TEXT_NUL_CHARACTER = chr(0)
+
+// hash.fnv1a stops at a NUL byte, so two texts that share the prefix before it would collide as cache keys;
+// a text with a NUL is hashed over its hex form (identical to fnv1a for every text without one).
+method textHashOf(string text): integer {
+    if (bytes.indexOf(text, TEXT_NUL_CHARACTER, 0) < 0) {
+        return hash.fnv1a(text)
+    }
+    return hash.fnv1a(bytes.hex(text))
+}
+
+define class Document {
+    string uri
+    string filePath
+    string languageId
+    integer version
+    string text
+    LineIndex lines
+    integer textHash
+
+    construct(string uri, string languageId, integer version, string text) {
+        this.uri = uri
+        this.filePath = uriToFilePath(uri)
+        this.languageId = languageId
+        this.version = version
+        this.text = text
+        this.lines = LineIndex(text)
+        this.textHash = textHashOf(text)
+    }
+
+    method replaceText(integer version, string text) {
+        this.version = version
+        this.text = text
+        this.lines = LineIndex(text)
+        this.textHash = textHashOf(text)
+    }
+
+    method fileKind(): string {
+        return fileKindOf(this.filePath)
+    }
+}
+
+method textBaseName(string filePath): string {
+    var slash = strings.lastIndexOf(filePath, "/")
+    var backslash = strings.lastIndexOf(filePath, "\\")
+    if (backslash > slash) {
+        slash = backslash
+    }
+    return filePath.substring(slash + 1)
+}
+
+method fileKindOf(string filePath): string {
+    var baseName = textBaseName(filePath)
+    if (baseName == TEXT_MANIFEST_FILE_NAME) {
+        return FILE_KIND_MANIFEST
+    }
+    if (baseName.endsWith(TEXT_NVH_EXTENSION)) {
+        return FILE_KIND_NVH
+    }
+    return FILE_KIND_NV
+}

@@ -1,0 +1,67 @@
+package format
+
+import syntax/lexing
+
+// The gaps next to braces. Blocks have spaces inside, object literals and annotations none, map literals what the author wrote
+// (`{"a": 1}` or `{ "a": 1 }`, the same on both sides); `=` between the fields of an object literal has no spaces.
+// FORMAT_NO_OPINION leaves the decision to the general rules of SpacingRules.
+private final FORMAT_NO_OPINION = "?"
+private final FORMAT_BRACE_NO_GAP = ""
+private final FORMAT_BRACE_SPACE = " "
+
+define class FormatBraceSpacing {
+    FormatRoles roles
+
+    construct(FormatRoles roles) {
+        this.roles = roles
+    }
+
+    method gapAt(Token left, Token right, integer index): string {
+        if (this.isPunct(right, "{") && this.roles.braces.isTight(index)) {
+            return FORMAT_BRACE_NO_GAP
+        }
+        if (this.isPunct(left, "{")) {
+            return this.insideGap(index - 1, index, right)
+        }
+        if (this.isPunct(right, "}")) {
+            return this.closingGap(index)
+        }
+        if (this.isPunct(right, "=") && this.roles.braces.insideTight[index]) {
+            return FORMAT_BRACE_NO_GAP
+        }
+        if (this.isPunct(left, "=") && this.roles.braces.insideTight[index - 1]) {
+            return FORMAT_BRACE_NO_GAP
+        }
+        return FORMAT_NO_OPINION
+    }
+
+    method isPunct(Token token, string text): bool {
+        return token.kind == TokenKind.Punct && token.text == text
+    }
+
+    // The gap after the `{` at `opener`.
+    method insideGap(integer opener, integer index, Token right): string {
+        if (this.isPunct(right, "}") || this.roles.braces.isTight(opener)) {
+            return FORMAT_BRACE_NO_GAP
+        }
+        return this.mapOrBlockGap(opener, index)
+    }
+
+    method closingGap(integer index): string {
+        var opener = this.roles.braces.openers[index]
+        if (opener < 0 || this.roles.braces.isBlock(opener)) {
+            return FORMAT_BRACE_SPACE
+        }
+        if (this.roles.braces.isTight(opener)) {
+            return FORMAT_BRACE_NO_GAP
+        }
+        return this.mapOrBlockGap(opener, opener + 1)
+    }
+
+    method mapOrBlockGap(integer opener, integer inner): string {
+        if (this.roles.braces.isBlock(opener) || this.roles.isPadded(inner)) {
+            return FORMAT_BRACE_SPACE
+        }
+        return FORMAT_BRACE_NO_GAP
+    }
+}

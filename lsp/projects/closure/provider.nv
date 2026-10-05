@@ -1,0 +1,8 @@
+package closure
+
+import syntax/outline
+
+// Implemented by the workspace cache: editor buffers shadow the disk.
+define interface SourceProvider {
+    syntaxOf(string filePath): SourceFile
+}

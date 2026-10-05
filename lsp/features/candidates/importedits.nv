@@ -1,0 +1,194 @@
+package candidates
+
+import base/maybe
+import base/model
+import base/text
+import services/snippets
+import semantics/semantic
+import projects/closure
+import projects/stdlib
+import projects/workspace
+import syntax/outline
+
+private final CANDIDATES_IMPORT_PREFIX = "import "
+private final CANDIDATES_LINE_FEED = "\n"
+private final CANDIDATES_CARRIAGE_RETURN = "\r"
+
+// The import statement that loads a target: `import os`, `import geo/shapes`, `import @geo/circle`, `import "mod/pkg"`.
+method importLineFor(ImportTarget target): string {
+    return candidatesImportLine(target.kind, target.text)
+}
+
+method candidatesImportLine(ImportKind kind, string target): string {
+    if (kind == ImportKind.File) {
+        return CANDIDATES_IMPORT_PREFIX + CANDIDATES_FILE_MARK + target
+    }
+    if (kind == ImportKind.Module) {
+        return CANDIDATES_IMPORT_PREFIX + CANDIDATES_QUOTE + target + CANDIDATES_QUOTE
+    }
+    return CANDIDATES_IMPORT_PREFIX + target
+}
+
+// A zero-width insertion that adds `importLine` (8.8); nil when the file imports it already. Std imports go into the
+// first group, project and dependency imports into the next one, each sorted; groups are told apart by what the
+// existing lines are, not by blank lines. The line may hold several statements (joined by the line break of the file).
+method importEditFor(SourceFile syntax, string text, string importLine, bool standardModule): TextEdit {
+    var lineBreak = candidatesLineBreak(text)
+    var existing = syntax.importLines()
+    if (candidatesAlreadyImported(existing, importLine)) {
+        return nothing()
+    }
+    if (existing.length() == 0) {
+        return candidatesFirstImport(syntax, text, importLine, lineBreak)
+    }
+    var group = candidatesGroupOf(existing, standardModule)
+    if (group.length() > 0) {
+        return candidatesSortedInsert(text, group, importLine, lineBreak)
+    }
+    return candidatesNewGroup(text, existing, importLine, standardModule, lineBreak)
+}
+
+method candidatesLineBreak(string text): string {
+    var feed = text.indexOf(CANDIDATES_LINE_FEED)
+    if (feed > 0 && text.charAt(feed - 1) == CANDIDATES_CARRIAGE_RETURN) {
+        return CANDIDATES_CARRIAGE_RETURN + CANDIDATES_LINE_FEED
+    }
+    return CANDIDATES_LINE_FEED
+}
+
+method candidatesAlreadyImported(array<ImportDecl> existing, string importLine): bool {
+    for (declaration in existing) {
+        if (candidatesImportLine(declaration.kind, declaration.target) == importLine) {
+            return true
+        }
+    }
+    return false
+}
+
+method candidatesIsStandardImport(ImportDecl declaration): bool {
+    return declaration.kind == ImportKind.Package && standardLibrary().has(declaration.target)
+}
+
+method candidatesGroupOf(array<ImportDecl> existing, bool standardModule): array<ImportDecl> {
+    var group = []
+    for (declaration in existing) {
+        if (candidatesIsStandardImport(declaration) == standardModule) {
+            group.append(declaration)
+        }
+    }
+    return group
+}
+
+// Before the first line of the group that sorts after the new one, else after the last line of the group.
+method candidatesSortedInsert(string text, array<ImportDecl> group, string importLine, string lineBreak): TextEdit {
+    for (declaration in group) {
+        if (importLine < candidatesImportLine(declaration.kind, declaration.target)) {
+            return TextEdit(Span(declaration.span.start, declaration.span.start), importLine + lineBreak)
+        }
+    }
+    return candidatesInsertAfter(text, group[group.length() - 1], lineBreak + importLine)
+}
+
+// The std group goes before the first import, the project group after the last, one blank line between them.
+method candidatesNewGroup(string text, array<ImportDecl> existing, string importLine, bool standardModule, string lineBreak): TextEdit {
+    if (standardModule) {
+        var first = existing[0]
+        return TextEdit(Span(first.span.start, first.span.start), importLine + lineBreak + lineBreak)
+    }
+    return candidatesInsertAfter(text, existing[existing.length() - 1], lineBreak + lineBreak + importLine)
+}
+
+// After the anchor's line, not after the anchor itself: a trailing comment stays with its own import.
+method candidatesInsertAfter(string text, ImportDecl anchor, string lines): TextEdit {
+    var at = candidatesLineEnd(text, anchor.span.end)
+    return TextEdit(Span(at, at), lines)
+}
+
+// The end of the line that holds `offset`, before its line break.
+method candidatesLineEnd(string text, integer offset): integer {
+    var feed = text.indexOf(CANDIDATES_LINE_FEED, offset)
+    if (feed < 0) {
+        return text.length()
+    }
+    if (feed > offset && text.charAt(feed - 1) == CANDIDATES_CARRIAGE_RETURN) {
+        return feed - 1
+    }
+    return feed
+}
+
+// No imports yet: one blank line below the `package` line, the import, one blank line, as the repository writes it.
+method candidatesFirstImport(SourceFile syntax, string text, string importLine, string lineBreak): TextEdit {
+    if (syntax.packageSpan.start < 0) {
+        return TextEdit(Span(0, 0), importLine + lineBreak + lineBreak)
+    }
+    var feed = text.indexOf(CANDIDATES_LINE_FEED, syntax.packageSpan.end)
+    var blankEnd = CANDIDATES_NO_OFFSET
+    if (feed >= 0) {
+        blankEnd = candidatesBlankLineEnd(text, feed + 1)
+    }
+    if (blankEnd >= 0) {
+        return TextEdit(Span(blankEnd + 1, blankEnd + 1), importLine + lineBreak + lineBreak)
+    }
+    var at = candidatesLineEnd(text, syntax.packageSpan.end)
+    return TextEdit(Span(at, at), lineBreak + lineBreak + importLine + lineBreak)
+}
+
+// The line break that ends the blank line starting at `from`; -1 when that line holds something or has no break.
+method candidatesBlankLineEnd(string text, integer from): integer {
+    var end = text.indexOf(CANDIDATES_LINE_FEED, from)
+    if (end < 0 || text.substring(from, end).trim() != "") {
+        return CANDIDATES_NO_OFFSET
+    }
+    return end
+}
+
+// A candidate that is not loaded yet is withheld when importing it would be wrong: a class that exists already is a
+// duplicate definition, and so is a root-level function of the same name and arity (the root wins, 5.6).
+method candidatesIsWithheld(ProgramIndex index, Symbol symbol): bool {
+    if (symbol.decl.isType()) {
+        return isSome(index.typeNamed(symbol.decl.name))
+    }
+    if (symbol.qualifier != "" || symbol.decl.isCallable() == false) {
+        return false
+    }
+    for (other in index.functionsNamed(symbol.decl.name)) {
+        if (other.qualifier == "" && other.decl.arity() == symbol.decl.arity()) {
+            return true
+        }
+    }
+    return false
+}
+
+// True when no other program package (and not the root level) has a function or global of that name and arity, so the
+// bare name resolves to this symbol.
+method candidatesIsBareReachable(ProgramIndex index, Symbol symbol): bool {
+    var named = index.globalsNamed(symbol.decl.name)
+    if (symbol.decl.isCallable()) {
+        named = index.functionsNamed(symbol.decl.name)
+    }
+    for (other in named) {
+        if (other.origin() != FileOrigin.Standard && other.qualifier != symbol.qualifier && other.decl.arity() == symbol.decl.arity()) {
+            return false
+        }
+    }
+    return true
+}
+
+// The std modules that a snippet needs and the file does not import yet, as one insertion.
+method candidatesSnippetImportEdits(FileContext context, CandidatesImports imports, Snippet snippet): array<TextEdit> {
+    var lines = []
+    for (name in snippet.imports) {
+        if (imports.importsStandard(name) == false) {
+            lines.append(CANDIDATES_IMPORT_PREFIX + name)
+        }
+    }
+    var text = context.document.text
+    var edit = nothing()
+    if (lines.length() > 0) {
+        edit = importEditFor(context.syntax, text, lines.join(candidatesLineBreak(text)), true)
+    }
+    if (isNone(edit)) {
+        return []
+    }
+    return [edit]
+}

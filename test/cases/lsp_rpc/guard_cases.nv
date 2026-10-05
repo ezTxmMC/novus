@@ -1,0 +1,88 @@
+package main
+
+import "novus/lsp/base/maybe"
+import "novus/lsp/server/rpc"
+import strings
+
+// 1500 characters of 3 bytes are 4500 bytes: longer than the 4095 bytes that the runtime keeps of a trap message.
+private final LONG_KEY_CHARACTERS = 1500
+
+define class GuardFailsWithCode based GuardedWork {
+    integer code
+    string message
+
+    construct(integer code, string message) {
+        this.code = code
+        this.message = message
+    }
+
+    method run(): object {
+        failRequest(this.code, this.message)
+        return "not reached"
+    }
+}
+
+define class GuardRuntimeError based GuardedWork {
+    construct() {
+    }
+
+    method run(): object {
+        var empty = {}
+        return empty["absent"]
+    }
+}
+
+define class GuardMissingLongKey based GuardedWork {
+    construct() {
+    }
+
+    method run(): object {
+        var empty = {}
+        return empty[strings.repeat("日", LONG_KEY_CHARACTERS)]
+    }
+}
+
+define class GuardSucceeds based GuardedWork {
+    construct() {
+    }
+
+    method run(): object {
+        return {"answer": 42}
+    }
+}
+
+method describeOutcome(GuardOutcome outcome): string {
+    return "failed=" + outcome.failed + " message=[" + outcome.message + "] code=" + errorCodeOf(outcome.message) + " text=[" + errorTextOf(outcome.message) + "]"
+}
+
+method runGuardCases() {
+    say("--- guard")
+    sayCase("codes", rpcParseError() + " " + rpcInvalidRequest() + " " + rpcMethodNotFound() + " " + rpcInvalidParams() + " " + rpcInternalError())
+    sayCase("more codes", rpcServerNotInitialized() + " " + rpcRequestCancelled() + " " + rpcContentModified())
+    sayCase("success", describeOutcome(runGuarded(GuardSucceeds())) + " value=" + runGuarded(GuardSucceeds()).value["answer"])
+    sayCase("failRequest", describeOutcome(runGuarded(GuardFailsWithCode(-32602, "bad params"))))
+    sayCase("failRequest keeps a colon in the text", describeOutcome(runGuarded(GuardFailsWithCode(-32800, "stopped: by user"))))
+    sayCase("failRequest with a positive code", describeOutcome(runGuarded(GuardFailsWithCode(5, "five"))))
+    sayCase("runtime error", describeOutcome(runGuarded(GuardRuntimeError())))
+    sayCase("a runtime error has no value", isNone(runGuarded(GuardRuntimeError()).value))
+    sayCase("RPC prefix without a code", errorCodeOf("RPCfoo: x") + " [" + errorTextOf("RPCfoo: x") + "]")
+    sayCase("RPC prefix with a bad code", errorCodeOf("RPC12x:y") + " [" + errorTextOf("RPC12x:y") + "]")
+    sayCase("RPC prefix without a colon", errorCodeOf("RPC-32800 nothing"))
+    sayCase("a code too long to be sane", errorCodeOf("RPC12345678901234:y"))
+    sayCase("empty trap message", errorCodeOf("") + " [" + errorTextOf("") + "]")
+    runLongTextCases()
+}
+
+// The runtime keeps 4095 bytes of a trap message: a longer text is cut at a character, never inside one.
+method runLongTextCases() {
+    var long = runGuarded(GuardFailsWithCode(-32602, strings.repeat("日", 300)))
+    var text = errorTextOf(long.message)
+    sayCase("failRequest cuts a long text at a character", text.length() + " bytes, whole characters: " + (text == strings.repeat("日", 160)))
+    var raw = errorTextOf(runGuarded(GuardMissingLongKey()).message)
+    var trimmed = rpcWithoutPartialCharacter(raw)
+    sayCase("a runtime error text is cut by the runtime inside a character", raw.length() + " -> " + trimmed.length() + ", ends with a whole character: " + trimmed.endsWith("日"))
+    var cuts = [["aé", 2], ["a日", 2], ["a日", 3], ["a日", 4], ["😀", 3], ["😀", 4], ["abc", 3], ["", 0]]
+    for (cut in cuts) {
+        sayCase("rpcWithoutPartialCharacter of " + cut[0] + " cut to " + cut[1] + " bytes", "[" + rpcWithoutPartialCharacter(cut[0].substring(0, cut[1])) + "]")
+    }
+}

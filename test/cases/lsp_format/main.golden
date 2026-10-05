@@ -1,0 +1,276 @@
+--- spacing
+ok   assignment
+ok   arithmetic
+ok   comparison
+ok   comparison or equal
+ok   equality
+ok   bitwise operators are kept
+ok   shift operators are kept
+ok   bitwise with parentheses
+ok   old comparison spellings
+ok   many spaces collapse
+ok   tabs between tokens
+ok   negative literal
+ok   minus after minus
+ok   binary minus without spaces
+ok   minus after a call
+ok   minus after an index
+ok   signs in an argument list
+ok   signs in an array
+ok   negative index
+ok   not
+ok   not in conditions
+ok   not equal is no not
+ok   return a negative value
+ok   await a negative value
+ok   double negation
+ok   unary after an operator
+ok   call
+ok   call with spaces inside
+ok   if
+ok   while
+ok   for
+ok   sync
+ok   return with parentheses
+ok   index
+ok   index after a call
+ok   index after a string
+ok   return an array
+ok   empty brackets
+ok   empty parentheses
+ok   nested calls
+ok   println without a gap is kept
+ok   println with a gap is kept
+ok   println with a gap and an operator
+ok   println spaces inside
+ok   a call after a bracket
+ok   comma
+ok   trailing comma
+ok   colon in a declaration
+ok   colon of a return type
+ok   member access
+ok   call chain
+ok   semicolons
+ok   empty statement
+ok   string concatenation
+ok   float literal
+ok   integer then member access
+ok   array type
+ok   map type
+ok   nested generics
+ok   generics with spaces
+ok   generic parameter and return type
+ok   generic typed declaration
+ok   a comparison with a variable named array
+ok   less than is a comparison
+ok   a type that never closes is a comparison
+ok   three nested generics stay together
+ok   three nested generics without spaces
+ok   four nested generics
+ok   closers written apart stay apart, joining them would change the tokens
+ok   three nested generics is stable
+ok   four nested generics is stable
+ok   a block after a generic return type is padded
+ok   a block after a nested generic return type
+ok   a block after a plain return type
+ok   import package
+ok   import with spaces around the slash
+ok   import file
+ok   import file in a folder
+ok   import dependency
+ok   package
+ok   a division after import is no path
+ok   a brace on an import line that closes later is stable
+ok   a brace on an import line, tab variant is stable
+ok   a tight brace on an import line is stable
+ok   block header
+ok   block without a name
+ok   class header
+ok   block on one line
+ok   else
+ok   else if
+ok   empty block
+ok   empty map
+ok   map without padding stays tight
+ok   map with padding stays padded
+ok   map padded on the left only is padded
+ok   map padded on the right only is tight
+ok   map in a call
+ok   object literal
+ok   object literal with spaces
+ok   object literal in an array
+ok   object literal after return
+ok   annotation
+ok   annotation with spaces
+ok   annotation without arguments
+ok   return type before the body
+ok   return type without parameters
+ok   construct
+ok   nested braces
+ok   equal sign outside of an object literal
+ok   unknown character with spaces
+ok   unknown character without spaces stays joined
+ok   unknown character on one side
+ok   several unknown characters
+ok   non-ascii text outside a string
+--- layout
+ok   blank lines collapse to one
+ok   a single blank line stays
+ok   blank lines with blanks in them
+ok   no blank lines allowed
+ok   three blank lines allowed
+ok   a negative limit means none
+ok   blank lines at the start are removed
+ok   blank lines at the end are removed
+ok   trailing blanks are removed
+ok   the final line break is added
+ok   one final line break stays
+ok   blanks before the end
+ok   empty file
+ok   whitespace only file
+ok   comment only file
+ok   a line comment loses its trailing blanks
+ok   trailing comment keeps its alignment
+ok   trailing comment gets a space
+ok   block comment between tokens
+ok   block comment keeps its content
+ok   code after a block comment
+ok   division is no comment
+ok   doc comment lines
+ok   comment before a closing brace
+ok   string content is untouched
+ok   multi line string is untouched
+ok   tokens after a multi line string
+ok   interpolation is untouched
+ok   crlf is kept
+ok   crlf indentation
+ok   crlf gets its final line break
+ok   lf stays lf
+ok   a lone carriage return is a blank
+ok   the first line break decides
+ok   a line break inside a string does not decide
+ok   unterminated string is returned as it is
+ok   unterminated comment is returned as it is
+ok   a nul byte inside a gap keeps the gap
+ok   a control byte inside a gap keeps the gap
+ok   a nul byte after the last token
+ok   a nul byte at the start
+ok   a nul byte inside a string
+ok   stray braces do not break the layout
+ok   a lex result of a shorter text is refused
+ok   a lex result of a longer text is refused
+ok   an empty lex result is refused
+edits with a stale lex result: 0
+ok   a small program is stable
+ok   crlf program is stable
+ok   squeezed program is stable
+ok   program with control bytes is stable
+ok   mixed line endings with a control byte is stable
+ok   a lone carriage return is stable
+ok   a manifest is not formatted
+ok   a component is not formatted
+ok   a source file is formatted
+--- indentation
+ok   nested blocks
+ok   else on the closing line
+ok   else on its own line
+ok   class members
+ok   wrong indentation is replaced
+ok   top level code stays at the left
+ok   call
+ok   call with spaces inside
+ok   if
+ok   while
+ok   for
+ok   sync
+ok   return with parentheses
+ok   index
+ok   index after a call
+ok   index after a string
+ok   return an array
+ok   empty brackets
+ok   empty parentheses
+ok   nested calls
+ok   println without a gap is kept
+ok   println with a gap is kept
+ok   println with a gap and an operator
+ok   println spaces inside
+ok   a call after a bracket
+ok   operator at the end of a line
+ok   assignment at the end of a line
+ok   chained calls with leading dots
+ok   logical operators at the start of a line
+ok   a comment between a continued line
+ok   continuation inside parentheses is flat
+ok   a closing brace after an operator line
+ok   comment lines follow the block
+ok   block comment line
+ok   comment after an opener
+ok   extra closing brace
+ok   extra closing parenthesis
+ok   a brace closes unclosed parentheses
+ok   mismatched closer
+ok   never closed block
+ok   indentation stops at sixty four levels
+ok   a file of unclosed brackets is stable
+ok   unmatched closers are copied
+ok   unmatched closers is stable
+ok   brackets nested deeper than the match limit is stable
+ok   tab indentation
+ok   two spaces
+ok   eight spaces
+ok   a tab size below one is one
+ok   a huge tab size is capped at sixteen
+tracker lines: []method depth=0 [    ]if depth=1 [        ]x depth=2 [    ]} depth=2 [    ]y depth=1 []} depth=1
+tracker depth at the end: 0
+gapBetween: [ ][ ][][][][][][][][ ][][ ]
+gapBetween of a minus after a bare equal sign: [ ][ ]
+--- edits
+edits one space missing: 1-1=>[ ] 2-2=>[ ]
+edits extra spaces: 2-4=>[] 6-7=>[]
+edits indentation only: 13-13=>[    ]
+edits trailing blanks and indentation per line: 12-14=>[] 17-17=>[  ] 22-24=>[]
+edits blank lines collapse: 7-9=>[]
+edits final line break added: 5-5=>[\n]
+edits final blank lines removed: 6-8=>[]
+edits crlf: 14-14=>[    ]
+edits already formatted: 
+edits empty text: 
+edits comment alignment is kept: 
+ok   small program edits give the formatted text
+ok   crlf program edits give the formatted text
+ok   blank line removal and indentation together edits give the formatted text
+ok   tabs edits give the formatted text
+ok   only whitespace edits give the formatted text
+ok   a control byte edits give the formatted text
+ok   a nul byte edits give the formatted text
+ok   unicode text edits give the formatted text
+edits for a manifest: 0
+edits for a component: 0
+range edits for a manifest: 0
+edits for an unterminated string: 0
+edits for an unterminated comment: 0
+edits for a formatted file: 0
+minimalEdits: 2-3=>[] 5-6=>[]
+minimalEdits of equal texts: 0
+minimalEdits of a different token: 0
+minimalEdits of a changed number: 0
+minimalEdits with an extra token: 0
+minimalEdits with a missing token: 0
+minimalEdits of the empty text: 0
+minimalEdits to the empty text: 0-3=>[]
+minimalEdits from the empty text: 0-0=>[\n]
+range all lines: 13-13=>[    ] 14-14=>[ ] 15-15=>[ ] 19-19=>[  ] 20-20=>[ ] 21-21=>[ ] 23-23=>[    ] 24-24=>[ ] 25-25=>[ ]
+range on the second line: 13-13=>[    ] 14-14=>[ ] 15-15=>[ ]
+range of the second and third line: 13-13=>[    ] 14-14=>[ ] 15-15=>[ ] 19-19=>[  ] 20-20=>[ ] 21-21=>[ ] 23-23=>[    ] 24-24=>[ ] 25-25=>[ ]
+range ending at the start of a line: 13-13=>[    ] 14-14=>[ ] 15-15=>[ ]
+range of one offset: 13-13=>[    ] 14-14=>[ ] 15-15=>[ ]
+range past the end: 19-19=>[  ] 20-20=>[ ] 21-21=>[ ] 23-23=>[    ] 24-24=>[ ] 25-25=>[ ]
+range before the start: 
+range with the end before the start: 
+range on a formatted line: 
+range keeps the context of the whole file: 22-22=>[        ] 23-23=>[ ] 24-24=>[ ]
+--- corpus
+ok   every .nv file of the repository is formatted whitespace-only and idempotently
+ok   the corpus is not empty
+failures: 0

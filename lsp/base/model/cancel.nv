@@ -1,0 +1,17 @@
+package model
+
+// The cancellation check engines poll (every CANCEL_POLL_INTERVAL files) and its always-false implementation.
+private final CANCEL_POLL_INTERVAL = 16
+
+define interface CancelCheck {
+    isCancelled(): bool
+}
+
+define class NeverCancelled based CancelCheck {
+    construct() {
+    }
+
+    method isCancelled(): bool {
+        return false
+    }
+}

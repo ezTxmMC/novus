@@ -1,0 +1,5 @@
+{"id":1,"jsonrpc":"2.0","result":{"capabilities":"@CAPABILITIES@","serverInfo":{"name":"novus-lsp","version":"0.1.0"}}}
+{"error":{"code":-32601,"message":"method not found: nope/one"},"id":7,"jsonrpc":"2.0"}
+{"error":{"code":-32601,"message":"method not found: nope/two"},"id":"abc","jsonrpc":"2.0"}
+{"error":{"code":-32601,"message":"method not found: nope/three"},"id":0,"jsonrpc":"2.0"}
+{"id":8,"jsonrpc":"2.0","result":null}

@@ -1,0 +1,112 @@
+package checker
+
+import base/maybe
+
+// Splitting one novusc message into path, line and text. Every text index is checked: charAt aborts out of range.
+private final CHECKER_COLON = ":"
+private final CHECKER_SPACE = " "
+private final CHECKER_MAX_LINE_DIGITS = 9
+private final CHECKER_FIRST_DIGIT = 48
+private final CHECKER_LAST_DIGIT = 57
+
+define class CheckerLocation {
+    string filePath
+    integer line
+    string message
+
+    construct(string filePath, integer line, string message) {
+        this.filePath = filePath
+        this.line = line
+        this.message = message
+    }
+}
+
+method checkerCharAt(string text, integer index): string {
+    if (index < 0 || index >= text.length()) {
+        return ""
+    }
+    return text.charAt(index)
+}
+
+method checkerIsDigitAt(string text, integer index): bool {
+    var character = checkerCharAt(text, index)
+    if (character == "") {
+        return false
+    }
+    var code = ord(character)
+    return code >= CHECKER_FIRST_DIGIT && code <= CHECKER_LAST_DIGIT
+}
+
+method checkerDigitsEnd(string text, integer from): integer {
+    var index = from
+    while (checkerIsDigitAt(text, index)) {
+        index = index + 1
+    }
+    return index
+}
+
+// The leftmost `:<line>[:<column>]: ` wins, so the colon of a drive letter ("C:\work\a.nv:3: m") is skipped.
+// nothing() when the text has no such form.
+method checkerSplitLocation(string rest): CheckerLocation {
+    var colon = checkerNextColon(rest, 0)
+    while (colon >= 0) {
+        var found = checkerLocationAt(rest, colon)
+        if (isSome(found)) {
+            return found
+        }
+        colon = checkerNextColon(rest, colon + 1)
+    }
+    return nothing()
+}
+
+method checkerNextColon(string text, integer from): integer {
+    var index = from
+    while (index < text.length()) {
+        if (text.charAt(index) == CHECKER_COLON) {
+            return index
+        }
+        index = index + 1
+    }
+    return -1
+}
+
+method checkerLocationAt(string rest, integer colon): CheckerLocation {
+    var lineStart = colon + 1
+    var lineEnd = checkerDigitsEnd(rest, lineStart)
+    if (colon == 0 || lineEnd == lineStart || lineEnd - lineStart > CHECKER_MAX_LINE_DIGITS) {
+        return nothing()
+    }
+    var closing = checkerClosingColon(rest, lineEnd)
+    if (closing < 0) {
+        return nothing()
+    }
+    var line = parseInt(rest.substring(lineStart, lineEnd))
+    return CheckerLocation(rest.substring(0, colon), line, checkerMessageAfter(rest, closing))
+}
+
+// The colon that ends `path:line` or `path:line:column`, -1 when the text goes on differently.
+method checkerClosingColon(string rest, integer afterLine): integer {
+    var closing = afterLine
+    if (checkerCharAt(rest, afterLine) == CHECKER_COLON) {
+        var columnEnd = checkerDigitsEnd(rest, afterLine + 1)
+        if (columnEnd > afterLine + 1 && checkerCharAt(rest, columnEnd) == CHECKER_COLON) {
+            closing = columnEnd
+        }
+    }
+    if (checkerCharAt(rest, closing) != CHECKER_COLON) {
+        return -1
+    }
+    var after = checkerCharAt(rest, closing + 1)
+    if (after != "" && after != CHECKER_SPACE) {
+        return -1
+    }
+    return closing
+}
+
+method checkerMessageAfter(string rest, integer closing): string {
+    var start = closing + 1
+    if (checkerCharAt(rest, start) == CHECKER_SPACE) {
+        start = start + 1
+    }
+    return rest.substring(start, rest.length())
+}

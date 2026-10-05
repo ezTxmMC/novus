@@ -1,0 +1,154 @@
+package pureline
+
+import bytes
+import base/platform
+import base/text
+import strings
+
+// The folder count of PL-STRUCT-002. Not counted: project.nv, files below a test or tests folder (such a folder is exempt
+// altogether) and generated files (one of the markers in the first lines).
+private final PURELINE_SLASH = "/"
+private final PURELINE_BACKSLASH = "\\"
+private final PURELINE_SOURCE_EXTENSIONS = [".nv", ".nvh"]
+private final PURELINE_MANIFEST_NAME = "project.nv"
+private final PURELINE_TEST_FOLDERS = { "test": true, "tests": true }
+private final PURELINE_GENERATED_MARKERS = ["generated", "do not edit"]
+private final PURELINE_ROOT_SEARCH_LIMIT = 24
+private final PURELINE_UNROOTED_SEGMENTS = 2
+private final PURELINE_HEADER_LINES = 5
+private final PURELINE_LINE_FEED = "\n"
+
+define class PurelineFolder {
+    integer limit
+
+    construct(integer limit) {
+        this.limit = limit
+    }
+
+    // The production source files of the folder of the document (the document itself counts even when it is not on disk yet).
+    // The generated-file check reads files, so it only runs when the plain count is above the limit.
+    method productionFiles(Document document, TextSource files): integer {
+        var directory = purelineParentOf(document.filePath)
+        if (directory == "" || this.isTestFolder(directory, files)) {
+            return 0
+        }
+        var names = this.sourceNames(directory, document, files)
+        if (names.length() <= this.limit) {
+            return names.length()
+        }
+        var count = 0
+        for (name in names) {
+            if (this.isGenerated(this.textOfName(directory, name, document, files)) == false) {
+                count = count + 1
+            }
+        }
+        return count
+    }
+
+    method sourceNames(string directory, Document document, TextSource files): array<string> {
+        var names = []
+        var seenSelf = false
+        var self = textBaseName(document.filePath)
+        for (name in files.entriesOf(directory)) {
+            if (this.isSourceName(name)) {
+                names.append(name)
+                seenSelf = seenSelf || name == self
+            }
+        }
+        if (seenSelf == false && this.isSourceName(self)) {
+            names.append(self)
+        }
+        return names
+    }
+
+    method isSourceName(string name): bool {
+        if (name == PURELINE_MANIFEST_NAME) {
+            return false
+        }
+        for (extension in PURELINE_SOURCE_EXTENSIONS) {
+            if (name.endsWith(extension)) {
+                return true
+            }
+        }
+        return false
+    }
+
+    // Only folders of the project count: a `test` segment above the project root (`/home/test/proj`) is where the project lives,
+    // not a test folder of it. Without a manifest on the way up the nearest segments are all that is trusted.
+    method isTestFolder(string directory, TextSource files): bool {
+        for (segment in this.projectSegments(directory, files)) {
+            if (PURELINE_TEST_FOLDERS.has(segment)) {
+                return true
+            }
+        }
+        return false
+    }
+
+    // The folder names from the folder of the file up to the project root (the root's own name included).
+    method projectSegments(string directory, TextSource files): array<string> {
+        var segments = []
+        var current = directory
+        var steps = 0
+        while (current != "" && steps < PURELINE_ROOT_SEARCH_LIMIT) {
+            segments.append(textBaseName(current))
+            if (files.exists(current + PURELINE_SLASH + PURELINE_MANIFEST_NAME)) {
+                return segments
+            }
+            current = purelineParentOf(current)
+            steps = steps + 1
+        }
+        return purelineFirst(segments, PURELINE_UNROOTED_SEGMENTS)
+    }
+
+    method textOfName(string directory, string name, Document document, TextSource files): string {
+        if (name == textBaseName(document.filePath)) {
+            return document.text
+        }
+        return files.textOf(directory + PURELINE_SLASH + name)
+    }
+
+    method isGenerated(string source): bool {
+        var header = this.headerOf(source).toLower()
+        for (marker in PURELINE_GENERATED_MARKERS) {
+            if (bytes.indexOf(header, marker, 0) >= 0) {
+                return true
+            }
+        }
+        return false
+    }
+
+    method headerOf(string source): string {
+        var end = 0
+        var lines = 0
+        while (lines < PURELINE_HEADER_LINES && end >= 0) {
+            end = bytes.indexOf(source, PURELINE_LINE_FEED, end)
+            if (end >= 0) {
+                end = end + 1
+            }
+            lines = lines + 1
+        }
+        if (end < 0) {
+            return source
+        }
+        return source.substring(0, end)
+    }
+}
+
+method purelineParentOf(string filePath): string {
+    var normalized = filePath.replace(PURELINE_BACKSLASH, PURELINE_SLASH)
+    var slash = strings.lastIndexOf(normalized, PURELINE_SLASH)
+    if (slash <= 0) {
+        return ""
+    }
+    return normalized.substring(0, slash)
+}
+
+method purelineFirst(array<string> items, integer count): array<string> {
+    var kept = []
+    var index = 0
+    while (index < items.length() && index < count) {
+        kept.append(items[index])
+        index = index + 1
+    }
+    return kept
+}

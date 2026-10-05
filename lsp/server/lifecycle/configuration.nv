@@ -1,0 +1,71 @@
+package lifecycle
+
+import base/maybe
+import log
+import server/jobs
+import server/protocol
+import server/rpc
+import server/session
+
+private final LIFECYCLE_SETTINGS_KEY = "settings"
+
+define class DidChangeConfigurationHandler based RequestHandler {
+    Session session
+    MessageWriter writer
+    Router router
+    DiagnosticScheduler scheduler
+
+    construct(Session session, MessageWriter writer, Router router, DiagnosticScheduler scheduler) {
+        this.session = session
+        this.writer = writer
+        this.router = router
+        this.scheduler = scheduler
+    }
+
+    // A push carries the settings; a client that sends none (empty or missing) is asked for them when it can answer.
+    method handle(Request request): object {
+        var pushed = protocolField(request.params, LIFECYCLE_SETTINGS_KEY)
+        if (this.isEmptySettings(pushed)) {
+            this.pull()
+            return nothing()
+        }
+        mergeSettings(this.session.settings, pushed)
+        this.scheduler.markAllDirty()
+        return nothing()
+    }
+
+    method isEmptySettings(object pushed): bool {
+        return protocolIsMap(pushed) == false || pushed.length() == 0
+    }
+
+    method pull() {
+        if (this.session.client.configurationPull == false) {
+            return
+        }
+        lifecyclePullConfiguration(this.session, this.writer, this.router, this.scheduler)
+    }
+}
+
+// The answer to workspace/configuration: one element per requested item, here the section "novus".
+define class ConfigurationResponse based ResponseHandler {
+    Session session
+    DiagnosticScheduler scheduler
+
+    construct(Session session, DiagnosticScheduler scheduler) {
+        this.session = session
+        this.scheduler = scheduler
+    }
+
+    method onResponse(object result, bool failed) {
+        if (failed) {
+            log.warn("lifecycle: the client could not answer workspace/configuration")
+            return
+        }
+        for (section in protocolItems(result)) {
+            mergeSettings(this.session.settings, section)
+        }
+        if (isSome(this.scheduler)) {
+            this.scheduler.markAllDirty()
+        }
+    }
+}

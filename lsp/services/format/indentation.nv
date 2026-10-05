@@ -1,0 +1,166 @@
+package format
+
+import base/maybe
+import base/model
+import strings
+import syntax/lexing
+
+// Indentation of a line from the brackets that are open at its start. Several brackets opened on one line indent the
+// following lines once; a closer that starts a line returns to the level of the line that opened its bracket.
+private final FORMAT_MIN_TAB_SIZE = 1
+private final FORMAT_MAX_TAB_SIZE = 16
+private final FORMAT_MATCH_DEPTH_LIMIT = 256
+private final FORMAT_MAX_INDENT_LEVEL = 64
+private final FORMAT_TAB_UNIT = "\t"
+private final FORMAT_SPACE_UNIT = " "
+private final FORMAT_OPENER_OF = { "}": "{", ")": "(", "]": "[" }
+private final FORMAT_OPENERS = { "{": true, "(": true, "[": true }
+private final FORMAT_BLOCK_OPENER = "{"
+private final FORMAT_CONTINUES_AFTER = { "+": true, "-": true, "*": true, "/": true, "%": true, "=": true, "==": true, "!=": true,
+    "<=": true, ">=": true, "=>": true, "=<": true, "&&": true, "||": true, "&": true, "|": true, "^": true, "<<": true, ".": true }
+private final FORMAT_CONTINUES_BEFORE = { ".": true, "&&": true, "||": true }
+
+define class IndentTracker {
+    FormatSettings settings
+    integer depth
+    array<string> openers
+    array<integer> bases
+    array<integer> contents
+    integer lineLevel
+    Token previous
+    string unit
+
+    construct(FormatSettings settings) {
+        this.settings = settings
+        this.depth = 0
+        this.openers = []
+        this.bases = []
+        this.contents = []
+        this.lineLevel = 0
+        this.previous = nothing()
+        this.unit = formatIndentUnit(settings)
+    }
+
+    // The indentation text of the line that starts with this token (a comment included), and the line's level for what follows.
+    // No line is indented deeper than FORMAT_MAX_INDENT_LEVEL, so a file of unclosed brackets cannot grow without bound.
+    method indentOf(Token firstOnLine): string {
+        this.lineLevel = this.levelOf(firstOnLine)
+        if (this.lineLevel > FORMAT_MAX_INDENT_LEVEL) {
+            this.lineLevel = FORMAT_MAX_INDENT_LEVEL
+        }
+        return strings.repeat(this.unit, this.lineLevel)
+    }
+
+    method levelOf(Token token): integer {
+        if (token.kind == TokenKind.Comment) {
+            return this.depth
+        }
+        var opener = this.openerOf(token)
+        if (opener >= 0) {
+            return this.bases[opener]
+        }
+        if (this.continuesLine(token)) {
+            return this.depth + 1
+        }
+        return this.depth
+    }
+
+    // A line that begins or follows with an operator or a member access continues the statement of the line above and is
+    // indented one more; inside parentheses and brackets the lines of the list already are.
+    method continuesLine(Token token): bool {
+        if (this.insideList()) {
+            return false
+        }
+        if (token.kind == TokenKind.Punct && FORMAT_CONTINUES_BEFORE.has(token.text)) {
+            return true
+        }
+        if (isNone(this.previous)) {
+            return false
+        }
+        return this.previous.kind == TokenKind.Punct && FORMAT_CONTINUES_AFTER.has(this.previous.text)
+    }
+
+    method insideList(): bool {
+        return this.openers.length() > 0 && this.openers[this.openers.length() - 1] != FORMAT_BLOCK_OPENER
+    }
+
+    // Moves the bracket state over one token; comments change nothing.
+    method advance(Token token) {
+        if (token.kind != TokenKind.Punct) {
+            this.rememberCode(token)
+            return
+        }
+        this.previous = token
+        if (FORMAT_OPENERS.has(token.text)) {
+            this.openBracket(token.text)
+            return
+        }
+        this.closeBracket(token)
+    }
+
+    method rememberCode(Token token) {
+        if (token.kind != TokenKind.Comment && token.kind != TokenKind.EndOfFile) {
+            this.previous = token
+        }
+    }
+
+    method openBracket(string opener) {
+        this.openers.append(opener)
+        this.bases.append(this.lineLevel)
+        this.contents.append(this.lineLevel + 1)
+        this.depth = this.lineLevel + 1
+    }
+
+    method closeBracket(Token token) {
+        var opener = this.openerOf(token)
+        if (opener < 0) {
+            return
+        }
+        if (this.bases[opener] < this.lineLevel) {
+            this.lineLevel = this.bases[opener]
+        }
+        while (this.openers.length() > opener) {
+            this.openers.pop()
+            this.bases.pop()
+            this.contents.pop()
+        }
+        this.depth = 0
+        if (this.contents.length() > 0) {
+            this.depth = this.contents[this.contents.length() - 1]
+        }
+    }
+
+    // Stack index of the bracket that this closer closes, -1 when it closes none. `)` and `]` never reach past a `{`.
+    method openerOf(Token token): integer {
+        if (token.kind != TokenKind.Punct || FORMAT_OPENER_OF.has(token.text) == false) {
+            return -1
+        }
+        var wanted = FORMAT_OPENER_OF[token.text]
+        var index = this.openers.length() - 1
+        var floor = index - FORMAT_MATCH_DEPTH_LIMIT
+        while (index >= 0 && index > floor) {
+            if (this.openers[index] == wanted) {
+                return index
+            }
+            if (this.openers[index] == FORMAT_BLOCK_OPENER && wanted != FORMAT_BLOCK_OPENER) {
+                return -1
+            }
+            index = index - 1
+        }
+        return -1
+    }
+}
+
+method formatIndentUnit(FormatSettings settings): string {
+    if (settings.insertSpaces == false) {
+        return FORMAT_TAB_UNIT
+    }
+    var width = settings.tabSize
+    if (width < FORMAT_MIN_TAB_SIZE) {
+        width = FORMAT_MIN_TAB_SIZE
+    }
+    if (width > FORMAT_MAX_TAB_SIZE) {
+        width = FORMAT_MAX_TAB_SIZE
+    }
+    return strings.repeat(FORMAT_SPACE_UNIT, width)
+}

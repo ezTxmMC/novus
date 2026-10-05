@@ -1,0 +1,112 @@
+package main
+
+import os
+import "novus/lsp/syntax/outline"
+import "novus/lsp/syntax/parsing"
+
+private final STD_FOLDER = "../../../std"
+private final SHOWCASE = "../../syntax.nv"
+
+method parseFileAt(string filePath): SourceFile {
+    return parseSourceText(filePath, readFile(filePath), editorParseOptions())
+}
+
+method kindsAndNames(array<Decl> decls): string {
+    var parts = []
+    for (decl in decls) {
+        parts.append("" + decl.kind + ":" + decl.name)
+    }
+    return parts.join(" ")
+}
+
+method checkShowcase() {
+    var file = parseFileAt(SHOWCASE)
+    expectEqual("showcase/no-issues", "", renderIssues(file))
+    expectEqual("showcase/imports", "Package:http Package:json Package:path Package:thread", renderImports(file))
+    var expected = "Global:NAME Method:main Method:main Global:total Method:load Method:addOne Method:concurrent Class:Person Enum:Gender Interface:IPerson AbstractClass:Shopping Class:WeekShopping Class:Item Annotation:Deprecated"
+    expectEqual("showcase/top-level-declarations", expected, kindsAndNames(file.decls))
+    var mains = file.topLevelNamed("main")
+    expectEqual("showcase/both-mains", "method main() | method main(array<str> args)", mains[0].signatureText() + " | " + mains[1].signatureText())
+    expectEqual("showcase/async-method", "method load(string name): string | mods=async", renderDecl(file.topLevelNamed("load")[0]))
+    var person = file.typeNamed("Person")
+    expectEqual("showcase/class-members", "Field:name Field:age Field:friends Constructor:construct Method:sendPacket", kindsAndNames(person.members))
+    expectEqual("showcase/field-with-accessors", "private,final|get,set", person.members[1].modifiers.join(",") + "|" + person.members[1].accessors.join(","))
+    expectEqual("showcase/annotated-keywordless-method", "method sendPacket() | in=Person | @Interface", renderDecl(person.members[4]))
+    var gender = file.typeNamed("Gender")
+    expectEqual("showcase/enum-members", "EnumConstant:MALE EnumConstant:FEMALE EnumConstant:NONE_BINARY Field:text Constructor:construct", kindsAndNames(gender.members))
+    expectEqual("showcase/private-constructor", "construct(str text) | in=Gender | mods=private", renderDecl(gender.members[4]))
+}
+
+method checkShowcaseDetails() {
+    var file = parseFileAt(SHOWCASE)
+    var shopping = file.typeNamed("WeekShopping")
+    expectEqual("showcase/overloads", "method collect(Item item)|method collect(array<Item> items)", file.memberNamed("WeekShopping", "collect")[0].signatureText() + "|" + file.memberNamed("WeekShopping", "collect")[1].signatureText())
+    var deprecated = file.memberNamed("WeekShopping", "collect")[0]
+    expectTrue("showcase/deprecated-annotation", deprecated.isDeprecated() && deprecated.annotations[0].values["since"] == "0.3.5" && deprecated.annotations[0].values["text"].startsWith("This method is signed as removal"))
+    var buy = file.memberNamed("WeekShopping", "buy")[0]
+    expectEqual("showcase/locals-of-buy", "var:itemObjects loop:item", buy.locals[0].origin + ":" + buy.locals[0].name + " " + buy.locals[1].origin + ":" + buy.locals[1].name)
+    expectEqual("showcase/header-parameters-are-discarded", "define class WeekShopping based Shopping", shopping.signatureText())
+    expectEqual("showcase/abstract-class", "define abstract Shopping", file.typeNamed("Shopping").signatureText())
+    expectEqual("showcase/interface-entry", "abstract method sendPacket()", file.memberNamed("IPerson", "sendPacket")[0].signatureText())
+    expectEqual("showcase/annotation-definition", "define annotation Deprecated", file.typeNamed("Deprecated").signatureText())
+}
+
+// Independent oracle: every standard module is methods and constants only, one `method` per line start.
+method checkStandardModules() {
+    var names = os.listDir(STD_FOLDER)
+    var modules = 0
+    var methods = 0
+    var mismatches = []
+    var withIssues = []
+    for (name in names) {
+        if (name.endsWith(".nv") == false) {
+            continue
+        }
+        var source = readFile(STD_FOLDER + "/" + name)
+        var file = parseSourceText(name, source, indexParseOptions())
+        var expectedCount = countLinesStartingWith(source, "method ")
+        var found = countKind(file, DeclKind.Method)
+        modules = modules + 1
+        methods = methods + found
+        if (expectedCount != found) {
+            mismatches.append(name + ":" + expectedCount + "!=" + found)
+        }
+        if (file.issues.length() > 0) {
+            withIssues.append(name)
+        }
+    }
+    expectEqual("std/every-method-line-is-a-method-declaration", "", mismatches.join(" "))
+    expectEqual("std/no-module-has-syntax-issues", "", withIssues.join(" "))
+    expectTrue("std/the-whole-library-was-seen", modules >= 25 && methods >= 400)
+}
+
+method countLinesStartingWith(string source, string prefix): integer {
+    var count = 0
+    for (line in source.split("\n")) {
+        if (line.startsWith(prefix)) {
+            count = count + 1
+        }
+    }
+    return count
+}
+
+method countKind(SourceFile file, DeclKind kind): integer {
+    var count = 0
+    for (decl in file.decls) {
+        if (decl.kind == kind) {
+            count = count + 1
+        }
+    }
+    return count
+}
+
+method checkSelectedStandardModules() {
+    var strings = parseFileAt(STD_FOLDER + "/strings.nv")
+    expectEqual("std/strings-first-and-doc", "method repeat(string s, integer times): string", strings.topLevelNamed("repeat")[0].signatureText())
+    expectEqual("std/strings-leading-doc", "Words separated by any run of whitespace.", strings.topLevelNamed("words")[0].doc)
+    var thread = parseFileAt(STD_FOLDER + "/thread.nv")
+    expectEqual("std/thread-native-with-trailing-doc", "method cpus(): integer | mods=native | native=nv_thread_cpus | doc=processors of the machine", renderDecl(thread.topLevelNamed("cpus")[0]))
+    expectEqual("std/thread-native-variadic-free", "method add(integer counter, integer delta): integer | mods=native | native=nv_counter_add | doc=the new value", renderDecl(thread.topLevelNamed("add")[0]))
+    expectEqual("std/thread-method-with-a-body", "method increment(integer counter): integer", thread.topLevelNamed("increment")[0].signatureText())
+    expectEqual("std/thread-native-without-parameters", "method yield()|nv_thread_yield", thread.topLevelNamed("yield")[0].signatureText() + "|" + thread.topLevelNamed("yield")[0].nativeName)
+}

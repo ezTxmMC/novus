@@ -1,0 +1,147 @@
+package hover
+
+import base/maybe
+import base/model
+import projects/workspace
+import semantics/builtins
+import semantics/semantic
+import semantics/targets
+import syntax/lexing
+import syntax/outline
+import syntax/scanning
+
+// `sync (lock) { ... }` reads as a call of a function `sync` at token level (NG37).
+method hoverIsSyncStatement(array<Token> tokens, integer openParen): bool {
+    if (openParen < 1 || tokens[openParen - 1].isIdent("sync") == false) {
+        return false
+    }
+    var before = openParen - 2
+    return before < 0 || tokens[openParen - 1].firstOnLine || tokens[before].isPunct("{") || tokens[before].isPunct("}") || tokens[before].isPunct(";")
+}
+
+method hoverReceiverSteps(array<ChainStep> callee): array<ChainStep> {
+    var steps = []
+    var i = 0
+    while (i < callee.length() - 1) {
+        steps.append(callee[i])
+        i = i + 1
+    }
+    return steps
+}
+
+// The signatures of the callee of a call site: a function, a method of the receiver's type, a constructor, a
+// qualified function or a built-in. Every overload is offered, whatever number of arguments is typed so far.
+define class HoverSignatureCandidates {
+    FileContext context
+    array<Token> tokens
+    Scope scope
+
+    construct(FileContext context, array<Token> tokens, Scope scope) {
+        this.context = context
+        this.tokens = tokens
+        this.scope = scope
+    }
+
+    method forCallee(array<ChainStep> callee): array<SignatureInfo> {
+        var last = callee[callee.length() - 1]
+        if (callee.length() == 1) {
+            return this.forName(last.text)
+        }
+        return this.forMember(callee, last.text)
+    }
+
+    method forName(string name): array<SignatureInfo> {
+        var resolver = this.context.resolver()
+        var rules = TargetsRules(resolver, this.context.closureFile, this.tokens, this.scope, true)
+        var found = rules.anyArity(name)
+        if (found.candidates.length() == 0) {
+            return this.builtinFree(name)
+        }
+        return this.fromSymbols(found.candidates)
+    }
+
+    method builtinFree(string name): array<SignatureInfo> {
+        var member = hoverBuiltinNamed(freeBuiltins(), name)
+        if (isSome(member) && this.context.resolver().isBuiltinCall(name)) {
+            return [hoverBuiltinInfo(member)]
+        }
+        var type = this.context.resolver().lookupType(name)
+        if (isNone(type)) {
+            return []
+        }
+        return this.fromSymbols([type])
+    }
+
+    method forMember(array<ChainStep> callee, string name): array<SignatureInfo> {
+        var resolver = this.context.resolver()
+        var receiver = hoverReceiverSteps(callee)
+        if (receiver.length() == 1 && receiver[0].kind == TARGETS_STEP_NAME && resolver.lookupName(this.scope, receiver[0].text).status == TARGETS_STATUS_UNKNOWN && resolver.isModuleQualifier(receiver[0].text)) {
+            return this.fromSymbols(resolver.lookupQualified(receiver[0].text, name, -1).candidates)
+        }
+        var type = resolver.typeOfChain(this.scope, receiver)
+        var found = resolver.lookupMember(type, name, -1)
+        if (found.candidates.length() > 0) {
+            return this.fromSymbols(found.candidates)
+        }
+        var member = hoverBuiltinNamed(builtinMembersOf(type.name), name)
+        if (isNone(member)) {
+            return []
+        }
+        return [hoverBuiltinInfo(member)]
+    }
+
+    method fromSymbols(array<Symbol> symbols): array<SignatureInfo> {
+        var infos = []
+        for (symbol in symbols) {
+            if (symbol.decl.isType()) {
+                infos = this.constructorsOf(symbol)
+                break
+            }
+            if (symbol.decl.isCallable()) {
+                infos.append(hoverSignatureInfo(symbol))
+            }
+        }
+        return infos
+    }
+
+    method constructorsOf(Symbol type): array<SignatureInfo> {
+        var members = this.context.resolver().index.membersOfType(type.decl.name)
+        var infos = []
+        for (member in members) {
+            if (member.decl.kind == DeclKind.Constructor) {
+                infos.append(hoverSignatureInfo(member))
+            }
+        }
+        if (infos.length() == 0 && type.decl.kind == DeclKind.Class) {
+            infos.append(hoverImplicitConstructor(type, members))
+        }
+        return infos
+    }
+}
+
+// Signature help from the call whose argument list holds the cursor.
+define class SignatureEngine {
+    construct() {
+    }
+
+    method signatureHelp(FileContext context, integer offset): SignatureHelp {
+        if (isNone(context.closureFile) || context.syntax.tokens.length() == 0) {
+            return nothing()
+        }
+        var tokens = targetsIslandAt(context.syntax.tokens, offset)
+        if (isNone(tokens)) {
+            tokens = context.syntax.tokens
+        }
+        var site = callSiteAt(tokens, offset)
+        if (isNone(site) || site.callee.length() == 0 || hoverIsSyncStatement(tokens, site.openParen)) {
+            return nothing()
+        }
+        var scope = context.resolver().scopeAt(context.closureFile, tokens[site.openParen].start)
+        var signatures = HoverSignatureCandidates(context, tokens, scope).forCallee(site.callee)
+        if (signatures.length() == 0) {
+            return nothing()
+        }
+        var active = hoverActiveSignature(signatures, site.activeArgument)
+        return SignatureHelp(signatures, active, hoverActiveParameter(signatures[active], site.activeArgument))
+    }
+}

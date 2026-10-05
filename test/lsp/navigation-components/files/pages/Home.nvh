@@ -1,0 +1,10 @@
+<?nv
+prop string title
+
+method heading(): string {
+    return title
+}
+?>
+<h1>{heading()}</h1>
+<Button label="ok"/>
+<Missing/>

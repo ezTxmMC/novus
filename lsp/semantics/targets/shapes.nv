@@ -1,0 +1,103 @@
+package targets
+
+import base/maybe
+import semantics/semantic
+import syntax/lexing
+
+private final TARGETS_NO_ARITY = -1
+private final TARGETS_MAX_LITERAL_SCAN = 400
+private final TARGETS_HEADER_WORDS = ["method", "class", "enum", "interface", "annotation", "abstract", "based"]
+
+method targetsDepthChange(Token token): integer {
+    if (token.isPunct("(") || token.isPunct("[") || token.isPunct("{")) {
+        return 1
+    }
+    if (token.isPunct(")") || token.isPunct("]") || token.isPunct("}")) {
+        return -1
+    }
+    return 0
+}
+
+// Number of arguments of the call whose name is token `index`; -1 when no `(` follows. An unclosed call is counted up to
+// its last token.
+method targetsCallArity(array<Token> tokens, integer index): integer {
+    var open = index + 1
+    if (open >= tokens.length() || tokens[open].isPunct("(") == false) {
+        return TARGETS_NO_ARITY
+    }
+    var depth = 0
+    var commas = 0
+    var last = open
+    var cursor = open
+    while (cursor < tokens.length() && tokens[cursor].isEnd() == false) {
+        var token = tokens[cursor]
+        depth = depth + targetsDepthChange(token)
+        if (depth == 1 && token.isPunct(",")) {
+            commas = commas + 1
+        }
+        if (depth == 0) {
+            return targetsArgumentCount(tokens, open, cursor, commas)
+        }
+        last = cursor
+        cursor = cursor + 1
+    }
+    return targetsArgumentCount(tokens, open, last + 1, commas)
+}
+
+method targetsArgumentCount(array<Token> tokens, integer open, integer close, integer commas): integer {
+    if (close <= open + 1) {
+        return 0
+    }
+    if (tokens[close - 1].isPunct(",")) {
+        return commas
+    }
+    return commas + 1
+}
+
+// The type named in front of the `{` of `Type{ key = value }` when token `index` is a key of that literal, else "".
+method targetsLiteralOwner(array<Token> tokens, integer index): string {
+    if (index + 1 >= tokens.length() || tokens[index + 1].isPunct("=") == false) {
+        return ""
+    }
+    var depth = 0
+    var cursor = index - 1
+    var steps = 0
+    while (cursor >= 0 && steps < TARGETS_MAX_LITERAL_SCAN) {
+        depth = depth + targetsDepthChange(tokens[cursor])
+        if (depth > 0) {
+            return targetsBraceOwner(tokens, cursor)
+        }
+        cursor = cursor - 1
+        steps = steps + 1
+    }
+    return ""
+}
+
+// A `{` after a plain identifier opens a type literal, except the body of `method name {`, of a `define` header and of a
+// callable with a return type (`): Type {`).
+method targetsBraceOwner(array<Token> tokens, integer open): string {
+    if (tokens[open].isPunct("{") == false || open < 1 || tokens[open - 1].kind != TokenKind.Ident) {
+        return ""
+    }
+    if (open >= 2 && TARGETS_HEADER_WORDS.contains(tokens[open - 2].text)) {
+        return ""
+    }
+    if (targetsIsReturnType(tokens, open - 1)) {
+        return ""
+    }
+    return tokens[open - 1].text
+}
+
+method targetsIsReturnType(array<Token> tokens, integer typeIndex): bool {
+    return typeIndex >= 2 && tokens[typeIndex - 1].isPunct(":") && tokens[typeIndex - 2].isPunct(")")
+}
+
+// The owner of a literal key that names a declared type: the lexer reads `integer`, `string`, `try` and the like as
+// plain identifiers too, so `name = value` in the body of such a block is an assignment, not a key.
+method targetsTypedLiteralOwner(Resolver resolver, array<Token> tokens, integer index): string {
+    var owner = targetsLiteralOwner(tokens, index)
+    if (owner == "" || isNone(resolver.lookupType(owner))) {
+        return ""
+    }
+    return owner
+}

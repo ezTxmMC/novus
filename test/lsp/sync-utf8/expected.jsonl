@@ -1,0 +1,6 @@
+{"id":1,"jsonrpc":"2.0","result":{"capabilities":"@CAPABILITIES@","serverInfo":{"name":"novus-lsp","version":"0.1.0"}}}
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@ROOTURI@/main.nv","version":1}}
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@ROOTURI@/main.nv","version":2}}
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[{"code":"unknown-character","message":"unknown character '#' is ignored by the compiler","range":{"end":{"character":23,"line":3},"start":{"character":22,"line":3}},"severity":2,"source":"novus"}],"uri":"@ROOTURI@/main.nv","version":3}}
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@ROOTURI@/main.nv"}}
+{"id":99,"jsonrpc":"2.0","result":null}

@@ -1,0 +1,115 @@
+package checker
+
+import base/platform
+import base/text
+
+// One `novusc check` run: always one simple command (NG32), never through a shell pipeline, never with the network on purpose
+// (the caller skips projects whose dependencies are not fetched, 5.9). `skipped` means "no verdict": nothing was run, the process
+// did not start, it timed out or it failed without a message of the compiler.
+private final CHECKER_CHECK_ARGUMENT = " check "
+private final CHECKER_MERGE_STDERR = " 2>&1"
+private final CHECKER_DETAIL_MAX_BYTES = 200
+private final CHECKER_TIMEOUT_MIN_SECONDS = 1
+private final CHECKER_TIMEOUT_DEFAULT_SECONDS = 60
+private final CHECKER_TIMEOUT_MAX_SECONDS = 600
+
+define class NovuscRunner {
+    construct() {
+    }
+
+    method run(CheckRequest request): CheckResult {
+        var startedAt = nowMillis()
+        var result = CheckResult(request.requestId)
+        result.snapshotVersions = request.snapshotVersions
+        this.execute(request, result)
+        var finishedAt = nowMillis()
+        result.durationMillis = finishedAt - startedAt
+        return result
+    }
+
+    method execute(CheckRequest request, CheckResult result) {
+        if (request.novuscPath == "") {
+            this.skip(result, "novusc was not found")
+            return
+        }
+        if (request.overlays.length() == 0) {
+            this.checkIn(request, request.entryFile, request.projectRoot, result)
+            return
+        }
+        var tree = buildShadowTree(request, DiskTextSource())
+        if (tree.directory == "") {
+            this.skip(result, "the shadow copy of the project could not be written")
+            return
+        }
+        this.checkIn(request, tree.entryFile, tree.directory, result)
+        tree.cleanup()
+        this.noteSkippedOverlays(tree, result)
+    }
+
+    method checkIn(CheckRequest request, string entryFile, string workDir, CheckResult result) {
+        var program = shellQuote(request.novuscPath)
+        var target = shellQuote(entryFile)
+        if (program == "" || target == "") {
+            this.skip(result, "the novusc command line cannot be quoted")
+            return
+        }
+        var seconds = checkerClampTimeout(request.timeoutSeconds)
+        var finished = runCommand(program + CHECKER_CHECK_ARGUMENT + target + CHECKER_MERGE_STDERR, seconds)
+        this.interpret(request, finished, workDir, result)
+    }
+
+    method interpret(CheckRequest request, CommandResult finished, string workDir, CheckResult result) {
+        if (finished.started == false) {
+            this.skip(result, "novusc could not be started")
+            return
+        }
+        if (finished.timedOut) {
+            this.skip(result, "novusc check timed out after " + checkerClampTimeout(request.timeoutSeconds) + " seconds")
+            return
+        }
+        if (finished.exitCode == 0) {
+            result.succeeded = true
+            return
+        }
+        var findings = parseCheckOutput(finished.output, workDir, request.projectRoot)
+        if (findings.length() == 0) {
+            this.skip(result, this.describeFailure(finished))
+            return
+        }
+        checkerAnchorFindings(findings, request.entryFile)
+        result.findings = findings
+    }
+
+    // Dirty buffers outside the project root are not in the shadow tree, so novusc read their disk text.
+    method noteSkippedOverlays(ShadowTree tree, CheckResult result) {
+        if (tree.skippedOverlays == 0 || result.detail != "") {
+            return
+        }
+        result.detail = tree.skippedOverlays + " unsaved buffer(s) outside the project root were checked from disk"
+    }
+
+    method skip(CheckResult result, string reason) {
+        result.skipped = true
+        result.detail = truncateUtf8(reason, CHECKER_DETAIL_MAX_BYTES)
+    }
+
+    method describeFailure(CommandResult finished): string {
+        var lines = finished.output.trim().split("\n")
+        var summary = "novusc exited with code " + finished.exitCode
+        if (lines.length() == 0 || lines[0].trim() == "") {
+            return summary
+        }
+        return summary + ": " + lines[0].trim()
+    }
+}
+
+// A hung novusc must not hold a worker forever: 0 or a negative value is not "no limit" here but the default of the setting.
+method checkerClampTimeout(integer requestedSeconds): integer {
+    if (requestedSeconds < CHECKER_TIMEOUT_MIN_SECONDS) {
+        return CHECKER_TIMEOUT_DEFAULT_SECONDS
+    }
+    if (requestedSeconds > CHECKER_TIMEOUT_MAX_SECONDS) {
+        return CHECKER_TIMEOUT_MAX_SECONDS
+    }
+    return requestedSeconds
+}

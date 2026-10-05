@@ -1,11 +1,16 @@
-/** VS Code client for the Novus language: starts the language server and provides the run command. */
+/** VS Code client for the Novus language: starts `novus-lsp` (or the TypeScript server) and provides the run command. */
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { LanguageClient, LanguageClientOptions, ServerOptions, TransportKind } from 'vscode-languageclient/node';
+import { locateServer } from './launcher';
 
 let client: LanguageClient | undefined;
+// Watchers belong to the client that was created with them: a restart must not leave the old ones running.
+let watchers: vscode.Disposable[] = [];
 let outputChannel: vscode.LogOutputChannel | undefined;
+
+type Implementation = 'lsp' | 'typescript';
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   outputChannel = vscode.window.createOutputChannel('Novus Language Server', { log: true });
@@ -15,29 +20,107 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand('novus.runFile', () => executeCurrentFile('run')),
     vscode.commands.registerCommand('novus.buildFile', () => executeCurrentFile('build')),
     vscode.commands.registerCommand('novus.restartServer', async () => {
-      if (client) {
-        await client.restart();
-        vscode.window.setStatusBarMessage('Novus language server restarted', 3000);
-      }
+      await restartClient(context);
+      vscode.window.setStatusBarMessage('Novus language server restarted', 3000);
+    }),
+    vscode.workspace.onDidChangeConfiguration(async event => {
+      if (event.affectsConfiguration('novus.server')) await restartClient(context);
     }),
   );
 
-  client = createClient(context);
+  await startClient(context);
+}
+
+export async function deactivate(): Promise<void> {
+  await stopClient();
+}
+
+async function stopClient(): Promise<void> {
+  const running = client;
+  client = undefined;
+  watchers.forEach(watcher => watcher.dispose());
+  watchers = [];
+  if (running) await running.stop();
+}
+
+function watchFiles(glob: string): vscode.FileSystemWatcher {
+  const watcher = vscode.workspace.createFileSystemWatcher(glob);
+  watchers.push(watcher);
+  return watcher;
+}
+
+async function restartClient(context: vscode.ExtensionContext): Promise<void> {
+  await stopClient();
+  await startClient(context);
+}
+
+async function startClient(context: vscode.ExtensionContext): Promise<void> {
+  const created = createClient(context);
+  if (!created) return;
+  client = created;
   try {
-    await client.start();
+    await created.start();
   } catch (err) {
+    client = undefined;
     void vscode.window.showErrorMessage(`Failed to start the Novus language server: ${String(err)}`);
   }
 }
 
-export async function deactivate(): Promise<void> {
-  if (client) {
-    await client.stop();
-    client = undefined;
+function implementation(): Implementation {
+  const chosen = vscode.workspace.getConfiguration('novus').get<string>('server.implementation', 'lsp');
+  return chosen === 'typescript' ? 'typescript' : 'lsp';
+}
+
+function createClient(context: vscode.ExtensionContext): LanguageClient | undefined {
+  if (implementation() === 'typescript') return createTypeScriptClient(context);
+  return createNativeClient();
+}
+
+/** `novus-lsp`: the language server written in Novus, spoken to over stdio. */
+function createNativeClient(): LanguageClient | undefined {
+  const server = locateServer();
+  if (!server.found) {
+    void offerFallback(server.command);
+    return undefined;
+  }
+  outputChannel?.info(`Starting ${server.command} (from ${server.source})`);
+  const serverOptions: ServerOptions = {
+    command: server.command,
+    args: ['--stdio'],
+    transport: TransportKind.stdio,
+  };
+  const clientOptions: LanguageClientOptions = {
+    documentSelector: [
+      { scheme: 'file', language: 'novus' },
+      { scheme: 'file', language: 'novus-html' },
+      { scheme: 'untitled', language: 'novus' },
+    ],
+    synchronize: {
+      fileEvents: watchFiles('**/*.{nv,nvh}'),
+      configurationSection: 'novus',
+    },
+    initializationOptions: { novus: JSON.parse(JSON.stringify(vscode.workspace.getConfiguration('novus'))) },
+    outputChannel,
+  };
+  return new LanguageClient('novus', 'Novus Language Server', serverOptions, clientOptions);
+}
+
+async function offerFallback(command: string): Promise<void> {
+  const choice = await vscode.window.showErrorMessage(
+    `The Novus language server '${command}' was not found. Build it with 'make lsp', put it on PATH or set 'novus.server.path'.`,
+    'Open settings',
+    'Use the TypeScript server',
+  );
+  if (choice === 'Open settings') {
+    void vscode.commands.executeCommand('workbench.action.openSettings', 'novus.server.path');
+  }
+  if (choice === 'Use the TypeScript server') {
+    await vscode.workspace.getConfiguration('novus').update('server.implementation', 'typescript', vscode.ConfigurationTarget.Global);
   }
 }
 
-function createClient(context: vscode.ExtensionContext): LanguageClient {
+/** The previous server (TypeScript), kept until the native one has the same features. */
+function createTypeScriptClient(context: vscode.ExtensionContext): LanguageClient {
   const serverModule = context.asAbsolutePath(path.join('out', 'server', 'server.js'));
   const serverOptions: ServerOptions = {
     run: { module: serverModule, transport: TransportKind.ipc },
@@ -49,7 +132,7 @@ function createClient(context: vscode.ExtensionContext): LanguageClient {
       { scheme: 'untitled', language: 'novus' },
     ],
     synchronize: {
-      fileEvents: vscode.workspace.createFileSystemWatcher('**/*.nv'),
+      fileEvents: watchFiles('**/*.nv'),
       configurationSection: 'novus',
     },
     outputChannel,

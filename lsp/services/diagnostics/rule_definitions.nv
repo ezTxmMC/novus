@@ -1,0 +1,189 @@
+package diagnostics
+
+import base/maybe
+import base/model
+import base/text
+import projects/closure
+import projects/workspace
+import semantics/semantic
+import syntax/outline
+
+private final DIAGNOSTICS_DUPLICATE_DEFINITION = "duplicate-definition"
+private final DIAGNOSTICS_QUALIFIER_COLLISION = "qualifier-collision"
+
+// The definition family: a class or enum declared twice, an interface or abstract method that a class leaves open,
+// two package folders that share one qualifier (5.9).
+define class DefinitionDiagnosticRule based DiagnosticRule {
+    construct() {
+    }
+
+    method check(FileContext context): array<Diagnostic> {
+        var found = []
+        if (diagnosticsIsSemanticFile(context) == false) {
+            return found
+        }
+        diagnosticsAppendAll(found, this.duplicates(context))
+        diagnosticsAppendAll(found, DiagnosticsInterfaceCheck(context).findings())
+        diagnosticsAppendAll(found, this.collisions(context))
+        return found
+    }
+
+    // The compiler gives no position; the second declaration carries the error and relates the first. An interface or an
+    // annotation of the same name is never reported: the compiler accepts it, and its order of files is not ours.
+    method duplicates(FileContext context): array<Diagnostic> {
+        var found = []
+        for (symbol in context.index().duplicateTypeDeclarations()) {
+            if (symbol.file.filePath != context.closureFile.filePath || this.isClassLike(symbol.decl) == false) {
+                continue
+            }
+            var first = this.firstClassLike(context.index().typeDeclarationsNamed(symbol.name()))
+            if (isSome(first) && first != symbol) {
+                found.append(this.duplicateFinding(symbol, first))
+            }
+        }
+        return found
+    }
+
+    method isClassLike(Decl decl): bool {
+        return decl.kind == DeclKind.Class || decl.kind == DeclKind.AbstractClass || decl.kind == DeclKind.Enum
+    }
+
+    method firstClassLike(array<Symbol> declarations): Symbol {
+        for (symbol in declarations) {
+            if (this.isClassLike(symbol.decl)) {
+                return symbol
+            }
+        }
+        return nothing()
+    }
+
+    method duplicateFinding(Symbol symbol, Symbol first): Diagnostic {
+        var message = "duplicate definition of '" + symbol.name() + "': a class or enum of that name exists already"
+        var error = diagnosticsFinding(symbol.decl.nameSpan, Severity.Error, DIAGNOSTICS_DUPLICATE_DEFINITION, message)
+        error.related.append(RelatedInfo(first.file.filePath, first.decl.nameSpan, "first definition"))
+        return error
+    }
+
+    // Folders `a/shapes` and `b/shapes` both become the qualifier `shapes` and merge silently (5.6 item 3).
+    method collisions(FileContext context): array<Diagnostic> {
+        var found = []
+        var file = context.closureFile
+        if (file.qualifier == "" || file.origin != FileOrigin.Project) {
+            return found
+        }
+        var others = this.otherFolders(context)
+        if (others.length() == 0) {
+            return found
+        }
+        var message = "the folders '" + file.packageName + "' and '" + others.join("', '") + "' share the qualifier '" + file.qualifier + "': their functions and globals merge"
+        found.append(diagnosticsFinding(this.anchorOf(context), Severity.Warning, DIAGNOSTICS_QUALIFIER_COLLISION, message))
+        return found
+    }
+
+    method otherFolders(FileContext context): array<string> {
+        var others = []
+        var file = context.closureFile
+        for (candidate in context.project.closure.filesOfQualifier(file.qualifier)) {
+            var isOther = candidate.origin == FileOrigin.Project && candidate.packageName != file.packageName
+            if (isOther && others.contains(candidate.packageName) == false) {
+                others.append(candidate.packageName)
+            }
+        }
+        return others
+    }
+
+    method anchorOf(FileContext context): Span {
+        if (context.syntax.packageSpan.start >= 0) {
+            return context.syntax.packageSpan
+        }
+        return Span(0, 0)
+    }
+}
+
+private final DIAGNOSTICS_MISSING_METHOD = "missing-interface-method"
+private final DIAGNOSTICS_CHAIN_LIMIT = 64
+
+// `missing-interface-method`, the compiler's `checkClasses`: a class that is not abstract implements every method of its
+// interface and every abstract method of its base classes; the most derived method of that name decides (by name, not by arity).
+define class DiagnosticsInterfaceCheck {
+    FileContext context
+
+    construct(FileContext context) {
+        this.context = context
+    }
+
+    method findings(): array<Diagnostic> {
+        var found = []
+        for (decl in this.context.syntax.decls) {
+            if (decl.kind == DeclKind.Class) {
+                this.checkClass(decl, found)
+            }
+        }
+        return found
+    }
+
+    method checkClass(Decl decl, array<Diagnostic> found) {
+        var chain = this.chainOf(decl)
+        var base = this.context.index().typeNamed(decl.baseName)
+        if (isSome(base) && base.decl.kind == DeclKind.Interface) {
+            for (required in this.methodsOf(base.decl)) {
+                this.require(decl, chain, required, "does not implement '" + required.name + "()' from interface " + base.decl.name, found)
+            }
+        }
+        for (owner in chain) {
+            for (abstractMethod in this.methodsOf(owner)) {
+                if (abstractMethod.kind == DeclKind.AbstractMethod) {
+                    this.require(decl, chain, abstractMethod, "must implement abstract method '" + abstractMethod.name + "()'", found)
+                }
+            }
+        }
+    }
+
+    method require(Decl decl, array<Decl> chain, Decl required, string reason, array<Diagnostic> found) {
+        var implementation = this.mostDerived(chain, required.name)
+        if (isSome(implementation) && implementation.kind != DeclKind.AbstractMethod) {
+            return
+        }
+        found.append(diagnosticsFinding(decl.nameSpan, Severity.Error, DIAGNOSTICS_MISSING_METHOD, "class '" + decl.name + "' " + reason))
+    }
+
+    // The class and its base classes, most derived first; the walk stops at an interface or at a name that is no class.
+    method chainOf(Decl decl): array<Decl> {
+        var chain = [decl]
+        var current = decl
+        while (chain.length() < DIAGNOSTICS_CHAIN_LIMIT && current.baseName != "") {
+            var base = this.context.index().typeNamed(current.baseName)
+            if (isNone(base) || this.isClass(base.decl) == false) {
+                return chain
+            }
+            chain.append(base.decl)
+            current = base.decl
+        }
+        return chain
+    }
+
+    method isClass(Decl decl): bool {
+        return decl.kind == DeclKind.Class || decl.kind == DeclKind.AbstractClass
+    }
+
+    method methodsOf(Decl owner): array<Decl> {
+        var methods = []
+        for (member in owner.members) {
+            if (member.kind == DeclKind.Method || member.kind == DeclKind.AbstractMethod) {
+                methods.append(member)
+            }
+        }
+        return methods
+    }
+
+    method mostDerived(array<Decl> chain, string name): Decl {
+        for (owner in chain) {
+            for (candidate in this.methodsOf(owner)) {
+                if (candidate.name == name) {
+                    return candidate
+                }
+            }
+        }
+        return nothing()
+    }
+}

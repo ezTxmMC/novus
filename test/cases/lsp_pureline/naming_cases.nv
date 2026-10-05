@@ -1,0 +1,55 @@
+package main
+
+import "novus/lsp/base/model"
+import "novus/lsp/base/platform"
+import "novus/lsp/syntax/parsing"
+import "novus/lsp/services/pureline"
+
+method runBadNameCases() {
+    showText("one letter parameter", "method f(integer a) {\n    return a\n}\n")
+    showText("one letter locals", "method f() {\n    var x = 1\n    string s = \"a\"\n    return x\n}\n")
+    showText("placeholder names", "method f() {\n    var tmp = 1\n    var obj = 2\n    var thing = 3\n    var data2 = 4\n}\n")
+    showText("a field with a one letter name", "define class A {\n    integer n\n    string name\n    method f() {\n    }\n}\n")
+    showText("a parameter of a constructor", "define class A {\n    construct(integer v) {\n    }\n}\n")
+    showText("a loop variable that is no counter", "method f(items) {\n    for (x in items) {\n    }\n}\n")
+    showText("a name used twice is reported at each declaration", "method f(a) {\n    if (a) {\n        var x = 1\n    }\n    var x = 2\n}\n")
+    showText("an underscore is one letter", "method f() {\n    var _ = 1\n}\n")
+}
+
+method runGoodNameCases() {
+    showText("meaningful names", "define class Account {\n    integer balance\n    method deposit(integer amount) {\n        var total = balance + amount\n    }\n}\n")
+    showText("a loop counter with a literal start", "method f() {\n    var i = 0\n    var j = 10\n    while (i < j) {\n        i = i + 1\n    }\n}\n")
+    showText("a for variable named i", "method f(items) {\n    for (i in items) {\n    }\n}\n")
+    showText("the other counter letters", "method f(items) {\n    for (j in items) {\n    }\n    for (k in items) {\n    }\n}\n")
+    showText("a longer name that starts like a placeholder", "method f() {\n    var tmpFile = 1\n    var object = 2\n    var data = 3\n    var data22 = 4\n}\n")
+    showText("a typed counter", "method f() {\n    integer i = 0\n}\n")
+}
+
+method runNameSettingCases() {
+    var none = PurelineSettings()
+    none.allowedShortNames = []
+    showWith("without allowed names a counter needs a literal start", none, "method f() {\n    var i = foo()\n    var j = 0\n    for (k in xs) {\n    }\n}\n")
+    showWith("without allowed names a parameter i is reported", none, "method f(integer i) {\n}\n")
+    var more = PurelineSettings()
+    more.allowedShortNames = ["x", "y", "tmp"]
+    showWith("allowed names", more, "method f(integer x, integer y, integer z) {\n    var tmp = 1\n    var i = foo()\n}\n")
+}
+
+method runNameRecoveryCases() {
+    showText("a body that never closes", "method f(integer a) {\n    var b = 1\n")
+    showText("an unfinished declaration", "method f() {\n    var \n}\n")
+    showText("no declarations", "")
+    var source = "method f(integer a) {\n    var b = 1\n}\n"
+    var document = documentFor("/work/pkg/main.nv", source)
+    var withoutLocals = parseSourceText(document.filePath, source, indexParseOptions())
+    var found = PurelineNamingRule(PurelineSettings()).check(document, withoutLocals, MemoryTextSource({}))
+    println("index parse without locals: " + found.length() + " finding(s), the parameter is checked: " + (found.length() == 1))
+}
+
+method runNamingCases() {
+    println("--- PL-NAME-001")
+    runBadNameCases()
+    runGoodNameCases()
+    runNameSettingCases()
+    runNameRecoveryCases()
+}

@@ -1,0 +1,20 @@
+import geo
+import strings
+import util
+
+method helper(integer value): integer {
+    var doubled = value * 2
+    return doubled + other()
+}
+
+method other(): integer {
+    return 1
+}
+
+method main() {
+    var total = helper(2)
+    var shape = Circle(1.0)
+    println(total + shape.area())
+    println(strings.repeat("a", 2))
+    println(util.twice())
+}

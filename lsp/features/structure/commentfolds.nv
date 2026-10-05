@@ -1,0 +1,85 @@
+package structure
+
+import base/model
+import base/text
+import syntax/lexing
+
+private final STRUCTURE_FOLD_COMMENT = "comment"
+private final STRUCTURE_FOLD_REGION = "region"
+private final STRUCTURE_LINE_COMMENT = "//"
+private final STRUCTURE_REGION_WORDS = ["region", "#region"]
+private final STRUCTURE_END_REGION_WORDS = ["endregion", "#endregion"]
+
+// Comment folds: runs of own-line `//` comments (two lines or more), block comments over several lines and region
+// markers (`// region` ... `// endregion`, also with a `#`).
+define class StructureCommentFolds {
+    LineIndex lines
+    array<FoldingEntry> found
+    integer runStart
+    integer runEnd
+    array<integer> regions
+
+    construct(LineIndex lines, array<FoldingEntry> found) {
+        this.lines = lines
+        this.found = found
+        this.runStart = -1
+        this.runEnd = -1
+        this.regions = []
+    }
+
+    method collect(array<Token> comments) {
+        for (comment in comments) {
+            this.visit(comment)
+        }
+        this.closeRun()
+    }
+
+    method visit(Token comment) {
+        var startLine = this.lines.lineOf(comment.start)
+        if (comment.text.startsWith(STRUCTURE_LINE_COMMENT) == false) {
+            this.closeRun()
+            this.addBlockComment(comment, startLine)
+            return
+        }
+        this.markRegion(comment, startLine)
+        if (comment.firstOnLine == false) {
+            this.closeRun()
+            return
+        }
+        if (this.runStart >= 0 && startLine == this.runEnd + 1) {
+            this.runEnd = startLine
+            return
+        }
+        this.closeRun()
+        this.runStart = startLine
+        this.runEnd = startLine
+    }
+
+    method addBlockComment(Token comment, integer startLine) {
+        var endLine = this.lines.lineOf(comment.end - 1)
+        if (endLine > startLine) {
+            this.found.append(FoldingEntry(startLine, endLine, STRUCTURE_FOLD_COMMENT))
+        }
+    }
+
+    method closeRun() {
+        if (this.runStart >= 0 && this.runEnd > this.runStart) {
+            this.found.append(FoldingEntry(this.runStart, this.runEnd, STRUCTURE_FOLD_COMMENT))
+        }
+        this.runStart = -1
+        this.runEnd = -1
+    }
+
+    method markRegion(Token comment, integer line) {
+        var word = comment.text.substring(STRUCTURE_LINE_COMMENT.length(), comment.text.length()).trim().split(" ")[0]
+        if (STRUCTURE_REGION_WORDS.contains(word)) {
+            this.regions.append(line)
+        }
+        if (STRUCTURE_END_REGION_WORDS.contains(word) && this.regions.length() > 0) {
+            var startLine = this.regions.pop()
+            if (line > startLine) {
+                this.found.append(FoldingEntry(startLine, line, STRUCTURE_FOLD_REGION))
+            }
+        }
+    }
+}

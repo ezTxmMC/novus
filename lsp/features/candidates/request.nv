@@ -1,0 +1,175 @@
+package candidates
+
+import path
+import strings
+import base/text
+import projects/closure
+import projects/workspace
+import semantics/semantic
+import syntax/outline
+import syntax/scanning
+
+// The kinds of 8.2, written once: the detector of `completion` produces them and the sources of this package read them.
+private final CANDIDATES_KIND_MANIFEST = "manifest"
+private final CANDIDATES_KIND_IMPORT_TARGET = "importTarget"
+private final CANDIDATES_KIND_IMPORT_FILE = "importFile"
+private final CANDIDATES_KIND_IMPORT_MODULE = "importModule"
+private final CANDIDATES_KIND_IMPORT_NESTED = "importNested"
+private final CANDIDATES_KIND_ANNOTATION = "annotation"
+private final CANDIDATES_KIND_FIELD_NAME = "fieldName"
+private final CANDIDATES_KIND_BASED = "basedClause"
+private final CANDIDATES_KIND_DEFINE = "defineKind"
+private final CANDIDATES_KIND_ACCESSOR = "fieldAccessor"
+private final CANDIDATES_KIND_TYPE = "type"
+private final CANDIDATES_KIND_MEMBER = "member"
+private final CANDIDATES_KIND_CLASS_MEMBER = "classMember"
+private final CANDIDATES_KIND_TOP_LEVEL = "topLevel"
+private final CANDIDATES_KIND_STATEMENT = "statement"
+private final CANDIDATES_KIND_EXPRESSION = "expression"
+private final CANDIDATES_KIND_NVH_HEADER = "nvhHeader"
+private final CANDIDATES_KIND_NVH_OUTSIDE = "nvhOutside"
+
+private final CANDIDATES_UNDERSCORE = "_"
+private final CANDIDATES_NOVUS_EXTENSION = ".nv"
+private final CANDIDATES_MAIN_METHOD = "main"
+private final CANDIDATES_MAIN_PACKAGE = "main"
+private final CANDIDATES_MEMO_SEPARATOR = "|"
+private final CANDIDATES_MEMO_LIMIT = 40000
+
+private final CANDIDATES_SCOPE_MANIFEST = "manifest"
+private final CANDIDATES_SNIPPET_SCOPES = {
+    CANDIDATES_KIND_STATEMENT: "statement", CANDIDATES_KIND_EXPRESSION: "expression", CANDIDATES_KIND_CLASS_MEMBER: "class",
+    CANDIDATES_KIND_TOP_LEVEL: "toplevel", CANDIDATES_KIND_NVH_OUTSIDE: "nvh", CANDIDATES_KIND_NVH_HEADER: "nvh_block",
+    CANDIDATES_KIND_MANIFEST: CANDIDATES_SCOPE_MANIFEST
+}
+
+// What a manifest context asks for (`detail` of a `manifest` context); the keys already set in a `Type{` literal
+// follow the marker `|` in `detail` of a `fieldName` context ("object|radius,name").
+private final CANDIDATES_DETAIL_DIRECTIVE = "directive"
+private final CANDIDATES_DETAIL_REQUIRE = "requireModule"
+private final CANDIDATES_DETAIL_REPLACE_MODULE = "replaceModule"
+private final CANDIDATES_DETAIL_REPLACE_DIRECTORY = "replaceDir"
+private final CANDIDATES_DETAIL_ANNOTATION = "annotation"
+private final CANDIDATES_DETAIL_OBJECT = "object"
+private final CANDIDATES_DETAIL_SEPARATOR = "|"
+
+// What the user is completing, detected from tokens by the completion package. `typeName` holds the typed parent path
+// of the import and manifest path contexts ("geo/"), the class or annotation name of a `fieldName` context and the
+// class whose header is being written in a `basedClause` context.
+define class CompletionContext {
+    string kind
+    string prefix
+    Span replaceSpan
+    array<ChainStep> receiver
+    string typeName
+    string detail
+    bool suppressed
+
+    construct(string kind, string prefix, Span replaceSpan) {
+        this.kind = kind
+        this.prefix = prefix
+        this.replaceSpan = replaceSpan
+        this.receiver = []
+        this.typeName = ""
+        this.detail = ""
+        this.suppressed = false
+    }
+}
+
+// The keys of a `fieldName` context that are written already.
+method candidatesKeysSet(CompletionContext request): array<string> {
+    var marker = request.detail.indexOf(CANDIDATES_DETAIL_SEPARATOR)
+    if (marker < 0 || marker + 1 >= request.detail.length()) {
+        return []
+    }
+    return request.detail.substring(marker + 1, request.detail.length()).split(",")
+}
+
+// The first part of `detail`: the form of the context (`annotation`, `object`, `directive`, ...).
+method candidatesDetailForm(CompletionContext request): string {
+    var marker = request.detail.indexOf(CANDIDATES_DETAIL_SEPARATOR)
+    if (marker < 0) {
+        return request.detail
+    }
+    return request.detail.substring(0, marker)
+}
+
+method candidatesIsValueContext(string kind): bool {
+    return kind == CANDIDATES_KIND_STATEMENT || kind == CANDIDATES_KIND_EXPRESSION
+}
+
+// The contexts in which the symbols of the program, of the dependencies and of unloaded packages are offered.
+method candidatesWantsSymbols(string kind): bool {
+    return candidatesIsValueContext(kind) || kind == CANDIDATES_KIND_TYPE || kind == CANDIDATES_KIND_CLASS_MEMBER ||
+        kind == CANDIDATES_KIND_BASED || kind == CANDIDATES_KIND_ANNOTATION
+}
+
+// The types, functions and globals of one origin that the closure holds.
+method candidatesLoadedSymbols(FileContext context, FileOrigin origin): array<Symbol> {
+    var index = context.index()
+    var symbols = []
+    for (group in [index.allTypes(), index.allFunctions(), index.allGlobals()]) {
+        for (symbol in group) {
+            if (symbol.origin() == origin) {
+                symbols.append(symbol)
+            }
+        }
+    }
+    return symbols
+}
+
+method candidatesIsImportableDependencyFile(ClosureFile file): bool {
+    if (file.filePath.endsWith(CANDIDATES_NOVUS_EXTENSION) == false) {
+        return false
+    }
+    for (segment in file.packageName.split(CANDIDATES_SEGMENT_SEPARATOR)) {
+        if (segment != "" && candidatesIsIdentifier(segment) == false) {
+            return false
+        }
+    }
+    return true
+}
+
+// The folders of the files that the closure holds.
+method candidatesLoadedFolders(FileContext context): map<string, bool> {
+    var folders = {}
+    for (file in context.project.closure.files) {
+        folders[path.dirname(file.filePath)] = true
+    }
+    return folders
+}
+
+// Folders and files whose name is no identifier (hyphens, dots) cannot be imported.
+method candidatesIsIdentifier(string name): bool {
+    if (name == "") {
+        return false
+    }
+    var index = 0
+    while (index < name.length()) {
+        var letter = name.charAt(index)
+        if (strings.isAlpha(letter) == false && letter != CANDIDATES_UNDERSCORE && (strings.isDigit(letter) == false || index == 0)) {
+            return false
+        }
+        index = index + 1
+    }
+    return true
+}
+
+// The top-level declarations that a name can reach: types, functions and globals; `main` is nobody's business.
+method candidatesDeclaredSymbols(ClosureFile file): array<Symbol> {
+    var symbols = []
+    for (decl in file.syntax.decls) {
+        if (decl.name != "" && (decl.name != CANDIDATES_MAIN_METHOD || decl.isCallable() == false)) {
+            symbols.append(Symbol(decl, file, file.qualifier, ""))
+        }
+    }
+    return symbols
+}
+
+// The snippet scope of 7.3 that a completion context offers (`""`: no snippets); a manifest has one for its directives.
+method candidatesSnippetScope(CompletionContext request): string {
+    if (request.kind == CANDIDATES_KIND_MANIFEST && candidatesDetailForm(request) != CANDIDATES_DETAIL_DIRECTIVE) {
+        return ""
+    }
+    return CANDIDATES_SNIPPET_SCOPES.get(request.kind, "")
+}

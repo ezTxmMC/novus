@@ -1,0 +1,58 @@
+package main
+
+import "novus/lsp/base/text"
+import "novus/lsp/server/jobs"
+import "novus/lsp/server/session"
+
+private final WATCH_MAIN_WITH_METHOD = "package main\n\nmethod main() {\n    return\n}\n\nmethod added() {\n    return\n}\n"
+private final WATCH_MAIN_BODY = "package main\n\nmethod main() {\n    println(\"body\")\n}\n\nmethod added() {\n    return\n}\n"
+
+method describeStale(JobsProjectWatch watch, map<string, integer> dirty): string {
+    var names = []
+    for (uri in watch.staleDocuments(dirty)) {
+        names.push(uri)
+    }
+    return "[" + names.join(", ") + "]"
+}
+
+// Publishing a document is simulated the way DiagnosticScheduler does: the context is made (which rebuilds an
+// invalid project) and then the document is noted at the revision it was published at.
+method publishLike(Session state, JobsProjectWatch watch, string uri) {
+    var context = state.contextFor(uri)
+    watch.note(state.documentFor(uri))
+}
+
+method changeLike(Session state, string uri, integer version, string text) {
+    var document = state.documentFor(uri)
+    document.replaceText(version, text)
+    state.workspace.onDocumentChanged(document)
+}
+
+method runWatchCases() {
+    println("--- revision watch")
+    var state = fixtureSession()
+    var revisions = {}
+    var watch = JobsProjectWatch(state, revisions)
+    var mainUri = fixtureOpen(state, "/proj/main.nv", 1, fixtureDiskText("/proj/main.nv"))
+    var utilUri = fixtureOpen(state, "/proj/util.nv", 1, fixtureDiskText("/proj/util.nv"))
+    publishLike(state, watch, mainUri)
+    publishLike(state, watch, utilUri)
+    println("first look, nothing changed: " + describeStale(watch, {}))
+    changeLike(state, mainUri, 2, WATCH_MAIN_WITH_METHOD)
+    publishLike(state, watch, mainUri)
+    println("main.nv declares a method: " + describeStale(watch, {}))
+    println("a document that waits for its own publication is left out: " + describeStale(watch, {utilUri: 1}))
+    publishLike(state, watch, utilUri)
+    println("after util.nv was published again: " + describeStale(watch, {}))
+    changeLike(state, mainUri, 3, WATCH_MAIN_BODY)
+    publishLike(state, watch, mainUri)
+    println("a body edit: " + describeStale(watch, {}))
+    state.workspace.onFilesChangedOnDisk(["/proj/util.nv"])
+    println("a file changed on disk (project invalid): " + describeStale(watch, {}))
+    println("reported once: " + describeStale(watch, {}))
+    publishLike(state, watch, mainUri)
+    publishLike(state, watch, utilUri)
+    println("after both were published: " + describeStale(watch, {}))
+    watch.forget(mainUri)
+    println("forget drops the record: " + describeStale(watch, {}))
+}

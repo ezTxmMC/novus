@@ -1,0 +1,193 @@
+== all directives
+  dir=/work/app name=[github.com/user/app] version=[0.1.0] main=[cmd/main.nv] lib=[lib.nv] output=[tool]
+  entry=lib.nv mainPath=/work/app/cmd/main.nv executable=tool
+  directive line 1 project [github.com/user/app] key 11-18 values [19-40]
+  directive line 2 version [0.1.0] key 41-48 values [49-56]
+  directive line 3 main [cmd/main.nv] key 57-61 values [62-75]
+  directive line 4 lib [lib.nv] key 76-79 values [80-88]
+  directive line 5 output [tool] key 89-95 values [96-102]
+  directive line 6 novus [0.1.0-pre.alpha.2] key 103-108 values [109-128]
+  directive line 7 require [github.com/user/lib, v1.2.0] key 129-136 values [137-158 159-167]
+  directive line 8 replace [github.com/user/lib, ../lib] key 168-175 values [176-197 198-206]
+  require github.com/user/lib @ v1.2.0 line 7 span 129-167
+  replaces {github.com/user/lib: ../lib}
+== empty text
+  dir=/work/app name=[] version=[] main=[main.nv] lib=[] output=[]
+  entry=main.nv mainPath=/work/app/main.nv executable=app
+  replaces {}
+== only a comment
+  dir=. name=[] version=[] main=[main.nv] lib=[] output=[]
+  entry=main.nv mainPath=main.nv executable=app
+  replaces {}
+== name only, entry is main
+  dir=/w name=[example.com/a/b/tool] version=[] main=[main.nv] lib=[] output=[]
+  entry=main.nv mainPath=/w/main.nv executable=tool
+  directive line 0 project [example.com/a/b/tool] key 0-7 values [8-30]
+  replaces {}
+== name ends with a slash
+  dir=/w name=[example.com/a/] version=[] main=[main.nv] lib=[] output=[]
+  entry=main.nv mainPath=/w/main.nv executable=app
+  directive line 0 project [example.com/a/] key 0-7 values [8-24]
+  replaces {}
+== lib wins as entry
+  dir=/w name=[] version=[] main=[m.nv] lib=[l.nv] output=[]
+  entry=l.nv mainPath=/w/m.nv executable=app
+  directive line 0 main [m.nv] key 0-4 values [5-11]
+  directive line 1 lib [l.nv] key 12-15 values [16-22]
+  replaces {}
+== root folder file
+  dir=/ name=[x] version=[] main=[main.nv] lib=[] output=[]
+  entry=main.nv mainPath=/main.nv executable=x
+  directive line 0 project [x] key 0-7 values [8-11]
+  replaces {}
+== relative bare name
+  dir=. name=[x] version=[] main=[main.nv] lib=[] output=[]
+  entry=main.nv mainPath=main.nv executable=x
+  directive line 0 project [x] key 0-7 values [8-11]
+  replaces {}
+== require without version, duplicates, replace overwrite
+  dir=/w name=[] version=[] main=[main.nv] lib=[] output=[]
+  entry=main.nv mainPath=/w/main.nv executable=app
+  directive line 0 require [a/b] key 0-7 values [8-13]
+  directive line 1 require [a/b, v2] key 14-21 values [22-27 28-32]
+  directive line 2 require [c/d, main] key 33-40 values [41-46 47-53]
+  directive line 3 replace [a/b, ../one] key 54-61 values [62-67 68-76]
+  directive line 4 replace [a/b, ../two] key 77-84 values [85-90 91-99]
+  directive line 5 replace [unused/x, ../x] key 100-107 values [108-118 119-125]
+  require a/b @ latest line 0 span 0-13
+  require c/d @ main line 2 span 33-53
+  replaces {a/b: ../two, unused/x: ../x}
+== unknown setting
+  dir=/w name=[a] version=[] main=[main.nv] lib=[] output=[]
+  entry=main.nv mainPath=/w/main.nv executable=a
+  directive line 0 project [a] key 0-7 values [8-11]
+  directive line 1 foo [bar] key 12-15 values [16-21]
+  replaces {}
+  issue line 1 span 12-15 [unknown-setting]: unknown setting 'foo' (known: project, version, main, lib, output, novus, require, replace) warning=false
+== unquoted value
+  dir=/w name=[ok] version=[] main=[main.nv] lib=[] output=[]
+  entry=main.nv mainPath=/w/main.nv executable=ok
+  directive line 0 version [] key 0-7 values []
+  directive line 1 main [] key 12-16 values []
+  directive line 2 project [ok] key 25-32 values [33-37]
+  replaces {}
+  issue line 0 span 8-11 [values-must-be-quoted]: values in project.nv must be quoted strings (near '1.0') warning=false
+  issue line 1 span 17-21 [values-must-be-quoted]: values in project.nv must be quoted strings (near 'main') warning=false
+== wrong arity
+  dir=/w name=[] version=[] main=[main.nv] lib=[] output=[]
+  entry=main.nv mainPath=/w/main.nv executable=app
+  directive line 0 project [] key 0-7 values []
+  directive line 1 version [1, 2] key 8-15 values [16-19 20-23]
+  directive line 2 require [] key 24-31 values []
+  directive line 3 require [a, b, c] key 32-39 values [40-43 44-47 48-51]
+  directive line 4 replace [a] key 52-59 values [60-63]
+  directive line 5 replace [a, b, c] key 64-71 values [72-75 76-79 80-83]
+  replaces {}
+  issue line 0 span 0-7 [bad-arity]: 'project' takes exactly one value warning=false
+  issue line 1 span 8-23 [bad-arity]: 'version' takes exactly one value warning=false
+  issue line 2 span 24-31 [bad-arity]: require needs a module path and an optional version warning=false
+  issue line 3 span 32-51 [bad-arity]: require needs a module path and an optional version warning=false
+  issue line 4 span 52-63 [bad-arity]: replace needs a module path and a local directory warning=false
+  issue line 5 span 64-83 [bad-arity]: replace needs a module path and a local directory warning=false
+== not a setting
+  dir=/w name=[after] version=[] main=[main.nv] lib=[] output=[]
+  entry=main.nv mainPath=/w/main.nv executable=after
+  directive line 3 project [after] key 24-31 values [32-39]
+  replaces {}
+  issue line 0 span 0-6 [expected-setting]: expected a setting such as project, version, main, require or replace but found 'import' warning=false
+  issue line 1 span 11-16 [expected-setting]: expected a setting such as project, version, main, require or replace but found 'str' warning=false
+  issue line 2 span 21-23 [expected-setting]: expected a setting such as project, version, main, require or replace but found '42' warning=false
+== two settings on one line
+  dir=/w name=[] version=[] main=[main.nv] lib=[] output=[]
+  entry=main.nv mainPath=/w/main.nv executable=app
+  directive line 0 project [a, 1] key 0-7 values [8-11 20-23]
+  replaces {}
+  issue line 0 span 12-19 [values-must-be-quoted]: values in project.nv must be quoted strings (near 'version') warning=false
+== an unknown setting with two values counts the values first
+  dir=/w name=[] version=[] main=[main.nv] lib=[] output=[]
+  entry=main.nv mainPath=/w/main.nv executable=app
+  directive line 0 foo [a, b] key 0-3 values [4-7 8-11]
+  replaces {}
+  issue line 0 span 0-11 [bad-arity]: 'foo' takes exactly one value warning=false
+== an unknown setting without a value counts the values first
+  dir=/w name=[] version=[] main=[main.nv] lib=[] output=[]
+  entry=main.nv mainPath=/w/main.nv executable=app
+  directive line 0 foo [] key 0-3 values []
+  replaces {}
+  issue line 0 span 0-3 [bad-arity]: 'foo' takes exactly one value warning=false
+== a string in key position is named by its value
+  dir=/w name=[] version=[] main=[main.nv] lib=[] output=[]
+  entry=main.nv mainPath=/w/main.nv executable=app
+  replaces {}
+  issue line 0 span 0-3 [expected-setting]: expected a setting such as project, version, main, require or replace but found 'x' warning=false
+== unterminated string
+  dir=/w name=[a] version=[1] main=[main.nv] lib=[] output=[]
+  entry=main.nv mainPath=/w/main.nv executable=a
+  directive line 0 version [1] key 0-7 values [8-11]
+  directive line 1 project [a] key 12-19 values [20-22]
+  replaces {}
+  issue line 1 span 20-22 [unterminated-string]: unterminated string: the closing quote is missing warning=true
+== unknown bytes are skipped like novusc does
+  dir=/w name=[a] version=[] main=[main.nv] lib=[] output=[]
+  entry=main.nv mainPath=/w/main.nv executable=a
+  directive line 0 note [] key 2-6 values []
+  directive line 1 project [a] key 7-14 values [15-18]
+  replaces {}
+  issue line 0 span 2-6 [bad-arity]: 'note' takes exactly one value warning=false
+== NUL byte
+  dir=/w name=[a] version=[2] main=[main.nv] lib=[] output=[]
+  entry=main.nv mainPath=/w/main.nv executable=a
+  directive line 0 project [a] key 0-7 values [8-11]
+  directive line 2 version [2] key 14-21 values [22-25]
+  replaces {}
+== utf-8 spans are byte offsets
+  dir=/w name=[héllo] version=[2] main=[main.nv] lib=[] output=[]
+  entry=main.nv mainPath=/w/main.nv executable=héllo
+  directive line 0 project [héllo] key 0-7 values [8-16]
+  directive line 1 version [2] key 17-24 values [25-28]
+  replaces {}
+== crlf line ends
+  dir=/w name=[a] version=[1] main=[main.nv] lib=[] output=[]
+  entry=main.nv mainPath=/w/main.nv executable=a
+  directive line 0 project [a] key 0-7 values [8-11]
+  directive line 1 version [1] key 13-20 values [21-24]
+  replaces {}
+== keys [project, version, main, lib, output, novus, require, replace]
+== file in a package folder
+  root=[/proj] manifest=[/proj/project.nv] main=[/proj/cmd/main.nv] hasManifest=true name=[p]
+== deeply nested file
+  root=[/proj] manifest=[/proj/project.nv] main=[/proj/cmd/main.nv] hasManifest=true name=[p]
+== the main file itself
+  root=[/proj] manifest=[/proj/project.nv] main=[/proj/cmd/main.nv] hasManifest=true name=[p]
+== the project folder
+  root=[/proj] manifest=[/proj/project.nv] main=[/proj/cmd/main.nv] hasManifest=true name=[p]
+== a folder start
+  root=[/proj] manifest=[/proj/project.nv] main=[/proj/cmd/main.nv] hasManifest=true name=[p]
+== a file that does not exist yet
+  root=[/proj] manifest=[/proj/project.nv] main=[/proj/cmd/main.nv] hasManifest=true name=[p]
+== no manifest: the file is the program
+  root=[/loose] manifest=[] main=[/loose/tool.nv] hasManifest=false name=[]
+== no manifest: a folder has no main
+  root=[/loose] manifest=[] main=[] hasManifest=false name=[]
+== project.nv as a folder is no manifest
+  root=[/dirmanifest/sub] manifest=[] main=[/dirmanifest/sub/s.nv] hasManifest=false name=[]
+== nearest manifest wins
+  root=[/outer/inner] manifest=[/outer/inner/project.nv] main=[/outer/inner/main.nv] hasManifest=true name=[inner]
+== outer manifest
+  root=[/outer] manifest=[/outer/project.nv] main=[/outer/main.nv] hasManifest=true name=[outer]
+== scratch buffer
+  root=[] manifest=[] main=[] hasManifest=false name=[]
+== unnormalised path
+  root=[/proj] manifest=[/proj/project.nv] main=[/proj/cmd/main.nv] hasManifest=true name=[p]
+== a relative path ends at the current folder
+  root=[.] manifest=[project.nv] main=[main.nv] hasManifest=true name=[rel]
+== the working folder is no ancestor of a .. path
+  root=[../x] manifest=[] main=[../x/f.nv] hasManifest=false name=[]
+== a .. path climbs further up
+  root=[../..] manifest=[../../project.nv] main=[../../main.nv] hasManifest=true name=[up]
+== a .. path finds the manifest next to it
+  root=[..] manifest=[../project.nv] main=[../main.nv] hasManifest=true name=[near]
+== a file 63 folders below the manifest finds it
+  root length 1 hasManifest=true main=8
+== a file 64 folders below the manifest does not
+  root length 128 hasManifest=false main=133

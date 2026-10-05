@@ -1,0 +1,6 @@
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"rootUri":"@ROOTURI@","capabilities":{}}}
+{"jsonrpc":"2.0","method":"initialized","params":{}}
+{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"@ROOTURI@/geo/shape.nv","languageId":"novus","version":1,"text":"package geo\n\n// A shape with an area.\ndefine abstract Shape {\n    abstract method area(): float\n\n    // The name of the shape.\n    method label(): string {\n        return \"shape\"\n    }\n}\n\n// A circle of a given radius.\ndefine class Circle based Shape {\n    float radius\n\n    construct(float radius) {\n        this.radius = radius\n    }\n\n    method area(): float {\n        return radius * radius\n    }\n\n    method grow(float by): float {\n        var next = radius + by\n        return next\n    }\n}\n\nmethod describe(Shape shape): string {\n    return shape.label()\n}\n\n// Scales one value.\nmethod scaled(float factor): float {\n    return factor\n}\n\nmethod scaled(float factor, float extra): float {\n    return factor + extra\n}\n"}}}
+{"jsonrpc":"2.0","id":2,"method":"textDocument/documentSymbol","params":{"textDocument":{"uri":"@ROOTURI@/geo/shape.nv"}}}
+{"jsonrpc":"2.0","id":99,"method":"shutdown"}
+{"jsonrpc":"2.0","method":"exit"}

@@ -1,0 +1,26 @@
+package main
+
+import @support
+import @fixtures
+import @definition_cases
+import @reference_cases
+import @rename_cases
+import @import_cases
+import @member_cases
+import @assign_cases
+
+method main() {
+    runDefinitionCases()
+    runReferenceCases()
+    runHighlightCases()
+    runRenameCases()
+    runImportCases()
+    runMemberCases()
+    runShadowCases()
+    runInterpolationCases()
+    runTagCases()
+    runScratchCases()
+    runManifestCases()
+    runAssignmentCases()
+    runRenameShadowCases()
+}

@@ -1,0 +1,79 @@
+package main
+
+method structShapeText(): string {
+    return structLines([
+        "package geo",
+        "",
+        "// A shape with an area.",
+        "define abstract Shape {",
+        "    abstract method area(): float",
+        "",
+        "    method label(): string {",
+        "        return \"shape\"",
+        "    }",
+        "}",
+        "",
+        "define class Circle based Shape {",
+        "    float radius",
+        "    private final string name: get, set",
+        "",
+        "    construct(float radius) {",
+        "        this.radius = radius",
+        "    }",
+        "",
+        "    @Deprecated",
+        "    method area(): float {",
+        "        return radius * radius",
+        "    }",
+        "}",
+        "",
+        "define enum Color {",
+        "    Red,",
+        "    Green",
+        "}",
+        "",
+        "define interface Named {",
+        "    nameOf(): string",
+        "}",
+        "",
+        "private final LIMIT = 10",
+        "",
+        "method describe(Shape shape): string {",
+        "    return shape.label()",
+        "}"
+    ])
+}
+
+method structMainText(): string {
+    return structLines([
+        "import geo",
+        "import strings",
+        "import @helper",
+        "",
+        "// First line of a note",
+        "// second line of the note",
+        "// third line of the note",
+        "method main() {",
+        "    var circle = Circle(2.0)",
+        "    if (circle.area() > 1.0) {",
+        "        println(\"big\")",
+        "    } else {",
+        "        println(\"small\")",
+        "    }",
+        "    /* a block",
+        "       comment */",
+        "    println(helper(1))",
+        "}"
+    ])
+}
+
+method structProject(): map<string, string> {
+    return {
+        "/p/project.nv": "project \"p\"\nmain \"main.nv\"\n",
+        "/p/main.nv": structMainText(),
+        "/p/geo/shape.nv": structShapeText(),
+        "/p/helper.nv": "method helper(integer count): integer {\n    return count + 1\n}\n",
+        "/p/unused/spare.nv": "package unused\n\ndefine class Spare {\n    method circleArea(): float {\n        return 1.0\n    }\n}\n",
+        "/p/loose.nv": "method looseCircle(): integer {\n    return 1\n}\n"
+    }
+}

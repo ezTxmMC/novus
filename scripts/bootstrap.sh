@@ -6,6 +6,10 @@
 #   stage1: compiler/*.nv       -> build/novusc1   (current sources, built by stage0)
 #   stage2: compiler/*.nv       -> build/novusc    (built by stage1, i.e. by itself)
 #
+# Stages 0 and 1 are only steps of the ladder and use -O1 (about half the C
+# compiler time of -O2, and they emit the same C); the result, stage 2, is
+# built with the default -O2. $NOVUS_CFLAGS comes last and wins.
+#
 # Environment: NOVUS_CC (C compiler, default cc), NOVUS_CFLAGS (extra flags),
 # NOVUS_OUT (output directory, default build/).
 set -eu
@@ -24,10 +28,10 @@ esac
 
 mkdir -p "$OUT"
 echo "stage0: $CC bootstrap/novusc.c -> $OUT/novusc0$EXE"
-$CC -O2 $CFLAGS "$ROOT/bootstrap/novusc.c" -o "$OUT/novusc0$EXE" $LIBS
+$CC -O1 -ffp-contract=off $CFLAGS "$ROOT/bootstrap/novusc.c" -o "$OUT/novusc0$EXE" $LIBS
 
 echo "stage1: compiling compiler/main.nv with the snapshot"
-"$OUT/novusc0$EXE" build "$ROOT/compiler/main.nv" -o "$OUT/novusc1$EXE" > /dev/null
+NOVUS_CFLAGS="-O1 $CFLAGS" "$OUT/novusc0$EXE" build "$ROOT/compiler/main.nv" -o "$OUT/novusc1$EXE" > /dev/null
 
 echo "stage2: compiling compiler/main.nv with stage1"
 "$OUT/novusc1$EXE" build "$ROOT/compiler/main.nv" -o "$OUT/novusc$EXE" > /dev/null

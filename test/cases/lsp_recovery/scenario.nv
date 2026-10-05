@@ -1,0 +1,69 @@
+package main
+
+import "novus/lsp/syntax/outline"
+import "novus/lsp/syntax/parsing"
+
+// Every issue code the scenarios produced, to prove that all codes of DESIGN 5.9 are covered.
+private final SEEN_CODES = {}
+
+method renderShape(SourceFile file): string {
+    var parts = []
+    for (decl in file.decls) {
+        parts.append(shapeOf(decl))
+        for (member in decl.members) {
+            parts.append("  " + shapeOf(member))
+        }
+    }
+    return parts.join(" / ")
+}
+
+method shapeOf(Decl decl): string {
+    return decl.signatureText()
+}
+
+method lineOfOffset(string source, integer offset): integer {
+    var line = 1
+    var at = 0
+    while (at < offset && at < source.length()) {
+        if (source.charAt(at) == "\n") {
+            line = line + 1
+        }
+        at = at + 1
+    }
+    return line
+}
+
+// `code@line/e` (error), `/w` (warning) or `/h` (hint), 1-based lines, in source order.
+method renderProblems(string source, SourceFile file): string {
+    var parts = []
+    for (issue in file.issues) {
+        var severity = "e"
+        if (issue.isHint()) {
+            severity = "h"
+        }
+        if (issue.isHint() == false && issue.warning) {
+            severity = "w"
+        }
+        parts.append(issue.code + "@" + lineOfOffset(source, issue.span.start) + "/" + severity)
+        SEEN_CODES[issue.code] = true
+    }
+    return parts.join(" ")
+}
+
+// Parses `source` and compares the declarations and the issues; both lists are written out in the test.
+method scenario(string name, string source, string shape, string problems) {
+    var file = parseSourceText("s.nv", source, editorParseOptions())
+    expectEqual(name + "/declarations", shape, renderShape(file))
+    expectEqual(name + "/issues", problems, renderProblems(source, file))
+}
+
+method expectAllCodesSeen() {
+    var codes = ["unterminated-string", "unterminated-block", "unterminated-class-body", "unterminated-comment", "unterminated-list", "unexpected-token", "expected-token", "unknown-character", "c-style-for", "compound-assignment", "braceless-body", "missing-parens", "else-without-if", "return-semicolon", "keyword-as-name", "generic-shift-token", "useless-top-level-print", "duplicate-constructor"]
+    var missing = []
+    for (code in codes) {
+        if (SEEN_CODES.has(code) == false) {
+            missing.append(code)
+        }
+    }
+    expectEqual("codes/every-code-of-the-table-was-produced", "", missing.join(" "))
+}

@@ -1,0 +1,77 @@
+package main
+
+import "novus/lsp/base/platform"
+import arrays
+import os
+
+private final HARDENING_DIRECTORIES = 200
+private final HARDENING_FILES_PER_DIRECTORY = 100
+private final HARDENING_SECONDS_LIMIT = 2.0
+private final HARDENING_NESTING = 80
+
+method showHardening(string label, object value) {
+    println("hardening " + label + ": " + value)
+}
+
+method scaleFiles(): map<string, string> {
+    var files = {}
+    for (directory in arrays.range(0, HARDENING_DIRECTORIES)) {
+        for (file in arrays.range(0, HARDENING_FILES_PER_DIRECTORY)) {
+            files["/r/dir" + directory + "/f" + file + ".nv"] = "x"
+        }
+    }
+    return files
+}
+
+method runMemoryScaleCases() {
+    var source = MemoryTextSource(scaleFiles())
+    var started = os.clock()
+    var found = walkSourceFiles(source, "/r", [".nv"], 5)
+    showHardening("a memory walk finds every file of 20000", found.length())
+    showHardening("a memory walk of 20000 files is not quadratic", os.clock() - started < HARDENING_SECONDS_LIMIT)
+}
+
+method runMemoryEdgeCases() {
+    var source = MemoryTextSource({"/m/a//b.nv": "x", "/m/ok.nv": "y"})
+    showHardening("an empty path segment is no entry", source.entriesOf("/m/a"))
+    showHardening("a walk skips what cannot be reached", walkSourceFiles(source, "/m", [".nv"], 5))
+    source.files["/m/new/n.nv"] = "z"
+    showHardening("every walk sees the current files", walkSourceFiles(source, "/m", [".nv"], 5))
+}
+
+method nestedPath(string root): string {
+    var nested = root
+    for (level in arrays.range(0, HARDENING_NESTING)) {
+        nested = nested + "/d"
+    }
+    return nested
+}
+
+method runDeepRemoveCases() {
+    var root = createTempDirectory("lsp-deep-")
+    makeDirectories(nestedPath(root))
+    writeTextFile(nestedPath(root) + "/leaf.txt", "x")
+    showHardening("removeTree of a tree 80 levels deep", removeTree(root))
+    showHardening("the deep tree is gone", os.exists(root))
+}
+
+method runRefusedRemoveCases() {
+    var root = createTempDirectory("lsp-refuse-")
+    makeDirectories(root + "/work/inner")
+    writeTextFile(root + "/work/inner/precious.txt", "keep")
+    showHardening("removeTree of a path ending in ..", removeTree(root + "/work/inner/.."))
+    showHardening("removeTree of a path ending in .", removeTree(root + "/work/inner/."))
+    showHardening("removeTree of the filesystem root", removeTree("/"))
+    showHardening("removeTree of the empty path", removeTree(""))
+    showHardening("removeTree of the home directory", removeTree(os.home()))
+    showHardening("nothing was deleted", readTextFile(root + "/work/inner/precious.txt"))
+    showHardening("removeTree of an ordinary directory", removeTree(root))
+}
+
+method runHardeningCases() {
+    println("--- hardening")
+    runMemoryScaleCases()
+    runMemoryEdgeCases()
+    runDeepRemoveCases()
+    runRefusedRemoveCases()
+}

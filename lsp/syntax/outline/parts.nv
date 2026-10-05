@@ -1,0 +1,45 @@
+package outline
+
+import base/text
+
+define class Param {
+    string typeText
+    string name
+    Span nameSpan
+
+    construct(string typeText, string name, Span nameSpan) {
+        this.typeText = typeText
+        this.name = name
+        this.nameSpan = nameSpan
+    }
+}
+
+define class AnnotationUse {
+    string name
+    Span span
+    map<string, string> values
+
+    construct(string name, Span span) {
+        this.name = name
+        this.span = span
+        this.values = {}
+    }
+}
+
+define class Local {
+    string name
+    Span nameSpan
+    string typeText
+    Span initializer
+    string origin
+    Span scope
+
+    construct(string name, Span nameSpan, string origin, Span scope) {
+        this.name = name
+        this.nameSpan = nameSpan
+        this.typeText = ""
+        this.initializer = Span(-1, -1)
+        this.origin = origin
+        this.scope = scope
+    }
+}

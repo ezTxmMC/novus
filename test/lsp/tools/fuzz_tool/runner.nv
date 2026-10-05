@@ -1,0 +1,116 @@
+package main
+
+import @check
+import @mutation
+import @subject
+import "novus/lsp/base/platform"
+import "novus/lsp/base/text"
+import "novus/lsp/server/rpc"
+
+// A case that runs longer than this is reported: the corpus files are small, so it is a loop that does not advance (LSP-R12).
+private final FUZZ_TOOL_SLOW_CASE_MILLIS = 5000
+private final FUZZ_TOOL_MAX_PRINTED_PER_FILE = 10
+private final FUZZ_TOOL_ORIGINAL_LABEL = "original"
+
+// The lexer, the parser of the file kind and every check on one text. It runs under runGuarded (LSP-R08), so a runtime
+// error of the code under test becomes a reported violation instead of ending the tool.
+define class FuzzToolCaseWork based GuardedWork {
+    string filePath
+    string source
+    array<FuzzToolCheck> checks
+
+    construct(string filePath, string source, array<FuzzToolCheck> checks) {
+        this.filePath = filePath
+        this.source = source
+        this.checks = checks
+    }
+
+    method run(): object {
+        var subject = FuzzToolSubject(this.filePath, this.source)
+        var violations = []
+        for (check in this.checks) {
+            for (line in check.check(subject)) {
+                violations.append(line)
+            }
+        }
+        return violations
+    }
+}
+
+// Runs the original text of one file and its planned mutations, and prints the first few problems of the file.
+define class FuzzToolFileRun {
+    string relative
+    array<FuzzToolCheck> checks
+    FuzzToolTotals totals
+    integer budgetMillis
+    integer printed
+
+    construct(string relative, array<FuzzToolCheck> checks, FuzzToolTotals totals, integer budgetMillis) {
+        this.relative = relative
+        this.checks = checks
+        this.totals = totals
+        this.budgetMillis = budgetMillis
+        this.printed = 0
+    }
+
+    // The cases of a file stop when their time is used up: a case cannot be interrupted, but a file whose every case is
+    // slow must not run all of them (counted as a slow case, with the file named).
+    method runAll(string source) {
+        var started = nowMillis()
+        this.totals.files = this.totals.files + 1
+        this.runCase(FUZZ_TOOL_ORIGINAL_LABEL, source)
+        var plan = this.plannedMutations(source)
+        for (mutation in plan) {
+            if (nowMillis() - started >= this.budgetMillis) {
+                this.stopFile(started)
+                return
+            }
+            this.runCase(mutation.label(), mutation.apply(source))
+        }
+    }
+
+    method plannedMutations(string source): array<FuzzToolMutation> {
+        var full = fuzzToolPlanMutations(source.length(), textHashOf(this.relative))
+        var plan = fuzzToolThinPlan(full, fuzzToolCaseCount(source.length()))
+        if (plan.length() < full.length()) {
+            this.totals.reducedFiles = this.totals.reducedFiles + 1
+        }
+        return plan
+    }
+
+    method stopFile(integer started) {
+        this.totals.slowCases = this.totals.slowCases + 1
+        println(this.relative + " [budget]: stopped after " + (nowMillis() - started) + " ms, the budget of a file is " + this.budgetMillis + " ms")
+    }
+
+    method runCase(string label, string source) {
+        this.totals.cases = this.totals.cases + 1
+        var started = nowMillis()
+        var outcome = runGuarded(FuzzToolCaseWork(this.relative, source, this.checks))
+        var elapsed = nowMillis() - started
+        if (outcome.failed) {
+            this.totals.runtimeErrors = this.totals.runtimeErrors + 1
+            this.say(label, "runtime error: " + outcome.message)
+            return
+        }
+        this.countViolations(label, outcome.value)
+        if (elapsed > FUZZ_TOOL_SLOW_CASE_MILLIS) {
+            this.totals.slowCases = this.totals.slowCases + 1
+            this.say(label, "took " + elapsed + " ms")
+        }
+    }
+
+    method countViolations(string label, array<string> violations) {
+        this.totals.violations = this.totals.violations + violations.length()
+        for (violation in violations) {
+            this.say(label, violation)
+        }
+    }
+
+    method say(string label, string message) {
+        this.printed = this.printed + 1
+        if (this.printed <= FUZZ_TOOL_MAX_PRINTED_PER_FILE) {
+            println(this.relative + " [" + label + "]: " + message)
+        }
+    }
+}

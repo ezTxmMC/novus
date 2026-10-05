@@ -1,0 +1,86 @@
+package main
+
+import bytes
+import "novus/lsp/base/model"
+import "novus/lsp/base/platform"
+import "novus/lsp/syntax/lexing"
+import "novus/lsp/services/format"
+
+private final CORPUS_ROOT = "../../.."
+private final CORPUS_MAX_DEPTH = 30
+private final CORPUS_CUTS_PER_FILE = 2
+private final CORPUS_VARIANT_STRIDE = 6
+
+// One file: whitespace only, idempotent, and the edits give the formatted text. Returns the number of broken properties.
+method corpusCheck(Formatter formatter, string label, string source): integer {
+    var lexed = lexText(source)
+    var once = formatter.formatText(source, lexed)
+    var broken = 0
+    if (bytes.equal(stripBlanks(once), stripBlanks(source)) == false) {
+        println("NOT WHITESPACE ONLY: " + label)
+        broken = broken + 1
+    }
+    var twice = formatter.formatText(once, lexText(once))
+    if (bytes.equal(twice, once) == false) {
+        println("NOT IDEMPOTENT: " + label)
+        broken = broken + 1
+    }
+    var applied = applyEdits(source, formatter.editsFor(documentOf(source), lexed))
+    if (bytes.equal(applied, once) == false) {
+        println("EDITS DO NOT GIVE THE FORMATTED TEXT: " + label)
+        broken = broken + 1
+    }
+    return broken
+}
+
+method corpusFiles(): array<string> {
+    var found = []
+    for (file in walkSourceFiles(DiskTextSource(), CORPUS_ROOT, [".nv"], CORPUS_MAX_DEPTH)) {
+        if (textBaseName(file) != "project.nv") {
+            found.append(file)
+        }
+    }
+    return found
+}
+
+// A fixed pseudo random sequence, so the cuts are the same on every run.
+method corpusCuts(string source, integer seed): array<integer> {
+    var cuts = []
+    var state = seed
+    var count = 0
+    while (count < CORPUS_CUTS_PER_FILE) {
+        state = (state * 1103515245 + 12345) % 2147483648
+        cuts.append(state % (source.length() + 1))
+        count = count + 1
+    }
+    return cuts
+}
+
+method corpusVariants(Formatter formatter, string file, string source, integer seed): integer {
+    var broken = corpusCheck(formatter, file + " [crlf]", source.replace("\n", "\r\n"))
+    broken = broken + corpusCheck(formatter, file + " [squeezed]", source.replace(" ", ""))
+    for (cut in corpusCuts(source, seed)) {
+        var prefix = source.substring(0, cut)
+        broken = broken + corpusCheck(formatter, file + " [cut at " + cut + "]", prefix)
+        broken = broken + corpusCheck(formatter, file + " [nul at " + cut + "]", prefix + chr(0) + source.substring(cut, source.length()))
+    }
+    return broken
+}
+
+method runCorpusCases() {
+    println("--- corpus")
+    var formatter = Formatter(FormatSettings())
+    var files = corpusFiles()
+    var broken = 0
+    var seed = 1
+    for (file in files) {
+        var source = readTextFile(file)
+        broken = broken + corpusCheck(formatter, file, source)
+        if (seed % CORPUS_VARIANT_STRIDE == 0) {
+            broken = broken + corpusVariants(formatter, file, source, seed)
+        }
+        seed = seed + 1
+    }
+    record("every .nv file of the repository is formatted whitespace-only and idempotently", broken == 0, "broken properties: " + broken)
+    record("the corpus is not empty", files.length() > 100, "files: " + files.length())
+}

@@ -19,12 +19,41 @@ static void nv_sb_init(NvSb *sb) {
     sb->buf[0] = 0;
 }
 
+/* The builder indexes with int (as a string's length does), so the largest
+ * text it can hold is INT_MAX bytes, terminator included. */
+#define NV_SB_MAX_BYTES ((size_t)INT_MAX)
+
+static void nv_error(const char *fmt, ...); /* defined below */
+
+/* Raises the catchable "text is longer" error when `bytes` do not fit into a
+ * string (every builder and concatenation checks before it allocates). */
+static void nv_check_text_length(size_t bytes) {
+    if (bytes > NV_SB_MAX_BYTES - 1) {
+        nv_error("text is longer than %lld bytes", (long long)(NV_SB_MAX_BYTES - 1));
+    }
+}
+
+static void nv_sb_grow(NvSb *sb, size_t needed) {
+    size_t cap = (size_t)sb->cap;
+    if (needed > NV_SB_MAX_BYTES) {
+        free(sb->buf);
+        sb->buf = 0;
+        nv_check_text_length(needed);
+    }
+    while (cap < needed) {
+        cap *= 2;
+    }
+    if (cap > NV_SB_MAX_BYTES) {
+        cap = NV_SB_MAX_BYTES;
+    }
+    sb->buf = (char *)realloc(sb->buf, cap);
+    sb->cap = (int)cap;
+}
+
 static void nv_sb_addn(NvSb *sb, const char *s, int n) {
-    if (sb->len + n + 1 > sb->cap) {
-        while (sb->len + n + 1 > sb->cap) {
-            sb->cap *= 2;
-        }
-        sb->buf = (char *)realloc(sb->buf, (size_t)sb->cap);
+    size_t needed = (size_t)sb->len + (size_t)n + 1;
+    if (needed > (size_t)sb->cap) {
+        nv_sb_grow(sb, needed);
     }
     memcpy(sb->buf + sb->len, s, (size_t)n);
     sb->len += n;
@@ -49,7 +78,8 @@ static const char *nv_sb_finish(NvSb *sb) {
 /* Set by nv_try_run(): a runtime error unwinds to it instead of ending the
  * program, so a server can answer one failed request and go on. */
 static NV_TLS jmp_buf *nv_trap = 0;
-static NV_TLS char nv_trap_message[512];
+#define NV_TRAP_MESSAGE_BYTES 4096 /* longer messages are cut, not overrun */
+static NV_TLS char nv_trap_message[NV_TRAP_MESSAGE_BYTES];
 static NV_TLS int nv_trap_failed = 0;
 
 static void nv_error(const char *fmt, ...) {
@@ -66,7 +96,29 @@ static void nv_error(const char *fmt, ...) {
     vfprintf(stderr, fmt, ap);
     va_end(ap);
     fprintf(stderr, "\n");
-    exit(1);
+    nv_terminate(1);
+}
+
+/* The failure state of the enclosing tryRun: code that traps errors for its
+ * own purpose (json.tryParse) saves it first and puts it back afterwards, so
+ * tryFailed() and tryError() keep describing the task's failure. The message
+ * only matters while a failure is recorded, so nothing is copied otherwise
+ * (a trapped parse of valid text is the common case). */
+typedef struct NvTrapState {
+    char *message; /* a copy of the recorded message, or 0 when none is recorded */
+    int failed;
+} NvTrapState;
+
+static void nv_trap_save(NvTrapState *state) {
+    state->failed = nv_trap_failed;
+    state->message = nv_trap_failed ? nv_strndup(nv_trap_message, strlen(nv_trap_message)) : 0;
+}
+
+static void nv_trap_restore(const NvTrapState *state) {
+    nv_trap_failed = state->failed;
+    if (state->message) {
+        strcpy(nv_trap_message, state->message);
+    }
 }
 
 /* ------------------------------------------------------------------ */
@@ -111,8 +163,12 @@ static nv nv_int(long long i) {
 
 static int nv_exit_code(nv v) { return nv_type_of(v) == NV_INT ? (int)nv_ival(v) : 0; }
 
-static nv nv_float(double f) {
-    nv v = nv_new_number(NV_FLOAT);
+static inline nv nv_float(double f) {
+    nv v = nv_float_immediate(f);
+    if (v) {
+        return v;
+    }
+    v = nv_new_number(NV_FLOAT);
     v->f = f;
     return v;
 }
@@ -255,6 +311,7 @@ static NvMap *nv_map_new_cap(int cap) {
     m->index = 0;
     m->mask = 0;
     m->sorted = 1;
+    m->ord = 0;
     return m;
 }
 
@@ -317,6 +374,41 @@ static int nv_map_find(NvMap *m, const char *key) {
     return -1;
 }
 
+/* A sorted map this big gets a position list when a key arrives out of
+ * order (see NvMap); below it sorting everything again is as cheap. */
+#define NV_MAP_ORD_MIN 64
+
+/* The position list: its first int is the number of items it covers. */
+static int nv_map_nord(const NvMap *m) { return m->ord[0]; }
+static int *nv_map_ord_slots(NvMap *m) { return m->ord + 1; }
+
+/* The position list follows the entry table when that grows. */
+static void nv_map_grow_ord(NvMap *m) {
+    int *ord;
+    if (!m->ord) {
+        return;
+    }
+    ord = (int *)nv_alloc_atomic(sizeof(int) * ((size_t)m->cap + 1));
+    memcpy(ord, m->ord, sizeof(int) * ((size_t)nv_map_nord(m) + 1));
+    m->ord = ord;
+}
+
+/* Called when the entry that was just appended breaks the key order of the
+ * items: everything before it is in order, so it becomes the sorted part of
+ * a position list and the new entry the pending one. */
+static void nv_map_unsort(NvMap *m) {
+    int i;
+    m->sorted = 0;
+    if (m->len - 1 < NV_MAP_ORD_MIN) {
+        return;
+    }
+    m->ord = (int *)nv_alloc_atomic(sizeof(int) * ((size_t)m->cap + 1));
+    m->ord[0] = m->len - 1;
+    for (i = 0; i < m->len - 1; i++) {
+        nv_map_ord_slots(m)[i] = i;
+    }
+}
+
 static void nv_map_append(NvMap *m, const char *key, nv val) {
     unsigned slot;
     if (m->len == m->cap) {
@@ -326,12 +418,13 @@ static void nv_map_append(NvMap *m, const char *key, nv val) {
         memset(items + m->len, 0, sizeof(NvEntry) * (size_t)(cap - m->len));
         m->items = items;
         m->cap = cap;
+        nv_map_grow_ord(m);
     }
     m->items[m->len].key = key;
     m->items[m->len].val = val;
     m->len++;
     if (m->sorted && m->len > 1 && strcmp(m->items[m->len - 2].key, key) > 0) {
-        m->sorted = 0;
+        nv_map_unsort(m);
     }
     if (!m->index) {
         if (m->len <= NV_MAP_LINEAR) {
@@ -399,33 +492,126 @@ static nv nv_map_get(NvMap *m, const char *key) {
 
 static int nv_map_has(NvMap *m, const char *key) { return nv_map_find(m, key) >= 0; }
 
+/* The index slot that holds item `at`. */
+static unsigned nv_map_slot_of(NvMap *m, int at) {
+    unsigned slot = nv_key_hash(m->items[at].key) & (unsigned)m->mask;
+    while (m->index[slot] != at + 1) {
+        slot = (slot + 1) & (unsigned)m->mask;
+    }
+    return slot;
+}
+
+/* Empties the index slot `hole` of a linear probing table: the entries of
+ * the run behind it that probed past it move up, so no lookup stops early. */
+static void nv_map_index_close(NvMap *m, unsigned hole) {
+    unsigned next = (hole + 1) & (unsigned)m->mask;
+    while (m->index[next]) {
+        unsigned wanted = nv_key_hash(m->items[m->index[next] - 1].key) & (unsigned)m->mask;
+        unsigned probed = (next - wanted) & (unsigned)m->mask;
+        unsigned gap = (next - hole) & (unsigned)m->mask;
+        if (probed >= gap) {
+            m->index[hole] = m->index[next];
+            hole = next;
+        }
+        next = (next + 1) & (unsigned)m->mask;
+    }
+    m->index[hole] = 0;
+}
+
+/* Back to plain items in no particular order: the next read that shows the
+ * order sorts them. */
+static void nv_map_drop_ord(NvMap *m) {
+    m->ord = 0;
+    m->sorted = 0;
+}
+
+/* Taking an entry out costs the length of one probe run, not of the map: the
+ * last entry fills the gap. The order of the entries is only ever shown
+ * sorted (nv_map_order), so where an entry sits does not matter. */
 static void nv_map_remove(NvMap *m, const char *key) {
     int at = nv_map_find(m, key);
+    int last;
     if (at < 0) {
         return;
     }
-    memmove(m->items + at, m->items + at + 1, sizeof(NvEntry) * (size_t)(m->len - at - 1));
-    m->len--;
-    if (m->index) {
-        nv_map_reindex(m, m->mask + 1);
+    last = m->len - 1;
+    if (m->ord && (at != last || last < nv_map_nord(m))) {
+        nv_map_drop_ord(m);  /* keeping the list right would cost O(n) per removal */
     }
+    if (m->index) {
+        nv_map_index_close(m, nv_map_slot_of(m, at));
+    }
+    if (at != last) {
+        if (m->index) {
+            m->index[nv_map_slot_of(m, last)] = at + 1;
+        }
+        m->items[at] = m->items[last];
+        m->sorted = 0;
+    }
+    memset(m->items + last, 0, sizeof(NvEntry));
+    m->len--;
 }
 
 static int nv_entry_cmp(const void *a, const void *b) {
     return strcmp(((const NvEntry *)a)->key, ((const NvEntry *)b)->key);
 }
 
-/* Every read that exposes the order sorts first. */
-static void nv_map_order(NvMap *m) {
-    if (m->sorted) {
-        return;
+/* Pending entries up to this many are put into the position list one by
+ * one; more are cheaper to sort together with everything else. */
+#define NV_MAP_INSERT_MAX 32
+
+/* The first place in ord whose key is not below `key`. */
+static int nv_map_ord_lower_bound(NvMap *m, const char *key) {
+    int low = 0;
+    int high = nv_map_nord(m);
+    while (low < high) {
+        int mid = low + (high - low) / 2;
+        if (strcmp(m->items[nv_map_ord_slots(m)[mid]].key, key) < 0) {
+            low = mid + 1;
+        } else {
+            high = mid;
+        }
     }
+    return low;
+}
+
+static void nv_map_ord_place_pending(NvMap *m) {
+    while (nv_map_nord(m) < m->len) {
+        int covered = nv_map_nord(m);
+        int slot = nv_map_ord_lower_bound(m, m->items[covered].key);
+        int *slots = nv_map_ord_slots(m);
+        memmove(slots + slot + 1, slots + slot, sizeof(int) * (size_t)(covered - slot));
+        slots[slot] = covered;
+        m->ord[0] = covered + 1;
+    }
+}
+
+static int nv_map_in_order(NvMap *m) { return m->ord ? nv_map_nord(m) == m->len : m->sorted; }
+
+static void nv_map_sort_items(NvMap *m) {
     qsort(m->items, (size_t)m->len, sizeof(NvEntry), nv_entry_cmp);
     m->sorted = 1;
+    m->ord = 0;
     if (m->index) {
         nv_map_reindex(m, m->mask + 1);
     }
 }
+
+/* Every read that exposes the order sorts first, and reads the entries
+ * through nv_map_nth afterwards. */
+static void nv_map_order(NvMap *m) {
+    if (nv_map_in_order(m)) {
+        return;
+    }
+    if (m->ord && m->len - nv_map_nord(m) <= NV_MAP_INSERT_MAX) {
+        nv_map_ord_place_pending(m);
+        return;
+    }
+    nv_map_sort_items(m);
+}
+
+/* The entry that is number `i` in key order; only valid after nv_map_order. */
+static NvEntry *nv_map_nth(NvMap *m, int i) { return m->items + (m->ord ? nv_map_ord_slots(m)[i] : i); }
 
 static nv nv_map(void) {
     nv v = nv_new(NV_MAP);

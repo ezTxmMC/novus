@@ -1,0 +1,44 @@
+package main
+
+import "novus/lsp/base/text"
+import "novus/lsp/syntax/lexing"
+
+method positions(string source): string {
+    var parts = []
+    for (token in lexText(source).tokens) {
+        parts.append(renderPosition(token))
+    }
+    return parts.join(" ")
+}
+
+method checkPositions() {
+    expectEqual("positions/lines-columns-first-on-line", "0:0* 0:3 1:2* 1:4", positions("ab cd\n  ef"))
+    expectEqual("positions/byte-columns-after-non-ascii", "0:0* 0:3 0:4", positions("é x"))
+    expectEqual("positions/column-after-a-two-byte-string", "0:0* 0:5 0:6", positions("\"é\" x"))
+    expectEqual("positions/tabs-are-one-byte", "0:0* 0:2 0:3", positions("a\tb"))
+    expectEqual("positions/blank-lines", "2:0* 2:1", positions("\n\nx"))
+    expectEqual("positions/empty-text", "0:0*", positions(""))
+    expectEqual("positions/only-whitespace", "1:2*", positions(" \n  "))
+    var program = lexText("method f(integer a) {\n    return a + 1 // sum\n}")
+    expectEqual("positions/method-header", "0:0* 0:7 0:8 0:9 0:17 0:18 0:20 0:21", positions("method f(integer a) {"))
+    expectEqual("positions/body-lines", "1:4* 1:11 1:13 1:15 2:0*", renderBodyPositions(program))
+}
+
+method renderBodyPositions(LexResult lexed): string {
+    var parts = []
+    for (token in lexed.tokens) {
+        if (token.line >= 1 && token.isEnd() == false) {
+            parts.append(renderPosition(token))
+        }
+    }
+    return parts.join(" ")
+}
+
+method checkCrlf() {
+    var lexed = lexText("a\r\nb // c\r\n/* x\r\ny */ z\r\n")
+    expectEqual("crlf/tokens", "I:a I:b I:z", renderTokens(lexed))
+    expectEqual("crlf/positions", "0:0* 1:0* 3:5 4:0*", positions("a\r\nb // c\r\n/* x\r\ny */ z\r\n"))
+    expectEqual("crlf/line-comment-excludes-the-carriage-return", "// c@5-9/1:2", renderComments(lexed).split(" | ")[0])
+    expectEqual("crlf/block-comment", "/* x\\r\\ny */@11-21/2:0*", renderComments(lexed).split(" | ")[1])
+    expectEqual("crlf/lone-carriage-return-is-no-newline", "0:0* 0:2 0:3", positions("a\rb"))
+}

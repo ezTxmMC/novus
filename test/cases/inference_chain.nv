@@ -1,0 +1,29 @@
+package main
+
+// Type inference over long numeric '+' chains. The analysis asked for the
+// "is this a float?" answer of every operand twice, so each extra term
+// doubled the compile time: 24 terms took 24 s, 30 terms years. A chain this
+// long compiles instantly once every operand is classified once; the test has
+// no clock - on a regression the compile simply does not finish.
+
+method leftChain(float x): float {
+    return x + x + x + x + x + x + x + x + x + x + x + x + x + x + x + x + x + x + x + x + x + x + x + x + x + x + x + x + x + x
+}
+
+method rightChain(float x): float {
+    return x + (x + (x + (x + (x + (x + (x + (x + (x + (x + (x + (x + (x + (x + (x + (x)))))))))))))))
+}
+
+method mixed(float x, integer n): float {
+    var total = 0.5 + n + x + n + x + n + x + n + x + n + x + n + x + n + x + n + x + n + x + n + x + n + x + n + x + n + x + n + x + n + x + n + x + n + x + n + x + n + x + n + x + n + x + n + x + n + x + n + x
+    return total
+}
+
+method main {
+    var x = 1.5
+    println leftChain(x)
+    println rightChain(x)
+    println mixed(x, 2)
+    var viaLocal = x + x + x + x + x + x + x + x + x + x + x + x + x + x + x + x + x + x + x + x + x + x + x + x + x + x + x + x + x + x
+    println viaLocal
+}

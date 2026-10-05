@@ -1,0 +1,69 @@
+package edits
+
+import base/maybe
+import base/model
+import base/text
+import server/protocol
+import server/rpc
+import server/session
+import services/format
+import syntax/lexing
+
+// `textDocument/formatting`: whitespace-only edits for the whole document. The client's options win (tab size and spaces);
+// the number of blank lines to keep is a setting of the server, because a client has no such option (6.18, V95). The kind
+// gate lives in the formatter: a `project.nv` or `.nvh` document gives no edits.
+define class FormattingHandler based RequestHandler {
+    Session session
+    WireEncoder encoder
+
+    construct(Session session, WireEncoder encoder) {
+        this.session = session
+        this.encoder = encoder
+    }
+
+    method handle(Request request): object {
+        var document = this.session.documentFor(decodeDocumentUri(request.params))
+        if (isNone(document)) {
+            return []
+        }
+        var formatter = editsFormatter(this.session, request.params)
+        var edits = formatter.editsFor(document, lexText(document.text))
+        return editsEncode(this.encoder, document, edits)
+    }
+}
+
+// `textDocument/rangeFormatting`: the edits of the whole-file format that start inside the lines of the range.
+define class RangeFormattingHandler based RequestHandler {
+    Session session
+    WireEncoder encoder
+
+    construct(Session session, WireEncoder encoder) {
+        this.session = session
+        this.encoder = encoder
+    }
+
+    method handle(Request request): object {
+        var document = this.session.documentFor(decodeDocumentUri(request.params))
+        if (isNone(document)) {
+            return []
+        }
+        var range = this.session.codec.spanOf(document.lines, decodeSelectedRange(request.params))
+        var formatter = editsFormatter(this.session, request.params)
+        var edits = formatter.rangeEditsFor(document, lexText(document.text), range)
+        return editsEncode(this.encoder, document, edits)
+    }
+}
+
+method editsFormatter(Session session, map<string, object> params): Formatter {
+    var settings = decodeFormattingOptions(params)
+    settings.maxBlankLines = session.settings.format.maxBlankLines
+    return Formatter(settings)
+}
+
+method editsEncode(WireEncoder encoder, Document document, array<TextEdit> edits): array<map<string, object>> {
+    var encoded = []
+    for (edit in edits) {
+        encoded.append(encoder.textEdit(document.lines, edit))
+    }
+    return encoded
+}

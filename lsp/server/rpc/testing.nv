@@ -1,0 +1,38 @@
+package rpc
+
+import base/maybe
+import os
+
+private final RPC_MAX_SLEEP_MILLIS = 5000
+private final RPC_MILLIS_KEY = "millis"
+private final RPC_INTEGER_NAME = "integer"
+
+// Test-only (NOVUS_LSP_TEST=1): a request that ends in a real runtime error, to prove that the guard answers -32603.
+define class CrashTestHandler based RequestHandler {
+    construct() {
+    }
+
+    method handle(Request request): object {
+        var empty = {}
+        return empty["a key that is not there"]
+    }
+}
+
+// Test-only (NOVUS_LSP_TEST=1): keeps the main thread busy for params.millis (at most 5000) while the reader
+// stays responsive, so $/cancelRequest and later messages can be observed.
+define class SleepTestHandler based RequestHandler {
+    construct() {
+    }
+
+    method handle(Request request): object {
+        var millis = request.params.get(RPC_MILLIS_KEY, 0)
+        if (typeOf(millis) != RPC_INTEGER_NAME || millis < 0) {
+            return nothing()
+        }
+        if (millis > RPC_MAX_SLEEP_MILLIS) {
+            millis = RPC_MAX_SLEEP_MILLIS
+        }
+        os.sleep(millis)
+        return nothing()
+    }
+}

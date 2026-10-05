@@ -1,0 +1,194 @@
+package main
+
+import @fixtures
+
+method fixtureStdShadow(): SemFixture {
+    return SemFixture("local-folder-shadows-std", {
+        "/proj/project.nv": semManifest(),
+        "/proj/main.nv": "import json
+
+%main%() {
+    println(json.stringify(5))
+}
+",
+        "/proj/json/mine.nv": "package json
+
+method stringify(object value): string {
+    return \"mine\"
+}
+"
+    }, "run:mine")
+}
+
+method fixtureModuleNotImported(): SemFixture {
+    return SemFixture("std-module-not-imported", {
+        "/proj/project.nv": semManifest(),
+        "/proj/main.nv": "method main() {
+    println(strings.repeat(\"a\", 2))
+}
+"
+    }, "error:module 'strings' is not imported")
+}
+
+method fixtureFlatVisibility(): SemFixture {
+    return SemFixture("visibility-is-flat", {
+        "/proj/project.nv": semManifest(),
+        "/proj/main.nv": "import @helper
+
+%main%() {
+    println(strings.repeat(\"a\", 2))
+}
+",
+        "/proj/helper.nv": "import strings
+
+method unused(): string {
+    return strings.repeat(\"b\", 1)
+}
+"
+    }, "run:aa")
+}
+
+method fixtureQualifierCollision(): SemFixture {
+    return SemFixture("qualifier-is-the-last-segment", {
+        "/proj/project.nv": semManifest(),
+        "/proj/main.nv": "import geo/shapes
+import draw/shapes
+
+%main%() {
+    println(shapes.f())
+}
+",
+        "/proj/geo/shapes/a.nv": "package shapes
+
+method f(): string {
+    return \"geo\"
+}
+",
+        "/proj/draw/shapes/b.nv": "package shapes
+
+method f(): string {
+    return \"draw\"
+}
+"
+    }, "run:geo")
+}
+
+method fixtureDependency(): SemFixture {
+    return SemFixture("dependency-root-level-is-unqualified", {
+        "/proj/project.nv": "project \"p\"\nmain \"main.nv\"\nrequire \"ext.example/lib\"\nreplace \"ext.example/lib\" \"lib\"\n",
+        "/proj/main.nv": "import \"ext.example/lib\"
+import \"ext.example/lib/util\"
+
+%main%() {
+    println(libHello())
+    println(util.utilHello())
+}
+",
+        "/proj/lib/lib.nv": "package lib
+
+method libHello(): string {
+    return \"lib\"
+}
+",
+        "/proj/lib/util/u.nv": "package util
+
+method utilHello(): string {
+    return \"util\"
+}
+"
+    }, "run:lib|util")
+}
+
+method fixtureUnreachable(): SemFixture {
+    return SemFixture("files-are-found-only-through-imports", {
+        "/proj/project.nv": semManifest(),
+        "/proj/main.nv": "method main() {
+    gone()
+}
+",
+        "/proj/extra/e.nv": "package extra
+
+method gone() {
+}
+"
+    }, "error:unknown method 'gone()'")
+}
+
+method fixtureOverloads(): SemFixture {
+    return SemFixture("overloads-by-name-and-arity", {
+        "/proj/project.nv": semManifest(),
+        "/proj/main.nv": "import @other
+
+method f(integer a): string {
+    return \"one\"
+}
+
+method f(integer a, integer b): string {
+    return \"two\"
+}
+
+%main%() {
+    println(f(1))
+    println(f(1, 2))
+}
+",
+        "/proj/other.nv": "method f(integer a): string {
+    return \"other\"
+}
+"
+    }, "run:other|two")
+}
+
+method fixturePackageMain(): SemFixture {
+    return SemFixture("package-main-folder-is-root-level", {
+        "/proj/project.nv": semManifest(),
+        "/proj/main.nv": "import util
+
+%main%() {
+    println(xhelp())
+}
+",
+        "/proj/util/x.nv": "package main
+
+method xhelp(): string {
+    return \"x\"
+}
+"
+    }, "run:x")
+}
+
+method fixturePackageMismatch(): SemFixture {
+    return SemFixture("package-line-must-match-the-folder", {
+        "/proj/project.nv": semManifest(),
+        "/proj/main.nv": "import util
+
+%main%() {
+    println(\"x\")
+}
+",
+        "/proj/util/x.nv": "package other
+
+method xhelp(): string {
+    return \"x\"
+}
+"
+    }, "error:the file declares package other")
+}
+
+method semFixtures(): array<SemFixture> {
+    return [fixtureOwnPackage(), fixtureRootWins(), fixtureUniquePackageFunction(), fixtureAmbiguousCall(),
+        fixtureQualifiedCall(), fixtureAmbiguousGlobal(), fixtureClassMethodWins(), fixtureClassBeatsFunction(),
+        fixtureBuiltins(), fixtureDuplicateClass(), fixtureVariables(), fixtureStdShadow(), fixtureModuleNotImported(),
+        fixtureFlatVisibility(), fixtureQualifierCollision(), fixtureDependency(), fixtureUnreachable(),
+        fixtureOverloads(), fixturePackageMain(), fixturePackageMismatch()]
+}
+
+method semFixtureNamed(string name): SemFixture {
+    for (fixture in semFixtures()) {
+        if (fixture.name == name) {
+            return fixture
+        }
+    }
+    println("FAIL no fixture " + name)
+    return semFixtures()[0]
+}

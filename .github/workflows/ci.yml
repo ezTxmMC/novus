@@ -59,6 +59,49 @@ jobs:
           name: novusc-${{ matrix.name }}
           path: artifact/*
 
+  lsp:
+    name: novus-lsp (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux-x86_64, os: ubuntu-latest }
+          - { name: macos-arm64, os: macos-latest }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Bootstrap
+        run: scripts/bootstrap.sh
+
+      - name: Build novus-lsp
+        run: make lsp
+
+      - name: Structure lint
+        run: scripts/lsp_lint.sh
+
+      - name: Golden cases
+        run: test/run_tests.sh lsp_
+
+      - name: Protocol scenarios
+        run: test/run_lsp.sh
+
+      - name: Corpus
+        run: test/run_lsp_corpus.sh
+
+      - name: Snippets
+        run: scripts/lsp_snippets.sh
+
+      - name: Package
+        run: |
+          mkdir -p artifact
+          cp build/novus-lsp artifact/novus-lsp-${{ matrix.name }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: novus-lsp-${{ matrix.name }}
+          path: artifact/*
+
   website:
     name: docs site
     runs-on: ubuntu-latest
@@ -91,7 +134,7 @@ jobs:
           version: 0.14.1
       - name: Bootstrap
         run: scripts/bootstrap.sh
-      - name: Cross compile
+      - name: Cross compile (novusc and novus-lsp)
         run: scripts/cross.sh
       - uses: actions/upload-artifact@v4
         with:
@@ -100,16 +143,16 @@ jobs:
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [native, cross]
+    needs: [native, lsp, cross]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      # only the compiler binaries; docs-site is not a release asset
+      # the compiler and language server binaries (novusc-*, novus-lsp-*); docs-site is not a release asset
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
-          pattern: novusc-*
+          pattern: novus*
       - name: Collect
         run: |
           mkdir -p release

@@ -1,0 +1,66 @@
+package main
+
+import hash
+import "novus/lsp/base/text"
+
+// Texts that contain a NUL byte: String.indexOf and hash.fnv1a stop at it.
+method nulText(string before, string after): string {
+    return before + chr(0) + after
+}
+
+method testNulLines() {
+    println "== regression: NUL byte in a text"
+    var lines = LineIndex(nulText("a", "b\nc"))
+    show("lineCount", lines.lineCount())
+    show("starts", lines.starts.join(","))
+    show("lineText 0 length", lines.lineText(0).length())
+    show("lineText 1", lines.lineText(1))
+    var codec = PositionCodec("utf-16")
+    show("offset 1:1", codec.offsetOf(lines, WirePosition(1, 1)))
+    showPositions("positions", codec, lines, [0, 2, 3, 4, 5])
+    var tail = LineIndex(nulText("", "\nx\n" + nulText("y", "z")))
+    show("nul first and last line", tail.lineCount() + " " + tail.lineText(2).length())
+}
+
+method testNulHash() {
+    var first = Document("untitled:x", "n", 1, nulText("a", "x"))
+    var second = Document("untitled:x", "n", 1, nulText("a", "y"))
+    show("texts with the same prefix differ", first.textHash != second.textHash)
+    show("same text same hash", first.textHash == Document("untitled:x", "n", 2, nulText("a", "x")).textHash)
+    first.replaceText(2, nulText("a", "y"))
+    show("replaceText follows", first.textHash == second.textHash)
+    show("without NUL it is fnv1a", Document("untitled:x", "n", 1, "plain").textHash == hash.fnv1a("plain"))
+    show("textHashOf empty", textHashOf("") == hash.fnv1a(""))
+}
+
+method testNulUri() {
+    show("NUL is not uri safe", textIsUriSafeByte(0))
+    show("percentEncodePath NUL", percentEncodePath(nulText("a", "b")))
+    show("negative code", textIsUriSafeByte(-5))
+    show("slash stays", textIsUriSafeByte(47))
+    show("decoded %00 stays encoded", uriToFilePath("file:///a%00b").length())
+}
+
+// DESIGN 5.1 (amendment 4): a line past the last one is the end of the text, so a client that sends a whole-document
+// range as (0,0)-(lineCount,0) replaces everything, also when the last line has no newline.
+method testWholeDocumentRange() {
+    println "== regression: a line past the end is the end of the text"
+    var codec = PositionCodec("utf-16")
+    var open = LineIndex("ab\ncd")
+    var closed = LineIndex("ab\ncd\n")
+    showOffsets("no trailing newline", codec, open, [[1, 0], [2, 0], [3, 7], [99, 0]])
+    showOffsets("trailing newline", codec, closed, [[2, 0], [3, 0], [99, 4]])
+    var whole = codec.spanOf(open, WireRange(WirePosition(0, 0), WirePosition(open.lineCount(), 0)))
+    show("whole-document span", whole.start + "-" + whole.end)
+    var document = Document("untitled:whole", "novus", 1, "ab\ncd")
+    applyTextChanges(document, codec, 2, [TextChange(false, WireRange(WirePosition(0, 0), WirePosition(2, 0)), "x")])
+    show("whole-document replace", "[" + document.text + "]")
+    showOffsets("negative line stays the first", codec, open, [[-1, 1], [-9, 0]])
+}
+
+method testRegressions() {
+    testWholeDocumentRange()
+    testNulLines()
+    testNulHash()
+    testNulUri()
+}

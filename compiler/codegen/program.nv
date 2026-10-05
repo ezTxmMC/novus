@@ -8,7 +8,17 @@ import parser
 // NOTE: this file is part of the bootstrap chain: it must stay compilable
 // by the previous compiler snapshot (bootstrap/novusc.c).
 
-method genClassCode(string node, map<string, string> prog, array<string> protos, array<string> bodies, array<string> registry): integer {
+// Records the C text of a body under `key` (the init order reads what a
+// function or class reaches from it, see initorder.nv).
+method addSource(map<string, string> sources, string key, string text) {
+    if (sources.has(key)) {
+        sources[key] = sources[key] + text
+        return
+    }
+    sources[key] = text
+}
+
+method genClassCode(string node, map<string, string> prog, array<string> protos, array<string> bodies, array<string> registry, map<string, string> sources): integer {
     var cls = nodeChild(node, 1)
     var isEnum = "0"
     if (nodeHead(node) == "enum") {
@@ -17,6 +27,10 @@ method genClassCode(string node, map<string, string> prog, array<string> protos,
     var base = classBase(node)
     if (isClassLike(prog, base) == false) {
         base = ""
+    }
+    if (base != "") {
+        // an inherited method runs whatever the base class reaches
+        addSource(sources, "c:" + cls, cstr(base))
     }
     var abstractFlag = "0"
     if (classIsAbstract(node)) {
@@ -36,7 +50,9 @@ method genClassCode(string node, map<string, string> prog, array<string> protos,
     var ctor = classCtor(node)
     if (nodeHead(ctor) == "ctor") {
         protos.append("static nv c_" + cls + "(nv self, nv *args, int n);" + nl())
-        bodies.append(genCtor(cls, ctor, prog))
+        var ctorBody = genCtor(cls, ctor, prog)
+        bodies.append(ctorBody)
+        addSource(sources, "c:" + cls, ctorBody)
         registry.append("    nv_class_ctor(c, " + (nodeCount(nodeChild(ctor, 1)) - 1) + ", c_" + cls + ");" + nl())
     }
     var methods = classMethods(node)
@@ -47,7 +63,9 @@ method genClassCode(string node, map<string, string> prog, array<string> protos,
         if (isAbstractMethod(m) == false) {
             var cname = methodCName(cls, m, methodVariant(methods, k))
             protos.append("static nv " + cname + "(nv self, nv *args, int n);" + nl())
-            bodies.append(genClassMethod(cls, m, cname, prog))
+            var methodBody = genClassMethod(cls, m, cname, prog)
+            bodies.append(methodBody)
+            addSource(sources, "c:" + cls, methodBody)
             registry.append("    nv_class_method(c, " + cstr(methodName(m)) + ", " + arityOf(m) + ", " + cname + ");" + nl())
         }
         k = k + 1
@@ -64,16 +82,39 @@ method genEnumInit(string node, map<string, string> prog): string {
     var i = 1
     var constsCount = nodeCount(consts)
     while (i < constsCount) {
-        var c = nodeChild(consts, i)
-        var nargs = nodeCount(c) - 2
-        var constructor = "nv_construct(" + cstr(name) + ", " + nargs
-        if (nargs > 0) {
-            constructor = constructor + ", " + genArgs(c, 2, prog, ctx, locals)
-        }
-        out = out + "    nv_enum_add(" + cstr(name) + ", " + cstr(nodeChild(c, 1)) + ", " + constructor + "));" + nl()
+        out = out + genEnumConstant(name, nodeChild(consts, i), prog, ctx, locals)
         i = i + 1
     }
-    return out
+    return withTemps(out, tempNames(ctx))
+}
+
+// The statement that creates one enum constant. Its constructor arguments are
+// evaluated left to right like the arguments of a call.
+method genEnumConstant(string enumName, string constant, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    var nargs = nodeCount(constant) - 2
+    var sequence = sequenceOperands(constant, prog, ctx, locals)
+    var source = constant
+    if (sequence.length() > 0) {
+        source = sequence[0]
+    }
+    var constructor = "nv_construct(" + cstr(enumName) + ", " + nargs
+    if (nargs > 0) {
+        constructor = constructor + ", " + genArgs(source, 2, prog, ctx, locals)
+    }
+    constructor = constructor + ")"
+    if (sequence.length() > 0) {
+        constructor = sequencedExpr(sequence, constructor)
+    }
+    return "    nv_enum_add(" + cstr(enumName) + ", " + cstr(nodeChild(constant, 1)) + ", " + constructor + ");" + nl()
+}
+
+// The statements of an initialiser inside a block that declares the
+// temporaries (see ordering.nv) they read; unchanged when there are none.
+method withTemps(string statements, string temps): string {
+    if (temps == "") {
+        return statements
+    }
+    return "    {" + nl() + "        nv " + temps + ";" + nl() + statements + "    }" + nl()
 }
 
 method genMainEntry(map<string, string> prog): string {
@@ -90,10 +131,9 @@ method genMainEntry(map<string, string> prog): string {
     out = out + "    nv_init_args(argc, argv);" + nl()
     out = out + "    nv_register_classes();" + nl()
     out = out + "    nv_init_globals();" + nl()
-    out = out + "    nv_init_enums();" + nl()
     out = out + mainCallCode(hasMain0, hasMain1)
-    out = out + "    fflush(stdout);" + nl()
-    out = out + "    return nv_exit_code(result);" + nl()
+    out = out + "    nv_terminate(nv_exit_code(result));" + nl()
+    out = out + "    return 0;" + nl()
     return out + "}" + nl()
 }
 
@@ -108,18 +148,57 @@ method mainCallCode(bool hasMain0, bool hasMain1): string {
     return "    result = f_main_0();" + nl()
 }
 
+// nv_init_globals: every global becomes a collector root, then the globals
+// and the enum constants are initialised, each after what it uses.
+method genInitFunction(array<string> rootsInit, array<string> globalUnits, array<string> enumUnits, map<string, string> sources): string {
+    var out = "static void nv_init_globals(void) {" + nl() + joinParts(rootsInit)
+    var units = globalUnits
+    for (enumUnit in enumUnits) {
+        units.append(enumUnit)
+    }
+    for (unit in initOrder(units, sources)) {
+        out = out + genUnitInit(unit, sources[unit], unitTemps(unit, sources))
+    }
+    return out + "}" + nl() + nl()
+}
+
+// The temporaries a global's initialiser uses (see ordering.nv), "" when none.
+method unitTemps(string unit, map<string, string> sources): string {
+    var key = "t:" + unit.substring(2, unit.length())
+    if (unit.startsWith("g:") && sources.has(key)) {
+        return sources[key]
+    }
+    return ""
+}
+
+// The statement(s) that initialise one unit from its C text; `temps` names
+// the temporaries the text reads.
+method genUnitInit(string unit, string text, string temps): string {
+    if (unit.startsWith("e:")) {
+        return text
+    }
+    var assignment = "g_" + unit.substring(2, unit.length()) + " = " + text + ";"
+    if (temps == "") {
+        return "    " + assignment + nl()
+    }
+    return withTemps("        " + assignment + nl(), temps)
+}
+
 // Generates the complete C translation unit. `runtime` is the text of
 // novus_rt.h to embed; when empty an #include "novus_rt.h" is emitted.
 method generateProgram(array<string> decls, string runtime): string {
     var prog = {}
     indexProgram(decls, prog)
     checkClasses(prog, decls)
+    analyseWorkers(decls, prog)
 
     var protos = []
     var bodies = []
     var registry = []
-    var globalsInit = []
-    var enumsInit = []
+    var rootsInit = []
+    var globalUnits = []
+    var enumUnits = []
+    var sources = {}
     var emitted = {}
 
     for (d in decls) {
@@ -139,17 +218,30 @@ method generateProgram(array<string> decls, string runtime): string {
             emitted[key] = intToStr(variant + 1)
             var cname = funcCName(name, arity, variant, variants)
             protos.append("static nv " + cname + "(" + cParamList(d) + ");" + nl())
-            bodies.append(genFreeMethod(d, cname, prog))
+            var descriptor = rawDescriptor(prog, name, arity)
+            if (descriptor != "") {
+                protos.append("static " + rawResultType(descriptor) + " " + cname + "_raw(" + rawParamList(d, descriptor) + ");" + nl())
+            }
+            var body = genFreeMethod(d, cname, prog)
+            bodies.append(body)
+            sources["f:" + cname] = body
+            if (descriptor != "") {
+                sources["f:" + cname + "_raw"] = body
+            }
             if (variants > 1 && variant == 0) {
-                protos.append("static nv " + funcCName(name, arity, 0, 1) + "(" + cParamList(d) + ");" + nl())
-                bodies.append(genDispatcher(name, arity, variants, prog))
+                var dispatcherName = funcCName(name, arity, 0, 1)
+                var dispatcher = genDispatcher(name, arity, variants, prog)
+                protos.append("static nv " + dispatcherName + "(" + cParamList(d) + ");" + nl())
+                bodies.append(dispatcher)
+                sources["f:" + dispatcherName] = dispatcher
             }
             continue
         }
         if (head == "class" || head == "enum") {
-            genClassCode(d, prog, protos, bodies, registry)
+            genClassCode(d, prog, protos, bodies, registry, sources)
             if (head == "enum") {
-                enumsInit.append(genEnumInit(d, prog))
+                enumUnits.append("e:" + nodeChild(d, 1))
+                sources["e:" + nodeChild(d, 1)] = genEnumInit(d, prog)
             }
             continue
         }
@@ -158,9 +250,15 @@ method generateProgram(array<string> decls, string runtime): string {
             var gctx = {"class": "", "pkg": packageOf(gname), "func": "", "ret": "void", "pos": "constant " + gname}
             var glocals = {}
             protos.append("static nv g_" + cName(gname) + ";" + nl())
-            // the collector cannot see statics on its own: each global is a root
-            globalsInit.append("    nv_gc_root(&g_" + cName(gname) + ");" + nl())
-            globalsInit.append("    g_" + cName(gname) + " = " + genExpr(nodeChild(d, 2), prog, gctx, glocals) + ";" + nl())
+            // the collector cannot see statics on its own: each global is a root;
+            // until its initialiser has run a global reads as null
+            rootsInit.append("    nv_gc_root(&g_" + cName(gname) + ");" + nl())
+            rootsInit.append("    g_" + cName(gname) + " = nv_nil;" + nl())
+            globalUnits.append("g:" + cName(gname))
+            sources["g:" + cName(gname)] = genExpr(nodeChild(d, 2), prog, gctx, glocals)
+            if (tempNames(gctx) != "") {
+                sources["t:" + cName(gname)] = tempNames(gctx)
+            }
         }
     }
 
@@ -177,14 +275,11 @@ method generateProgram(array<string> decls, string runtime): string {
     out.append(nl() + "/* declarations */" + nl())
     out.append(joinParts(protos))
     out.append(literalTable(prog))
+    out.append(icTable(prog))
     out.append(spawnBodies(prog))
     out.append(nl() + "static void nv_register_classes(void) {" + nl() + "    NvClass *c = 0;" + nl() + "    (void)c;" + nl())
     out.append(joinParts(registry))
-    out.append("}" + nl() + nl() + "static void nv_init_globals(void) {" + nl())
-    out.append(joinParts(globalsInit))
-    out.append("}" + nl() + nl() + "static void nv_init_enums(void) {" + nl())
-    out.append(joinParts(enumsInit))
-    out.append("}" + nl() + nl())
+    out.append("}" + nl() + nl() + genInitFunction(rootsInit, globalUnits, enumUnits, sources))
     var i = 0
     while (i < bodies.length()) {
         out.append(bodies[i] + nl())

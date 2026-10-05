@@ -1,0 +1,8 @@
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"rootUri":"@ROOTURI@","capabilities":{},"initializationOptions":{"novus":{"check":{"novuscPath":"@ROOT@/fake-novusc.sh","mode":"off"}}}}}
+{"jsonrpc":"2.0","method":"initialized","params":{}}
+{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"@ROOTURI@/main.nv","languageId":"novus","version":1,"text":"package main\n\nmethod main() {\n    return\n}\n"}}}
+{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"@ROOTURI@/util.nv","languageId":"novus","version":1,"text":"package main\n\nmethod helper() {\n    return\n}\n"}}}
+{"jsonrpc":"2.0","id":2,"method":"workspace/executeCommand","params":{"command":"novus.rerunChecks"}}
+{"jsonrpc":"2.0","id":3,"method":"workspace/executeCommand","params":{"command":"novus.rerunChecks"}}
+{"jsonrpc":"2.0","id":99,"method":"shutdown"}
+{"jsonrpc":"2.0","method":"exit"}

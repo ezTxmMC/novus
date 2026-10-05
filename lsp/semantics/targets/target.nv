@@ -1,0 +1,103 @@
+package targets
+
+import base/maybe
+import semantics/semantic
+import syntax/lexing
+import syntax/outline
+
+private final TARGETS_KIND_SYMBOL = "symbol"
+private final TARGETS_KIND_QUALIFIER = "qualifier"
+private final TARGETS_KIND_FREE_BUILTIN = "freeBuiltin"
+private final TARGETS_KIND_BUILTIN_MEMBER = "builtinMember"
+private final TARGETS_KIND_UNRESOLVED = "unresolved"
+private final TARGETS_STATUS_UNKNOWN = "unknown"
+private final TARGETS_STATUS_RESOLVED = "resolved"
+private final TARGETS_STATUS_AMBIGUOUS = "ambiguous"
+private final TARGETS_STEP_NAME = "name"
+private final TARGETS_STEP_CALL = "call"
+private final TARGETS_LOCAL_MODIFIER = "local"
+
+// What the identifier under the cursor stands for (Amendment 7, V138: the one resolution that go to definition, references,
+// rename and hover share). `symbol`: one or more declarations (`status` says whether the candidates are overloads of one
+// owner or ambiguous); `qualifier`: a std module or package name before a dot; `freeBuiltin`: a free built-in function;
+// `builtinMember`: a member of a built-in type (`receiver` is its type name, empty when the value only comes out of a std
+// function and has no type); `unresolved`: a member whose receiver the light inference could not type (`receiverKnown`
+// false) or whose known receiver does not have it. `scope` is the scope at the token, `declaration` is true when the
+// identifier is the name of a declaration.
+define class IdentifierTarget {
+    string kind
+    array<Symbol> symbols
+    string status
+    Token token
+    Span span
+    string name
+    bool declaration
+    bool receiverKnown
+    string receiver
+    Scope scope
+
+    construct(string kind, array<Symbol> symbols, string status, Token token) {
+        this.kind = kind
+        this.symbols = symbols
+        this.status = status
+        this.token = token
+        this.span = token.span()
+        this.name = token.text
+        this.declaration = false
+        this.receiverKnown = true
+        this.receiver = ""
+        this.scope = nothing()
+    }
+
+    method first(): Symbol {
+        if (this.symbols.length() == 0) {
+            return nothing()
+        }
+        return this.symbols[0]
+    }
+
+    method isSymbol(): bool {
+        return this.kind == TARGETS_KIND_SYMBOL
+    }
+
+    method isAmbiguous(): bool {
+        return this.status == TARGETS_STATUS_AMBIGUOUS
+    }
+
+    // A free built-in function or a member of a built-in type: there is no declaration to jump to or to rename.
+    method isBuiltin(): bool {
+        return this.kind == TARGETS_KIND_FREE_BUILTIN || this.kind == TARGETS_KIND_BUILTIN_MEMBER
+    }
+}
+
+method targetsSymbolTarget(Token token, Resolution resolution): IdentifierTarget {
+    if (resolution.status == TARGETS_STATUS_UNKNOWN || resolution.candidates.length() == 0) {
+        return nothing()
+    }
+    return IdentifierTarget(TARGETS_KIND_SYMBOL, resolution.candidates, resolution.status, token)
+}
+
+method targetsPlainTarget(string kind, Token token): IdentifierTarget {
+    return IdentifierTarget(kind, [], TARGETS_STATUS_UNKNOWN, token)
+}
+
+// A local as the resolver spells it: a synthetic global declaration over the name and the scope of the local.
+method targetsLocalSymbol(ClosureFile file, Local local): Symbol {
+    var decl = Decl(DeclKind.Global, local.name, local.nameSpan, local.scope)
+    decl.typeText = local.typeText
+    decl.modifiers = [TARGETS_LOCAL_MODIFIER, local.origin]
+    return Symbol(decl, file, "", "")
+}
+
+// The resolution of candidates found by several lookups: overloads of one owner resolve together, anything else is ambiguous.
+method targetsResolutionOf(array<Symbol> candidates): Resolution {
+    if (candidates.length() == 0) {
+        return Resolution([], TARGETS_STATUS_UNKNOWN)
+    }
+    for (candidate in candidates) {
+        if (candidate.qualifier != candidates[0].qualifier || candidate.container != candidates[0].container) {
+            return Resolution(candidates, TARGETS_STATUS_AMBIGUOUS)
+        }
+    }
+    return Resolution(candidates, TARGETS_STATUS_RESOLVED)
+}

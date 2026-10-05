@@ -1,0 +1,97 @@
+package main
+
+import unicode
+
+// The unicode module: UTF-8 characters and UTF-16 positions of byte strings.
+
+final SAMPLE = "aé😀b"
+final LONE_CONTINUATION = chr(128)
+final TRUNCATED_EURO = chr(226) + chr(130)
+final OVERLONG_NUL = chr(192) + chr(128)
+final ENCODED_SURROGATE = chr(237) + chr(160) + chr(128)
+
+method row(string label, integer input, integer result) {
+    println "${label}(${input}) = ${result}"
+}
+
+method printLengths() {
+    println "bytes ${SAMPLE.length()}"
+    println "utf16 ${unicode.utf16Length(SAMPLE)}"
+    println "chars ${unicode.charLength(SAMPLE)}"
+    var empty = ""
+    println "empty ${unicode.utf16Length(empty)} ${unicode.charLength(empty)}"
+}
+
+method printByteToUtf16() {
+    for (index in [-5, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 100]) {
+        row("byteToUtf16", index, unicode.byteToUtf16(SAMPLE, index))
+    }
+}
+
+method printUtf16ToByte() {
+    for (index in [-5, 0, 1, 2, 3, 4, 5, 6, 100]) {
+        row("utf16ToByte", index, unicode.utf16ToByte(SAMPLE, index))
+    }
+}
+
+method printCodePoints() {
+    for (index in [-1, 0, 1, 2, 3, 5, 6, 7, 8]) {
+        row("codePointAt", index, unicode.codePointAt(SAMPLE, index))
+    }
+    row("codePointAt", 0, unicode.codePointAt(LONE_CONTINUATION, 0))
+    var empty = ""
+    row("codePointAt", 0, unicode.codePointAt(empty, 0))
+}
+
+method printEncoding() {
+    for (code in [0, 65, 233, 8364, 128512, 1114111]) {
+        var text = unicode.fromCodePoint(code)
+        println "fromCodePoint(${code}) = ${text.length()} bytes, back ${unicode.codePointAt(text, 0)}"
+    }
+    for (code in [-1, 55296, 57343, 1114112]) {
+        println "fromCodePoint(${code}) is U+FFFD: ${unicode.codePointAt(unicode.fromCodePoint(code), 0) == 65533}"
+    }
+}
+
+method printValidity() {
+    var empty = ""
+    var ascii = "plain ascii"
+    var withNul = "a" + chr(0) + "b"
+    println "valid ${unicode.isValidUtf8(SAMPLE)} ${unicode.isValidUtf8(empty)} ${unicode.isValidUtf8(ascii)}"
+    println "valid nul ${unicode.isValidUtf8(withNul)}"
+    println "invalid 0xFF ${unicode.isValidUtf8(chr(255))}"
+    println "invalid stray ${unicode.isValidUtf8(LONE_CONTINUATION)}"
+    println "invalid truncated ${unicode.isValidUtf8(TRUNCATED_EURO)}"
+    println "invalid overlong ${unicode.isValidUtf8(OVERLONG_NUL)}"
+    println "invalid surrogate ${unicode.isValidUtf8(ENCODED_SURROGATE)}"
+    var malformed = chr(255) + "a" + TRUNCATED_EURO
+    println "malformed chars ${unicode.charLength(malformed)}"
+}
+
+// every UTF-16 offset survives the trip through bytes, except the one in the
+// middle of the emoji's surrogate pair, which lands on its start
+method printRoundTrip() {
+    var line = "x😀é日本y"
+    var midPair = 2
+    var index = 0
+    var failures = 0
+    while (index <= unicode.utf16Length(line)) {
+        var byteIndex = unicode.utf16ToByte(line, index)
+        var back = unicode.byteToUtf16(line, byteIndex)
+        if (back != index && index != midPair) {
+            failures = failures + 1
+        }
+        index = index + 1
+    }
+    println "round trip failures ${failures}, mid pair ${unicode.byteToUtf16(line, unicode.utf16ToByte(line, midPair))}"
+}
+
+method main {
+    printLengths()
+    printByteToUtf16()
+    printUtf16ToByte()
+    printCodePoints()
+    printEncoding()
+    printValidity()
+    printRoundTrip()
+}

@@ -1,0 +1,130 @@
+package main
+
+import unicode
+import @check
+import @subject
+import "novus/lsp/base/text"
+
+private final FUZZ_TOOL_POSITION_STRIDE = 7
+private final FUZZ_TOOL_PLAIN_SAMPLES = 64
+private final FUZZ_TOOL_EDGE_SAMPLES = 48
+private final FUZZ_TOOL_ENCODING_UTF16 = "utf-16"
+private final FUZZ_TOOL_ENCODING_UTF8 = "utf-8"
+private final FUZZ_TOOL_LINE_FEED = "\n"
+private final FUZZ_TOOL_CARRIAGE_RETURN = "\r"
+private final FUZZ_TOOL_NON_ASCII_MIN = 128
+
+// Positions survive a round trip through the wire encodings (DESIGN 5.1): byte offsets of the text (every 7th one, and
+// every offset next to a line terminator or a multi-byte character) are converted to a line and a character and back.
+// Texts that are not valid UTF-8 (a cut inside a character) are skipped, because a position inside a broken character
+// has no defined unit. The cost of one case stays bounded: the samples are thinned to a few hundred.
+define class FuzzToolPositionCheck based FuzzToolCheck {
+    construct() {
+    }
+
+    method check(FuzzToolSubject subject): array<string> {
+        var found = []
+        if (subject.validUtf8 == false) {
+            return found
+        }
+        var lines = LineIndex(subject.source)
+        var codecs = [PositionCodec(FUZZ_TOOL_ENCODING_UTF16), PositionCodec(FUZZ_TOOL_ENCODING_UTF8)]
+        for (offset in fuzzToolPositionSamples(subject.source, lines)) {
+            for (codec in codecs) {
+                fuzzToolRoundTrip(lines, codec, offset, found)
+            }
+        }
+        return found
+    }
+}
+
+method fuzzToolRoundTrip(LineIndex lines, PositionCodec codec, integer offset, array<string> found) {
+    var position = codec.positionOf(lines, offset)
+    var back = codec.offsetOf(lines, position)
+    if (back != offset) {
+        found.append(codec.encoding + " round trip of offset " + offset + " (line " + position.line + ", character " + position.character + ") gives " + back)
+    }
+}
+
+method fuzzToolPositionSamples(string source, LineIndex lines): array<integer> {
+    var samples = []
+    var stride = fuzzToolMax(FUZZ_TOOL_POSITION_STRIDE, source.length() / FUZZ_TOOL_PLAIN_SAMPLES)
+    var offset = 0
+    while (offset <= source.length()) {
+        samples.append(offset)
+        offset = offset + stride
+    }
+    samples.append(source.length())
+    fuzzToolAppendThinned(samples, fuzzToolLineEdgeOffsets(lines), FUZZ_TOOL_EDGE_SAMPLES)
+    fuzzToolAppendThinned(samples, fuzzToolMultiByteEdgeOffsets(source), FUZZ_TOOL_EDGE_SAMPLES)
+    return fuzzToolUsableOffsets(source, samples)
+}
+
+method fuzzToolMax(integer first, integer second): integer {
+    if (first > second) {
+        return first
+    }
+    return second
+}
+
+method fuzzToolAppendThinned(array<integer> target, array<integer> candidates, integer limit) {
+    var stride = fuzzToolMax(1, candidates.length() / limit)
+    var i = 0
+    while (i < candidates.length()) {
+        target.append(candidates[i])
+        i = i + stride
+    }
+}
+
+// The start and the end (before a CR LF or LF) of every line.
+method fuzzToolLineEdgeOffsets(LineIndex lines): array<integer> {
+    var offsets = []
+    var line = 0
+    while (line < lines.lineCount()) {
+        offsets.append(lines.lineStart(line))
+        offsets.append(lines.lineEnd(line))
+        line = line + 1
+    }
+    return offsets
+}
+
+// The character boundaries directly before and after a non-ASCII character; an ASCII text has none and is not scanned.
+method fuzzToolMultiByteEdgeOffsets(string source): array<integer> {
+    var offsets = []
+    if (unicode.utf16Length(source) == source.length()) {
+        return offsets
+    }
+    var i = 0
+    while (i <= source.length()) {
+        if (isCharBoundary(source, i) && fuzzToolTouchesNonAscii(source, i)) {
+            offsets.append(i)
+        }
+        i = i + 1
+    }
+    return offsets
+}
+
+method fuzzToolTouchesNonAscii(string source, integer offset): bool {
+    if (offset < source.length() && ord(source.charAt(offset)) >= FUZZ_TOOL_NON_ASCII_MIN) {
+        return true
+    }
+    return offset > 0 && ord(source.charAt(offset - 1)) >= FUZZ_TOOL_NON_ASCII_MIN
+}
+
+// Only character boundaries have a position, and the middle of a CR LF is not one (a line ends before its CR).
+method fuzzToolUsableOffsets(string source, array<integer> samples): array<integer> {
+    var usable = []
+    for (offset in samples) {
+        if (offset <= source.length() && isCharBoundary(source, offset) && fuzzToolInsideLineBreak(source, offset) == false) {
+            usable.append(offset)
+        }
+    }
+    return usable
+}
+
+method fuzzToolInsideLineBreak(string source, integer offset): bool {
+    if (offset <= 0 || offset >= source.length()) {
+        return false
+    }
+    return source.charAt(offset - 1) == FUZZ_TOOL_CARRIAGE_RETURN && source.charAt(offset) == FUZZ_TOOL_LINE_FEED
+}

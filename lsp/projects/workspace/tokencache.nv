@@ -1,0 +1,61 @@
+package workspace
+
+import base/maybe
+import syntax/outline
+
+private final TOKEN_CACHE_CAPACITY = 64
+
+// Least-recently-used parses that keep their tokens (references, rename, resolved semantic tokens of non-open files).
+// `order` lists the paths from the least to the most recently used; a path is in `order` exactly once.
+define class TokenCache {
+    map<string, SourceFile> entries
+    array<string> order
+    integer capacity
+
+    construct(integer capacity) {
+        this.entries = {}
+        this.order = []
+        this.capacity = capacity
+    }
+
+    // The cached parse when it was made from text with that hash; a hit makes the file the most recently used.
+    method find(string filePath, integer textHash): SourceFile {
+        if (this.entries.has(filePath) == false) {
+            return nothing()
+        }
+        var syntax = this.entries[filePath]
+        if (syntax.textHash != textHash) {
+            return nothing()
+        }
+        this.touch(filePath)
+        return syntax
+    }
+
+    // Stores the parse as the most recently used one and drops the least recently used beyond the capacity.
+    method store(string filePath, SourceFile syntax) {
+        this.entries[filePath] = syntax
+        this.touch(filePath)
+        while (this.order.length() > this.capacity && this.order.length() > 0) {
+            var oldest = this.order[0]
+            this.order.remove(0)
+            this.entries.remove(oldest)
+        }
+    }
+
+    method touch(string filePath) {
+        var position = this.order.indexOf(filePath)
+        if (position >= 0) {
+            this.order.remove(position)
+        }
+        this.order.append(filePath)
+    }
+
+    // Additive: drops one path (the file was deleted or changed on disk).
+    method drop(string filePath) {
+        var position = this.order.indexOf(filePath)
+        if (position >= 0) {
+            this.order.remove(position)
+        }
+        this.entries.remove(filePath)
+    }
+}

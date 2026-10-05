@@ -1,0 +1,183 @@
+package lifecycle
+
+import base/maybe
+import log
+import services/checker
+import server/jobs
+import server/protocol
+import server/rpc
+import server/session
+
+private final LIFECYCLE_COMMAND_FETCH = "novus.fetchDependencies"
+private final LIFECYCLE_COMMAND_RERUN = "novus.rerunChecks"
+private final LIFECYCLE_WORKER_FETCH = "fetch"
+private final LIFECYCLE_SHOW_MESSAGE = "window/showMessage"
+private final LIFECYCLE_MESSAGE_ERROR = 1
+private final LIFECYCLE_MESSAGE_INFO = 3
+private final LIFECYCLE_NOT_FOUND_TEXT = "novus: novusc was not found; set novus.check.novuscPath"
+
+// What the fetch worker posts through the inbox as Envelope(ENVELOPE_COMMAND_DONE, ...).
+define class CommandOutcome {
+    string command
+    bool succeeded
+    string message
+    string projectRoot
+
+    construct(string command, bool succeeded, string message, string projectRoot) {
+        this.command = command
+        this.succeeded = succeeded
+        this.message = message
+        this.projectRoot = projectRoot
+    }
+}
+
+define class ExecuteCommandHandler based RequestHandler {
+    Session session
+    CheckCoordinator checks
+    InboxChannel inbox
+    MessageWriter writer
+
+    construct(Session session, CheckCoordinator checks, InboxChannel inbox, MessageWriter writer) {
+        this.session = session
+        this.checks = checks
+        this.inbox = inbox
+        this.writer = writer
+    }
+
+    // The answer is null at once: a fetch runs on a worker thread and reports through showMessage later.
+    method handle(Request request): object {
+        var call = decodeCommand(request.params)
+        if (call.command == LIFECYCLE_COMMAND_FETCH) {
+            this.fetchDependencies(call)
+            return nothing()
+        }
+        if (call.command == LIFECYCLE_COMMAND_RERUN) {
+            this.rerunChecks(call)
+            return nothing()
+        }
+        failRequest(rpcInvalidParams(), "unknown command: " + call.command)
+        return nothing()
+    }
+
+    // The optional first argument is the active document; it is checked on its own, else every open document is (one per project).
+    method rerunChecks(CommandCall call) {
+        for (project in this.session.workspace.allProjects()) {
+            project.invalidateScan()
+        }
+        var uris = this.session.documents.uris()
+        if (call.arguments.length() > 0) {
+            uris = [call.arguments[0]]
+        }
+        var requested = {}
+        for (uri in uris) {
+            var key = this.projectKeyOf(uri)
+            if (requested.has(key)) {
+                continue
+            }
+            if (key != "") {
+                requested[key] = true
+            }
+            this.checks.requestCheck(uri, "command")
+        }
+    }
+
+    // A check covers its whole project, so one request per project is enough (6.32); "" when the document has none.
+    method projectKeyOf(string uri): string {
+        var document = this.session.documentFor(uri)
+        if (isNone(document)) {
+            return ""
+        }
+        var context = this.session.workspace.contextFor(document)
+        if (isNone(context)) {
+            return ""
+        }
+        return context.project.key()
+    }
+
+    method fetchDependencies(CommandCall call) {
+        var novusc = locateNovusc(this.session.settings.check.novuscPath, this.session.workspace.folders)
+        if (novusc == "") {
+            this.writer.sendNotification(LIFECYCLE_SHOW_MESSAGE, {"type": LIFECYCLE_MESSAGE_ERROR, "message": LIFECYCLE_NOT_FOUND_TEXT})
+            return
+        }
+        for (root in lifecycleFetchRoots(this.session, call)) {
+            this.startFetch(root, novusc)
+        }
+    }
+
+    // Test mode runs the fetch on the main thread so that the output order is deterministic.
+    method startFetch(string root, string novusc) {
+        var timeout = this.session.settings.check.timeoutSeconds
+        if (this.checks.synchronous) {
+            var outcome = lifecycleFetchOutcome(root, novusc, timeout)
+            var listener = CommandDoneListener(this.session, this.writer, this.checks.scheduler)
+            listener.onEnvelope(Envelope(ENVELOPE_COMMAND_DONE, outcome))
+            return
+        }
+        thread runFetchWorker(root, novusc, timeout, this.inbox)
+    }
+}
+
+define class CommandDoneListener based EnvelopeListener {
+    Session session
+    MessageWriter writer
+    DiagnosticScheduler scheduler
+
+    construct(Session session, MessageWriter writer, DiagnosticScheduler scheduler) {
+        this.session = session
+        this.writer = writer
+        this.scheduler = scheduler
+    }
+
+    // Tells the user, makes the project read its dependencies again and publishes everything anew.
+    method onEnvelope(Envelope envelope) {
+        if (envelope.kind != ENVELOPE_COMMAND_DONE) {
+            return
+        }
+        var outcome = envelope.payload
+        var type = LIFECYCLE_MESSAGE_ERROR
+        if (outcome.succeeded) {
+            type = LIFECYCLE_MESSAGE_INFO
+        }
+        this.writer.sendNotification(LIFECYCLE_SHOW_MESSAGE, {"type": type, "message": outcome.message})
+        this.invalidateProjects(outcome.projectRoot)
+        this.scheduler.markAllDirty()
+    }
+
+    method invalidateProjects(string projectRoot) {
+        for (project in this.session.workspace.allProjects()) {
+            if (project.layout.root == projectRoot) {
+                project.invalidate()
+            }
+        }
+    }
+}
+
+// Thread body: guarded, returns nothing (LSP-R08, LSP-R09).
+method runFetchWorker(string projectRoot, string novuscPath, integer timeoutSeconds, InboxChannel inbox) {
+    var outcome = runGuarded(LifecycleFetchWork(projectRoot, novuscPath, timeoutSeconds, inbox))
+    if (outcome.failed) {
+        log.error("lifecycle: the fetch worker failed: " + outcome.message)
+        postWorkerFailure(inbox, LIFECYCLE_WORKER_FETCH, 0, outcome)
+    }
+}
+
+define class LifecycleFetchWork based GuardedWork {
+    string projectRoot
+    string novuscPath
+    integer timeoutSeconds
+    InboxChannel inbox
+
+    construct(string projectRoot, string novuscPath, integer timeoutSeconds, InboxChannel inbox) {
+        this.projectRoot = projectRoot
+        this.novuscPath = novuscPath
+        this.timeoutSeconds = timeoutSeconds
+        this.inbox = inbox
+    }
+
+    method run(): object {
+        var outcome = lifecycleFetchOutcome(this.projectRoot, this.novuscPath, this.timeoutSeconds)
+        this.inbox.post(Envelope(ENVELOPE_COMMAND_DONE, outcome))
+        return nothing()
+    }
+}

@@ -1,0 +1,86 @@
+package main
+
+import os
+import path
+
+// `novusc check --offline` never clones a dependency: a missing one is an
+// error (exit 1, nothing created in the dependency cache). The progress line
+// of a fetch goes to stderr, so stdout of `check` is only its result.
+
+final PROJECT = "project \"example.com/app\"\nversion \"0.1.0\"\nmain \"main.nv\"\n\nrequire \"file://%s\" \"latest\"\n"
+final MAIN = "package main\n\nimport \"file://%s\"\n\nmethod main {\n    println greeting()\n}\n"
+final LIBRARY = "package lib\n\nmethod greeting(): string {\n    return \"from lib\"\n}\n"
+
+method compiler(): string {
+    var fromEnvironment = os.env("NOVUSC")
+    if (fromEnvironment == "") {
+        return "novusc"
+    }
+    return fromEnvironment
+}
+
+method fill(string template, string value): string {
+    return template.replace("%s", value)
+}
+
+// Runs `novusc check main.nv <options>` in `dir` with `deps` as the
+// dependency cache; `redirect` is a shell redirection of its streams.
+method check(string dir, string deps, string options, string redirect): map<string, object> {
+    var line = "cd " + os.shellQuote(dir) + " && NOVUS_DEPS=" + os.shellQuote(deps) + " " + os.shellQuote(compiler()) + " check main.nv " + options + " " + redirect
+    return os.run(line)
+}
+
+method outputOf(map<string, object> result, string shown, string placeholder): string {
+    var text = "" + result["output"]
+    return text.trim().replace(shown, placeholder)
+}
+
+method createLibraryRepository(string repository): bool {
+    os.mkdir(repository)
+    os.writeFile(path.join(repository, "lib.nv"), LIBRARY)
+    var git = "git -C " + os.shellQuote(repository) + " -c user.name=test -c user.email=test@example.com "
+    var commands = [
+        "git init --quiet " + os.shellQuote(repository),
+        git + "add lib.nv",
+        git + "commit --quiet -m library"
+    ]
+    for (command in commands) {
+        if (os.run(command + " 2>&1")["code"] != 0) {
+            return false
+        }
+    }
+    return true
+}
+
+method main {
+    var dir = path.join(os.temp(), "novus-offline-" + os.pid())
+    var deps = path.join(dir, "deps")
+    var repository = path.join(dir, "lib")
+    var project = path.join(dir, "project")
+    os.removeAll(dir)
+    os.mkdir(deps)
+    os.mkdir(project)
+    println "library repository: ${createLibraryRepository(repository)}"
+    os.writeFile(path.join(project, "project.nv"), fill(PROJECT, repository))
+    os.writeFile(path.join(project, "main.nv"), fill(MAIN, repository))
+
+    var offline = check(project, deps, "--offline", "2>&1")
+    var offlineCode = offline["code"]
+    println "offline, not fetched: exit code ${offlineCode}"
+    println outputOf(offline, repository, "<repository>")
+    println "nothing was cloned: ${os.listDir(deps).length() == 0}"
+
+    var fetching = check(project, deps, "", "2>/dev/null")
+    var stdoutText = outputOf(fetching, project, "<project>")
+    println "stdout while fetching: ${stdoutText}"
+    var cached = check(project, deps, "--offline", "2>&1")
+    var cachedCode = cached["code"]
+    println "offline, fetched: exit code ${cachedCode}"
+
+    os.removeAll(deps)
+    os.mkdir(deps)
+    var progress = check(project, deps, "", "2>&1 >/dev/null")
+    var stderrText = outputOf(progress, repository, "<repository>")
+    println "stderr while fetching: ${stderrText}"
+    os.removeAll(dir)
+}

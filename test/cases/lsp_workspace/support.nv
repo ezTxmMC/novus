@@ -1,0 +1,152 @@
+package main
+
+import "novus/lsp/base/platform"
+import "novus/lsp/base/text"
+import "novus/lsp/projects/closure"
+import "novus/lsp/projects/stdlib"
+import "novus/lsp/projects/workspace"
+import "novus/lsp/syntax/outline"
+
+// A text source in memory whose files have modification times that the test moves by hand: every `write` and `erase`
+// ticks a clock, a directory changes its time when a file appears in it or disappears (like a real file system).
+define class WsSource based TextSource {
+    map<string, string> files
+    map<string, integer> stamps
+    MemoryTextSource inner
+    integer clock
+
+    construct(map<string, string> files) {
+        this.files = files
+        this.stamps = {}
+        this.inner = MemoryTextSource(files)
+        this.clock = 1
+        for (filePath in files.keys()) {
+            this.stamps[filePath] = 1
+        }
+    }
+
+    method exists(string filePath): bool {
+        return this.inner.exists(filePath)
+    }
+
+    method isDirectory(string dirPath): bool {
+        return this.inner.isDirectory(dirPath)
+    }
+
+    method textOf(string filePath): string {
+        return this.inner.textOf(filePath)
+    }
+
+    method entriesOf(string dirPath): array<string> {
+        return this.inner.entriesOf(dirPath)
+    }
+
+    method modifiedMillis(string filePath): integer {
+        if (this.stamps.has(filePath)) {
+            return this.stamps[filePath]
+        }
+        if (this.inner.isDirectory(filePath)) {
+            return 1
+        }
+        return -1
+    }
+
+    method write(string filePath, string content) {
+        var isNew = this.files.has(filePath) == false
+        this.files[filePath] = content
+        this.clock = this.clock + 1
+        this.stamps[filePath] = this.clock
+        if (isNew) {
+            this.touchFolder(wsFolderOf(filePath))
+        }
+    }
+
+    // A file that appears changes its folder; a folder that appears changes its parent too.
+    method touchFolder(string folder) {
+        var isNewFolder = this.stamps.has(folder) == false
+        this.stamps[folder] = this.clock
+        if (isNewFolder && folder.length() > 1) {
+            this.touchFolder(wsFolderOf(folder))
+        }
+    }
+
+    method erase(string filePath) {
+        this.files.remove(filePath)
+        this.stamps.remove(filePath)
+        this.clock = this.clock + 1
+        this.stamps[wsFolderOf(filePath)] = this.clock
+    }
+}
+
+method wsFolderOf(string filePath): string {
+    var cut = filePath.length()
+    while (cut > 0 && filePath.charAt(cut - 1) != "/") {
+        cut = cut - 1
+    }
+    return filePath.substring(0, cut - 1)
+}
+
+define class WsWorld {
+    WsSource source
+    FileCache cache
+    Workspace space
+
+    construct(map<string, string> files) {
+        this.source = WsSource(files)
+        this.cache = FileCache(this.source)
+        this.space = Workspace(this.cache, standardLibrary())
+    }
+
+    method open(string filePath, integer version): FileContext {
+        return this.space.contextFor(wsDocument(filePath, version, this.cache.textOf(filePath)))
+    }
+
+    method openText(string filePath, integer version, string content): FileContext {
+        return this.space.contextFor(wsDocument(filePath, version, content))
+    }
+
+    // The text that an editor sends for a change: the document changes, the workspace is told.
+    method change(string filePath, integer version, string content) {
+        this.space.onDocumentChanged(wsDocument(filePath, version, content))
+    }
+
+    method model(string filePath): ProjectModel {
+        return this.space.projectFor(filePath)
+    }
+}
+
+method wsDocument(string filePath, integer version, string content): Document {
+    return Document(filePathToUri(filePath), "novus", version, content)
+}
+
+method wsSummary(ProjectModel model): string {
+    return "key=" + model.key() + " valid=" + model.valid + " revision=" + model.revision
+}
+
+method wsNames(array<ClosureFile> files): string {
+    var names = []
+    for (file in files) {
+        if (file.origin != FileOrigin.Standard) {
+            names.append(file.filePath)
+        }
+    }
+    return names.join(", ")
+}
+
+method wsCheck(string label, string actual, string expected) {
+    if (actual == expected) {
+        println("ok   " + label + ": " + actual)
+        return
+    }
+    println("FAIL " + label + ": got <" + actual + ">, expected <" + expected + ">")
+}
+
+method wsSimpleProject(): map<string, string> {
+    return {
+        "/p/project.nv": "project \"p\"\nmain \"main.nv\"\n",
+        "/p/main.nv": "import geo\n\nmethod main() {\n    println(\"hi\")\n}\n",
+        "/p/geo/shape.nv": "package geo\n\ndefine class Shape {\n    method area(): float {\n        return 1.0\n    }\n}\n",
+        "/p/geo/extra.nv": "package geo\n\nmethod extra(): integer {\n    return 1\n}\n",
+        "/p/lone.nv": "method helper(): integer {\n    return 2\n}\n"
+    }
+}

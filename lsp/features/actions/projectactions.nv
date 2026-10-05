@@ -1,0 +1,109 @@
+package actions
+
+import base/maybe
+import base/model
+import base/text
+import projects/workspace
+
+private final ACTIONS_QUICKFIX_KIND = "quickfix"
+private final ACTIONS_FETCH_COMMAND = "novus.fetchDependencies"
+private final ACTIONS_CODE_NOT_FETCHED = "dependency-not-fetched"
+private final ACTIONS_CODE_DUPLICATE_REQUIRE = "duplicate-require"
+private final ACTIONS_CODE_REPLACE_WITHOUT_REQUIRE = "replace-without-require"
+private final ACTIONS_KEY_REQUIRE = "require"
+private final ACTIONS_KEY_REPLACE = "replace"
+private final ACTIONS_QUOTE = "\""
+
+// The fixes of `project.nv`: *Fetch dependencies* (it only names the command; `lifecycle` runs it on a worker thread), the removal
+// of a repeated `require` and the `require` that a `replace` lacks. Every fix checks the key word at the span of the diagnostic.
+define class ProjectActions {
+    construct() {
+    }
+
+    method fixes(FileContext context, array<Diagnostic> diagnostics): array<CodeActionItem> {
+        var items = []
+        if (context.document.fileKind() != FILE_KIND_MANIFEST) {
+            return items
+        }
+        var fetchOffered = false
+        for (diagnostic in diagnostics) {
+            if (diagnostic.code == ACTIONS_CODE_NOT_FETCHED && fetchOffered == false) {
+                fetchOffered = true
+                items.append(this.fetch(context, diagnostic))
+            }
+            if (diagnostic.code == ACTIONS_CODE_DUPLICATE_REQUIRE && this.startsWithKey(context, diagnostic, ACTIONS_KEY_REQUIRE)) {
+                items.append(this.removeLine(context, diagnostic))
+            }
+            if (diagnostic.code == ACTIONS_CODE_REPLACE_WITHOUT_REQUIRE && this.startsWithKey(context, diagnostic, ACTIONS_KEY_REPLACE)) {
+                this.addRequire(context, diagnostic, items)
+            }
+        }
+        return items
+    }
+
+    method fetch(FileContext context, Diagnostic diagnostic): CodeActionItem {
+        var item = CodeActionItem("Fetch dependencies", ACTIONS_QUICKFIX_KIND)
+        item.command = ACTIONS_FETCH_COMMAND
+        item.commandArguments = [context.document.uri]
+        item.diagnostics = [diagnostic]
+        item.preferred = true
+        return item
+    }
+
+    method startsWithKey(FileContext context, Diagnostic diagnostic, string key): bool {
+        var text = context.document.text
+        if (diagnostic.span.start < 0 || diagnostic.span.end > text.length() || diagnostic.span.start >= diagnostic.span.end) {
+            return false
+        }
+        return text.substring(diagnostic.span.start, diagnostic.span.end).startsWith(key)
+    }
+
+    // The whole line of the directive goes, with its line break.
+    method removeLine(FileContext context, Diagnostic diagnostic): CodeActionItem {
+        var lines = context.document.lines
+        var line = lines.lineOf(diagnostic.span.start)
+        var span = Span(lines.lineStart(line), lines.lineStart(line + 1))
+        if (line + 1 >= lines.lineCount()) {
+            span = Span(lines.lineStart(line), context.document.text.length())
+        }
+        var item = CodeActionItem("Remove the repeated require", ACTIONS_QUICKFIX_KIND)
+        item.edits = [FileEdit(context.document.filePath, [TextEdit(span, "")])]
+        item.diagnostics = [diagnostic]
+        return item
+    }
+
+    // The module comes from the directive that the span covers, never from `data`, which is client input.
+    method addRequire(FileContext context, Diagnostic diagnostic, array<CodeActionItem> items) {
+        var module = this.moduleOfReplace(context, diagnostic)
+        if (module == "") {
+            return
+        }
+        var lines = context.document.lines
+        var start = lines.lineStart(lines.lineOf(diagnostic.span.start))
+        var line = ACTIONS_KEY_REQUIRE + " \"" + module + "\"" + actionsLineEnding(context.document.text)
+        var item = CodeActionItem("Add require '" + module + "'", ACTIONS_QUICKFIX_KIND)
+        item.edits = [FileEdit(context.document.filePath, [TextEdit(Span(start, start), line)])]
+        item.diagnostics = [diagnostic]
+        items.append(item)
+    }
+
+    // The first quoted word behind the key of `replace "<module>" "<target>"`; "" when the directive is not written like that.
+    method moduleOfReplace(FileContext context, Diagnostic diagnostic): string {
+        var directive = context.document.text.substring(diagnostic.span.start, diagnostic.span.end)
+        var behindKey = directive.substring(ACTIONS_KEY_REPLACE.length(), directive.length())
+        var rest = behindKey.trim()
+        var isSeparated = behindKey != "" && behindKey.charAt(0).trim() == ""
+        if (isSeparated == false || rest.startsWith(ACTIONS_QUOTE) == false) {
+            return ""
+        }
+        var close = rest.indexOf(ACTIONS_QUOTE, 1)
+        if (close < 0) {
+            return ""
+        }
+        var module = rest.substring(1, close)
+        if (module.contains("\n") || module.contains("\r") || module.contains("\\")) {
+            return ""
+        }
+        return module
+    }
+}

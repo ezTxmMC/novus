@@ -1,0 +1,21 @@
+package main
+
+import @notation_cases
+import @catalogue_cases
+import @export_cases
+import @regression_cases
+
+// Golden case of the package `snippets` (DESIGN 6.16, 7): the notation, the catalogue as data, the
+// VS Code export and the verification projects. The compile check of every snippet is
+// scripts/lsp_snippets.sh.
+
+method main {
+    println "#### notation"
+    runNotationCases()
+    println "#### catalogue"
+    runCatalogueCases()
+    println "#### export"
+    runExportCases()
+    println "#### regression"
+    runRegressionCases()
+}

@@ -1,0 +1,39 @@
+package main
+
+import "novus/lsp/base/text"
+import "novus/lsp/server/protocol"
+
+method fullMethods(): array<string> {
+    return ["initialize", "shutdown", "exit", "textDocument/didOpen", "textDocument/didChange", "textDocument/didClose", "textDocument/didSave", "textDocument/completion", "completionItem/resolve", "textDocument/hover", "textDocument/signatureHelp", "textDocument/definition", "textDocument/references", "textDocument/documentHighlight", "textDocument/documentSymbol", "workspace/symbol", "textDocument/foldingRange", "textDocument/documentLink", "textDocument/rename", "textDocument/prepareRename", "textDocument/formatting", "textDocument/rangeFormatting", "textDocument/codeAction", "textDocument/semanticTokens/full", "textDocument/semanticTokens/range", "workspace/executeCommand", "workspace/didChangeWorkspaceFolders"]
+}
+
+method testCapabilities() {
+    println "== buildServerCapabilities"
+    var legendTypes = ["namespace", "class", "method"]
+    var legendModifiers = ["declaration", "deprecated"]
+    var commands = ["novus.fetchDependencies", "novus.rerunChecks"]
+    var utf16Client = ClientInfo()
+    utf16Client.positionEncodings = ["utf-16"]
+    var utf16Codec = PositionCodec(negotiatePositionEncoding(utf16Client.positionEncodings))
+    showJson("utf-16 only client", buildServerCapabilities(utf16Client, utf16Codec, fullMethods(), legendTypes, legendModifiers, commands))
+    var modern = ClientInfo()
+    modern.positionEncodings = ["utf-8", "utf-16"]
+    modern.labelDetailsSupport = true
+    var utf8Codec = PositionCodec(negotiatePositionEncoding(modern.positionEncodings))
+    showJson("utf-8 client", buildServerCapabilities(modern, utf8Codec, fullMethods(), legendTypes, legendModifiers, commands))
+    showJson("bootstrap only", buildServerCapabilities(utf16Client, utf16Codec, ["initialize", "shutdown", "exit", "novus/test/crash"], [], [], []))
+    showJson("nothing registered", buildServerCapabilities(utf16Client, utf16Codec, [], [], [], []))
+    var partial = ["textDocument/didChange", "textDocument/rename", "textDocument/semanticTokens/full", "workspace/executeCommand"]
+    showJson("partial", buildServerCapabilities(utf16Client, utf16Codec, partial, legendTypes, legendModifiers, ["novus.rerunChecks"]))
+}
+
+method testInitializeResult() {
+    println "== initialize result"
+    var client = ClientInfo()
+    var codec = PositionCodec("utf-16")
+    var capabilities = buildServerCapabilities(client, codec, ["initialize", "shutdown", "exit"], [], [], [])
+    showJson("buildInitializeResult", buildInitializeResult(capabilities))
+    showJson("buildInitializeResult empty", buildInitializeResult({}))
+    show("serverVersionText", serverVersionText())
+    show("SERVER_NAME SERVER_VERSION", SERVER_NAME + " " + SERVER_VERSION)
+}

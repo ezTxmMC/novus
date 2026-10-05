@@ -1,0 +1,31 @@
+package main
+
+import "novus/lsp/base/maybe"
+import "novus/lsp/base/model"
+import "novus/lsp/base/text"
+import @support
+
+method runManifestCases() {
+    println("== ManifestDiagnostics: reader issues, derived notes, dependency states")
+    var world = DgWorld({
+        "/p/project.nv": "project \"p\"\nrequire \"github.com/x/dep\" \"v1\"\nrequire \"github.com/x/dep\" \"v2\"\nrequire \"github.com/x/gone\" \"v1\"\nreplace \"github.com/x/dep\" \"../dep\"\nreplace \"github.com/z/free\" \"../free\"\nreplace \"github.com/x/lost\" \"/abs/lost\"\nrequire \"github.com/x/lost\"\nbogus \"a\"\nmain bad\n",
+        "/p/main.nv": "method main() {\n    return\n}\n",
+        "/dep/lib.nv": "method depHelper() {\n    return\n}\n"
+    })
+    dgShow("project.nv", world.manifestOf("/p/project.nv"))
+    dgShow("a source file gets nothing from the manifest layer", world.manifestOf("/p/main.nv"))
+    dgShow("project.nv gets nothing from OwnDiagnostics", world.ownOf("/p/project.nv"))
+    println("== unterminated string in a manifest is a warning, a good manifest is clean")
+    var fine = DgWorld({
+        "/p/project.nv": "project \"p\"\nversion \"1.0\"\nmain \"main.nv\"\n",
+        "/p/main.nv": "method main() {\n    return\n}\n"
+    })
+    dgShow("clean", fine.manifestOf("/p/project.nv"))
+    var open = DgWorld({
+        "/p/project.nv": "project \"p",
+        "/p/main.nv": "method main() {\n    return\n}\n"
+    })
+    dgShow("unterminated", open.manifestOf("/p/project.nv"))
+    open.settings.ownDiagnostics = false
+    dgShow("novus.diagnostics.own is false: the source novus is silent for the manifest too", open.manifestOf("/p/project.nv"))
+}

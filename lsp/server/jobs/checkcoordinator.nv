@@ -1,0 +1,150 @@
+package jobs
+
+import base/maybe
+import log
+import services/checker
+import server/rpc
+import server/session
+
+// Starts novusc check workers, drops stale results, merges source "novusc" (5.9, 6.31).
+define class CheckCoordinator based EnvelopeListener {
+    Session session
+    DiagnosticScheduler scheduler
+    InboxChannel inbox
+    map<string, array<string>> lastCheckUris
+    bool synchronous
+    bool disabled
+    JobsCheckState state
+    JobsRequestPlanner planner
+    JobsResultApplier applier
+    JobsIdleTimer idle
+
+    construct(Session session, DiagnosticScheduler scheduler, InboxChannel inbox) {
+        this.session = session
+        this.scheduler = scheduler
+        this.inbox = inbox
+        this.lastCheckUris = {}
+        this.synchronous = false
+        this.disabled = false
+        this.state = JobsCheckState()
+        this.planner = JobsRequestPlanner(session, this.state)
+        this.applier = JobsResultApplier(session, scheduler, this.lastCheckUris)
+        this.idle = JobsIdleTimer(session)
+    }
+
+    // reason: "open", "save", "idle" or "command" (6.31). Test mode disables the coordinator unless NOVUS_LSP_CHECK=1,
+    // which a scenario sets in its `env` file (9.5-2).
+    method requestCheck(string uri, string reason) {
+        if (this.disabled) {
+            return
+        }
+        if (this.session.shutdownRequested || jobsReasonAllowed(this.session.settings.check.mode, reason) == false) {
+            return
+        }
+        log.debug("jobs: check requested for " + uri + " (" + reason + ")")
+        var plan = this.planner.prepare(uri)
+        if (plan.ok == false) {
+            log.debug("jobs: no check: " + plan.why)
+            return
+        }
+        this.start(plan, uri, reason)
+    }
+
+    // At most one worker per project and two in all; a request that cannot start waits as the pending one of its project.
+    method start(JobsPlan plan, string uri, string reason) {
+        var key = plan.project.key()
+        if (this.state.isRunning(key)) {
+            this.state.rememberPending(key, uri, reason)
+            return
+        }
+        if (this.state.isFull()) {
+            log.info("jobs: two checks are running already, the request for " + uri + " waits")
+            this.state.rememberPending(key, uri, reason)
+            return
+        }
+        var request = this.planner.build(plan)
+        this.applier.rememberSnapshot(request)
+        this.state.begin(key, request.requestId)
+        this.launch(request)
+    }
+
+    // Test mode runs the request on the main thread so that the output order is deterministic.
+    method launch(CheckRequest request) {
+        if (this.synchronous) {
+            this.runInline(request)
+            return
+        }
+        thread runCheckWorker(request, this.inbox)
+    }
+
+    // A failing run frees its project again, like a failed worker does.
+    method runInline(CheckRequest request) {
+        var outcome = runGuarded(JobsInlineCheck(request))
+        if (outcome.failed) {
+            log.error("jobs: the check failed: " + outcome.message)
+            this.release(request.requestId)
+            return
+        }
+        this.finish(outcome.value)
+    }
+
+    method finish(CheckResult result) {
+        var key = this.state.finish(result.requestId)
+        this.applier.apply(key, result)
+        this.startWaiting(key)
+    }
+
+    // A run that ended without a result frees its project and its slot like a finished one.
+    method release(integer requestId) {
+        var key = this.state.finish(requestId)
+        this.applier.forgetSnapshot(requestId)
+        this.startWaiting(key)
+    }
+
+    // The request that waited for the project that just became free, then the ones that waited for a free slot.
+    method startWaiting(string key) {
+        this.rerunPending(key)
+        for (waitingKey in this.state.waitingKeys()) {
+            if (this.state.isFull()) {
+                return
+            }
+            this.rerunPending(waitingKey)
+        }
+    }
+
+    method rerunPending(string key) {
+        var waiting = this.state.takePending(key)
+        if (isSome(waiting)) {
+            this.requestCheck(waiting.uri, waiting.reason)
+        }
+    }
+
+    method onEnvelope(Envelope envelope) {
+        if (envelope.kind == ENVELOPE_CHECK_DONE) {
+            this.finish(envelope.payload)
+            return
+        }
+        if (envelope.kind == ENVELOPE_WORKER_FAILED) {
+            this.onWorkerFailed(envelope.payload)
+            return
+        }
+        if (envelope.kind == ENVELOPE_TICK) {
+            this.onTick(jobsTickTime(envelope))
+        }
+    }
+
+    method onTick(integer now) {
+        for (uri in this.idle.collectDue(now)) {
+            this.requestCheck(uri, "idle")
+        }
+    }
+
+    // The failed worker no longer holds its project; the next request may start again.
+    method onWorkerFailed(WorkerFailure failure) {
+        if (failure.worker != JOBS_WORKER_CHECK) {
+            return
+        }
+        log.warn("jobs: the check " + failure.requestId + " failed: " + failure.message)
+        this.release(failure.requestId)
+    }
+}

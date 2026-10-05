@@ -1,0 +1,93 @@
+package main
+
+import os
+
+// os.shellQuoteFor: the quoting of both shells, tested on every platform
+// (the rules are string code). Whether cmd.exe really takes the Windows
+// result as described has not been run here - see the doc of os.shellQuote.
+
+final WINDOWS = os.platform() == "windows"
+final BACKSLASH = chr(92)
+final QUOTE = chr(34)
+
+define class QuoteTask {
+    private string platform: get, set
+    private string text: get, set
+    method run(): object {
+        return os.shellQuoteFor(platform, text)
+    }
+}
+
+method tryRun(object task): object native "nv_try_run"
+method tryFailed(): bool native "nv_try_failed"
+method tryError(): string native "nv_try_error"
+
+method show(string platform, string label, string text) {
+    println "${platform} ${label}: ${os.shellQuoteFor(platform, text)}"
+}
+
+method printUnix() {
+    show("unix", "plain", "plain")
+    show("unix", "empty", "")
+    show("unix", "space", "with space")
+    show("unix", "apostrophe", "it's")
+    show("unix", "two apostrophes", "'a'")
+    show("unix", "metacharacters", "$HOME `date` ; & | < > * ? ( ) !")
+    show("unix", "double quote and backslash", "say " + QUOTE + "hi" + QUOTE + BACKSLASH)
+    show("linux", "same as unix", "it's")
+    show("macos", "same as unix", "it's")
+}
+
+method printWindows() {
+    show("windows", "plain", "plain")
+    show("windows", "empty", "")
+    show("windows", "space", "with space")
+    show("windows", "path", "C:" + BACKSLASH + "Program Files" + BACKSLASH + "app.exe")
+    show("windows", "trailing backslash", "C:" + BACKSLASH + "dir" + BACKSLASH)
+    show("windows", "unc path", BACKSLASH + BACKSLASH + "server" + BACKSLASH + "share" + BACKSLASH)
+    show("windows", "cmd metacharacters", "a&b|c<d>e^f(g)")
+    show("windows", "apostrophe", "it's")
+    show("windows", "percent", "50%")
+    show("windows", "variable", "%PATH%")
+    show("windows", "bang", "hi!")
+    show("windows", "quote", "a" + QUOTE + "b")
+    show("windows", "backslash then quote", "a" + BACKSLASH + QUOTE + "b")
+    show("windows", "two backslashes then quote", "a" + BACKSLASH + BACKSLASH + QUOTE)
+    show("windows", "injection attempt", "x" + QUOTE + " & calc & " + QUOTE)
+}
+
+method printErrors() {
+    tryRun(QuoteTask{platform="windows", text="two" + chr(10) + "lines"})
+    println "windows line break: ${tryFailed()} ${tryError()}"
+    tryRun(QuoteTask{platform="windows", text="a" + chr(13)})
+    println "windows carriage return: ${tryFailed()}"
+    tryRun(QuoteTask{platform="unix", text="two" + chr(10) + "lines"})
+    println "unix line break: ${tryFailed()}"
+    tryRun(QuoteTask{platform="plan9", text="x"})
+    println "unknown platform: ${tryFailed()} ${tryError()}"
+}
+
+// A command that prints its argument: the real check of the unix rules. No
+// program echoes an argument exactly under cmd.exe, so on Windows this check
+// passes without running anything (skipped).
+method roundTrips(string text): bool {
+    if (WINDOWS) {
+        return true
+    }
+    return os.run("printf %s " + os.shellQuote(text))["output"] == text
+}
+
+method printPlatformQuote() {
+    var tricky = "it's " + QUOTE + "quoted" + QUOTE + " $HOME `date` ; rm -rf * " + BACKSLASH + " end"
+    println "shellQuote is the quoting of this platform: ${os.shellQuote(tricky) == os.shellQuoteFor(os.platform(), tricky)}"
+    println "round trip through the shell: ${roundTrips(tricky)}"
+    var nothing = ""
+    println "round trip, empty: ${roundTrips(nothing)}"
+}
+
+method main {
+    printUnix()
+    printWindows()
+    printErrors()
+    printPlatformQuote()
+}

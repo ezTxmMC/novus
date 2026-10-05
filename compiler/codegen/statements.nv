@@ -8,8 +8,15 @@ import parser
 // NOTE: this file is part of the bootstrap chain: it must stay compilable
 // by the previous compiler snapshot (bootstrap/novusc.c).
 
-method genBlock(string block, string indent, map<string, string> prog, map<string, string> ctx, map<string, string> outerLocals): string {
-    var locals = copyMap(outerLocals)
+// What blockVars records about a name declared in the block: it is new, or it
+// shadows a local of an enclosing block (which then stays after the block).
+final LOCAL_NEW = "new"
+final LOCAL_SHADOWS = "shadows"
+
+// The block adds its declarations to the map of the enclosing blocks and takes
+// them out again at its end. Copying the whole map for every block made a
+// method with many locals and many blocks quadratic.
+method genBlock(string block, string indent, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
     var blockVars = {}
     var parts = []
     var i = 1
@@ -24,7 +31,16 @@ method genBlock(string block, string indent, map<string, string> prog, map<strin
         parts.append(genStatement(stmt, indent, prog, ctx, locals, blockVars))
         i = i + 1
     }
+    forgetBlockLocals(locals, blockVars)
     return joinParts(parts)
+}
+
+method forgetBlockLocals(map<string, string> locals, map<string, string> blockVars) {
+    for (name in blockVars.keys()) {
+        if (blockVars[name] == LOCAL_NEW) {
+            locals.remove(name)
+        }
+    }
 }
 
 method declareLocal(string name, string init, string indent, map<string, string> locals, map<string, string> blockVars): string {
@@ -38,8 +54,11 @@ method declareLocal(string name, string init, string indent, map<string, string>
     if (blockVars.has(name)) {
         return indent + "l_" + name + " = " + init + ";" + nl()
     }
+    blockVars[name] = LOCAL_SHADOWS
+    if (locals.has(name) == false) {
+        blockVars[name] = LOCAL_NEW
+    }
     locals[name] = "l_" + name
-    blockVars[name] = "1"
     return indent + type + "l_" + name + " = " + init + ";" + nl()
 }
 
@@ -49,7 +68,8 @@ method genValueFor(string name, string node, map<string, string> prog, map<strin
         return genInt(node, prog, ctx, locals)
     }
     if (isFloatLocal(locals, name)) {
-        return genFloat(node, prog, ctx, locals)
+        // an integer expression is computed as one and converted: `float x = 7 / 2` is 3.0
+        return genNumberAs(node, KIND_FLOAT, prog, ctx, locals)
     }
     return genExpr(node, prog, ctx, locals)
 }
@@ -83,7 +103,7 @@ method genStatement(string node, string indent, map<string, string> prog, map<st
                 return declareLocal(tname, genInt(nodeChild(node, 3), prog, ctx, locals), indent, locals, blockVars)
             }
             if (isFloatLocal(locals, tname)) {
-                return declareLocal(tname, genFloat(nodeChild(node, 3), prog, ctx, locals), indent, locals, blockVars)
+                return declareLocal(tname, genNumberAs(nodeChild(node, 3), KIND_FLOAT, prog, ctx, locals), indent, locals, blockVars)
             }
             return declareLocal(tname, coerceCode(genExpr(nodeChild(node, 3), prog, ctx, locals), ttype), indent, locals, blockVars)
         }
@@ -93,7 +113,8 @@ method genStatement(string node, string indent, map<string, string> prog, map<st
         var target = nodeChild(node, 1)
         var cname = resolveVar(target, prog, ctx, locals)
         if (cname == "" && isImplicitField(target, prog, ctx, locals)) {
-            return indent + "nv_fields(self->o)[" + fieldSlot(prog, ctx["class"], target) + "] = " + genExpr(nodeChild(node, 2), prog, ctx, locals) + ";" + nl()
+            var stored = coerceFieldCode(genExpr(nodeChild(node, 2), prog, ctx, locals), fieldType(prog, ctx["class"], target))
+            return indent + "nv_fields(self->o)[" + fieldSlot(prog, ctx["class"], target) + "] = " + stored + ";" + nl()
         }
         if (cname == "" || cname == "self") {
             fail("unknown variable '" + target + "'", ctx["pos"])
@@ -101,6 +122,10 @@ method genStatement(string node, string indent, map<string, string> prog, map<st
         return indent + cname + " = " + genValueFor(target, nodeChild(node, 2), prog, ctx, locals) + ";" + nl()
     }
     if (head == "setexpr") {
+        var sequence = sequenceOperands(node, prog, ctx, locals)
+        if (sequence.length() > 0) {
+            return sequencedStatements(sequence, indent) + genStatement(sequence[0], indent, prog, ctx, locals, blockVars)
+        }
         var lhs = nodeChild(node, 1)
         var value = genExpr(nodeChild(node, 2), prog, ctx, locals)
         if (nodeHead(lhs) == "idx") {
@@ -110,7 +135,7 @@ method genStatement(string node, string indent, map<string, string> prog, map<st
             var receiver = nodeChild(lhs, 1)
             var member = nodeChild(lhs, 2)
             if (receiver == "this" && ctx["class"] != "" && fieldSlot(prog, ctx["class"], member) >= 0) {
-                return indent + "nv_fields(self->o)[" + fieldSlot(prog, ctx["class"], member) + "] = " + value + ";" + nl()
+                return indent + "nv_fields(self->o)[" + fieldSlot(prog, ctx["class"], member) + "] = " + coerceFieldCode(value, fieldType(prog, ctx["class"], member)) + ";" + nl()
             }
             return indent + "nv_set_member(" + genExpr(receiver, prog, ctx, locals) + ", " + cstr(member) + ", " + value + ");" + nl()
         }
@@ -119,6 +144,10 @@ method genStatement(string node, string indent, map<string, string> prog, map<st
     if (head == "return") {
         // leaving a method leaves every sync block it is inside
         var leaveAll = syncUnwind(syncHeld(ctx), "")
+        if (nodeCount(node) > 1 && ctx.has("rawret") && ctx["rawret"] != "") {
+            // the unboxed worker of a method returns the number itself
+            return indent + leaveAll + "return " + genNumberAs(nodeChild(node, 1), ctx["rawret"], prog, ctx, locals) + ";" + nl()
+        }
         if (nodeCount(node) > 1) {
             return indent + leaveAll + "return " + coerceCode(genExpr(nodeChild(node, 1), prog, ctx, locals), ctx["ret"]) + ";" + nl()
         }
@@ -184,11 +213,14 @@ method genStatement(string node, string indent, map<string, string> prog, map<st
         fout = fout + inner + "int n_" + v + " = it_" + v + "->len;" + nl()
         fout = fout + inner + "for (int i_" + v + " = 0; i_" + v + " < n_" + v + "; i_" + v + "++) {" + nl()
         fout = fout + inner + "    nv l_" + v + " = it_" + v + "->items[i_" + v + "];" + nl()
-        var bodyLocals = copyMap(locals)
-        bodyLocals[v] = "l_" + v
+        var loopVarIsNew = locals.has(v) == false
+        locals[v] = "l_" + v
         var fouter = syncLoopHeld(ctx)
         ctx["syncloop"] = syncHeld(ctx)
-        fout = fout + genBlock(nodeChild(node, 3), inner + "    ", prog, ctx, bodyLocals)
+        fout = fout + genBlock(nodeChild(node, 3), inner + "    ", prog, ctx, locals)
+        if (loopVarIsNew) {
+            locals.remove(v)
+        }
         ctx["syncloop"] = fouter
         fout = fout + inner + "}" + nl()
         return fout + indent + "}" + nl()

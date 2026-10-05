@@ -1,0 +1,327 @@
+package main
+
+import unicode
+import hash
+import "novus/lsp/base/text"
+import @regressions
+
+method show(string label, object value) {
+    println label + ": " + value
+}
+
+method showPosition(string label, WirePosition position) {
+    println label + ": " + position.line + ":" + position.character
+}
+
+method showSpan(string label, Span span) {
+    println label + ": [" + span.start + "," + span.end + ")"
+}
+
+method showOffsets(string label, PositionCodec codec, LineIndex lines, array<array<integer>> positions) {
+    var parts = []
+    for (pair in positions) {
+        parts.append(pair[0] + ":" + pair[1] + "=" + codec.offsetOf(lines, WirePosition(pair[0], pair[1])))
+    }
+    println label + ": " + parts.join(" ")
+}
+
+method showPositions(string label, PositionCodec codec, LineIndex lines, array<integer> offsets) {
+    var parts = []
+    for (offset in offsets) {
+        var position = codec.positionOf(lines, offset)
+        parts.append(offset + "=" + position.line + ":" + position.character)
+    }
+    println label + ": " + parts.join(" ")
+}
+
+method testSpan() {
+    println "== span"
+    var span = Span(2, 5)
+    show("length", span.length())
+    show("isEmpty", span.isEmpty())
+    show("empty isEmpty", Span(4, 4).isEmpty())
+    show("reversed length", Span(5, 2).length())
+    show("contains 2/4/5", span.contains(2) + "/" + span.contains(4) + "/" + span.contains(5))
+    show("touches 1/2/5/6", span.touches(1) + "/" + span.touches(2) + "/" + span.touches(5) + "/" + span.touches(6))
+    show("overlaps [4,8)", span.overlaps(Span(4, 8)))
+    show("overlaps [5,8)", span.overlaps(Span(5, 8)))
+    show("overlaps [0,2)", span.overlaps(Span(0, 2)))
+    show("overlaps [3,4)", span.overlaps(Span(3, 4)))
+    show("empty inside overlaps", span.overlaps(Span(3, 3)))
+    show("empty empty overlaps", Span(3, 3).overlaps(Span(3, 3)))
+}
+
+method testLineIndex() {
+    println "== lineindex"
+    var lines = LineIndex("ab\ncd\r\nef\n\r\nlast")
+    show("lineCount", lines.lineCount())
+    show("starts", lines.starts.join(","))
+    show("lineEnd 0/1/2/3/4", lines.lineEnd(0) + "/" + lines.lineEnd(1) + "/" + lines.lineEnd(2) + "/" + lines.lineEnd(3) + "/" + lines.lineEnd(4))
+    show("lineOf 0/2/3/4/7/9/16/17/99", lines.lineOf(0) + "/" + lines.lineOf(2) + "/" + lines.lineOf(3) + "/" + lines.lineOf(4) + "/" + lines.lineOf(7) + "/" + lines.lineOf(9) + "/" + lines.lineOf(16) + "/" + lines.lineOf(17) + "/" + lines.lineOf(99))
+    show("byteColumn 0/2/5/12", lines.byteColumn(0) + "/" + lines.byteColumn(2) + "/" + lines.byteColumn(5) + "/" + lines.byteColumn(12))
+    show("lineText 0", "[" + lines.lineText(0) + "]")
+    show("lineText 1", "[" + lines.lineText(1) + "]")
+    show("lineText 3", "[" + lines.lineText(3) + "]")
+    show("lineText 4", "[" + lines.lineText(4) + "]")
+    show("lineStart clamp -1/99", lines.lineStart(-1) + "/" + lines.lineStart(99))
+    var empty = LineIndex("")
+    show("empty lineCount", empty.lineCount())
+    show("empty lineEnd 0", empty.lineEnd(0))
+    var trailing = LineIndex("a\n")
+    show("trailing lineCount", trailing.lineCount())
+    show("trailing lineText 1", "[" + trailing.lineText(1) + "]")
+    var lone = LineIndex("a\rb")
+    show("lone CR lineCount", lone.lineCount())
+}
+
+method testEmoji() {
+    println "== encodings: emoji (4 bytes, 2 units)"
+    var emoji = unicode.fromCodePoint(128512)
+    var lines = LineIndex("a" + emoji + "b")
+    var utf16 = PositionCodec("utf-16")
+    var utf8 = PositionCodec("utf-8")
+    showOffsets("utf-16 offsetOf", utf16, lines, [[0, 0], [0, 1], [0, 2], [0, 3], [0, 4], [0, 99]])
+    showOffsets("utf-8  offsetOf", utf8, lines, [[0, 0], [0, 1], [0, 3], [0, 5], [0, 6], [0, 99]])
+    showPositions("utf-16 positionOf", utf16, lines, [0, 1, 2, 3, 4, 5, 6, 99])
+    showPositions("utf-8  positionOf", utf8, lines, [0, 1, 2, 3, 4, 5, 6, 99])
+}
+
+method testCjkAndCombining() {
+    println "== encodings: CJK (3 bytes, 1 unit) and combining marks"
+    var cjk = LineIndex(unicode.fromCodePoint(28450) + unicode.fromCodePoint(23383) + "x")
+    var combining = LineIndex("e" + unicode.fromCodePoint(769) + "x")
+    var utf16 = PositionCodec("utf-16")
+    var utf8 = PositionCodec("utf-8")
+    showOffsets("cjk utf-16 offsetOf", utf16, cjk, [[0, 0], [0, 1], [0, 2], [0, 3], [0, 4]])
+    showPositions("cjk utf-16 positionOf", utf16, cjk, [0, 1, 3, 4, 6, 7])
+    showPositions("cjk utf-8 positionOf", utf8, cjk, [0, 1, 3, 4, 6, 7])
+    showOffsets("combining utf-16 offsetOf", utf16, combining, [[0, 0], [0, 1], [0, 2], [0, 3], [0, 4]])
+    showPositions("combining utf-16 positionOf", utf16, combining, [0, 1, 2, 3, 4])
+    showPositions("combining utf-8 positionOf", utf8, combining, [0, 1, 2, 3, 4])
+}
+
+method testInvalidBytes() {
+    println "== encodings: invalid byte"
+    var lines = LineIndex("a" + chr(255) + "b")
+    var utf16 = PositionCodec("utf-16")
+    var utf8 = PositionCodec("utf-8")
+    showOffsets("utf-16 offsetOf", utf16, lines, [[0, 0], [0, 1], [0, 2], [0, 3], [0, 4]])
+    showPositions("utf-16 positionOf", utf16, lines, [0, 1, 2, 3])
+    showPositions("utf-8 positionOf", utf8, lines, [0, 1, 2, 3])
+}
+
+method testLinesAndLimits() {
+    println "== encodings: CRLF, past the end of a line and of the document"
+    var emoji = unicode.fromCodePoint(128512)
+    var crlf = LineIndex("ab\r\n" + emoji + "d\r\n")
+    var plain = LineIndex("ab\ncd")
+    var closed = LineIndex("ab\ncd\n")
+    var utf16 = PositionCodec("utf-16")
+    var utf8 = PositionCodec("utf-8")
+    showOffsets("crlf utf-16 offsetOf", utf16, crlf, [[0, 2], [0, 3], [0, 99], [1, 0], [1, 2], [1, 3], [1, 99], [2, 0], [2, 5]])
+    showPositions("crlf utf-16 positionOf", utf16, crlf, [0, 2, 3, 4, 5, 6, 7, 9, 10, 11, 12, 99])
+    showPositions("crlf utf-8 positionOf", utf8, crlf, [0, 2, 3, 4, 5, 6, 7, 9, 10, 11, 12, 99])
+    showOffsets("plain past end of doc", utf16, plain, [[1, 99], [2, 0], [7, 0], [7, 99]])
+    showOffsets("closed past end of doc", utf16, closed, [[2, 0], [3, 0], [9, 4]])
+    showOffsets("negative", utf16, plain, [[-1, 0], [-3, -4], [1, -2]])
+    showPositions("positionOf clamps", utf16, plain, [-5, 99])
+    showOffsets("utf-8 past end of line", utf8, plain, [[0, 99], [1, 1], [1, 99]])
+}
+
+method testCodecSpans() {
+    println "== codec spans and ranges"
+    var emoji = unicode.fromCodePoint(128512)
+    var lines = LineIndex("x" + emoji + "y\nlast")
+    var utf16 = PositionCodec("utf-16")
+    var range = WireRange(WirePosition(0, 1), WirePosition(0, 3))
+    showSpan("spanOf emoji", utf16.spanOf(lines, range))
+    showSpan("spanOf reversed", utf16.spanOf(lines, WireRange(WirePosition(0, 3), WirePosition(0, 1))))
+    showSpan("spanOf across lines", utf16.spanOf(lines, WireRange(WirePosition(0, 3), WirePosition(1, 2))))
+    var wire = utf16.rangeOf(lines, Span(1, 5))
+    showPosition("rangeOf start", wire.start)
+    showPosition("rangeOf end", wire.end)
+    var empty = utf16.rangeOf(lines, Span(5, 5))
+    show("empty span gives empty range", empty.start.line == empty.end.line && empty.start.character == empty.end.character)
+    show("negotiate utf-8 offered", negotiatePositionEncoding(["utf-16", "utf-8", "utf-32"]))
+    show("negotiate utf-16 only", negotiatePositionEncoding(["utf-16"]))
+    show("negotiate utf-32 only", negotiatePositionEncoding(["utf-32"]))
+    show("negotiate none", negotiatePositionEncoding([]))
+}
+
+method newChange(integer line, integer character, integer endLine, integer endCharacter, string inserted): TextChange {
+    var range = WireRange(WirePosition(line, character), WirePosition(endLine, endCharacter))
+    return TextChange(true, range, inserted)
+}
+
+method testChangesBatch() {
+    println "== didChange: a batch whose second range lies on a line created by the first"
+    var emoji = unicode.fromCodePoint(128512)
+    var document = Document("file:///work/a.nv", "novus", 1, "x" + emoji + "y")
+    var before = document.textHash
+    var first = newChange(0, 3, 0, 3, "\nnew" + emoji + "tail")
+    var second = newChange(1, 5, 1, 5, "-")
+    applyTextChanges(document, PositionCodec("utf-16"), 2, [first, second])
+    show("utf-16 text", document.text.replace("\n", "|"))
+    show("utf-16 version", document.version)
+    show("utf-16 lineCount", document.lines.lineCount())
+    show("lines follow text", document.lines.text == document.text)
+    show("hash follows text", document.textHash == hash.fnv1a(document.text))
+    show("hash changed", document.textHash != before)
+
+    var other = Document("file:///work/b.nv", "novus", 1, "x" + emoji + "y")
+    var firstBytes = newChange(0, 5, 0, 5, "\nnew" + emoji + "tail")
+    var secondBytes = newChange(1, 7, 1, 7, "-")
+    applyTextChanges(other, PositionCodec("utf-8"), 2, [firstBytes, secondBytes])
+    show("utf-8 equals utf-16 result", other.text == document.text)
+}
+
+method testChangesVariants() {
+    println "== didChange: variants"
+    var document = Document("file:///work/c.nv", "novus", 1, "one\ntwo\nthree")
+    var codec = PositionCodec("utf-16")
+    applyTextChanges(document, codec, 2, [newChange(0, 1, 1, 1, "X")])
+    show("replace across lines", document.text.replace("\n", "|"))
+    applyTextChanges(document, codec, 3, [TextChange(false, WireRange(WirePosition(0, 0), WirePosition(0, 0)), "fresh\ntext")])
+    show("whole text", document.text.replace("\n", "|"))
+    show("version", document.version)
+    applyTextChanges(document, codec, 4, [newChange(9, 9, 9, 9, "!")])
+    show("insert past end", document.text.replace("\n", "|"))
+    applyTextChanges(document, codec, 5, [newChange(0, 0, 9, 9, "")])
+    show("delete everything", "[" + document.text + "] lines " + document.lines.lineCount())
+    var hashEmpty = document.textHash
+    applyTextChanges(document, codec, 6, [])
+    show("no changes keeps text", "[" + document.text + "] v" + document.version + " same hash " + (document.textHash == hashEmpty))
+    var twin = Document("file:///work/d.nv", "novus", 1, "same")
+    var twinOther = Document("file:///work/e.nv", "novus", 1, "same")
+    show("equal text equal hash", twin.textHash == twinOther.textHash)
+    twin.replaceText(7, "different")
+    show("replaceText", twin.text + " v" + twin.version + " lines " + twin.lines.lineCount() + " hash " + (twin.textHash == hash.fnv1a("different")))
+}
+
+method testDocuments() {
+    println "== documents and store"
+    var store = DocumentStore()
+    var scratch = Document("untitled:Untitled-1", "novus", 1, "var x = 1")
+    var disk = Document("file:///work/proj/main.nv", "novus", 3, "package main")
+    var manifest = Document("file:///work/proj/project.nv", "novus", 1, "project \"x\"")
+    var nvh = Document("file:///work/proj/page.nvh", "novus", 1, "<div/>")
+    store.open(scratch)
+    store.open(disk)
+    store.open(manifest)
+    store.open(nvh)
+    show("scratch filePath", "[" + scratch.filePath + "]")
+    show("scratch fileKind", scratch.fileKind())
+    show("disk filePath", disk.filePath)
+    show("kinds", disk.fileKind() + "/" + manifest.fileKind() + "/" + nvh.fileKind())
+    show("uris", store.uris().join(" "))
+    show("has scratch", store.has("untitled:Untitled-1"))
+    show("find scratch", store.find("untitled:Untitled-1").text)
+    show("find missing is none", typeOf(store.find("file:///nope")))
+    show("findByPath disk", store.findByPath("/work/proj/main.nv").version)
+    show("findByPath empty is none", typeOf(store.findByPath("")))
+    show("findByPath unknown is none", typeOf(store.findByPath("/nope")))
+    store.close("file:///work/proj/main.nv")
+    show("closed", store.has("file:///work/proj/main.nv"))
+    store.close("file:///work/proj/main.nv")
+    show("uris after close", store.uris().join(" "))
+    show("fileKindOf", fileKindOf("/a/b/project.nv") + " " + fileKindOf("project.nv") + " " + fileKindOf("C:\\a\\project.nv") + " " + fileKindOf("/a/myproject.nv") + " " + fileKindOf("/a/x.nvh") + " " + fileKindOf("/a/x.nv") + " " + fileKindOf("") + " " + fileKindOf("/a/project.nvh"))
+}
+
+method testUtf8() {
+    println "== utf8"
+    var emoji = unicode.fromCodePoint(128512)
+    var source = "a" + emoji + "b"
+    var parts = []
+    var i = 0
+    while (i <= source.length() + 1) {
+        parts.append(i + ":" + isCharBoundary(source, i))
+        i = i + 1
+    }
+    show("boundaries", parts.join(" "))
+    show("isCharBoundary negative", isCharBoundary(source, -1))
+    var cuts = []
+    var maxBytes = -1
+    while (maxBytes <= 7) {
+        cuts.append(maxBytes + "=" + truncateUtf8(source, maxBytes).length())
+        maxBytes = maxBytes + 1
+    }
+    show("truncate lengths", cuts.join(" "))
+    show("truncate keeps short text", truncateUtf8("abc", 10))
+    show("truncate ascii", truncateUtf8("abcdef", 3))
+    show("truncate valid", unicode.isValidUtf8(truncateUtf8(source, 3)))
+    var cjk = unicode.fromCodePoint(28450) + unicode.fromCodePoint(23383)
+    show("truncate cjk 4", truncateUtf8(cjk, 4).length())
+    var stray = "a" + chr(128) + chr(128) + chr(128) + chr(128) + "b"
+    show("stray continuation bytes", truncateUtf8(stray, 3).length() + " " + isCharBoundary(stray, 2))
+    show("invalid lead", isCharBoundary("a" + chr(255) + chr(128), 2))
+}
+
+method testUris() {
+    println "== uri"
+    show("unix", uriToFilePath("file:///home/user/a%20b/main.nv"))
+    show("localhost", uriToFilePath("file://localhost/home/user/x.nv"))
+    show("single slash", uriToFilePath("file:/home/user/x.nv"))
+    show("upper scheme", uriToFilePath("FILE:///home/x.nv"))
+    show("drive encoded colon", uriToFilePath("file:///c%3A/Users/me/x.nv"))
+    show("drive plain colon", uriToFilePath("file:///C:/Users/me/x.nv"))
+    show("unc", uriToFilePath("file://server/share/dir/x.nv"))
+    show("query and fragment", uriToFilePath("file:///home/x.nv?a=b#top"))
+    show("utf-8 bytes", uriToFilePath("file:///home/%C3%A9.nv"))
+    show("invalid escapes stay", uriToFilePath("file:///home/%zz%4.nv"))
+    show("nul escape stays", uriToFilePath("file:///home/a%00b.nv"))
+    show("untitled", "[" + uriToFilePath("untitled:Untitled-1") + "]")
+    show("notebook", "[" + uriToFilePath("vscode-notebook-cell:/home/x.ipynb#W0sZmlsZQ%3D%3D") + "]")
+    show("git", "[" + uriToFilePath("git:/home/x.nv?ref") + "]")
+    show("empty", "[" + uriToFilePath("") + "]")
+    show("short", "[" + uriToFilePath("fi") + "]")
+    show("no path", "[" + uriToFilePath("file:") + "]")
+    show("relative", "[" + uriToFilePath("file:relative/x.nv") + "]")
+    show("no slash after authority", "[" + uriToFilePath("file://host") + "]")
+}
+
+method testUriEncoding() {
+    println "== uri encoding"
+    show("unix path", filePathToUri("/home/user/a b/main.nv"))
+    show("non ascii", filePathToUri("/home/" + unicode.fromCodePoint(233) + ".nv"))
+    show("special", filePathToUri("/a/b#c?d%e+f@g.nv"))
+    show("empty", "[" + filePathToUri("") + "]")
+    show("drive backslash", filePathToUri("C:\\Users\\me\\x.nv"))
+    show("drive slash", filePathToUri("c:/Users/me/x.nv"))
+    show("windows unc", filePathToUri("\\\\server\\share\\x.nv"))
+    show("relative", filePathToUri("rel/x.nv"))
+    show("posix backslash", filePathToUri("/a/b\\c.nv"))
+    var paths = ["/home/user/a b/main.nv", "/a/b#c?d%e+f@g.nv", "C:/Users/me/x.nv", "//server/share/x.nv", "/home/" + unicode.fromCodePoint(233) + ".nv", "/a/b\\c.nv"]
+    var results = []
+    for (candidate in paths) {
+        results.append(uriToFilePath(filePathToUri(candidate)) == candidate)
+    }
+    show("round trips", results.join(" "))
+    show("percentDecode", percentDecode("a%20b%2Fc%2fd%"))
+    show("percentDecode plus", percentDecode("a+b"))
+    show("percentEncodePath", percentEncodePath("a b/c:d~e-f_g.h" + unicode.fromCodePoint(233)))
+    show("percentEncodePath empty", "[" + percentEncodePath("") + "]")
+}
+
+method testLimits() {
+    println "== limits"
+    show("MAX_NESTING_DEPTH", MAX_NESTING_DEPTH)
+    show("MAX_FRAME_BYTES", MAX_FRAME_BYTES)
+}
+
+method main {
+    testSpan()
+    testLineIndex()
+    testEmoji()
+    testCjkAndCombining()
+    testInvalidBytes()
+    testLinesAndLimits()
+    testCodecSpans()
+    testChangesBatch()
+    testChangesVariants()
+    testDocuments()
+    testUtf8()
+    testUris()
+    testUriEncoding()
+    testLimits()
+    testRegressions()
+}

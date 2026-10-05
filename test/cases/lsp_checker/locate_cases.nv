@@ -1,0 +1,43 @@
+package main
+
+import "novus/lsp/base/platform"
+import "novus/lsp/services/checker"
+
+method showSearch(string label, string pathValue, map<string, string> files) {
+    println("search " + label + ": [" + checkerSearchPath(pathValue, MemoryTextSource(files)) + "]")
+}
+
+method runPathCases() {
+    var exe = checkerExecutableName()
+    var files = { "/opt/nv/bin/" + exe: "binary", "/usr/local/bin/other": "x" }
+    showSearch("hit in the second directory", "/usr/bin:/opt/nv/bin", files)
+    showSearch("first hit wins", "/opt/nv/bin:/usr/local/bin", { "/opt/nv/bin/" + exe: "a", "/usr/local/bin/" + exe: "b" })
+    showSearch("empty entries are skipped", ":/opt/nv/bin:", files)
+    showSearch("no hit", "/usr/bin:/bin", files)
+    showSearch("empty path value", "", files)
+    showSearch("a directory of that name is no hit", "/opt", { "/opt/" + exe + "/inner": "x" })
+}
+
+method runConfiguredCases() {
+    var root = createTempDirectory("lsp-locate-")
+    var fake = root + "/fake-novusc"
+    writeTextFile(fake, "#!/bin/sh\n")
+    var folder = root + "/work"
+    makeDirectories(folder + "/build")
+    writeTextFile(folder + "/build/" + checkerExecutableName(), "#!/bin/sh\n")
+    println("locate configured file wins: " + (locateNovusc(fake, [folder]) == fake))
+    println("locate configured directory is no novusc: " + (locateNovusc(root, []) != root))
+    println("locate configured missing file is skipped: " + (locateNovusc(root + "/missing", []) != root + "/missing"))
+    println("locate workspace build folder: " + (locateNovusc("", [folder]) != ""))
+    println("locate workspace search: " + (checkerSearchWorkspaces(["", root, folder], DiskTextSource()) == folder + "/build/" + checkerExecutableName()))
+    println("locate nothing in an empty workspace list: " + (checkerSearchWorkspaces([], DiskTextSource()) == ""))
+    println("locate bare command that exists: " + (locateNovusc("sh", []) == "sh" || operatingSystem() == "windows"))
+    println("locate bare command that does not exist: " + (locateNovusc("no-such-command-lsp-checker", []) != "no-such-command-lsp-checker"))
+    removeTree(root)
+}
+
+method runLocateCases() {
+    println("--- locate")
+    runPathCases()
+    runConfiguredCases()
+}

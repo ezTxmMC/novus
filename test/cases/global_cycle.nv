@@ -1,0 +1,12 @@
+package main
+
+// Globals whose initialisers use each other cannot be ordered: a compile
+// error that names the cycle (a silent exit at start-up before).
+
+final FIRST = [SECOND]
+final SECOND = [THIRD]
+final THIRD = [FIRST]
+
+method main {
+    println FIRST
+}

@@ -1,0 +1,164 @@
+package navigation
+
+import base/maybe
+import projects/closure
+import projects/workspace
+import semantics/semantic
+import syntax/lexing
+import syntax/outline
+
+private final NAVIGATION_MAX_BASE_STEPS = 64
+private final NAVIGATION_REASON_STANDARD = "standard library declarations cannot be renamed"
+private final NAVIGATION_REASON_DEPENDENCY = "dependency declarations cannot be renamed"
+private final NAVIGATION_REASON_CONSTRUCTOR = "constructors take the name of their class, rename the class instead"
+private final NAVIGATION_REASON_COMPONENT = "a component is named after its file"
+private final NAVIGATION_REASON_MEMBER = "ambiguous member name"
+private final NAVIGATION_COMPONENT_BASE = "NvhComponent"
+// Words that are plain identifiers to the lexer but mean something to the compiler: the primitive types and their
+// aliases, `nothing`/`nil` and the words that a position turns into syntax.
+private final NAVIGATION_RESERVED_WORDS = { "integer": true, "int": true, "float": true, "double": true, "doub": true,
+    "string": true, "str": true, "bool": true, "boolean": true, "array": true, "map": true, "object": true,
+    "nothing": true, "nil": true, "sync": true, "async": true, "await": true, "thread": true, "virtual": true,
+    "define": true, "class": true, "abstract": true, "enum": true, "interface": true, "annotation": true,
+    "based": true, "construct": true }
+private final NAVIGATION_UNDERSCORE = 95
+private final NAVIGATION_UPPER_FIRST = 65
+private final NAVIGATION_UPPER_LAST = 90
+private final NAVIGATION_LOWER_FIRST = 97
+private final NAVIGATION_LOWER_LAST = 122
+private final NAVIGATION_DIGIT_FIRST = 48
+private final NAVIGATION_DIGIT_LAST = 57
+
+define class RenameDecision {
+    bool allowed
+    string reason
+
+    construct(bool allowed, string reason) {
+        this.allowed = allowed
+        this.reason = reason
+    }
+}
+
+// Which declarations may be renamed (6.23): locals exactly, types, functions and globals by their unique name and
+// arity, members only when every declarer of the member name belongs to one inheritance family. Built-in, std and
+// dependency declarations never.
+define class RenamePolicy {
+    construct() {
+    }
+
+    method decide(FileContext context, Symbol target): RenameDecision {
+        if (target.isLocal()) {
+            return RenameDecision(true, "")
+        }
+        var reason = this.originReason(target)
+        if (reason == "") {
+            reason = this.kindReason(context, target)
+        }
+        return RenameDecision(reason == "", reason)
+    }
+
+    method originReason(Symbol target): string {
+        if (target.origin() == FileOrigin.Standard) {
+            return NAVIGATION_REASON_STANDARD
+        }
+        if (target.origin() == FileOrigin.Dependency) {
+            return NAVIGATION_REASON_DEPENDENCY
+        }
+        return ""
+    }
+
+    method kindReason(FileContext context, Symbol target): string {
+        if (target.decl.kind == DeclKind.Constructor) {
+            return NAVIGATION_REASON_CONSTRUCTOR
+        }
+        if (target.decl.baseName == NAVIGATION_COMPONENT_BASE) {
+            return NAVIGATION_REASON_COMPONENT
+        }
+        if (navigationHasFamily(target) && navigationFamilyOf(context.resolver(), target).byName == false) {
+            return NAVIGATION_REASON_MEMBER
+        }
+        return ""
+    }
+
+    // Additive: why `newName` cannot be the name of the target, "" when it can.
+    method nameProblem(FileContext context, Symbol target, string newName): string {
+        var invalid = navigationNameProblem(newName)
+        if (invalid != "") {
+            return invalid
+        }
+        if (newName == target.name()) {
+            return "the new name is the current name"
+        }
+        return NavigationRenameConflicts(context, target, newName).reason()
+    }
+}
+
+// A name the lexer reads as one identifier that is no keyword and no reserved word.
+method navigationNameProblem(string newName): string {
+    if (newName == "") {
+        return "the new name is empty"
+    }
+    var i = 0
+    while (i < newName.length()) {
+        if (navigationIsNameByte(ord(newName.charAt(i)), i) == false) {
+            return "'" + newName + "' is not a valid identifier"
+        }
+        i = i + 1
+    }
+    if (isKeywordWord(newName) || newName == "this") {
+        return "'" + newName + "' is a keyword"
+    }
+    if (NAVIGATION_RESERVED_WORDS.has(newName)) {
+        return "'" + newName + "' is a reserved word"
+    }
+    return ""
+}
+
+method navigationIsNameByte(integer code, integer position): bool {
+    if (code == NAVIGATION_UNDERSCORE) {
+        return true
+    }
+    if ((code >= NAVIGATION_UPPER_FIRST && code <= NAVIGATION_UPPER_LAST) || (code >= NAVIGATION_LOWER_FIRST && code <= NAVIGATION_LOWER_LAST)) {
+        return true
+    }
+    return position > 0 && code >= NAVIGATION_DIGIT_FIRST && code <= NAVIGATION_DIGIT_LAST
+}
+
+// The names of the type, of its bases and of every type that has it among its bases.
+method navigationRelatedTypes(ProgramIndex index, string container): map<string, bool> {
+    var related = {}
+    related[container] = true
+    var cursor = container
+    var steps = 0
+    while (steps < NAVIGATION_MAX_BASE_STEPS) {
+        var symbol = index.typeNamed(cursor)
+        if (isNone(symbol) || symbol.decl.baseName == "" || related.has(symbol.decl.baseName)) {
+            break
+        }
+        related[symbol.decl.baseName] = true
+        cursor = symbol.decl.baseName
+        steps = steps + 1
+    }
+    for (type in index.allTypes()) {
+        if (navigationHasBase(index, type, container)) {
+            related[type.decl.name] = true
+        }
+    }
+    return related
+}
+
+method navigationHasBase(ProgramIndex index, Symbol type, string base): bool {
+    var cursor = type
+    var steps = 0
+    while (steps < NAVIGATION_MAX_BASE_STEPS && cursor.decl.baseName != "") {
+        if (cursor.decl.baseName == base) {
+            return true
+        }
+        cursor = index.typeNamed(cursor.decl.baseName)
+        if (isNone(cursor)) {
+            return false
+        }
+        steps = steps + 1
+    }
+    return false
+}

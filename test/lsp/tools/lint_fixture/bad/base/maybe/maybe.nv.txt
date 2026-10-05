@@ -1,0 +1,5 @@
+package maybe
+
+method nothing(): object {
+    return
+}

@@ -1,0 +1,99 @@
+package main
+
+import "novus/lsp/base/maybe"
+import "novus/lsp/base/platform"
+import "novus/lsp/projects/closure"
+import "novus/lsp/projects/manifest"
+import "novus/lsp/projects/modules"
+import "novus/lsp/projects/stdlib"
+import "novus/lsp/semantics/semantic"
+import "novus/lsp/syntax/outline"
+import "novus/lsp/syntax/parsing"
+import @fixtures
+import @support
+
+method scopeSource(): string {
+    return "method outer(integer a, string b) {
+    var x = 1
+    if (a > 0) {
+        var x = \"inner\"
+        println(x)
+    }
+    println(x)
+}
+
+define class Keeper {
+    integer held
+
+    construct(integer held) {
+        this.held = held
+    }
+
+    method keep(integer extra): integer {
+        return held
+    }
+}
+"
+}
+
+// The parse that a project file nobody opened has: no tokens and no locals.
+define class SemLeanProvider based SourceProvider {
+    TextSource source
+
+    construct(TextSource source) {
+        this.source = source
+    }
+
+    method syntaxOf(string filePath): SourceFile {
+        return parseSourceText(filePath, this.source.textOf(filePath), indexParseOptions())
+    }
+}
+
+method describeScope(SemWorld world, Scope scope): string {
+    var names = []
+    for (local in scope.locals) {
+        names.append(local.name + ":" + local.origin + ":" + world.resolver.typeOfLocal(scope, local).display())
+    }
+    var type = "-"
+    if (isSome(scope.enclosingType)) {
+        type = scope.enclosingType.name
+    }
+    var callable = "-"
+    if (isSome(scope.enclosingCallable)) {
+        callable = scope.enclosingCallable.name
+    }
+    return "type=" + type + " callable=" + callable + " locals=[" + names.join(", ") + "]"
+}
+
+method runScopeCases() {
+    println("== Resolver.scopeAt")
+    var world = SemWorld({"/proj/project.nv": semManifest(), "/proj/main.nv": scopeSource()}, "/proj/main.nv")
+    semCheck("inner block shadows", describeScope(world, world.scopeAt("/proj/main.nv", "println(x)\n    }")), "type=- callable=outer locals=[a:parameter:integer, b:parameter:string, x:var:string]")
+    semCheck("after the block", describeScope(world, world.scopeAt("/proj/main.nv", "println(x)\n}")), "type=- callable=outer locals=[a:parameter:integer, b:parameter:string, x:var:integer]")
+    semCheck("constructor parameters", describeScope(world, world.scopeAt("/proj/main.nv", "this.held = held")), "type=Keeper callable=construct locals=[held:parameter:integer]")
+    semCheck("method of a class", describeScope(world, world.scopeAt("/proj/main.nv", "return held")), "type=Keeper callable=keep locals=[extra:parameter:integer]")
+    semCheck("in the field list", describeScope(world, world.scopeAt("/proj/main.nv", "integer held\n")), "type=Keeper callable=- locals=[]")
+    semCheck("in the signature of a method", describeScope(world, world.resolver.scopeAt(world.closure.fileAt("/proj/main.nv"), 0)), "type=- callable=outer locals=[]")
+    var between = scopeSource().indexOf("define class") - 1
+    semCheck("between two declarations", describeScope(world, world.resolver.scopeAt(world.closure.fileAt("/proj/main.nv"), between)), "type=- callable=- locals=[]")
+    var nobody = world.resolver.scopeAt(nothing(), 0)
+    semCheck("no file", describeScope(world, nobody), "type=- callable=- locals=[]")
+}
+
+method runLeanScopeCases() {
+    println("== a file parsed without tokens still shows its parameters")
+    var files = {"/proj/project.nv": semManifest(), "/proj/main.nv": scopeSource()}
+    var source = MemoryTextSource(files)
+    var layout = findProjectLayout(source, "/proj/main.nv")
+    var closure = ClosureBuilder(layout, ModuleTableBuilder(source, "/cache").build(layout.manifest), source, SemLeanProvider(source), standardLibrary()).build([])
+    var resolver = Resolver(ProgramIndex(closure, standardLibrary()))
+    var offset = scopeSource().indexOf("println(x)\n}")
+    var scope = resolver.scopeAt(closure.fileAt("/proj/main.nv"), offset)
+    var names = []
+    for (local in scope.locals) {
+        names.append(local.name + ":" + resolver.typeOfLocal(scope, local).display())
+    }
+    semCheck("parameters only", names.join(", "), "a:integer, b:string")
+    var syntax = closure.fileAt("/proj/main.nv").syntax
+    semCheck("the scan did not touch a file without tokens", syntax.decls[0].locals.length(), "0")
+}

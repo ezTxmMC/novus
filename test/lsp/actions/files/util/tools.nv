@@ -1,0 +1,5 @@
+package util
+
+method tool(): integer {
+    return 1
+}

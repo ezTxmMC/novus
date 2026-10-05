@@ -1,0 +1,29 @@
+== shapes
+arity of f(a, [1, 2], g(x),): 3
+arity of the unclosed h(: 1
+arity of k(): 0
+no call after Point: -1
+owner of key x: []
+owner of key y: [Point]
+a body after a return type is no literal: []
+island of plain text: true
+identifier at 0: 0, at the end of ab: 0, on the dot: 2, on the 1: -1
+first token ending after 2: 1, after everything: 7
+== targets
+a function declaration: symbol resolved name=scaled keys=[scaled/1] declaration=true receiverKnown=true receiver=[] builtin=false scoped=true
+a call with a matching number of arguments: symbol resolved name=scaled keys=[scaled/1] declaration=false receiverKnown=true receiver=[] builtin=false scoped=true
+a call with the wrong arity, strict: none
+the same call, lenient: symbol resolved name=scaled keys=[scaled/1] declaration=false receiverKnown=true receiver=[] builtin=false scoped=true
+a local: symbol resolved name=origin keys=[local:origin@251] declaration=false receiverKnown=true receiver=[] builtin=false scoped=true
+a method of a typed local: symbol resolved name=moved keys=[Point.moved/1] declaration=false receiverKnown=true receiver=[] builtin=false scoped=true
+a field: symbol resolved name=x keys=[Point.x] declaration=false receiverKnown=true receiver=[] builtin=false scoped=true
+a member the type does not have: unresolved unknown name=missing keys=[] declaration=false receiverKnown=true receiver=[Point] builtin=false scoped=true
+a method of a string: builtinMember unknown name=trim keys=[] declaration=false receiverKnown=true receiver=[string] builtin=true scoped=true
+a member of a local that holds a std result (the light inference cannot type it): unresolved unknown name=size keys=[] declaration=false receiverKnown=false receiver=[] builtin=false scoped=true
+a free built-in: freeBuiltin unknown name=exit keys=[] declaration=false receiverKnown=true receiver=[] builtin=true scoped=true
+a std module: qualifier unknown name=json keys=[] declaration=false receiverKnown=true receiver=[] builtin=false scoped=true
+a std function: symbol resolved name=parse keys=[json.parse/1] declaration=false receiverKnown=true receiver=[] builtin=false scoped=true
+a type: symbol resolved name=Point keys=[Point] declaration=false receiverKnown=true receiver=[] builtin=false scoped=true
+a key of a typed literal: symbol resolved name=x keys=[Point.x] declaration=false receiverKnown=true receiver=[] builtin=false scoped=true
+inside an interpolation: symbol resolved name=x keys=[Point.x] declaration=false receiverKnown=true receiver=[] builtin=false scoped=true
+on a number: none

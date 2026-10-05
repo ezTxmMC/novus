@@ -7,7 +7,8 @@ import driver
 //   novusc run [file.nv] [args...]        compile to a temporary binary and run it
 //   novusc build [file.nv] [options]      compile to a native executable
 //   novusc emit [file.nv] [-o out.c]      write the generated C
-//   novusc check [file.nv]                parse and analyze only
+//   novusc check [file.nv] [--offline]    parse and analyze only (no C compiler)
+//   novusc cache [dir | clear]            the cache of compiled programs
 //   novusc nvh <file.nvh>                 the Novus code a component compiles to
 //   novusc init [module] | deps [...]     project.nv and dependencies
 //   novusc version | help
@@ -37,6 +38,9 @@ method main(array<string> arguments) {
     if (command == "deps") {
         return depsCommand(arguments)
     }
+    if (command == "cache") {
+        return cacheCommand(arguments)
+    }
     if (command == "emit") {
         return emitCommand(sourceFor(arguments), optionsFrom(arguments, optionStart(arguments)))
     }
@@ -45,7 +49,7 @@ method main(array<string> arguments) {
     }
     if (command == "check") {
         var source = sourceFor(arguments)
-        generate(source, "")
+        generate(source, "", hasSwitch(arguments, optionStart(arguments), "--offline"))
         println "ok: ${source}"
         return 0
     }

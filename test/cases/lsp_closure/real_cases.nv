@@ -1,0 +1,95 @@
+package main
+
+import arrays
+import os
+import "novus/lsp/base/platform"
+import "novus/lsp/projects/closure"
+import "novus/lsp/projects/manifest"
+import "novus/lsp/projects/modules"
+import "novus/lsp/projects/stdlib"
+import @expected_sets
+import @support
+
+method relativeTo(string repo, string target): string {
+    if (target.startsWith(repo + "/")) {
+        return target.substring(repo.length() + 1, target.length())
+    }
+    return target
+}
+
+method buildReal(string repo, string program): ProgramClosure {
+    var source = DiskTextSource()
+    var mainPath = repo + "/" + program
+    var layout = findProjectLayout(source, mainPath)
+    var table = ModuleTableBuilder(source, dependencyCacheDirectory()).build(layout.manifest)
+    var builder = ClosureBuilder(layout, table, source, TestProvider(source), standardLibrary())
+    return builder.build([mainPath])
+}
+
+method loadedFiles(string repo, ProgramClosure closure): array<string> {
+    var found = []
+    for (file in closure.files) {
+        if (file.origin != FileOrigin.Standard) {
+            found.append(relativeTo(repo, file.filePath))
+        }
+    }
+    return arrays.sort(found)
+}
+
+method describeDifference(string label, array<string> expected, array<string> actual) {
+    for (item in expected) {
+        if (actual.contains(item) == false) {
+            println("    missing " + label + " " + item)
+        }
+    }
+    for (item in actual) {
+        if (expected.contains(item) == false) {
+            println("    extra " + label + " " + item)
+        }
+    }
+}
+
+method checkAgainstCompiler(string repo, string program) {
+    var closure = buildReal(repo, program)
+    var files = loadedFiles(repo, closure)
+    var expected = expectedLoads()[program]
+    var std = arrays.sort(closure.loadedStdModules)
+    var expectedStd = expectedStdModules()[program]
+    println("== real " + program)
+    println("  files " + files.length() + " same set as novusc " + (files.join("\n") == expected.join("\n")) + "; std modules " + std.length() + " same set as novusc " + (std.join("\n") == expectedStd.join("\n")) + "; issues " + closure.issues.length())
+    describeDifference("file", expected, files)
+    describeDifference("std module", expectedStd, std)
+}
+
+method showQualifiers(string repo, string program) {
+    var closure = buildReal(repo, program)
+    println("== qualifiers of " + program)
+    for (relative in loadedFiles(repo, closure)) {
+        var file = closure.fileAt(repo + "/" + relative)
+        println("  " + relative + " " + file.origin + " q=[" + file.qualifier + "] package=[" + file.packageName + "] module=[" + file.moduleName + "]")
+    }
+}
+
+// Trees that other work keeps growing cannot be frozen into a set: every file the walk reports must exist, the
+// loader must not have complained, and the walk must have followed the imports of the entry file.
+method checkLiveProgram(string repo, string program) {
+    var closure = buildReal(repo, program)
+    var allExist = true
+    for (file in closure.files) {
+        if (file.origin != FileOrigin.Standard && DiskTextSource().exists(file.filePath) == false) {
+            allExist = false
+        }
+    }
+    println("== live " + program)
+    println("  issues " + closure.issues.length() + " all files exist " + allExist + " follows imports " + (loadedFiles(repo, closure).length() > 1) + " uses std " + (closure.loadedStdModules.length() > 0))
+}
+
+method runRealCases() {
+    var repo = os.realpath("../../..")
+    for (program in expectedLoads().keys()) {
+        checkAgainstCompiler(repo, program)
+    }
+    checkLiveProgram(repo, "compiler/main.nv")
+    showQualifiers(repo, "test/cases/packages/main.nv")
+    showQualifiers(repo, "test/cases/project/main.nv")
+}

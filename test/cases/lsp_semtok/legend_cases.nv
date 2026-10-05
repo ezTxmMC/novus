@@ -1,0 +1,42 @@
+package main
+
+import "novus/lsp/features/semtok"
+import @support
+
+// The legend is what `initialize` advertises: the index of a name is the number a span carries, so the constants that
+// the classifiers use must agree with the order of the lists.
+method runLegendCases() {
+    println("== the legend")
+    println("types: " + semanticTokenTypes().join(" "))
+    println("modifiers: " + semanticTokenModifiers().join(" "))
+    var types = semanticTokenTypes()
+    var again = semanticTokenTypes()
+    types.append("changed")
+    stCheck("a call hands out a copy", again.length() + " " + semanticTokenTypes().length(), "18 18")
+    stCheck("no duplicates", stDistinctCount(semanticTokenTypes()) + " " + stDistinctCount(semanticTokenModifiers()), "18 8")
+    var world = StWorld(stProject(""))
+    var source = "private final LIMIT = 1\n"
+    var spans = world.spans("/p/main.nv", source)
+    stCheck("a constant is a readonly variable declaration", stAt(source, spans, "LIMIT", 1), "variable +declaration +readonly")
+    stCheck("every type index is in the legend", stAllInLegend(spans), "true")
+}
+
+method stDistinctCount(array<string> names): integer {
+    var seen = {}
+    for (name in names) {
+        seen[name] = true
+    }
+    return seen.keys().length()
+}
+
+method stAllInLegend(array<SemanticSpan> spans): bool {
+    for (span in spans) {
+        if (span.tokenType < 0 || span.tokenType >= semanticTokenTypes().length()) {
+            return false
+        }
+        if (span.modifiers < 0 || span.modifiers >= 1 << semanticTokenModifiers().length()) {
+            return false
+        }
+    }
+    return true
+}

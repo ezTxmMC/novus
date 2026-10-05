@@ -1,0 +1,12 @@
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"rootUri":"@ROOTURI@","capabilities":{"textDocument":{"completion":{"completionItem":{"snippetSupport":true,"labelDetailsSupport":true,"documentationFormat":["markdown","plaintext"],"insertTextModeSupport":{"valueSet":[1,2]}}}}},"initializationOptions":{"novus":{"diagnostics":{"own":false}}}}}
+{"jsonrpc":"2.0","method":"initialized","params":{}}
+{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"@ROOTURI@/main.nv","languageId":"novus","version":1,"text":"package main\n\nimport geo\nimport @util\nimport geo/shapes\nimport strings\nimport \"github.com/acme/geo\"\nimport \"github.com/acme/geo/mapping\"\nimport \"\"\n"}}}
+{"jsonrpc":"2.0","id":2,"method":"textDocument/completion","params":{"textDocument":{"uri":"@ROOTURI@/main.nv"},"position":{"line":2,"character":8},"context":{"triggerKind":1}}}
+{"jsonrpc":"2.0","id":3,"method":"textDocument/completion","params":{"textDocument":{"uri":"@ROOTURI@/main.nv"},"position":{"line":3,"character":8},"context":{"triggerKind":1}}}
+{"jsonrpc":"2.0","id":4,"method":"textDocument/completion","params":{"textDocument":{"uri":"@ROOTURI@/main.nv"},"position":{"line":4,"character":11},"context":{"triggerKind":2,"triggerCharacter":"/"}}}
+{"jsonrpc":"2.0","id":5,"method":"textDocument/completion","params":{"textDocument":{"uri":"@ROOTURI@/main.nv"},"position":{"line":5,"character":10},"context":{"triggerKind":1}}}
+{"jsonrpc":"2.0","id":6,"method":"textDocument/completion","params":{"textDocument":{"uri":"@ROOTURI@/main.nv"},"position":{"line":6,"character":24},"context":{"triggerKind":1}}}
+{"jsonrpc":"2.0","id":7,"method":"textDocument/completion","params":{"textDocument":{"uri":"@ROOTURI@/main.nv"},"position":{"line":7,"character":28},"context":{"triggerKind":2,"triggerCharacter":"/"}}}
+{"jsonrpc":"2.0","id":8,"method":"textDocument/completion","params":{"textDocument":{"uri":"@ROOTURI@/main.nv"},"position":{"line":8,"character":8},"context":{"triggerKind":1}}}
+{"jsonrpc":"2.0","id":99,"method":"shutdown"}
+{"jsonrpc":"2.0","method":"exit"}

@@ -1,0 +1,3 @@
+method extraHelper(): integer {
+    return 1
+}

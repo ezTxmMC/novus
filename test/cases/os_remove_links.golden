@@ -1,0 +1,11 @@
+tree removed: true
+tree is gone: true
+link targets survive: true
+link as root removed: true
+link as root is gone: true
+target of the root link survives: true
+link with trailing slash removed: true
+link with trailing slash is gone: true
+target of the slash link survives: true
+missing: false
+cleanup: true

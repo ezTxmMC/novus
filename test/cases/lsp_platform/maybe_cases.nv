@@ -1,0 +1,29 @@
+package main
+
+import "novus/lsp/base/maybe"
+
+method bareReturn(): object {
+    return
+}
+
+method showCase(string label, object value) {
+    println(label + ": " + value)
+}
+
+method runMaybeCases() {
+    println("--- maybe")
+    showCase("nothing is none", isNone(nothing()))
+    showCase("a bare return is none", isNone(bareReturn()))
+    showCase("0 is none/some", isNone(0) + " " + isSome(0))
+    showCase("false is none/some", isNone(false) + " " + isSome(false))
+    showCase("empty string is none/some", isNone("") + " " + isSome(""))
+    showCase("empty array is none", isNone([]))
+    showCase("empty map is none", isNone({}))
+    showCase("text is some", isSome("x"))
+    showCase("nothing is some", isSome(nothing()))
+    showCase("valueOr(nothing, 5)", valueOr(nothing(), 5))
+    showCase("valueOr(0, 5)", valueOr(0, 5))
+    showCase("valueOr(false, true)", valueOr(false, true))
+    showCase("valueOr('', 'fallback') is empty", valueOr("", "fallback") == "")
+    showCase("valueOr(bare, 'fallback')", valueOr(bareReturn(), "fallback"))
+}

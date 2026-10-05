@@ -1,0 +1,84 @@
+package main
+
+import os
+import path
+
+// os.removeAll never follows a link: a link inside the tree, or the tree's
+// own root being a link, is removed itself and what it points to survives.
+// A link that cannot be made here makes the checks that depend on it pass
+// vacuously (only the root link is checked for it).
+
+final WINDOWS = os.platform() == "windows"
+
+method say(string label, object value) {
+    println label + ": " + value
+}
+
+// A symlink on unix, a junction on Windows (which needs no privilege).
+method makeLink(string target, string link): bool {
+    if (WINDOWS) {
+        var command = "mklink /J " + os.shellQuote(link.replace("/", "\\")) + " " + os.shellQuote(target.replace("/", "\\"))
+        return os.run(command + " 2>&1")["code"] == 0
+    }
+    return os.run("ln -s " + os.shellQuote(target) + " " + os.shellQuote(link) + " 2>&1")["code"] == 0
+}
+
+method makeFileLink(string target, string link): bool {
+    if (WINDOWS) {
+        return false
+    }
+    return makeLink(target, link)
+}
+
+method survives(string root): bool {
+    return os.isFile(path.join(root, "precious.txt")) && os.isFile(path.join(root, "sub", "deep.txt"))
+}
+
+method printTreeWithLinks(string base, string keep) {
+    var tree = path.join(base, "tree")
+    os.mkdir(path.join(tree, "real"))
+    os.writeFile(path.join(tree, "own.txt"), "own")
+    os.writeFile(path.join(tree, "real", "inner.txt"), "inner")
+    makeLink(keep, path.join(tree, "dirlink"))
+    makeFileLink(path.join(keep, "precious.txt"), path.join(tree, "filelink"))
+    makeFileLink(path.join(base, "gone"), path.join(tree, "dangling"))
+    say("tree removed", os.removeAll(tree))
+    say("tree is gone", !os.exists(tree) && !os.isSymlink(path.join(tree, "dirlink")))
+    say("link targets survive", survives(keep))
+}
+
+method printLinkAsRoot(string base, string keep) {
+    var link = path.join(base, "rootlink")
+    var made = makeLink(keep, link)
+    say("link as root removed", !made || os.removeAll(link))
+    say("link as root is gone", !made || !os.isSymlink(link))
+    say("target of the root link survives", survives(keep))
+}
+
+// "link/" makes the system resolve the link: it must still be the link
+// that goes, not the contents of what it points to.
+method printLinkWithTrailingSeparator(string base, string keep) {
+    var link = path.join(base, "slashlink")
+    var made = makeLink(keep, link)
+    say("link with trailing slash removed", !made || os.removeAll(link + "/"))
+    say("link with trailing slash is gone", !made || !os.isSymlink(link))
+    say("target of the slash link survives", survives(keep))
+}
+
+method printMissing(string base) {
+    say("missing", os.removeAll(path.join(base, "nope")))
+}
+
+method main {
+    var base = path.join(os.temp(), "novus-remove-links-" + os.pid())
+    var keep = path.join(base, "keep")
+    os.removeAll(base)
+    os.mkdir(path.join(keep, "sub"))
+    os.writeFile(path.join(keep, "precious.txt"), "precious")
+    os.writeFile(path.join(keep, "sub", "deep.txt"), "deep")
+    printTreeWithLinks(base, keep)
+    printLinkAsRoot(base, keep)
+    printLinkWithTrailingSeparator(base, keep)
+    printMissing(base)
+    say("cleanup", os.removeAll(base))
+}

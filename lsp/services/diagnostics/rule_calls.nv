@@ -1,0 +1,200 @@
+package diagnostics
+
+import base/maybe
+import base/model
+import projects/workspace
+import semantics/semantic
+import syntax/outline
+
+private final DIAGNOSTICS_UNKNOWN_NAME = "unknown-name"
+private final DIAGNOSTICS_AMBIGUOUS_CALL = "ambiguous-call"
+private final DIAGNOSTICS_STATUS_UNKNOWN = "unknown"
+private final DIAGNOSTICS_STATUS_AMBIGUOUS = "ambiguous"
+private final DIAGNOSTICS_THIS_WORD = "this"
+private final DIAGNOSTICS_FOREIGN_HINTS = { "null": "Novus has no 'null': a method without a value returns nothing, test it with isNone()",
+    "new": "Novus has no 'new': call the class like a function, Circle(2.0)" }
+
+// The call family (5.9): a name that nothing in the program declares, and a call that two packages claim. Both stay
+// silent while the program is incomplete and inside a class whose base type is not in the program.
+define class CallDiagnosticRule based DiagnosticRule {
+    construct() {
+    }
+
+    method check(FileContext context): array<Diagnostic> {
+        var found = []
+        if (diagnosticsJudgesNames(context) == false) {
+            return found
+        }
+        var judge = DiagnosticsNameJudge(context)
+        for (use in DiagnosticsUseScanner(context.syntax.tokens).usesOfFile(context.syntax)) {
+            var finding = judge.judge(use)
+            if (isSome(finding)) {
+                found.append(finding)
+            }
+        }
+        return found
+    }
+}
+
+define class DiagnosticsNameJudge {
+    FileContext context
+    map<string, bool> opaque
+    DiagnosticsScopes scopes
+    DiagnosticsLookups lookups
+
+    construct(FileContext context) {
+        this.context = context
+        this.opaque = {}
+        this.scopes = DiagnosticsScopes(context)
+        this.lookups = DiagnosticsLookups(context)
+    }
+
+    method judge(DiagnosticsUse use): Diagnostic {
+        var scope = this.scopes.scopeFor(use)
+        if (this.isOpaque(scope)) {
+            return nothing()
+        }
+        if (use.isCall()) {
+            return this.judgeCall(use, scope)
+        }
+        return this.judgeName(use, scope)
+    }
+
+    method judgeCall(DiagnosticsUse use, Scope scope): Diagnostic {
+        var name = use.token.text
+        if (use.arity < 0) {
+            return nothing()
+        }
+        var resolution = this.lookups.call(scope, name, use.arity)
+        if (resolution.status == DIAGNOSTICS_STATUS_AMBIGUOUS) {
+            return this.ambiguous(use, resolution)
+        }
+        if (resolution.status != DIAGNOSTICS_STATUS_UNKNOWN || this.isDeclaredSomewhere(scope, name)) {
+            return nothing()
+        }
+        return this.unknown(use, "unknown function '" + name + "': no function or class of that name is in the program")
+    }
+
+    // A function of that name with another arity, a built-in, a type or a variable: the compiler says something else.
+    method isDeclaredSomewhere(Scope scope, string name): bool {
+        var index = this.context.index()
+        if (this.context.resolver().isBuiltinCall(name) || index.functionsNamed(name).length() > 0 || isSome(index.typeNamed(name))) {
+            return true
+        }
+        return this.lookups.isKnownName(scope, name)
+    }
+
+    method ambiguous(DiagnosticsUse use, Resolution resolution): Diagnostic {
+        var qualifiers = []
+        for (candidate in resolution.candidates) {
+            if (qualifiers.contains(candidate.qualifier) == false) {
+                qualifiers.append(candidate.qualifier)
+            }
+        }
+        var name = use.token.text
+        var message = "'" + name + "' is defined in more than one package (" + qualifiers.join(", ") + "): call it qualified, e.g. " + qualifiers[0] + "." + name + "(...)"
+        return diagnosticsFinding(use.token.span(), Severity.Warning, DIAGNOSTICS_AMBIGUOUS_CALL, message)
+    }
+
+    method judgeName(DiagnosticsUse use, Scope scope): Diagnostic {
+        var name = use.token.text
+        var isKnown = name == DIAGNOSTICS_THIS_WORD || this.lookups.isKnownName(scope, name)
+        if (isKnown || this.isTypeOrModule(name) || this.isConstantOfOwnEnum(scope, name)) {
+            return nothing()
+        }
+        return this.unknown(use, DIAGNOSTICS_FOREIGN_HINTS.get(name, "unknown variable '" + name + "': nothing of that name is declared here"))
+    }
+
+    method isTypeOrModule(string name): bool {
+        return isSome(this.context.index().typeNamed(name)) || this.context.index().hasQualifier(name)
+    }
+
+    method isConstantOfOwnEnum(Scope scope, string name): bool {
+        if (isNone(scope.enclosingType)) {
+            return false
+        }
+        for (constant in this.context.resolver().constantsOf(scope.enclosingType.name)) {
+            if (constant.decl.name == name) {
+                return true
+            }
+        }
+        return false
+    }
+
+    method unknown(DiagnosticsUse use, string message): Diagnostic {
+        var warning = diagnosticsFinding(use.token.span(), Severity.Warning, DIAGNOSTICS_UNKNOWN_NAME, message)
+        warning.data = use.token.text
+        return warning
+    }
+
+    // A class whose base chain leaves the program (a std base such as NvhComponent) inherits names that no table lists.
+    method isOpaque(Scope scope): bool {
+        if (isNone(scope.enclosingType)) {
+            return false
+        }
+        var key = scope.enclosingType.name
+        if (this.opaque.has(key) == false) {
+            this.opaque[key] = this.leavesProgram(scope.enclosingType)
+        }
+        return this.opaque[key]
+    }
+
+    method leavesProgram(Decl owner): bool {
+        var current = owner
+        var steps = 0
+        while (current.baseName != "" && steps < DIAGNOSTICS_CHAIN_LIMIT) {
+            var base = this.context.index().typeNamed(current.baseName)
+            if (isNone(base)) {
+                return true
+            }
+            current = base.decl
+            steps = steps + 1
+        }
+        return false
+    }
+}
+
+// Resolver answers that do not depend on the locals, kept per enclosing type and name (one search of a huge class per use is quadratic).
+define class DiagnosticsLookups {
+    FileContext context
+    map<string, Resolution> answers
+
+    construct(FileContext context) {
+        this.context = context
+        this.answers = {}
+    }
+
+    method isKnownName(Scope scope, string name): bool {
+        if (isSome(this.context.resolver().localNamed(scope, name))) {
+            return true
+        }
+        var key = "name|" + this.ownerKey(scope) + "|" + name
+        if (this.answers.has(key) == false) {
+            this.answers[key] = this.context.resolver().lookupName(scope, name)
+        }
+        return this.answers[key].status != DIAGNOSTICS_STATUS_UNKNOWN
+    }
+
+    method call(Scope scope, string name, integer arity): Resolution {
+        var key = "call|" + this.ownerKey(scope) + "|" + name + "|" + arity
+        if (this.answers.has(key) == false) {
+            this.answers[key] = this.context.resolver().lookupCall(scope, name, arity)
+        }
+        return this.answers[key]
+    }
+
+    method member(TypeRef type, string name): Resolution {
+        var key = "member|" + type.name + "|" + name
+        if (this.answers.has(key) == false) {
+            this.answers[key] = this.context.resolver().lookupMember(type, name, DIAGNOSTICS_NO_ARITY)
+        }
+        return this.answers[key]
+    }
+
+    method ownerKey(Scope scope): string {
+        if (isNone(scope.enclosingType)) {
+            return ""
+        }
+        return "" + scope.enclosingType.fullSpan.start
+    }
+}

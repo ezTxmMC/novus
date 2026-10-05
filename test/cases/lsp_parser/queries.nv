@@ -1,0 +1,100 @@
+package main
+
+import "novus/lsp/base/maybe"
+import "novus/lsp/syntax/outline"
+import "novus/lsp/syntax/parsing"
+
+private final QUERY_SOURCE = "package q\nimport a\nimport b\n\ndefine class Shape {\n    float w\n    area(float x): float {\n        return 1\n    }\n    area(float x, float y): float {\n        return 2\n    }\n}\n\nmethod area(float x): float {\n    return 3\n}\n\ndefine enum E { A, B }\n"
+
+method queryFile(): SourceFile {
+    return parseSourceText("q.nv", QUERY_SOURCE, editorParseOptions())
+}
+
+method offsetOf(string marker): integer {
+    return QUERY_SOURCE.indexOf(marker, 0)
+}
+
+method nameOf(Decl decl): string {
+    if (isNone(decl)) {
+        return "none"
+    }
+    return "" + decl.kind + ":" + decl.name + "/" + decl.arity()
+}
+
+method names(array<Decl> decls): string {
+    var parts = []
+    for (decl in decls) {
+        parts.append(nameOf(decl))
+    }
+    return parts.join(" ")
+}
+
+method checkLookups() {
+    var file = queryFile()
+    expectEqual("lookup/top-level-by-name", "Method:area/1", names(file.topLevelNamed("area")))
+    expectEqual("lookup/top-level-type-by-name", "Class:Shape/0", names(file.topLevelNamed("Shape")))
+    expectEqual("lookup/top-level-unknown", "", names(file.topLevelNamed("zzz")))
+    expectEqual("lookup/type", "Class:Shape/0", nameOf(file.typeNamed("Shape")))
+    expectEqual("lookup/enum-is-a-type", "Enum:E/0", nameOf(file.typeNamed("E")))
+    expectEqual("lookup/method-is-not-a-type", "none", nameOf(file.typeNamed("area")))
+    expectEqual("lookup/members-overloads-in-order", "Method:area/1 Method:area/2", names(file.memberNamed("Shape", "area")))
+    expectEqual("lookup/member-field", "Field:w/0", names(file.memberNamed("Shape", "w")))
+    expectEqual("lookup/member-of-unknown-type", "", names(file.memberNamed("Nope", "w")))
+    expectEqual("lookup/unknown-member", "", names(file.memberNamed("Shape", "zzz")))
+    expectEqual("lookup/enum-constant", "EnumConstant:B/0", names(file.memberNamed("E", "B")))
+}
+
+method checkOffsetQueries() {
+    var file = queryFile()
+    expectEqual("declAt/field", "Field:w/0", nameOf(file.declAt(offsetOf("w\n"))))
+    expectEqual("declAt/inside-a-member-body", "Method:area/1", nameOf(file.declAt(offsetOf("return 1"))))
+    expectEqual("declAt/second-overload", "Method:area/2", nameOf(file.declAt(offsetOf("return 2"))))
+    expectEqual("declAt/class-gap-gives-the-class", "Class:Shape/0", nameOf(file.declAt(offsetOf("    area(float x, float y)") - 1)))
+    expectEqual("declAt/top-level-method", "Method:area/1", nameOf(file.declAt(offsetOf("return 3"))))
+    expectEqual("declAt/between-declarations", "none", nameOf(file.declAt(offsetOf("method area") - 1)))
+    expectEqual("declAt/package-line", "none", nameOf(file.declAt(0)))
+    expectEqual("declAt/past-the-end", "none", nameOf(file.declAt(QUERY_SOURCE.length() + 5)))
+    expectEqual("declAt/one-past-a-declaration-is-outside", "none", nameOf(file.declAt(offsetOf("method area") + QUERY_SOURCE.substring(offsetOf("method area"), QUERY_SOURCE.length()).indexOf("}\n", 0) + 1)))
+    expectEqual("enclosingType/member-body", "Class:Shape/0", nameOf(file.enclosingType(offsetOf("return 1"))))
+    expectEqual("enclosingType/top-level-method", "none", nameOf(file.enclosingType(offsetOf("return 3"))))
+    expectEqual("enclosingType/enum", "Enum:E/0", nameOf(file.enclosingType(offsetOf("A, B"))))
+    expectEqual("enclosingCallable/member-body", "Method:area/1", nameOf(file.enclosingCallable(offsetOf("return 1"))))
+    expectEqual("enclosingCallable/top-level-body", "Method:area/1", nameOf(file.enclosingCallable(offsetOf("return 3"))))
+    expectEqual("enclosingCallable/field-is-not-callable", "none", nameOf(file.enclosingCallable(offsetOf("w\n"))))
+    expectEqual("enclosingCallable/class-gap", "none", nameOf(file.enclosingCallable(offsetOf("    area(float x, float y)") - 1)))
+}
+
+method checkImportLines() {
+    var file = queryFile()
+    var lines = file.importLines()
+    expectEqual("importLines/source-order", "Package:a Package:b", renderImports(file))
+    expectTrue("importLines/same-objects", lines[0] == file.imports[0] && lines[1] == file.imports[1])
+    lines.append(lines[0])
+    expectInt("importLines/is-a-new-array", 2, file.imports.length())
+    expectInt("importLines/none", 0, parseSourceText("e.nv", "method m() {\n}\n", editorParseOptions()).importLines().length())
+}
+
+method checkDeclMethods() {
+    var file = parseSample()
+    var foo = file.topLevelNamed("foo")[0]
+    expectTrue("decl/isCallable-and-not-type", foo.isCallable() && foo.isType() == false)
+    expectInt("decl/arity", 2, foo.arity())
+    expectTrue("decl/isDeprecated", foo.isDeprecated() && file.topLevelNamed("fetch")[0].isDeprecated() == false)
+    expectTrue("decl/hasModifier", file.topLevelNamed("fetch")[0].hasModifier("async") && foo.hasModifier("async") == false)
+    var circle = file.typeNamed("Circle")
+    expectTrue("decl/type-kinds", circle.isType() && circle.isCallable() == false && file.typeNamed("Shape").isType() && file.typeNamed("Note").isType() && file.typeNamed("Base").isType())
+    var constructor = file.memberNamed("Circle", "construct")[0]
+    expectTrue("decl/constructor-is-callable", constructor.isCallable() && constructor.arity() == 1)
+    var field = file.memberNamed("Circle", "radius")[0]
+    expectTrue("decl/field-is-neither", field.isCallable() == false && field.isType() == false && field.arity() == 0)
+}
+
+// An annotation belongs to the declaration that follows it: the first member of a class must not inherit the class's.
+method checkAnnotationScope() {
+    var text = "@Deprecated{text=\"x\"}\ndefine class Z {\n    method old() {\n    }\n\n    method fresh() {\n    }\n}\n\n@Deprecated{text=\"y\"}\ndefine Broken\nmethod after() {\n}\n"
+    var file = parseSourceText("a.nv", text, editorParseOptions())
+    expectTrue("annotations/class-has-its-own", file.typeNamed("Z").isDeprecated())
+    expectTrue("annotations/first-member-has-none", file.memberNamed("Z", "old")[0].isDeprecated() == false)
+    expectTrue("annotations/second-member-has-none", file.memberNamed("Z", "fresh")[0].isDeprecated() == false)
+    expectTrue("annotations/after-a-broken-define", file.topLevelNamed("after")[0].isDeprecated() == false)
+}

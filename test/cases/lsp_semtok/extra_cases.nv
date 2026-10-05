@@ -1,0 +1,39 @@
+package main
+
+import "novus/lsp/features/semtok"
+import @support
+
+// Packages, imports, annotations, built-in functions, asynchronous calls and names that the resolver does not know.
+method runDeclarationCases() {
+    println("== package, imports, annotations")
+    var source = stLines([
+        "package main",
+        "import @helper",
+        "import \"x/y\"",
+        "import base/maybe",
+        "",
+        "@Deprecated{text=\"old\", since=\"1\"}",
+        "method legacy(): integer {",
+        "    return 1",
+        "}",
+        "",
+        "@Interface",
+        "async method fetch(integer id): integer {",
+        "    return id",
+        "}",
+        "",
+        "method main() {",
+        "    var parsed = parseInt(\"7\") + legacy()",
+        "    var task = thread fetch(parsed)",
+        "    var result = await task",
+        "    var kind = typeOf(result)",
+        "    println(chr(65), kind, unknownCall(1), Missing{a=1})",
+        "}"
+    ])
+    var world = StWorld({
+        "/p/project.nv": "project \"p\"\nmain \"main.nv\"\n",
+        "/p/main.nv": source,
+        "/p/helper.nv": "method help() {\n}\n"
+    })
+    stShow("main.nv", source, world.spans("/p/main.nv", source))
+}

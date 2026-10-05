@@ -1,0 +1,117 @@
+package closure
+
+import arrays
+import base/platform
+import base/text
+import projects/manifest
+import projects/modules
+import projects/stdlib
+import syntax/outline
+
+private final CLOSURE_LIST_DEPTH = 12
+private final CLOSURE_LIST_CURRENT = "."
+private final CLOSURE_SOURCE_EXTENSIONS = [".nv", ".nvh"]
+
+// Builds the list behind importableTargets: std modules (a local folder of the same name hides its std module, as
+// it does for the compiler), then the packages and files of the project, then those of every Ready dependency.
+define class ClosureTargetLister {
+    ProjectLayout layout
+    ModuleTable modules
+    TextSource source
+    StdLibrary library
+    ImportResolver resolver
+
+    construct(ProjectLayout layout, ModuleTable modules, TextSource source, StdLibrary library) {
+        this.layout = layout
+        this.modules = modules
+        this.source = source
+        this.library = library
+        this.resolver = ImportResolver(layout, modules, source, library)
+    }
+
+    method list(): array<ImportTarget> {
+        var targets = []
+        this.addStandard(targets)
+        this.addProject(targets)
+        this.addDependencies(targets)
+        return targets
+    }
+
+    method addStandard(array<ImportTarget> targets) {
+        for (name in this.library.moduleNames()) {
+            if (this.isShadowedByFolder(name) == false) {
+                targets.append(ImportTarget(ImportKind.Package, name, stdFileKey(name), FileOrigin.Standard))
+            }
+        }
+    }
+
+    method isShadowedByFolder(string name): bool {
+        if (this.layout.root == "") {
+            return false
+        }
+        return this.resolver.sourceFilesIn(closureJoin(this.layout.root, name)).length() > 0
+    }
+
+    method addProject(array<ImportTarget> targets) {
+        if (this.layout.root == "") {
+            return
+        }
+        this.addTree(targets, this.layout.root, "", ImportKind.Package, ImportKind.File, FileOrigin.Project)
+    }
+
+    method addDependencies(array<ImportTarget> targets) {
+        for (entry in this.modules.readyEntries()) {
+            targets.append(ImportTarget(ImportKind.Module, entry.module, entry.entryFile, FileOrigin.Dependency))
+            this.addTree(targets, entry.dir, entry.module + "/", ImportKind.Module, ImportKind.Module, FileOrigin.Dependency)
+        }
+    }
+
+    // The folders that hold sources directly (packages), then every source file without its extension.
+    method addTree(array<ImportTarget> targets, string rootDir, string prefix, ImportKind folderKind, ImportKind fileKind, FileOrigin origin) {
+        var files = this.sourcesBelow(rootDir)
+        var folders = {}
+        for (filePath in files) {
+            this.noteFolder(folders, rootDir, filePath)
+        }
+        for (relative in arrays.sort(folders.keys())) {
+            targets.append(ImportTarget(folderKind, prefix + relative, closureJoin(rootDir, relative), origin))
+        }
+        for (filePath in files) {
+            var stem = closureStripSourceExtension(this.relativeTo(rootDir, filePath))
+            targets.append(ImportTarget(fileKind, prefix + stem, filePath, origin))
+        }
+    }
+
+    // Source files below a root, without manifests: project.nv is no Novus source. Paths are normalised like the
+    // paths of the closure files ("./geo/a.nv" of a relative root "." becomes "geo/a.nv").
+    method sourcesBelow(string rootDir): array<string> {
+        var found = []
+        for (filePath in walkSourceFiles(this.source, rootDir, CLOSURE_SOURCE_EXTENSIONS, CLOSURE_LIST_DEPTH)) {
+            if (fileKindOf(filePath) != FILE_KIND_MANIFEST) {
+                found.append(manifestNormalizePath(filePath))
+            }
+        }
+        return found
+    }
+
+    method noteFolder(map<string, bool> folders, string rootDir, string filePath) {
+        var folder = manifestDirectoryOf(this.relativeTo(rootDir, filePath))
+        if (folder != "." && folder != "") {
+            folders[folder] = true
+        }
+    }
+
+    method relativeTo(string rootDir, string filePath): string {
+        var prefix = manifestNormalizePath(rootDir)
+        if (prefix == CLOSURE_LIST_CURRENT) {
+            return filePath
+        }
+        if (prefix.endsWith("/") == false) {
+            prefix = prefix + "/"
+        }
+        if (filePath.startsWith(prefix)) {
+            return filePath.substring(prefix.length(), filePath.length())
+        }
+        return filePath
+    }
+}

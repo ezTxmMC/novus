@@ -1,0 +1,50 @@
+package pureline
+
+import base/model
+import base/platform
+import base/text
+import syntax/lexing
+import syntax/outline
+
+// PL-CF-002: an `else` whose block above ends with return, break or continue is redundant (a guard clause says it linearly).
+// A plain `else` is only a hint, and only with flagPlainElse. Needs the tokens of the editor parse; without them nothing is found.
+private final PURELINE_CODE_ELSE = "PL-CF-002"
+private final PURELINE_MESSAGE_ELSE_AFTER_JUMP = "Avoid else after return, break or continue: keep the happy path linear with a guard clause."
+private final PURELINE_MESSAGE_PLAIN_ELSE = "Avoid else: prefer a guard clause or an early return."
+
+define class PurelineElseRule based PurelineRule {
+    PurelineSettings settings
+
+    construct(PurelineSettings settings) {
+        this.settings = settings
+    }
+
+    method check(Document document, SourceFile syntax, TextSource files): array<Diagnostic> {
+        var code = PurelineCode(syntax.tokens)
+        var found = []
+        var index = 1
+        while (index < code.tokens.length()) {
+            this.inspect(code, index, found)
+            index = index + 1
+        }
+        return found
+    }
+
+    method inspect(PurelineCode code, integer index, array<Diagnostic> found) {
+        var token = code.tokens[index]
+        if (token.isKeyword("else") == false || code.tokens[index - 1].isPunct("}") == false) {
+            return
+        }
+        var open = code.partners[index - 1]
+        if (open < 0) {
+            return
+        }
+        if (code.blockEndsWithJump(open, index - 1)) {
+            found.append(purelineDiagnostic(token.span(), Severity.Warning, PURELINE_CODE_ELSE, PURELINE_MESSAGE_ELSE_AFTER_JUMP))
+            return
+        }
+        if (this.settings.flagPlainElse) {
+            found.append(purelineDiagnostic(token.span(), Severity.Hint, PURELINE_CODE_ELSE, PURELINE_MESSAGE_PLAIN_ELSE))
+        }
+    }
+}

@@ -1,0 +1,8 @@
+visited 100 first k0 last k99 missing 19
+length 100 has k99 false
+[added1, added10, added100, added11, added12, added13, added14, added15, added16, added17, added18, added19, added2, added20, added21, added22, added23, added24, added25, added26, added27, added28, added29, added3, added30, added31, added32, added33, added34, added35, added36, added37, added38, added39, added4, added40, added41, added42, added43, added44, added45, added46, added47, added48, added49, added5, added50, added51, added52, added53, added54, added55, added56, added57, added58, added59, added6, added60, added61, added62, added63, added64, added65, added66, added67, added68, added69, added7, added70, added71, added72, added73, added74, added75, added76, added77, added78, added79, added8, added80, added81, added82, added83, added84, added85, added86, added87, added88, added89, added9, added90, added91, added92, added93, added94, added95, added96, added97, added98, added99]
+100
+added1 added99
+100 99 false
+0 []
+{again: 1}

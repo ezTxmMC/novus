@@ -1,0 +1,10 @@
+package main
+
+import @parse_cases
+import @layout_cases
+
+// lsp/projects/manifest: the tolerant project.nv reader and the project discovery.
+method main() {
+    runParseCases()
+    runLayoutCases()
+}

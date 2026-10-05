@@ -1,0 +1,100 @@
+package main
+
+import time
+import "novus/lsp/base/model"
+import "novus/lsp/base/platform"
+import "novus/lsp/features/candidates"
+import "novus/lsp/projects/stdlib"
+import "novus/lsp/projects/workspace"
+import @support
+
+private final CA_MANY_LOCALS = 30000
+private final CA_FEW_LOCALS = 200
+private final CA_MANY_FOLDERS = 150
+private final CA_CLASSES_PER_FOLDER = 30
+private final CA_UNLOADED_FLOOR = 4000
+private final CA_TIME_LIMIT_MILLIS = 2500
+private final CA_FILE_TIME_GAP_MILLIS = 30
+
+// The project is on disk here: a named pipe among the sources (where `mkfifo` exists) must not block the thread that scans them, and an
+// unloaded file that changes on disk shows its new symbols (the parse is kept only while its modification time is).
+method runDiskCases() {
+    println("#### unloaded files on disk")
+    var root = createTempDirectory("novus-lsp-test-")
+    writeTextFile(root + "/project.nv", "project \"d\"\nmain \"main.nv\"\n")
+    var mainText = "package main\n\nmethod main() {\n    \n}\n"
+    writeTextFile(root + "/main.nv", mainText)
+    writeTextFile(root + "/real.nv", "package main\n\ndefine class Alpha {\n}\n")
+    runCommandIn(root, "mkfifo pipe.nv", 10)
+    var space = Workspace(FileCache(DiskTextSource()), standardLibrary())
+    var symbols = SymbolSources(space, Settings())
+    var context = space.contextFor(Document(filePathToUri(root + "/main.nv"), "novus", 1, mainText))
+    var request = caContext("statement", "", mainText.indexOf("    \n}") + 4)
+    caPrint("a named pipe is skipped", symbols.projectSymbols(context, request))
+    caPrint("the same request again", symbols.projectSymbols(context, request))
+    time.sleep(CA_FILE_TIME_GAP_MILLIS)
+    writeTextFile(root + "/real.nv", "package main\n\ndefine class Beta {\n}\n")
+    caPrint("the file changed on disk", symbols.projectSymbols(context, request))
+    removeTree(root)
+}
+
+// A statement is one line: only the locals within a line's reach of the cursor have their text looked at, so the cost
+// of the check does not grow with the square of the number of locals.
+method runManyLocalCases() {
+    println("#### a method with many locals")
+    var head = caManyLocalsHead(CA_MANY_LOCALS)
+    var world = CaWorld({"/p/main.nv": head + "\n}\n"})
+    var context = world.open("/p/main.nv", head + "\n}\n")
+    var scope = context.resolver().scopeAt(context.closureFile, head.length())
+    var started = nowMillis()
+    var being = 0
+    for (local in scope.locals) {
+        if (candidatesIsBeingDeclared(head, local, head.length())) {
+            being = being + 1
+            println("being declared: " + local.name)
+        }
+    }
+    println("locals: " + scope.locals.length() + ", being declared: " + being)
+    println("within the time limit: " + ((nowMillis() - started) < CA_TIME_LIMIT_MILLIS))
+    var small = caManyLocalsHead(CA_FEW_LOCALS)
+    var smallWorld = CaWorld({"/p/main.nv": small + "\n}\n"})
+    var labels = caLabels(smallWorld.symbols.locals(smallWorld.open("/p/main.nv", small + "\n}\n"), caContext("expression", "", small.length())))
+    println("the last local is offered: " + labels.contains("value" + (CA_FEW_LOCALS - 1)))
+    println("the local being declared is not: " + (labels.contains("total") == false))
+}
+
+// `var value0 = 0` and so on, then `var total = ` with the cursor at its end.
+method caManyLocalsHead(integer count): string {
+    var lines = []
+    var index = 0
+    while (index < count) {
+        lines.append("    var value" + index + " = " + index)
+        index = index + 1
+    }
+    return "package main\n\nmethod f() {\n" + lines.join("\n") + "\n    var total = "
+}
+
+// Items of unloaded files stop at a bound whatever the size of the project, but a prefix still finds a name in the
+// last file: only the symbols that match count.
+method runUnloadedLimitCases() {
+    println("#### many unloaded files")
+    var files = {"/p/main.nv": "package main\n\nmethod main() {\n}\n"}
+    var folder = 0
+    while (folder < CA_MANY_FOLDERS) {
+        var text = "package pkg" + folder + "\n\n"
+        var index = 0
+        while (index < CA_CLASSES_PER_FOLDER) {
+            text = text + "define class Item" + folder + "x" + index + " {\n}\n"
+            index = index + 1
+        }
+        files["/p/pkg" + folder + "/items.nv"] = text
+        folder = folder + 1
+    }
+    files["/p/zeta/last.nv"] = "package zeta\n\ndefine class Zed {\n}\n"
+    var world = CaWorld(files)
+    var context = world.open("/p/main.nv", "package main\n\nmethod main() {\n    \n}\n")
+    var at = 40
+    var everything = world.symbols.projectSymbols(context, caContext("statement", "", at)).length()
+    println("bounded: " + (everything < CA_MANY_FOLDERS * CA_CLASSES_PER_FOLDER * 2) + ", still many: " + (everything >= CA_UNLOADED_FLOOR))
+    caPrint("a name in the last file", world.symbols.projectSymbols(context, caContext("statement", "Zed", at + 3)))
+}

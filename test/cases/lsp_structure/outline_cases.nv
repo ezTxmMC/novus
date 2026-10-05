@@ -1,0 +1,41 @@
+package main
+
+import "novus/lsp/features/structure"
+import "novus/lsp/base/model"
+import "novus/lsp/base/text"
+import @support
+import @fixtures
+
+method structTree(array<OutlineEntry> entries, string indent, LineIndex lines) {
+    for (entry in entries) {
+        var line = lines.lineOf(entry.nameSpan.start) + 1
+        var flag = ""
+        if (entry.deprecated) {
+            flag = " deprecated"
+        }
+        println(indent + entry.kind.code + " " + entry.name + " {" + entry.detail + "} name@" + line + " range " + (lines.lineOf(entry.fullSpan.start) + 1) + "-" + (lines.lineOf(entry.fullSpan.end - 1) + 1) + flag)
+        structTree(entry.children, indent + "  ", lines)
+    }
+}
+
+method runOutlineCases() {
+    println("== document symbols")
+    var world = StructWorld(structProject())
+    var context = world.context("/p/geo/shape.nv")
+    structTree(OutlineBuilder().documentSymbols(context), "", context.document.lines)
+    var component = StructWorld({
+        "/n/project.nv": "project \"n\"\nmain \"main.nv\"\n",
+        "/n/main.nv": "method main() {\n}\n",
+        "/n/page.nvh": "<?nv\nprop string title\nmethod greet(): string {\n    return title\n}\n?>\n<h1>x</h1>\n"
+    })
+    var page = component.context("/n/page.nvh")
+    println("-- component")
+    structTree(OutlineBuilder().documentSymbols(page), "", page.document.lines)
+    var manifest = component.context("/n/project.nv")
+    structCheck("manifest", "" + OutlineBuilder().documentSymbols(manifest).length() + " symbols")
+    var scratch = component.space.contextFor(Document("untitled:Untitled-1", "novus", 1, "method one() {\n}\nmethod two() {\n}\n"))
+    structCheck("scratch buffer", "" + OutlineBuilder().documentSymbols(scratch).length() + " symbols")
+    var broken = component.space.contextFor(Document("untitled:Untitled-2", "novus", 1, "define class Half {\n    method open() {\n"))
+    println("-- unterminated class")
+    structTree(OutlineBuilder().documentSymbols(broken), "", broken.document.lines)
+}

@@ -1,283 +1,982 @@
 {
-  "package": {
-    "prefix": "package",
-    "body": [
-      "package ${1:main}",
-      "",
-      "$0"
-    ],
-    "description": "Package declaration"
-  },
-  "import": {
-    "prefix": "import",
-    "body": [
-      "import ${1:module}"
-    ],
-    "description": "Import a module"
-  },
-  "main": {
-    "prefix": "main",
+  "Program entry point": {
     "body": [
       "method main {",
       "\t$0",
       "}"
     ],
-    "description": "Program entry point"
+    "description": "Program entry point",
+    "prefix": "main"
   },
-  "main with args": {
-    "prefix": "mainargs",
+  "Program entry point receiving the command line arguments": {
     "body": [
       "method main(array<string> args) {",
       "\t$0",
       "}"
     ],
-    "description": "Program entry point receiving arguments"
+    "description": "Program entry point receiving the command line arguments",
+    "prefix": [
+      "psvm",
+      "mainargs"
+    ]
   },
-  "method": {
-    "prefix": "method",
+  "Entry point whose return value is the exit code": {
+    "body": [
+      "method main(array<string> args): integer {",
+      "\t$0",
+      "\treturn ${1:0}",
+      "}"
+    ],
+    "description": "Entry point whose return value is the exit code",
+    "prefix": [
+      "maine",
+      "psvmi"
+    ]
+  },
+  "Package declaration": {
+    "body": [
+      "package ${1:main}",
+      "",
+      "$0"
+    ],
+    "description": "Package declaration (must equal the folder name, or main)",
+    "prefix": [
+      "pkg",
+      "package"
+    ]
+  },
+  "Import a package folder or a standard module": {
+    "body": [
+      "import ${1:json}"
+    ],
+    "description": "Import a package folder or a standard module",
+    "prefix": "import"
+  },
+  "Import one file of the project": {
+    "body": [
+      "import @${1:geo}/${2:circle}"
+    ],
+    "description": "Import one file of the project (no extension)",
+    "prefix": [
+      "importf",
+      "importfile"
+    ]
+  },
+  "Import a nested package folder": {
+    "body": [
+      "import ${1:geo}/${2:shapes}"
+    ],
+    "description": "Import a nested package folder",
+    "prefix": [
+      "importn",
+      "importnested"
+    ]
+  },
+  "Import a dependency module": {
+    "body": [
+      "import \"${1:github.com/user/module}\""
+    ],
+    "description": "Import a dependency module (path from require in project.nv)",
+    "prefix": [
+      "importm",
+      "importmod"
+    ]
+  },
+  "Top-level constant": {
+    "body": [
+      "private final ${1:NAME} = ${2:0}"
+    ],
+    "description": "Top-level constant",
+    "prefix": [
+      "psf",
+      "const",
+      "final"
+    ]
+  },
+  "Top-level mutable global": {
+    "body": [
+      "var ${1:name} = ${2:0}"
+    ],
+    "description": "Top-level mutable global",
+    "prefix": "gvar"
+  },
+  "Method with parameters and return type": {
     "body": [
       "method ${1:name}(${2:integer value})${3:: ${4:integer}} {",
       "\t$0",
       "}"
     ],
-    "description": "Method declaration"
+    "description": "Method with parameters and return type",
+    "prefix": [
+      "method",
+      "meth"
+    ]
   },
-  "method without parameters": {
-    "prefix": "methodv",
+  "Method without a parameter list": {
     "body": [
       "method ${1:name} {",
       "\t$0",
       "}"
     ],
-    "description": "Method declaration without parameter list"
+    "description": "Method without a parameter list",
+    "prefix": [
+      "methodv",
+      "methodn"
+    ]
   },
-  "abstract method": {
-    "prefix": "abstract",
+  "Async method: calls start on a virtual thread and return a task": {
     "body": [
-      "abstract method ${1:name}(${2})${3:: ${4:bool}}"
+      "async method ${1:name}(${2:integer value}): ${3:integer} {",
+      "\t$0",
+      "\treturn ${4:value}",
+      "}"
     ],
-    "description": "Abstract method signature"
+    "description": "Async method: calls start on a virtual thread and return a task",
+    "prefix": [
+      "methoda",
+      "async"
+    ]
   },
-  "class": {
-    "prefix": "class",
+  "Run a task so that a runtime error becomes a value": {
     "body": [
-      "define class ${1:Name}${2: based ${3:Base}} {",
-      "\tprivate final ${4:string} ${5:field}: get, set",
+      "method tryRun(object task): object native \"nv_try_run\"",
+      "method tryFailed(): bool native \"nv_try_failed\"",
+      "method tryError(): string native \"nv_try_error\"",
       "",
-      "\tconstruct(${4:string} ${5:field}) {",
-      "\t\tthis.${5:field} = ${5:field}",
+      "define class ${1:GuardedTask} {",
+      "\tmethod run(): object {",
+      "\t\t$0",
+      "\t\treturn 0",
+      "\t}",
+      "}"
+    ],
+    "description": "Run a task so that a runtime error becomes a value (natives as in std/toml.nv). Insert once per package: a second copy duplicates the three native declarations",
+    "prefix": [
+      "tryrun",
+      "guarded"
+    ]
+  },
+  "Documentation comment": {
+    "body": [
+      "// ${1:What it does and why}"
+    ],
+    "description": "Documentation comment (a // block above the declaration)",
+    "prefix": "doc"
+  },
+  "Class with fields and a constructor": {
+    "body": [
+      "define class ${1:Name} {",
+      "\t${2:string} ${3:field}",
+      "",
+      "\tconstruct(${2} ${3}) {",
+      "\t\tthis.${3} = ${3}",
       "\t}",
       "",
       "\t$0",
       "}"
     ],
-    "description": "Class definition with constructor"
+    "description": "Class with fields and a constructor",
+    "prefix": [
+      "class",
+      "cls"
+    ]
   },
-  "class with primary constructor": {
-    "prefix": "classp",
+  "Class based on another class, abstract class or interface": {
     "body": [
-      "define class ${1:Name}(${2:string} ${3:field}) {",
-      "\tprivate final ${2:string} ${3:field}: get, set",
+      "define class ${1:Name} based ${2:Base} {",
       "\t$0",
       "}"
     ],
-    "description": "Class definition with primary constructor parameters"
+    "description": "Class based on another class, abstract class or interface",
+    "prefix": [
+      "classb",
+      "extends"
+    ]
   },
-  "abstract class": {
-    "prefix": "abstractclass",
+  "Abstract class": {
     "body": [
       "define abstract ${1:Name} {",
-      "\tabstract method ${2:name}(): ${3:bool}",
+      "\tabstract method ${2:name}(): ${3:string}",
+      "",
       "\t$0",
       "}"
     ],
-    "description": "Abstract class definition"
+    "description": "Abstract class",
+    "prefix": [
+      "abstract",
+      "abstractclass"
+    ]
   },
-  "interface": {
-    "prefix": "interface",
+  "Interface": {
     "body": [
-      "define interface ${1:IName} {",
-      "\t${2:method}()",
+      "define interface ${1:Name} {",
+      "\t${2:name}(): ${3:string}",
       "\t$0",
       "}"
     ],
-    "description": "Interface definition"
+    "description": "Interface",
+    "prefix": [
+      "interface",
+      "iface"
+    ]
   },
-  "enum": {
-    "prefix": "enum",
+  "Class implementing an interface": {
     "body": [
-      "define enum ${1:Name} {",
-      "\t${2:FIRST}(\"${3:first}\"),",
-      "\t${4:SECOND}(\"${5:second}\");",
-      "",
-      "\tprivate final string text: get",
-      "",
-      "\tprivate construct(string text) {",
-      "\t\tthis.text = text",
+      "define class ${1:Name} based ${2:Shape} {",
+      "\t${3:name}(): ${4:string} {",
+      "\t\t$0",
+      "\t\treturn ${5:\"\"}",
       "\t}",
       "}"
     ],
-    "description": "Enum definition with constructor"
+    "description": "Class implementing an interface",
+    "prefix": [
+      "impl",
+      "implements"
+    ]
   },
-  "annotation": {
-    "prefix": "annotation",
+  "Enum": {
+    "body": [
+      "define enum ${1:Name} {",
+      "\t${2:FIRST},",
+      "\t${3:SECOND}",
+      "}"
+    ],
+    "description": "Enum",
+    "prefix": "enum"
+  },
+  "Enum with a value per constant": {
+    "body": [
+      "define enum ${1:Name} {",
+      "\t${2:FIRST}(${3:1}),",
+      "\t${4:SECOND}(${5:2});",
+      "",
+      "\t${6:integer} ${7:code}",
+      "",
+      "\tconstruct(${6} ${7}) {",
+      "\t\tthis.${7} = ${7}",
+      "\t}",
+      "}"
+    ],
+    "description": "Enum with a value per constant",
+    "prefix": [
+      "enumv",
+      "enumc"
+    ]
+  },
+  "Annotation definition": {
     "body": [
       "define annotation ${1:Name} {",
-      "\t${2:text}(): ${3:string}",
       "\t$0",
       "}"
     ],
-    "description": "Annotation definition"
+    "description": "Annotation definition (the braces are required)",
+    "prefix": [
+      "annotation",
+      "anno"
+    ]
   },
-  "construct": {
-    "prefix": "construct",
-    "body": [
-      "construct(${1:string} ${2:name}) {",
-      "\tthis.${2:name} = ${2:name}",
-      "\t$0",
-      "}"
-    ],
-    "description": "Constructor"
-  },
-  "field": {
-    "prefix": "field",
-    "body": [
-      "private final ${1:string} ${2:name}: ${3|get,get\\, set,set|}"
-    ],
-    "description": "Field with accessors"
-  },
-  "var": {
-    "prefix": "var",
-    "body": [
-      "var ${1:name} = ${2:value}"
-    ],
-    "description": "Variable declaration"
-  },
-  "typed var": {
-    "prefix": "vart",
-    "body": [
-      "var ${1:name}: ${2:integer} = ${3:value}"
-    ],
-    "description": "Variable declaration with explicit type"
-  },
-  "println": {
-    "prefix": "println",
-    "body": [
-      "println \"${1:text}\""
-    ],
-    "description": "Print a line"
-  },
-  "println interpolated": {
-    "prefix": "printf",
-    "body": [
-      "println \"${1:text} \\${${2:value}}\""
-    ],
-    "description": "Print a line with string interpolation"
-  },
-  "if": {
-    "prefix": "if",
-    "body": [
-      "if (${1:condition}) {",
-      "\t$0",
-      "}"
-    ],
-    "description": "If statement"
-  },
-  "if else": {
-    "prefix": "ifelse",
-    "body": [
-      "if (${1:condition}) {",
-      "\t$2",
-      "} else {",
-      "\t$0",
-      "}"
-    ],
-    "description": "If / else statement"
-  },
-  "for in": {
-    "prefix": "for",
-    "body": [
-      "for (${1:item} in ${2:items}) {",
-      "\t$0",
-      "}"
-    ],
-    "description": "For-in loop"
-  },
-  "for index": {
-    "prefix": "fori",
-    "body": [
-      "for (var ${1:i} = 0; ${1:i} < ${2:count}; ${1:i} = ${1:i} + 1) {",
-      "\t$0",
-      "}"
-    ],
-    "description": "Counted for loop"
-  },
-  "while": {
-    "prefix": "while",
-    "body": [
-      "while (${1:condition}) {",
-      "\t$0",
-      "}"
-    ],
-    "description": "While loop"
-  },
-  "struct init": {
-    "prefix": "new",
-    "body": [
-      "${1:Type}{",
-      "\t${2:field}=${3:value}",
-      "}"
-    ],
-    "description": "Initialize an object with named fields"
-  },
-  "deprecated": {
-    "prefix": "@Deprecated",
+  "Mark a method as deprecated": {
     "body": [
       "@Deprecated{",
       "\ttext=\"${1:Reason}\",",
       "\tsince=\"${2:0.1.0}\"",
       "}"
     ],
-    "description": "Mark a member as deprecated"
+    "description": "Mark a method as deprecated",
+    "prefix": [
+      "@Deprecated",
+      "deprecated"
+    ]
   },
-  "doc comment": {
-    "prefix": "doc",
+  "Constructor assigning one field": {
     "body": [
-      "/**",
-      " * ${1:Description}",
-      " */"
-    ],
-    "description": "Documentation comment"
-  },
-  "Print to stderr": {
-    "prefix": "eprintln",
-    "body": [
-      "eprintln \"${1:message}\""
-    ],
-    "description": "Print a line to standard error"
-  },
-  "Print without newline": {
-    "prefix": "print",
-    "body": [
-      "print ${1:value}"
-    ],
-    "description": "Print without a line break"
-  },
-  "Run a command": {
-    "prefix": "exec",
-    "body": [
-      "var ${1:code} = os.exec(\"${2:command}\")"
-    ],
-    "description": "Run a shell command (import os)"
-  },
-  "HTTP request": {
-    "prefix": "http",
-    "body": [
-      "var ${1:response} = http.request(\"${2:GET}\", \"${3:https://example.com}\", ${4:\"\"}, {})",
-      "if (${1:response}[\"ok\"]) {",
+      "construct(${1:string} ${2:name}) {",
+      "\tthis.${2} = ${2}",
       "\t$0",
       "}"
     ],
-    "description": "HTTP request with status/body/headers (import http)"
+    "description": "Constructor assigning one field",
+    "prefix": [
+      "construct",
+      "ctor"
+    ]
+  },
+  "Field": {
+    "body": [
+      "${1:string} ${2:name}"
+    ],
+    "description": "Field",
+    "prefix": [
+      "field",
+      "fld"
+    ]
+  },
+  "Field with a getter": {
+    "body": [
+      "${1:string} ${2:name}: get"
+    ],
+    "description": "Field with a getter",
+    "prefix": [
+      "fieldg",
+      "getter"
+    ]
+  },
+  "Field with getter and/or setter": {
+    "body": [
+      "${1:string} ${2:name}: ${3|get,get\\, set,set|}"
+    ],
+    "description": "Field with getter and/or setter",
+    "prefix": [
+      "fieldgs",
+      "accessors"
+    ]
+  },
+  "Abstract method signature": {
+    "body": [
+      "abstract method ${1:name}(${2}): ${3:string}"
+    ],
+    "description": "Abstract method signature",
+    "prefix": [
+      "abstractm",
+      "absm"
+    ]
+  },
+  "Constructor taking two fields": {
+    "body": [
+      "construct(${1:string} ${2:first}, ${3:integer} ${4:second}) {",
+      "\tthis.${2} = ${2}",
+      "\tthis.${4} = ${4}",
+      "}"
+    ],
+    "description": "Constructor taking two fields",
+    "prefix": [
+      "ctord",
+      "constructall"
+    ]
+  },
+  "Print a line": {
+    "body": [
+      "println \"${1:text}\""
+    ],
+    "description": "Print a line",
+    "prefix": [
+      "sout",
+      "println",
+      "pl"
+    ]
+  },
+  "Print a variable with its name": {
+    "body": [
+      "println \"${1:value} = \\${${1}}\""
+    ],
+    "description": "Print a variable with its name",
+    "prefix": [
+      "soutv",
+      "printv"
+    ]
+  },
+  "Print the current method name": {
+    "body": [
+      "println \"${1:Class}.${2:method}()\""
+    ],
+    "description": "Print the current method name",
+    "prefix": [
+      "soutm",
+      "printm"
+    ]
+  },
+  "Print a parameter with its name": {
+    "body": [
+      "println \"${1:value} = \\${${1}}\""
+    ],
+    "description": "Print a parameter with its name",
+    "prefix": [
+      "soutp",
+      "printp"
+    ]
+  },
+  "Print a line to standard error": {
+    "body": [
+      "eprintln \"${1:message}\""
+    ],
+    "description": "Print a line to standard error",
+    "prefix": [
+      "serr",
+      "eprintln"
+    ]
+  },
+  "Print without a line break": {
+    "body": [
+      "print ${1:text}"
+    ],
+    "description": "Print without a line break",
+    "prefix": "print"
+  },
+  "Variable": {
+    "body": [
+      "var ${1:name} = ${2:value}"
+    ],
+    "description": "Variable",
+    "prefix": "var"
+  },
+  "Variable with an explicit type": {
+    "body": [
+      "var ${1:name}: ${2:integer} = ${3:value}"
+    ],
+    "description": "Variable with an explicit type",
+    "prefix": [
+      "vart",
+      "tvar"
+    ]
+  },
+  "Typed local declaration": {
+    "body": [
+      "${1:integer} ${2:name} = ${3:value}"
+    ],
+    "description": "Typed local declaration",
+    "prefix": [
+      "local",
+      "typed"
+    ]
+  },
+  "Return a value": {
+    "body": [
+      "return ${1:value}"
+    ],
+    "description": "Return a value",
+    "prefix": [
+      "ret",
+      "return"
+    ]
+  },
+  "Map literal": {
+    "body": [
+      "var ${1:table} = {\"${2:key}\": ${3:value}}"
+    ],
+    "description": "Map literal",
+    "prefix": [
+      "mapl",
+      "newmap"
+    ]
+  },
+  "Array literal": {
+    "body": [
+      "var ${1:list} = [${2:1, 2, 3}]"
+    ],
+    "description": "Array literal",
+    "prefix": [
+      "arrl",
+      "newarr"
+    ]
+  },
+  "Object literal with named fields": {
+    "body": [
+      "${1:Point}{",
+      "\t${2:x}=${3:1}",
+      "}"
+    ],
+    "description": "Object literal with named fields (skips the constructor, so collection fields stay nil; use new for the constructor call)",
+    "prefix": [
+      "struct",
+      "obj"
+    ]
+  },
+  "Constructor call": {
+    "body": [
+      "${1:Point}(${2})"
+    ],
+    "description": "Constructor call (runs construct; Novus has no new keyword)",
+    "prefix": "new"
+  },
+  "TODO comment": {
+    "body": [
+      "// TODO: ${1:describe}"
+    ],
+    "description": "TODO comment",
+    "prefix": "todo"
+  },
+  "Counted loop": {
+    "body": [
+      "var ${1:i} = 0",
+      "while (${1} < ${2:count}) {",
+      "\t$0",
+      "\t${1} = ${1} + 1",
+      "}"
+    ],
+    "description": "Counted loop (a while loop: Novus has no C-style for). Do not use continue inside it (the increment would be skipped); use forrange",
+    "prefix": [
+      "fori",
+      "forc"
+    ]
+  },
+  "Counting down": {
+    "body": [
+      "var ${1:i} = ${2:count} - 1",
+      "while (${1} >= 0) {",
+      "\t$0",
+      "\t${1} = ${1} - 1",
+      "}"
+    ],
+    "description": "Counting down",
+    "prefix": [
+      "forir",
+      "forr"
+    ]
+  },
+  "For-in over arrays.range": {
+    "body": [
+      "for (${1:i} in arrays.range(0, ${2:count})) {",
+      "\t$0",
+      "}"
+    ],
+    "description": "For-in over arrays.range (continue-safe counting loop)",
+    "prefix": [
+      "forrange",
+      "fora"
+    ]
+  },
+  "For-in over an array": {
+    "body": [
+      "for (${1:item} in ${2:items}) {",
+      "\t$0",
+      "}"
+    ],
+    "description": "For-in over an array",
+    "prefix": [
+      "foreach",
+      "iter",
+      "for",
+      "itar"
+    ]
+  },
+  "Iterate the keys of a map": {
+    "body": [
+      "for (${1:key} in ${2:names}) {",
+      "\tvar ${3:value} = ${2}[${1}]",
+      "\t$0",
+      "}"
+    ],
+    "description": "Iterate the keys of a map (sorted) and read the value",
+    "prefix": [
+      "itmap",
+      "formap"
+    ]
+  },
+  "Iterate the characters": {
+    "body": [
+      "for (${1:ch} in ${2:text}) {",
+      "\t$0",
+      "}"
+    ],
+    "description": "Iterate the characters (bytes) of a string",
+    "prefix": [
+      "itstr",
+      "forchar"
+    ]
+  },
+  "If": {
+    "body": [
+      "if (${1:condition}) {",
+      "\t$0",
+      "}"
+    ],
+    "description": "If",
+    "prefix": "if"
+  },
+  "If / else": {
+    "body": [
+      "if (${1:condition}) {",
+      "\t${2}",
+      "} else {",
+      "\t$0",
+      "}"
+    ],
+    "description": "If / else",
+    "prefix": [
+      "ifelse",
+      "ife"
+    ]
+  },
+  "Else-if branch": {
+    "body": [
+      "else if (${1:condition}) {",
+      "\t$0",
+      "}"
+    ],
+    "description": "Else-if branch (after an if block)",
+    "prefix": [
+      "elif",
+      "elseif"
+    ]
+  },
+  "Else branch": {
+    "body": [
+      "else {",
+      "\t$0",
+      "}"
+    ],
+    "description": "Else branch (after an if block)",
+    "prefix": "else"
+  },
+  "Guard clause: leave early": {
+    "body": [
+      "if (${1:!condition}) {",
+      "\treturn ${2}",
+      "}",
+      "$0"
+    ],
+    "description": "Guard clause: leave early",
+    "prefix": [
+      "guard",
+      "ifret"
+    ]
+  },
+  "If not": {
+    "body": [
+      "if (!${1:condition}) {",
+      "\t$0",
+      "}"
+    ],
+    "description": "If not",
+    "prefix": [
+      "ifnot",
+      "ifn"
+    ]
+  },
+  "If a map has the key": {
+    "body": [
+      "if (${1:names}.has(\"${2:key}\")) {",
+      "\t$0",
+      "}"
+    ],
+    "description": "If a map has the key",
+    "prefix": "ifhas"
+  },
+  "While loop": {
+    "body": [
+      "while (${1:condition}) {",
+      "\t$0",
+      "}"
+    ],
+    "description": "While loop",
+    "prefix": "while"
+  },
+  "Endless loop with a way out": {
+    "body": [
+      "while (true) {",
+      "\t$0",
+      "\tif (${1:done}) {",
+      "\t\tbreak",
+      "\t}",
+      "}"
+    ],
+    "description": "Endless loop with a way out",
+    "prefix": [
+      "wh1",
+      "loop"
+    ]
+  },
+  "Run a method call on an operating-system thread": {
+    "body": [
+      "var ${1:task} = thread ${2:work}(${3})"
+    ],
+    "description": "Run a method call on an operating-system thread",
+    "prefix": [
+      "thread",
+      "osthread"
+    ]
+  },
+  "Run a method call on a virtual thread": {
+    "body": [
+      "var ${1:task} = virtual ${2:work}(${3})"
+    ],
+    "description": "Run a method call on a virtual thread",
+    "prefix": [
+      "virtual",
+      "vthread"
+    ]
+  },
+  "Wait for a task and take its value": {
+    "body": [
+      "var ${1:result} = await ${2:task}"
+    ],
+    "description": "Wait for a task and take its value",
+    "prefix": "await"
+  },
+  "Wait for all tasks": {
+    "body": [
+      "var ${1:results} = thread.joinAll(${2:tasks})"
+    ],
+    "description": "Wait for all tasks",
+    "prefix": "joinall"
+  },
+  "Block guarded by the program-wide lock": {
+    "body": [
+      "sync {",
+      "\t$0",
+      "}"
+    ],
+    "description": "Block guarded by the program-wide lock",
+    "prefix": "sync"
+  },
+  "Block guarded by a mutex": {
+    "body": [
+      "sync (${1:lock}) {",
+      "\t$0",
+      "}"
+    ],
+    "description": "Block guarded by a mutex",
+    "prefix": [
+      "syncl",
+      "synchronized"
+    ]
+  },
+  "Create a channel": {
+    "body": [
+      "var ${1:channel} = thread.channel(${2:16})"
+    ],
+    "description": "Create a channel",
+    "prefix": [
+      "chan",
+      "channel"
+    ]
+  },
+  "Test program: assertions, then the exit code": {
+    "body": [
+      "import test",
+      "",
+      "method main {",
+      "\ttest.assertEqual(${1:1 + 1}, ${2:2}, \"${3:addition}\")",
+      "\t$0",
+      "\texit(test.report())",
+      "}"
+    ],
+    "description": "Test program: assertions, then the exit code",
+    "prefix": [
+      "testmain",
+      "tmain"
+    ]
+  },
+  "Entry point parsing --options and positional arguments": {
+    "body": [
+      "import cli",
+      "",
+      "method main(array<string> args) {",
+      "\tvar parsed = cli.parse(args)",
+      "\tvar ${1:input} = cli.argument(parsed, 0, \"${2:default}\")",
+      "\t$0",
+      "}"
+    ],
+    "description": "Entry point parsing --options and positional arguments",
+    "prefix": [
+      "maincli",
+      "cli"
+    ]
+  },
+  "Compare two values in a test": {
+    "body": [
+      "test.assertEqual(${1:actual}, ${2:expected}, \"${3:name}\")"
+    ],
+    "description": "Compare two values in a test",
+    "prefix": [
+      "asserteq",
+      "assertequal"
+    ]
+  },
+  "Assert a condition in a test": {
+    "body": [
+      "test.assert(${1:condition}, \"${2:name}\")"
+    ],
+    "description": "Assert a condition in a test",
+    "prefix": [
+      "asserttrue",
+      "assert"
+    ]
+  },
+  "Read a command line option": {
+    "body": [
+      "var ${1:parsed} = cli.parse(args())",
+      "var ${2:port} = cli.option(${1}, \"${3:port}\", \"${4:8080}\")"
+    ],
+    "description": "Read a command line option",
+    "prefix": "cliopt"
+  },
+  "Read a command line flag": {
+    "body": [
+      "var ${1:verbose} = cli.flag(${2:parsed}, \"${3:verbose}\")"
+    ],
+    "description": "Read a command line flag",
+    "prefix": "cliflag"
+  },
+  "HTTP GET returning the body": {
+    "body": [
+      "var ${1:body} = http.get(\"${2:https://example.com}\")"
+    ],
+    "description": "HTTP GET returning the body",
+    "prefix": [
+      "httpget",
+      "get"
+    ]
+  },
+  "HTTP POST of a map or array as JSON": {
+    "body": [
+      "var ${1:body} = http.post(\"${2:https://example.com}\", ${3:{\"key\": \"value\"\\}})"
+    ],
+    "description": "HTTP POST of a map or array as JSON",
+    "prefix": [
+      "httppost",
+      "post"
+    ]
+  },
+  "HTTP GET parsed as JSON": {
+    "body": [
+      "var ${1:data} = http.getJson(\"${2:https://example.com/data.json}\")"
+    ],
+    "description": "HTTP GET parsed as JSON",
+    "prefix": [
+      "httpjson",
+      "getjson"
+    ]
+  },
+  "HTTP request with status, body and headers": {
+    "body": [
+      "var ${1:response} = http.request(\"${2:GET}\", \"${3:https://example.com}\", \"\", {})",
+      "if (${1}[\"ok\"]) {",
+      "\t$0",
+      "}"
+    ],
+    "description": "HTTP request with status, body and headers",
+    "prefix": [
+      "httpreq",
+      "http"
+    ]
+  },
+  "Parse JSON text": {
+    "body": [
+      "var ${1:data} = json.parse(${2:text})"
+    ],
+    "description": "Parse JSON text (aborts on invalid input)",
+    "prefix": [
+      "jsonparse",
+      "jparse"
+    ]
+  },
+  "Serialize a value to JSON": {
+    "body": [
+      "var ${1:text} = json.stringify(${2:value})"
+    ],
+    "description": "Serialize a value to JSON",
+    "prefix": [
+      "jsonstr",
+      "jstringify"
+    ]
+  },
+  "Serialize a value to indented JSON": {
+    "body": [
+      "var ${1:text} = json.pretty(${2:value})"
+    ],
+    "description": "Serialize a value to indented JSON",
+    "prefix": [
+      "jsonpretty",
+      "jpretty"
+    ]
+  },
+  "Load a JSON file": {
+    "body": [
+      "var ${1:data} = json.load(\"${2:data.json}\")"
+    ],
+    "description": "Load a JSON file",
+    "prefix": [
+      "jsonload",
+      "jload"
+    ]
+  },
+  "Save a value as a JSON file": {
+    "body": [
+      "json.save(${1:value}, \"${2:out}\", \"${3:data.json}\")"
+    ],
+    "description": "Save a value as a JSON file",
+    "prefix": [
+      "jsonsave",
+      "jsave"
+    ]
+  },
+  "Parse JSON text without aborting": {
+    "body": [
+      "var ${1:data} = json.tryParse(${2:text})",
+      "if (typeOf(${1}) == \"unknown\") {",
+      "\t$0",
+      "}"
+    ],
+    "description": "Parse JSON text without aborting (tryParse gives nil on invalid input; test it with typeOf)",
+    "prefix": [
+      "jsontry",
+      "jtry"
+    ]
+  },
+  "Read a whole file": {
+    "body": [
+      "var ${1:content} = readFile(\"${2:path}\")"
+    ],
+    "description": "Read a whole file",
+    "prefix": [
+      "readfile",
+      "rf"
+    ]
+  },
+  "Write a whole file": {
+    "body": [
+      "writeFile(\"${1:path}\", ${2:text})"
+    ],
+    "description": "Write a whole file",
+    "prefix": [
+      "writefile",
+      "wf"
+    ]
+  },
+  "Loop over the lines of a file": {
+    "body": [
+      "for (${1:line} in strings.lines(readFile(\"${2:path}\"))) {",
+      "\t$0",
+      "}"
+    ],
+    "description": "Loop over the lines of a file",
+    "prefix": [
+      "readlines",
+      "rl"
+    ]
+  },
+  "Loop over the entries of a directory": {
+    "body": [
+      "for (${1:entry} in os.listDir(\"${2:.}\")) {",
+      "\t$0",
+      "}"
+    ],
+    "description": "Loop over the entries of a directory",
+    "prefix": [
+      "listdir",
+      "ls"
+    ]
+  },
+  "Run a shell command and get its exit code": {
+    "body": [
+      "var ${1:code} = os.exec(\"${2:command}\")"
+    ],
+    "description": "Run a shell command and get its exit code",
+    "prefix": [
+      "exec",
+      "shell"
+    ]
+  },
+  "Read a line from standard input": {
+    "body": [
+      "var ${1:line} = io.readLine()"
+    ],
+    "description": "Read a line from standard input",
+    "prefix": [
+      "stdin",
+      "readline"
+    ]
   }
 }

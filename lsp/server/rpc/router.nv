@@ -1,0 +1,174 @@
+package rpc
+
+import base/maybe
+import log
+
+private final RPC_GATE_OPEN = 0
+private final RPC_NOT_INITIALIZED_TEXT = "the server is not initialized: send initialize first"
+private final RPC_REFUSED_TEXT = "the request is not allowed in the current state of the server"
+private final RPC_CANCELLED_TEXT = "request cancelled"
+private final RPC_UNKNOWN_METHOD_TEXT = "method not found: "
+
+define interface RequestHandler {
+    handle(Request request): object
+}
+
+define interface EnvelopeListener {
+    onEnvelope(Envelope envelope)
+}
+
+// Asked before every dispatch: 0 lets the message through, anything else is the JSON-RPC error code to answer.
+define interface RequestGate {
+    check(Request request): integer
+}
+
+define class Router {
+    map<string, RequestHandler> handlers
+    map<string, array<EnvelopeListener>> listeners
+    ResponseRouter responses
+    RequestGate gate
+
+    construct() {
+        this.handlers = {}
+        this.listeners = {}
+        this.responses = ResponseRouter()
+    }
+
+    method registerHandler(string methodName, RequestHandler handler) {
+        this.handlers[methodName] = handler
+    }
+
+    // Listeners of one envelope kind are called in registration order.
+    method registerListener(string kind, EnvelopeListener listener) {
+        if (this.listeners.has(kind) == false) {
+            this.listeners[kind] = []
+        }
+        this.listeners[kind].push(listener)
+    }
+
+    method expectResponse(string requestId, ResponseHandler handler) {
+        this.responses.expect(requestId, handler)
+    }
+
+    method setGate(RequestGate gate) {
+        this.gate = gate
+    }
+
+    method hasHandler(string methodName): bool {
+        return this.handlers.has(methodName)
+    }
+
+    method registeredMethods(): array<string> {
+        return this.handlers.keys()
+    }
+
+    // Cancellation, gate and lookup first, then the handler under the guard: a failing handler
+    // answers -32603 (or the code it raised) and the server keeps running. Only requests are answered.
+    method dispatch(Request request, MessageWriter writer, CancelRegistry cancellations) {
+        this.answer(request, writer, cancellations)
+        if (request.isNotification == false) {
+            cancellations.forget(request.id)
+        }
+    }
+
+    method answer(Request request, MessageWriter writer, CancelRegistry cancellations) {
+        var refusal = this.refusalFor(request, cancellations)
+        if (refusal.code != RPC_GATE_OPEN) {
+            this.reject(request, writer, refusal)
+            return
+        }
+        this.run(request, writer)
+    }
+
+    method dispatchEnvelope(Envelope envelope) {
+        for (listener in this.listeners.get(envelope.kind, [])) {
+            var outcome = runGuarded(RpcListenerWork(listener, envelope))
+            if (outcome.failed) {
+                log.error("rpc: a " + envelope.kind + " listener failed: " + outcome.message)
+            }
+        }
+    }
+
+    method routeResponse(map<string, object> message) {
+        var outcome = runGuarded(RpcResponseWork(this.responses, message))
+        if (outcome.failed) {
+            log.error("rpc: a response handler failed: " + outcome.message)
+        }
+    }
+
+    method refusalFor(Request request, CancelRegistry cancellations): RpcRefusal {
+        if (request.isNotification == false && cancellations.isCancelled(request.id)) {
+            return RpcRefusal(rpcRequestCancelled(), RPC_CANCELLED_TEXT)
+        }
+        if (isSome(this.gate)) {
+            var verdict = this.askGate(request)
+            if (verdict.code != RPC_GATE_OPEN) {
+                return verdict
+            }
+        }
+        if (this.handlers.has(request.methodName) == false) {
+            return RpcRefusal(rpcMethodNotFound(), RPC_UNKNOWN_METHOD_TEXT + request.methodName)
+        }
+        return RpcRefusal(RPC_GATE_OPEN, "")
+    }
+
+    // A gate that fails answers like a failing handler: the request is answered and its id forgotten as usual.
+    method askGate(Request request): RpcRefusal {
+        var outcome = runGuarded(RpcGateWork(this.gate, request))
+        if (outcome.failed) {
+            log.warn("rpc: the gate failed for " + request.methodName + ": " + outcome.message)
+            return RpcRefusal(errorCodeOf(outcome.message), errorTextOf(outcome.message))
+        }
+        return RpcRefusal(outcome.value, rpcRefusalText(outcome.value, request.methodName))
+    }
+
+    method reject(Request request, MessageWriter writer, RpcRefusal refusal) {
+        if (request.isNotification) {
+            log.debug("rpc: ignored the notification " + request.methodName + " (" + refusal.code + ")")
+            return
+        }
+        writer.sendError(request.id, refusal.code, refusal.text)
+    }
+
+    method run(Request request, MessageWriter writer) {
+        var outcome = runGuarded(RpcHandlerWork(this.handlers[request.methodName], request))
+        if (request.isNotification) {
+            this.noteNotification(request, outcome)
+            return
+        }
+        if (outcome.failed) {
+            writer.sendError(request.id, errorCodeOf(outcome.message), errorTextOf(outcome.message))
+            return
+        }
+        writer.sendResult(request.id, outcome.value)
+    }
+
+    method noteNotification(Request request, GuardOutcome outcome) {
+        if (outcome.failed) {
+            log.warn("rpc: the handler of " + request.methodName + " failed: " + outcome.message)
+        }
+    }
+}
+
+method rpcRefusalText(integer code, string methodName): string {
+    if (code == rpcRequestCancelled()) {
+        return RPC_CANCELLED_TEXT
+    }
+    if (code == rpcMethodNotFound()) {
+        return RPC_UNKNOWN_METHOD_TEXT + methodName
+    }
+    if (code == rpcServerNotInitialized()) {
+        return RPC_NOT_INITIALIZED_TEXT
+    }
+    return RPC_REFUSED_TEXT
+}
+
+define class RpcRefusal {
+    integer code
+    string text
+
+    construct(integer code, string text) {
+        this.code = code
+        this.text = text
+    }
+}

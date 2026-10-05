@@ -1,0 +1,117 @@
+package wiring
+
+import base/platform
+import base/text
+import projects/stdlib
+import projects/workspace
+import server/jobs
+import server/protocol
+import server/rpc
+import server/session
+import services/snippets
+
+private final WIRING_DEFAULT_ENCODING = "utf-16"
+private final WIRING_TEST_VARIABLE = "NOVUS_LSP_TEST"
+private final WIRING_CHECK_VARIABLE = "NOVUS_LSP_CHECK"
+private final WIRING_COALESCE_VARIABLE = "NOVUS_LSP_COALESCE"
+private final WIRING_TEST_BATCH = 1
+private final WIRING_FLAG_ON = "1"
+private final WIRING_TICK_MILLIS = 50
+
+// Everything shared, built once. testMode is additive: it records NOVUS_LSP_TEST=1 for Application.run.
+define class ServerParts {
+    Session session
+    Router router
+    MessageWriter writer
+    InboxChannel inbox
+    CancelRegistry cancellations
+    MainLoop loop
+    WireEncoder encoder
+    DiagnosticScheduler scheduler
+    CheckCoordinator checks
+    SnippetCatalogue snippets
+    bool testMode
+
+    construct(Session session, Router router, MessageWriter writer, InboxChannel inbox, CancelRegistry cancellations) {
+        this.session = session
+        this.router = router
+        this.writer = writer
+        this.inbox = inbox
+        this.cancellations = cancellations
+        this.testMode = false
+    }
+}
+
+define class Application {
+    ServerParts parts
+    MainLoop loop
+
+    construct(ServerParts parts, MainLoop loop) {
+        this.parts = parts
+        this.loop = loop
+    }
+
+    // The reader thread, the ticker thread (not in test mode: ticks would make the output racy) and the main loop.
+    method run(): integer {
+        startReaderThread(this.parts.inbox, this.parts.cancellations)
+        if (this.parts.testMode == false) {
+            startTickerThread(this.parts.inbox, WIRING_TICK_MILLIS)
+        }
+        return this.loop.run()
+    }
+}
+
+// Every channel, mutex and counter is created here exactly once (NG27); then each feature registers itself.
+method buildApplication(): Application {
+    var parts = wiringBuildParts(environmentValue(WIRING_TEST_VARIABLE, "") == WIRING_FLAG_ON)
+    registerLifecycleHandlers(parts)
+    registerDiagnosticProducers(parts)
+    registerCompletionHandlers(parts)
+    registerQueryHandlers(parts)
+    registerEditHandlers(parts)
+    registerSemanticTokenHandlers(parts)
+    finishRegistration(parts)
+    return Application(parts, parts.loop)
+}
+
+// standardLibrary() is called here, on the main thread before any other thread exists (V87).
+method wiringBuildParts(bool testMode): ServerParts {
+    var codec = PositionCodec(WIRING_DEFAULT_ENCODING)
+    var files = FileCache(DiskTextSource())
+    var workspace = Workspace(files, standardLibrary())
+    var session = Session(DocumentStore(), workspace)
+    session.codec = codec
+    var inbox = InboxChannel(INBOX_CAPACITY)
+    var cancellations = CancelRegistry()
+    var writer = MessageWriter()
+    var router = Router()
+    var parts = ServerParts(session, router, writer, inbox, cancellations)
+    parts.loop = MainLoop(inbox, router, writer, cancellations)
+    parts.testMode = testMode
+    wiringBuildJobs(parts)
+    return parts
+}
+
+method wiringBuildJobs(ServerParts parts) {
+    var session = parts.session
+    parts.encoder = WireEncoder(session.codec, session.client)
+    parts.scheduler = DiagnosticScheduler(session, parts.writer, parts.encoder, [])
+    parts.checks = CheckCoordinator(session, parts.scheduler, parts.inbox)
+    parts.snippets = loadSnippetCatalogue()
+    wiringApplyTestMode(parts)
+}
+
+// Test mode (9.5-2): own diagnostics are published at once, a check runs on the main thread and only when
+// NOVUS_LSP_CHECK=1, and the main loop takes one envelope at a time unless NOVUS_LSP_COALESCE=1 (a request is then
+// never answered -32801 because the reader happened to be ahead).
+method wiringApplyTestMode(ServerParts parts) {
+    if (parts.testMode == false) {
+        return
+    }
+    parts.scheduler.synchronous = true
+    parts.checks.synchronous = true
+    parts.checks.disabled = environmentValue(WIRING_CHECK_VARIABLE, "") != WIRING_FLAG_ON
+    if (environmentValue(WIRING_COALESCE_VARIABLE, "") != WIRING_FLAG_ON) {
+        parts.loop.maxBatch = WIRING_TEST_BATCH
+    }
+}

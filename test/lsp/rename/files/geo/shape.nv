@@ -1,0 +1,25 @@
+package geo
+
+define class Circle {
+    float radius
+
+    construct(float radius) {
+        this.radius = radius
+    }
+
+    method area(): float {
+        return this.radius * this.radius
+    }
+}
+
+define class Square {
+    float side
+
+    method area(): float {
+        return this.side * this.side
+    }
+}
+
+method make(): Circle {
+    return Circle(2.0)
+}

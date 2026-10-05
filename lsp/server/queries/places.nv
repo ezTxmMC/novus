@@ -1,0 +1,58 @@
+package queries
+
+import base/maybe
+import base/model
+import base/text
+import server/protocol
+import server/session
+
+// Turns the logical paths of an engine's answer into what the client knows: a uri and the line index to encode the
+// positions with (V128). A scratch buffer has the path "" and is the requesting document; every other path goes
+// through `Session.uriOf` and `Session.linesOf`, which map a std key to its materialised copy. Line indexes are built
+// once per file of an answer.
+define class QueriesPlaces {
+    Session session
+    WireEncoder encoder
+    Document requester
+    map<string, LineIndex> linesByPath
+
+    construct(Session session, WireEncoder encoder, Document requester) {
+        this.session = session
+        this.encoder = encoder
+        this.requester = requester
+        this.linesByPath = {}
+    }
+
+    method linesOf(string filePath): LineIndex {
+        if (filePath == "") {
+            return this.requester.lines
+        }
+        if (this.linesByPath.has(filePath) == false) {
+            this.linesByPath[filePath] = this.session.linesOf(filePath)
+        }
+        return this.linesByPath[filePath]
+    }
+
+    method uriOf(string filePath): string {
+        if (filePath == "") {
+            return this.requester.uri
+        }
+        return this.session.uriOf(filePath)
+    }
+
+    method location(Location place): map<string, object> {
+        return this.encoder.location(this.uriOf(place.filePath), this.linesOf(place.filePath), place.span)
+    }
+
+    // A place that has no uri (a std source that could not be written to the temporary directory) is dropped: a
+    // location without a uri would make the client drop the whole answer.
+    method locations(array<Location> places): array<object> {
+        var encoded = []
+        for (place in places) {
+            if (this.uriOf(place.filePath) != "") {
+                encoded.append(this.location(place))
+            }
+        }
+        return encoded
+    }
+}

@@ -1,0 +1,147 @@
+package main
+
+import "novus/lsp/semantics/builtins"
+import @sources
+
+// Golden case of the package `builtins` (DESIGN 6.14): the member tables are compared with the
+// runtime's own method dispatch, the free builtins with the code generator, the keyword
+// documentation with the lexer's keyword table.
+
+method describe(BuiltinMember member): string {
+    var arity = "" + member.minArity + ".." + member.maxArity
+    return member.receiver + "." + member.name + " " + arity + " params=[" + member.parameterNames.join(",") + "] -> " + member.returnType
+}
+
+method printTable(string receiver) {
+    var members = builtinMembersOf(receiver)
+    println "== " + receiver + " (" + members.length() + ")"
+    for (member in members) {
+        println describe(member)
+    }
+}
+
+method memberNames(array<BuiltinMember> members): array<string> {
+    var names = []
+    for (member in members) {
+        names.append(member.name)
+    }
+    return names
+}
+
+method checkAgainstRuntime(string receiver) {
+    var runtimeNames = dispatchNames(receiver)
+    var tableNames = memberNames(builtinMembersOf(receiver))
+    var missing = missingFrom(runtimeNames, tableNames)
+    var extra = missingFrom(tableNames, runtimeNames)
+    extra = missingFrom(extra, ["length"])
+    println receiver + ": runtime " + runtimeNames.length() + ", table " + tableNames.length() + ", missing=[" + missing.join(",") + "] extra=[" + extra.join(",") + "]"
+    println receiver + " has length: " + tableNames.contains("length")
+}
+
+method checkMembers() {
+    println "runtime dispatches length on every collection: " + dispatchHasLength()
+    checkAgainstRuntime("string")
+    checkAgainstRuntime("array")
+    checkAgainstRuntime("map")
+    println "any: " + memberNames(builtinMembersOf("any")).join(",")
+}
+
+method checkMemberShape() {
+    var problems = 0
+    for (receiver in builtinsReceiverTypes()) {
+        for (member in builtinMembersOf(receiver)) {
+            var bad = member.documentation == "" || member.signature.startsWith("method " + member.name + "(") == false
+            bad = bad || member.receiver != receiver || member.parameterNames.length() < member.minArity
+            bad = bad || (member.maxArity >= 0 && member.maxArity < member.minArity)
+            if (bad) {
+                problems = problems + 1
+                println "bad member " + describe(member)
+            }
+        }
+    }
+    println "member shape problems: " + problems
+}
+
+method checkReceiverNames() {
+    println "receivers: " + builtinsReceiverTypes().join(" ")
+    println "str -> " + builtinMembersOf("str").length() + ", array<integer> -> " + builtinMembersOf("array<integer>").length()
+    println "map<string, integer> -> " + builtinMembersOf("map<string, integer>").length() + ", ' string ' -> " + builtinMembersOf(" string ").length()
+    println "unknown -> " + builtinMembersOf("Point").length() + ", empty -> " + builtinMembersOf("").length()
+}
+
+method checkFreeBuiltins() {
+    var builtinsList = freeBuiltins()
+    var names = memberNames(builtinsList)
+    println "free builtins: " + builtinsList.length()
+    println names.join(" ")
+    var generated = codegenNames()
+    println "code generator: " + generated.length() + ", missing=[" + missingFrom(generated, names).join(",") + "] extra=[" + missingFrom(names, generated).join(",") + "]"
+    var wrongArity = []
+    for (member in builtinsList) {
+        var arity = codegenArity(member.name)
+        if (arity != member.minArity || arity != member.maxArity || member.receiver != "") {
+            wrongArity.append(member.name)
+        }
+    }
+    println "arity differs from the code generator: [" + wrongArity.join(",") + "]"
+    println describe(builtinsList[0])
+    println builtinsList[0].signature
+    println builtinsList[13].signature + " | " + builtinsList[2].signature
+}
+
+method checkAnnotations() {
+    for (annotation in builtinAnnotations()) {
+        println annotation.signature + " (" + annotation.minArity + ".." + annotation.maxArity + ")"
+    }
+}
+
+method checkKeywords() {
+    var keywords = lexerKeywords()
+    var undocumented = []
+    for (keyword in keywords) {
+        if (keywordDocumentation(keyword) == "") {
+            undocumented.append(keyword)
+        }
+    }
+    println "lexer keywords: " + keywords.length() + ", undocumented: [" + undocumented.join(",") + "]"
+    var undocumentedTypes = []
+    for (typeName in primitiveTypeNames()) {
+        if (keywordDocumentation(typeName) == "") {
+            undocumentedTypes.append(typeName)
+        }
+    }
+    println "types: " + primitiveTypeNames().join(" ") + ", undocumented: [" + undocumentedTypes.join(",") + "]"
+    println "contextual: " + (keywordDocumentation("define") != "") + " " + (keywordDocumentation("sync") != "") + " " + (keywordDocumentation("nothing") == "")
+    println keywordDocumentation("println")
+    println keywordDocumentation("break")
+}
+
+method checkScopes() {
+    var scopes = ["manifest", "type", "nvhHeader", "toplevel", "topLevel", "class", "classMember", "statement", "expression", "defineKind", "basedClause", "fieldAccessor", "nowhere"]
+    for (scope in scopes) {
+        println scope + ": " + keywordsForScope(scope).join(" ")
+    }
+    var copy = keywordsForScope("statement")
+    copy.append("changed")
+    println "statement stays at " + keywordsForScope("statement").length() + " words after a caller changed its copy"
+}
+
+method checkRowLayout() {
+    println "malformed rows: [" + builtinsMalformedRows().join(";") + "]"
+    var member = builtinsMemberFromRow("any", "demo|string a, integer b|bool|1|2|Either a or b | both.")
+    println describe(member) + " | " + member.signature + " | " + member.documentation
+}
+
+method main {
+    checkRowLayout()
+    checkMembers()
+    printTable("string")
+    printTable("array")
+    printTable("map")
+    checkMemberShape()
+    checkReceiverNames()
+    checkFreeBuiltins()
+    checkAnnotations()
+    checkKeywords()
+    checkScopes()
+}

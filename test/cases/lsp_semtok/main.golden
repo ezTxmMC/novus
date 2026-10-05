@@ -1,0 +1,603 @@
+== the legend
+types: namespace type class enum interface parameter variable property enumMember function method decorator keyword comment string number operator modifier
+modifiers: declaration readonly abstract deprecated defaultLibrary modification async documentation
+ok   a call hands out a copy
+ok   no duplicates
+ok   a constant is a readonly variable declaration
+ok   every type index is in the legend
+== LexicalTokens.classify: what the lexer alone decides
+var -> keyword
+x -> none
+= -> operator
+0x1F -> number
++ -> operator
+2.5 -> number
+"s" -> string
+a -> none
+< -> none
+b -> none
+>= -> operator
+c -> none
+=> -> operator
+d -> none
+&& -> operator
+! -> operator
+e -> none
+@ -> decorator
+; -> none
+: -> none
+// note -> comment
+/// doc -> comment +documentation
+/** block */ -> comment +documentation
+ok   a plain identifier is left alone
+ok   the end of file is left alone
+== contextual words: special in their position only
+define class Box based Base { }
+    define@0=keyword  class@7=keyword  based@17=keyword
+define abstract Shape { abstract method area(): float }
+    define@0=keyword  abstract@7=keyword  abstract@24=modifier
+define abstract class Shape { }
+    define@0=keyword  abstract@7=keyword  class@16=keyword
+define enum E { A }  define interface I { }  define annotation N { }
+    define@0=keyword  enum@7=keyword  define@21=keyword  interface@28=keyword  define@45=keyword  annotation@52=keyword
+var define = 1 var class = 2 var based = 3 var construct = 4
+    define@4=name  class@19=name  based@33=name  construct@47=name
+define class A { construct(integer x) { } method construct(integer y) { } }
+    construct@17=keyword  construct@49=name
+async method run() { } method abstract() { }
+    async@0=modifier  abstract@30=name
+method f(): T native "nv_f" variadic  method g(variadic: integer) { }
+    native@14=modifier  variadic@28=modifier  variadic@47=name
+define class A { string x: get, set  integer get: integer }
+    get@27=modifier  set@32=modifier  get@45=name
+var get = 1 var set = 2
+    get@4=name  set@16=name
+method m() { sync { x = 1 } sync (lock) { x = 2 } sync(x) y = sync(3) }
+    sync@13=keyword  sync@28=keyword  sync@50=keyword  sync@62=name
+method m() { var a = await t  var b = await + 1  var c = await -1 }
+    await@21=keyword  await@38=name  await@57=keyword
+method m() { var a = thread work(1)  var b = thread  var c = virtual obj.run() }
+    thread@21=keyword  thread@45=name  virtual@61=keyword
+method m() { a.define a.class a.sync a.await a.this }
+    define@15=name  class@24=name  sync@32=name  await@39=name  this@47=name
+method m() { this.x = this }
+    this@13=keyword  this@22=keyword
+import @file import base/maybe @Deprecated @Async{ } method m() { }
+    file@8=name  Deprecated@32=decorator  Async@44=decorator
+== the resolved pass: a program with a package, an enum, an interface and locals
+== main.nv
+1:0 import keyword
+1:7 geo namespace
+2:0 import keyword
+2:7 strings namespace
+4:0 define keyword
+4:7 enum keyword
+4:12 Kind enum +declaration
+5:4 Round enumMember +declaration +readonly
+5:11 Square enumMember +declaration +readonly
+8:0 define keyword
+8:7 interface keyword
+8:17 Named interface +declaration
+9:4 method keyword
+9:11 label method +declaration +abstract
+9:20 string type +defaultLibrary
+12:0 define keyword
+12:7 class keyword
+12:13 Box class +declaration
+12:17 based keyword
+12:23 Named interface
+13:4 Shape class
+13:10 shape property +declaration
+14:4 integer type +defaultLibrary
+14:12 size property +declaration
+14:18 get modifier
+14:23 set modifier
+16:4 construct keyword
+16:14 integer type +defaultLibrary
+16:22 size parameter +declaration
+17:8 this keyword
+17:13 size property +modification
+17:18 = operator
+17:20 size parameter
+20:4 method keyword
+20:11 label method +declaration
+20:20 string type +defaultLibrary
+21:8 return keyword
+21:15 strings namespace +defaultLibrary
+21:23 repeat function +defaultLibrary
+21:30 "b" string
+21:35 this keyword
+21:40 size property
+24:4 method keyword
+24:11 grow method +declaration
+24:16 integer type +defaultLibrary
+24:24 by parameter +declaration
+24:29 integer type +defaultLibrary
+25:8 var keyword
+25:12 next variable +declaration
+25:17 = operator
+25:19 this keyword
+25:24 size property
+25:29 + operator
+25:31 by parameter
+26:8 this keyword
+26:13 size property +modification
+26:18 = operator
+26:20 next variable
+27:8 return keyword
+27:15 next variable
+31:0 method keyword
+31:7 main function +declaration
+32:4 var keyword
+32:8 box variable +declaration
+32:12 = operator
+32:14 Box class
+32:18 size property
+32:22 = operator
+32:23 2 number
+33:4 var keyword
+33:8 kind variable +declaration
+33:13 = operator
+33:15 Kind enum
+33:20 Square enumMember +readonly
+34:4 for keyword
+34:9 item variable +declaration
+34:14 in keyword
+34:18 1 number
+34:21 2 number
+34:24 3 number
+35:8 box variable
+35:12 grow method
+35:17 item variable
+37:4 var keyword
+37:8 shape variable +declaration
+37:14 = operator
+37:16 Shape class
+37:22 name property
+37:26 = operator
+37:27 "s" string
+37:32 sides property
+37:37 = operator
+37:38 3 number
+38:4 println keyword
+38:12 shape variable
+38:18 count method +deprecated
+38:26 + operator
+38:28 shape variable
+38:34 corners method
+38:44 + operator
+38:46 SIDES variable +readonly
+39:4 println keyword
+39:12 geo namespace
+39:16 describe function
+39:25 shape variable
+39:32 + operator
+39:34 geo namespace
+39:38 describe function
+39:47 shape variable
+39:54 "p" string
+39:59 + operator
+39:61 box variable
+39:65 label method
+== names after a dot
+this.total =  -> total: property +modification
+this.total + by -> total: property
+return this.next.total -> next: property
+return this.next.total -> total: property
+    thing.bump(1)\n -> bump: method
+    thing.total\n -> total: property
+thing.missing\n -> missing: none
+thing.missing() -> missing: method
+thing.bump(1, 2) -> bump: method
+names.append -> append: method
+args.length -> length: method
+strings.repeat -> repeat: function +defaultLibrary
+strings.nothing\n -> nothing: none
+strings.nothing(1) -> nothing: none
+Kind.Round\n -> Round: enumMember +readonly
+Kind.values() -> values: method +defaultLibrary
+Kind.Nothing -> Nothing: none
+geo.describe(thing) -> describe: function
+thing.next.next.total -> next: property
+next.next.total -> total: property
+== strings and interpolations
+== interpolations
+1:0 method keyword
+1:7 main function +declaration
+2:4 var keyword
+2:8 n variable +declaration
+2:10 = operator
+2:12 1 number
+3:4 println keyword
+3:12 "a ${n + 2} b ${n} c" string
+3:17 n variable
+3:19 + operator
+3:21 2 number
+3:28 n variable
+4:4 println keyword
+4:12 "tab\t ${n}" string
+4:21 n variable
+5:4 println keyword
+5:12 "open ${n and no close" string
+6:4 println keyword
+6:12 "esc ${id(\"x\")} end" string
+7:4 println keyword
+7:12 "two\nlines ${n}\nend" string
+8:8 n variable
+11:0 method keyword
+11:7 id function +declaration
+11:10 string type +defaultLibrary
+11:17 s parameter +declaration
+11:21 string type +defaultLibrary
+12:4 return keyword
+12:11 s parameter
+== scopes
+LIMIT = 10 -> LIMIT: variable +declaration +readonly
+counter = 0 -> counter: variable +declaration
+first(integer LIMIT) -> LIMIT: parameter +declaration
+return LIMIT -> LIMIT: parameter
+var value = LIMIT -> LIMIT: variable +readonly
+var value = -> value: variable +declaration
+    value = value -> value: variable +modification
+= value + 1 -> value: variable
+    counter = counter + 1 -> counter: variable +modification
+= counter + 1 -> counter: variable
+third(string value) -> value: parameter +declaration
+for (value in -> value: variable +declaration
+println(value) -> value: variable
+integer typed -> typed: variable +declaration
+return value\n}\n\nmethod fourth -> value: parameter
+return later -> later: none
+== odd documents
+-- an empty document
+
+-- blanks only
+
+-- a comment only
+1:0 // nothing comment
+-- an unterminated string
+1:0 var keyword
+1:4 s variable +declaration
+1:6 = operator
+1:8 "abc string
+2:0 var keyword
+2:4 t variable +declaration
+2:6 = operator
+2:8 1 number
+-- an unterminated block comment
+1:0 var keyword
+1:4 a variable +declaration
+1:6 = operator
+1:8 1 number
+1:10 /* never closed\nvar b = 2\n comment
+-- a NUL byte
+1:0 var keyword
+1:4 a variable +declaration
+1:6 = operator
+1:8 1 number
+1:10 var keyword
+1:14 b variable +declaration
+1:16 = operator
+1:18 2 number
+-- CRLF line ends
+1:0 var keyword
+1:4 a variable +declaration
+1:6 = operator
+1:8 1 number
+2:0 var keyword
+2:4 b variable +declaration
+2:6 = operator
+2:8 "x" string
+-- unknown characters
+1:0 var keyword
+1:4 a variable +declaration
+1:6 = operator
+1:10 1 number
+-- a missing closing brace
+1:0 method keyword
+1:7 main function +declaration
+2:4 var keyword
+2:8 x variable +declaration
+2:10 = operator
+2:12 1 number
+== file kinds
+ok   a manifest has no tokens
+== a template: the header only
+2:0 var keyword
+2:4 greeting property +declaration
+2:13 = operator
+2:15 "hi" string
+== a scratch buffer
+1:0 var keyword
+1:4 a variable +declaration
+1:6 = operator
+1:8 1 number
+2:0 println keyword
+2:8 a variable
+== a file that is not open
+ok   it has no tokens from the cache
+== lexed on demand
+1:0 package keyword
+1:8 geo namespace +declaration
+3:0 method keyword
+3:7 twice function +declaration
+3:13 integer type +defaultLibrary
+3:21 n parameter +declaration
+3:25 integer type +defaultLibrary
+4:4 return keyword
+4:11 n parameter
+4:13 + operator
+4:15 n parameter
+ok   the same as when it is open
+== ranges
+-- the second line [31,59)
+2:4 var keyword
+2:8 big variable +declaration
+2:12 = operator
+2:14 n parameter
+2:16 + operator
+2:18 1 number
+2:20 // note comment
+-- inside a token (starts in `integer`) [12,14)
+1:9 integer type +defaultLibrary
+-- empty range [10,10)
+
+-- reversed range [20,5)
+
+-- after the end [81,85)
+
+-- before the start [-9,-3)
+
+-- wider than the text [-5,126)
+1:0 method keyword
+1:7 f function +declaration
+1:9 integer type +defaultLibrary
+1:17 n parameter +declaration
+1:21 integer type +defaultLibrary
+2:4 var keyword
+2:8 big variable +declaration
+2:12 = operator
+2:14 n parameter
+2:16 + operator
+2:18 1 number
+2:20 // note comment
+3:4 return keyword
+3:11 big variable
+ok   the whole range is the document
+== the two passes
+refine keeps the lexical span and adds identifiers
+1:0 method keyword
+1:7 f function +declaration
+1:9 integer type +defaultLibrary
+1:17 n parameter +declaration
+1:21 integer type +defaultLibrary
+2:11 n parameter
+refine of nothing is the identifiers only
+1:7 f function +declaration
+1:9 integer type +defaultLibrary
+1:17 n parameter +declaration
+1:21 integer type +defaultLibrary
+2:11 n parameter
+the lexical pass alone, token by token
+1:0 method keyword
+2:4 return keyword
+== encoded tokens
+-- utf-16: 20 tokens
+  0 0 6 comment
+  1 0 11 comment
+  1 0 6 keyword
+  0 7 4 function +declaration
+  1 4 3 keyword
+  0 4 1 variable +declaration
+  0 2 1 operator
+  0 2 1 number
+  0 2 10 comment
+  1 4 3 keyword
+  0 4 1 variable +declaration
+  0 2 1 operator
+  0 2 6 string
+  0 6 1 variable
+  0 1 7 string
+  1 4 7 keyword
+  0 8 6 string
+  1 0 5 string
+  0 6 1 operator
+  0 2 1 variable
+-- utf-8: 20 tokens
+  0 0 6 comment
+  1 0 11 comment
+  1 0 6 keyword
+  0 7 4 function +declaration
+  1 4 3 keyword
+  0 4 1 variable +declaration
+  0 2 1 operator
+  0 2 1 number
+  0 2 12 comment
+  1 4 3 keyword
+  0 4 1 variable +declaration
+  0 2 1 operator
+  0 2 10 string
+  0 10 1 variable
+  0 1 9 string
+  1 4 7 keyword
+  0 8 6 string
+  1 0 5 string
+  0 6 1 operator
+  0 2 1 variable
+== package, imports, annotations
+== main.nv
+1:0 package keyword
+1:8 main namespace +declaration
+2:0 import keyword
+2:8 helper namespace
+3:0 import keyword
+3:7 "x/y" string
+4:0 import keyword
+4:7 base namespace
+4:12 maybe namespace
+6:0 @ decorator
+6:1 Deprecated decorator
+6:12 text property
+6:16 = operator
+6:17 "old" string
+6:24 since property
+6:29 = operator
+6:30 "1" string
+7:0 method keyword
+7:7 legacy function +declaration +deprecated
+7:17 integer type +defaultLibrary
+8:4 return keyword
+8:11 1 number
+11:0 @ decorator
+11:1 Interface decorator
+12:0 async modifier
+12:6 method keyword
+12:13 fetch function +declaration +async
+12:19 integer type +defaultLibrary
+12:27 id parameter +declaration
+12:32 integer type +defaultLibrary
+13:4 return keyword
+13:11 id parameter
+16:0 method keyword
+16:7 main function +declaration
+17:4 var keyword
+17:8 parsed variable +declaration
+17:15 = operator
+17:17 parseInt function +defaultLibrary
+17:26 "7" string
+17:31 + operator
+17:33 legacy function +deprecated
+18:4 var keyword
+18:8 task variable +declaration
+18:13 = operator
+18:15 thread keyword
+18:22 fetch function +async
+18:28 parsed variable
+19:4 var keyword
+19:8 result variable +declaration
+19:15 = operator
+19:17 await keyword
+19:23 task variable
+20:4 var keyword
+20:8 kind variable +declaration
+20:13 = operator
+20:15 typeOf function +defaultLibrary
+20:22 result variable
+21:4 println keyword
+21:12 chr function +defaultLibrary
+21:16 65 number
+21:21 kind variable
+21:39 1 number
+21:52 = operator
+21:53 1 number
+== scope reuse
+ok   a long method without locals is fast
+ok   and fully classified
+== scope boundaries
+1:0 final modifier
+1:6 total variable +declaration +readonly
+1:12 = operator
+1:14 1 number
+2:0 method keyword
+2:7 plain function +declaration
+3:4 println keyword
+3:12 total variable +readonly
+4:4 println keyword
+4:12 total variable +readonly
+6:0 method keyword
+6:7 shadow function +declaration
+7:4 println keyword
+7:12 total variable +readonly
+8:4 var keyword
+8:8 total variable +declaration
+8:14 = operator
+8:16 2 number
+9:4 println keyword
+9:12 total variable
+11:0 method keyword
+11:7 after function +declaration
+11:13 integer type +defaultLibrary
+11:21 total parameter +declaration
+12:4 println keyword
+12:12 total parameter
+14:0 method keyword
+14:7 last function +declaration
+15:4 println keyword
+15:12 total variable +readonly
+== generic brackets
+== closing two generics
+1:0 method keyword
+1:7 f function +declaration
+1:9 map type +defaultLibrary
+1:13 string type +defaultLibrary
+1:21 array type +defaultLibrary
+1:27 integer type +defaultLibrary
+1:37 m parameter +declaration
+1:40 integer type +defaultLibrary
+1:48 a parameter +declaration
+1:52 integer type +defaultLibrary
+2:4 return keyword
+2:11 a parameter
+2:13 + operator
+2:15 1 number
+== long lists
+ok   the call after a long first argument
+ok   a field after a long initializer
+== assigned members
+== member assignments
+1:0 define keyword
+1:7 class keyword
+1:13 Counter class +declaration
+2:4 integer type +defaultLibrary
+2:12 count property +declaration
+2:19 get modifier
+2:24 set modifier
+3:4 method keyword
+3:11 bump method +declaration
+4:8 var keyword
+4:12 local variable +declaration
+4:18 = operator
+4:20 1 number
+5:8 local variable +modification
+5:14 = operator
+5:16 2 number
+6:8 this keyword
+6:13 count property +modification
+6:19 = operator
+6:21 3 number
+7:8 if keyword
+7:12 this keyword
+7:17 count property
+7:23 == operator
+7:26 3 number
+8:12 this keyword
+8:17 count property +modification
+8:23 = operator
+8:25 this keyword
+8:30 count property
+8:36 + operator
+8:38 1 number
+12:0 method keyword
+12:7 main function +declaration
+13:4 var keyword
+13:8 counter variable +declaration
+13:16 = operator
+13:18 Counter class
+13:26 count property
+13:31 = operator
+13:32 1 number
+14:4 counter variable
+14:12 count property +modification
+14:18 = operator
+14:20 5 number
+== async only for callables
+== annotated class and method
+1:0 @ decorator
+1:1 Async decorator
+2:0 define keyword
+2:7 class keyword
+2:13 Worker class +declaration
+4:0 @ decorator
+4:1 Async decorator
+5:0 method keyword
+5:7 run function +declaration +async

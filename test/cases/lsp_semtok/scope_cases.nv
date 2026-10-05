@@ -1,0 +1,55 @@
+package main
+
+import "novus/lsp/features/semtok"
+import @support
+
+// Names that mean different things in different places: a parameter hides a global, a local is visible after its
+// declaration only, the same name in two callables is two variables, and an assignment is a modification.
+method runScopeCases() {
+    println("== scopes")
+    var source = stLines([
+        "private final LIMIT = 10",
+        "var counter = 0",
+        "",
+        "method first(integer LIMIT): integer {",
+        "    return LIMIT",
+        "}",
+        "",
+        "method second(): integer {",
+        "    var value = LIMIT",
+        "    value = value + 1",
+        "    counter = counter + 1",
+        "    return value",
+        "}",
+        "",
+        "method third(string value): string {",
+        "    for (value in [1]) {",
+        "        println(value)",
+        "    }",
+        "    integer typed = 2",
+        "    return value",
+        "}",
+        "",
+        "method fourth(): integer {",
+        "    return later",
+        "}"
+    ])
+    var world = StWorld(stProject(source))
+    var spans = world.spans("/p/main.nv", source)
+    stProbe(source, spans, "LIMIT = 10", "LIMIT")
+    stProbe(source, spans, "counter = 0", "counter")
+    stProbe(source, spans, "first(integer LIMIT)", "LIMIT")
+    stProbe(source, spans, "return LIMIT", "LIMIT")
+    stProbe(source, spans, "var value = LIMIT", "LIMIT")
+    stProbe(source, spans, "var value =", "value")
+    stProbe(source, spans, "    value = value", "value")
+    stProbe(source, spans, "= value + 1", "value")
+    stProbe(source, spans, "    counter = counter + 1", "counter")
+    stProbe(source, spans, "= counter + 1", "counter")
+    stProbe(source, spans, "third(string value)", "value")
+    stProbe(source, spans, "for (value in", "value")
+    stProbe(source, spans, "println(value)", "value")
+    stProbe(source, spans, "integer typed", "typed")
+    stProbe(source, spans, "return value\n}\n\nmethod fourth", "value")
+    stProbe(source, spans, "return later", "later")
+}

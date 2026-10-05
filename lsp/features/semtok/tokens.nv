@@ -1,0 +1,106 @@
+package semtok
+
+import base/model
+import base/text
+import projects/workspace
+import syntax/lexing
+
+// Lexical pass first, resolved refinement of the identifiers second. Nothing here reads a file or touches server
+// state: the answer follows from the `FileContext` alone, and a token that cannot be classified is left out.
+define class SemanticTokenEngine {
+    LexicalTokens lexical
+    ResolvedTokens resolved
+
+    construct() {
+        this.lexical = LexicalTokens()
+        this.resolved = ResolvedTokens()
+    }
+
+    method spansFor(FileContext context, Span range): array<SemanticSpan> {
+        var source = SemtokSources(context).build(range)
+        var lexicalSpans = this.lexicalSpans(context, source)
+        return this.resolved.refineSource(context, source, lexicalSpans)
+    }
+
+    method lexicalSpans(FileContext context, SemtokSource source): array<SemanticSpan> {
+        var spans = []
+        for (stream in source.streams) {
+            this.addStream(context, stream, spans)
+        }
+        for (comment in source.comments) {
+            spans.append(this.lexical.classify(comment))
+        }
+        return spans
+    }
+
+    method addStream(FileContext context, SemtokStream stream, array<SemanticSpan> spans) {
+        var i = stream.first
+        while (i < stream.last) {
+            var span = this.lexical.classifyAt(stream, i)
+            if (semtokIsNone(span) && stream.inner) {
+                span = this.innerPunctuation(stream.tokens[i])
+            }
+            if (semtokIsNone(span) == false && this.isImportSeparator(context, stream.tokens[i]) == false) {
+                spans.append(span)
+            }
+            i = i + 1
+        }
+    }
+
+    // Inside `${...}` the string would show through every bracket and dot, so these become operators, which themes
+    // paint like plain code.
+    method innerPunctuation(Token token): SemanticSpan {
+        if (token.kind != TokenKind.Punct) {
+            return semtokNoSpan(token.start)
+        }
+        return SemanticSpan(token.span(), SEMTOK_TYPE_OPERATOR, SEMTOK_MOD_NONE)
+    }
+
+    // The `/` and `@` of `import base/maybe` and `import @file` are punctuation of the path, not operators.
+    method isImportSeparator(FileContext context, Token token): bool {
+        return token.kind == TokenKind.Punct && semtokInsideImportPath(context.syntax, token.start)
+    }
+}
+
+// Refines the identifiers of a lexical pass through the resolver (class, method, parameter, property, ...). The
+// lexical spans are kept as they are; every identifier that no lexical span covers is classified by `SemtokNames`.
+define class ResolvedTokens {
+    construct() {
+    }
+
+    method refine(FileContext context, Span range, array<SemanticSpan> lexical): array<SemanticSpan> {
+        return this.refineSource(context, SemtokSources(context).build(range), lexical)
+    }
+
+    // Additive: the same over a source that the caller has built already, so the engine reads the tokens once.
+    method refineSource(FileContext context, SemtokSource source, array<SemanticSpan> lexical): array<SemanticSpan> {
+        var covered = {}
+        var spans = []
+        for (span in lexical) {
+            covered["" + span.span.start] = true
+            spans.append(span)
+        }
+        var names = SemtokNames(context)
+        for (stream in source.streams) {
+            this.classifyStream(names, stream, covered, spans)
+        }
+        return spans
+    }
+
+    method classifyStream(SemtokNames names, SemtokStream stream, map<string, bool> covered, array<SemanticSpan> spans) {
+        var i = stream.first
+        while (i < stream.last) {
+            var token = stream.tokens[i]
+            if (token.kind == TokenKind.Ident && covered.has("" + token.start) == false) {
+                this.addUnlessNone(spans, names.classify(stream, i))
+            }
+            i = i + 1
+        }
+    }
+
+    method addUnlessNone(array<SemanticSpan> spans, SemanticSpan span) {
+        if (semtokIsNone(span) == false) {
+            spans.append(span)
+        }
+    }
+}

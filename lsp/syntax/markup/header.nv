@@ -1,0 +1,149 @@
+package markup
+
+import base/maybe
+import base/text
+import syntax/outline
+
+private final MARKUP_IMPORT_WORD = "import"
+private final MARKUP_PACKAGE_WORD = "package"
+private final MARKUP_DEFINE_WORD = "define"
+private final MARKUP_FIELD_WORDS = ["prop", "ref", "var"]
+private final MARKUP_DEFINE_AFTER_MEMBER_MESSAGE = "define blocks go before the component's members in the <?nv ?> block"
+
+// What markup itself reads out of the header island: the imports, the `prop|ref|var` fields and the `define`
+// blocks. `claimed` lists the spans of all those statements so that the member parser does not see them again.
+define class MarkupHeaderResult {
+    array<ImportDecl> imports
+    array<Decl> fields
+    array<Span> defineSpans
+    array<Span> claimed
+    array<SyntaxIssue> issues
+    map<string, bool> fieldNames
+    bool memberSeen
+
+    construct() {
+        this.imports = []
+        this.fields = []
+        this.defineSpans = []
+        this.claimed = []
+        this.issues = []
+        this.fieldNames = {}
+        this.memberSeen = false
+    }
+}
+
+// Splits the header into statements like nvhDecls of the compiler: a statement ends at the first line break
+// outside brackets, strings and comments, and its first word decides what it is. Everything that is none of the
+// known words is a member and stays for SourceParser.parseMembers.
+define class MarkupHeaderReader {
+    string text
+    Span region
+    string className
+    MarkupHeaderResult result
+    MarkupStatementReader statements
+
+    construct(string text, Span region, string className) {
+        this.text = text
+        this.region = region
+        this.className = className
+        this.result = MarkupHeaderResult()
+        this.statements = MarkupStatementReader(text, className, this.result.issues)
+    }
+
+    method read(): MarkupHeaderResult {
+        var index = this.region.start
+        while (index < this.region.end) {
+            index = this.step(index)
+        }
+        return this.result
+    }
+
+    // Always moves forward.
+    method step(integer index): integer {
+        var current = this.text.charAt(index)
+        if (markupIsSpace(current)) {
+            return index + 1
+        }
+        if (current == "/" && markupStartsComment(this.text, index, this.region.end)) {
+            return markupSkipComment(this.text, index, this.region.end)
+        }
+        var end = markupStatementEnd(this.text, index, this.region.end)
+        this.handle(index, markupTrimEnd(this.text, index, end))
+        if (end <= index) {
+            return index + 1
+        }
+        return end
+    }
+
+    method handle(integer start, integer end) {
+        var word = markupFirstWord(this.text, start, end)
+        if (word == MARKUP_IMPORT_WORD) {
+            this.handleImport(start, end)
+            return
+        }
+        if (word == MARKUP_PACKAGE_WORD) {
+            this.result.claimed.append(Span(start, end))
+            return
+        }
+        if (word == MARKUP_DEFINE_WORD) {
+            this.handleDefine(start, end)
+            return
+        }
+        this.result.memberSeen = true
+        if (MARKUP_FIELD_WORDS.contains(word)) {
+            this.handleField(word, start, end)
+        }
+    }
+
+    method handleImport(integer start, integer end) {
+        this.result.claimed.append(Span(start, end))
+        var declaration = this.statements.readImport(start, end)
+        if (isSome(declaration)) {
+            this.result.imports.append(declaration)
+        }
+    }
+
+    // The compiler rejects a define after the first member; the block is still read so that its names resolve.
+    method handleDefine(integer start, integer end) {
+        this.result.claimed.append(Span(start, end))
+        this.result.defineSpans.append(Span(start, end))
+        if (this.result.memberSeen) {
+            var wordEnd = start + MARKUP_DEFINE_WORD.length()
+            this.result.issues.append(SyntaxIssue(Span(start, wordEnd), "misplaced-define", MARKUP_DEFINE_AFTER_MEMBER_MESSAGE, false))
+        }
+    }
+
+    method handleField(string word, integer start, integer end) {
+        this.result.claimed.append(Span(start, end))
+        var field = this.statements.readField(word, start, end)
+        if (isSome(field)) {
+            this.addField(field)
+        }
+    }
+
+    method addField(Decl field) {
+        if (this.result.fieldNames.has(field.name)) {
+            this.result.issues.append(SyntaxIssue(field.nameSpan, "duplicate-declaration", "'" + field.name + "' is declared twice", false))
+        }
+        this.result.fieldNames[field.name] = true
+        this.result.fields.append(field)
+    }
+}
+
+// The run of ASCII letters at `start`, within `end`.
+method markupFirstWord(string text, integer start, integer end): string {
+    var index = start
+    while (index < end && markupIsAlpha(text.charAt(index))) {
+        index = index + 1
+    }
+    return text.substring(start, index)
+}
+
+// `end` moved back over trailing whitespace, but never before `start`.
+method markupTrimEnd(string text, integer start, integer end): integer {
+    var trimmed = end
+    while (trimmed > start && markupIsSpace(text.charAt(trimmed - 1))) {
+        trimmed = trimmed - 1
+    }
+    return trimmed
+}

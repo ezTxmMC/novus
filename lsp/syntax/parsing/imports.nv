@@ -1,0 +1,161 @@
+package parsing
+
+import base/maybe
+import base/text
+import syntax/lexing
+import syntax/outline
+
+// `package NAME` and the three import forms: `import a/b`, `import @a/b` and `import "mod/pkg/file"`.
+define class ParsingImports {
+    ParsingCursor cursor
+    SourceFile file
+
+    construct(ParsingCursor cursor, SourceFile file) {
+        this.cursor = cursor
+        this.file = file
+    }
+
+    // The cursor stands on `package`. The first package line wins, later ones are tolerated.
+    method parsePackage() {
+        this.cursor.advance()
+        var name = this.cursor.current()
+        if (name.kind != TokenKind.Ident) {
+            this.cursor.reportAtToken(name, "expected-token", "expected package name but found " + this.cursor.describe(this.cursor.pos))
+            return
+        }
+        this.cursor.advance()
+        if (this.file.packageName == "") {
+            this.file.packageName = name.text
+            this.file.packageSpan = name.span()
+        }
+    }
+
+    // The cursor stands on `import`.
+    method parseImport() {
+        var keyword = this.cursor.current()
+        this.cursor.advance()
+        var target = this.cursor.current()
+        if (target.kind == TokenKind.String) {
+            this.addModuleImport(keyword, target)
+            return
+        }
+        var isFile = this.cursor.punctAt(this.cursor.pos, "@")
+        if (isFile) {
+            this.cursor.advance()
+        }
+        this.parsePathImport(keyword, isFile)
+    }
+
+    method addModuleImport(Token keyword, Token target) {
+        this.cursor.advance()
+        var targetSpan = Span(target.start + 1, target.end - 1)
+        if (target.terminated == false) {
+            targetSpan = Span(target.start + 1, target.end)
+        }
+        this.file.imports.append(ImportDecl(ImportKind.Module, target.value, Span(keyword.start, target.end), targetSpan))
+    }
+
+    method parsePathImport(Token keyword, bool isFile) {
+        var first = this.cursor.current()
+        if (first.kind != TokenKind.Ident) {
+            this.cursor.reportAtToken(first, "expected-token", "expected package name after 'import' but found " + this.cursor.describe(this.cursor.pos))
+            return
+        }
+        this.cursor.advance()
+        var parts = [first.text]
+        var lastEnd = first.end
+        while (this.cursor.punctAt(this.cursor.pos, "/")) {
+            var segment = this.nextSegment()
+            if (isNone(segment)) {
+                break
+            }
+            parts.append(segment.text)
+            lastEnd = segment.end
+        }
+        var kind = ImportKind.Package
+        if (isFile) {
+            kind = ImportKind.File
+        }
+        this.file.imports.append(ImportDecl(kind, parts.join("/"), Span(keyword.start, lastEnd), Span(first.start, lastEnd)))
+    }
+
+    // After a `/`: the next path segment (both tokens consumed), or nil after reporting a path that ends in a slash.
+    method nextSegment(): Token {
+        var segment = this.cursor.tokenAt(this.cursor.pos + 1)
+        if (this.cursor.identAt(this.cursor.pos + 1) == false) {
+            this.cursor.reportAtToken(this.cursor.current(), "expected-token", "expected package name after '/' but found " + this.cursor.describe(this.cursor.pos + 1))
+            this.cursor.advance()
+            return nothing()
+        }
+        this.cursor.pos = this.cursor.pos + 2
+        return segment
+    }
+}
+
+
+// `@Name` with optional `{key="value", ...}` arguments; only string values are kept.
+define class ParsingAnnotations {
+    ParsingCursor cursor
+    ParsingSignatures signatures
+
+    construct(ParsingCursor cursor, ParsingSignatures signatures) {
+        this.cursor = cursor
+        this.signatures = signatures
+    }
+
+    method readAnnotation(): AnnotationUse {
+        var at = this.cursor.current()
+        this.cursor.advance()
+        var name = this.signatures.readName("annotation name after '@'")
+        if (isNone(name)) {
+            return nothing()
+        }
+        var use = AnnotationUse(name.text, Span(at.start, name.end))
+        if (this.cursor.punctAt(this.cursor.pos, "{")) {
+            this.readAnnotationArguments(use)
+        }
+        use.span = Span(at.start, this.cursor.lastEnd())
+        return use
+    }
+
+    method readAnnotationArguments(AnnotationUse use) {
+        var openToken = this.cursor.current()
+        this.cursor.advance()
+        while (this.cursor.punctAt(this.cursor.pos, "}") == false) {
+            if (this.cursor.atEnd() || parsingIsBodyKiller(this.cursor, this.cursor.pos)) {
+                this.cursor.reportAtToken(openToken, "unterminated-list", "unterminated annotation arguments: the closing '}' is missing")
+                return
+            }
+            this.readAnnotationEntry(use)
+        }
+        this.cursor.advance()
+    }
+
+    method readAnnotationEntry(AnnotationUse use) {
+        var key = this.cursor.current()
+        if (key.kind == TokenKind.Ident && this.cursor.punctAt(this.cursor.pos + 1, "=")) {
+            this.cursor.pos = this.cursor.pos + 2
+            this.readAnnotationValue(use, key.text)
+        }
+        if (this.cursor.current().isPunct(",")) {
+            this.cursor.advance()
+            return
+        }
+        if (key.start == this.cursor.current().start) {
+            this.cursor.advance()
+        }
+    }
+
+    method readAnnotationValue(AnnotationUse use, string key) {
+        var value = this.cursor.current()
+        if (value.kind == TokenKind.String) {
+            use.values[key] = value.value
+            this.cursor.advance()
+            return
+        }
+        var end = this.cursor.expressions.endOf(this.cursor.pos)
+        if (end > this.cursor.pos) {
+            this.cursor.pos = end
+        }
+    }
+}

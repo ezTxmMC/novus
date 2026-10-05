@@ -1,0 +1,132 @@
+package main
+
+import "novus/lsp/base/maybe"
+import "novus/lsp/base/model"
+import "novus/lsp/features/candidates"
+import "novus/lsp/features/completion"
+import @support
+
+private final CX_MAIN = "/p/main.nv"
+
+method cxItemNamed(CompletionList list, string label, string detailPart): CompletionItem {
+    for (item in list.items) {
+        if (item.label == label && item.detail.contains(detailPart)) {
+            return item
+        }
+    }
+    return nothing()
+}
+
+method runCapCases() {
+    println("#### the result cap")
+    var world = CxWorld(cxProject())
+    var marked = "package main\n\nmethod f(integer count) {\n    <|>\n}\n"
+    var all = world.complete(CX_MAIN, marked)
+    println("default cap: " + (all.items.length() > 100) + " (more than 100 items), incomplete=" + all.isIncomplete)
+    world.settings.completionMaxItems = 10
+    var cut = world.complete(CX_MAIN, marked)
+    println("cap 10: " + cut.items.length() + " items, incomplete=" + cut.isIncomplete)
+    println("the first ones: " + cxLabels(cut))
+    world.settings.completionMaxItems = all.items.length()
+    var exact = world.complete(CX_MAIN, marked)
+    println("cap equals the count: " + (exact.items.length() == all.items.length()) + " (same count), incomplete=" + exact.isIncomplete)
+    world.settings.completionMaxItems = 0
+    println("cap 0 is no cap: " + (world.complete(CX_MAIN, marked).items.length() == all.items.length()) + " (same count)")
+}
+
+method runTriggerCases() {
+    println("#### trigger characters and replace spans")
+    var world = CxWorld(cxProject())
+    var marked = "package main\n\nimport geo\n\nmethod main() {\n    var shape = Shape(\"a\", 1.0)\n    shape.na<|>me\n}\n"
+    var context = world.contextOf(CX_MAIN, marked)
+    var list = world.engine.complete(context, cxMarkerOffset(marked), ".")
+    for (item in list.items) {
+        println(item.label + " replaces [" + cxWithoutMarker(marked).substring(item.replaceSpan.start, item.replaceSpan.end) + "]")
+    }
+    var other = world.engine.complete(context, cxMarkerOffset(marked), "@")
+    println("another trigger character gives the same list: " + (cxLabels(other) == cxLabels(list)))
+}
+
+method runResolveCases() {
+    println("#### resolve")
+    var world = CxWorld(cxProject())
+    var marked = "package main\n\nimport geo\n\nmethod main() {\n    arrays.so<|>\n}\n"
+    var list = world.complete(CX_MAIN, marked)
+    var item = cxItemNamed(list, "sort", "")
+    println("std item key: " + item.resolveKey)
+    println("documentation before: [" + item.documentation + "]")
+    var context = world.contextOf(CX_MAIN, marked)
+    var resolved = world.engine.resolve(context, item)
+    println("documentation after: " + cxEscape(resolved.documentation))
+    println("uri of the key: " + completionUriOfKey(item.resolveKey))
+    var moduleList = world.complete(CX_MAIN, "package main\n\nimport ar<|>\n")
+    var module = cxItemNamed(moduleList, "arrays", "")
+    println("module key: " + module.resolveKey)
+    println("module documentation: " + cxEscape(world.engine.resolve(world.contextOf(CX_MAIN, "package main\n\nimport ar<|>\n"), module).documentation))
+    var libList = world.complete(CX_MAIN, "package main\n\nmethod f() {\n    libFun<|>\n}\n")
+    var libItem = cxItemNamed(libList, "libFunction", "ex.com/lib")
+    println("dependency key: " + libItem.resolveKey)
+    var libContext = world.contextOf(CX_MAIN, "package main\n\nmethod f() {\n    libFun<|>\n}\n")
+    println("dependency documentation: " + cxEscape(world.engine.resolve(libContext, libItem).documentation))
+    var own = cxItemNamed(world.complete(CX_MAIN, "package main\n\nimport geo\n\nmethod f() {\n    Shap<|>\n}\n"), "Shape", "")
+    println("project item key: [" + own.resolveKey + "]")
+    println("project item documentation: " + cxEscape(own.documentation))
+}
+
+method runBadKeyCases() {
+    println("#### resolve with a bad key")
+    var world = CxWorld(cxProject())
+    var context = world.contextOf(CX_MAIN, "package main\n<|>")
+    for (key in ["", "no separators", "a|b", "u|Method|/missing.nv|5", "u|Method|std:nothing|5", "u|Method|std:strings|notanumber", "file:///p/a|b.nv|Method|std:strings|3"]) {
+        var item = CompletionItem("x", CompletionKind.Method, "")
+        item.resolveKey = key
+        var resolved = world.engine.resolve(context, item)
+        println("key [" + key + "]: uri=[" + completionUriOfKey(key) + "] documentation=[" + cxEscape(resolved.documentation) + "] detail=[" + resolved.detail + "]")
+    }
+}
+
+method runPlainTextCases() {
+    println("#### the plain text of snippets")
+    var dollar = "$"
+    var sources = [
+        "println \"" + dollar + "{1:text}\"",
+        "for (" + dollar + "{1:item} in " + dollar + "{2:items}) {\\n    " + dollar + "0\\n}",
+        dollar + "{1:name} = " + dollar + "1",
+        dollar + "{1:a" + dollar + "{2:b}c}",
+        dollar + "{3|get,get\\, set,set|}",
+        "price \\" + dollar + "5 " + dollar + "{1:{x}}",
+        "call(" + dollar + "1) and " + dollar + "{9}",
+        "tail " + dollar,
+        "open " + dollar + "{1:never closed",
+        "bare " + dollar + "{x}",
+        "nested " + dollar + "{1:" + dollar + "{2:" + dollar + "{3:" + dollar + "{4:" + dollar + "{5:" + dollar + "{6:" + dollar + "{7:" + dollar + "{8:" + dollar + "{9:deep}}}}}}}}}"
+    ]
+    for (source in sources) {
+        println(cxEscape(source) + "  ->  " + cxEscape(CompletionPlainText(source).render()))
+    }
+    var item = CompletionItem("t", CompletionKind.Snippet, "")
+    item.insertText = "while (" + dollar + "{1:condition}) {\n    " + dollar + "0\n}"
+    item.isSnippet = true
+    var plain = CompletionItem("name", CompletionKind.Variable, "")
+    plain.insertText = "name"
+    var converted = completionWithoutSnippets(CompletionList(true, [item, plain]))
+    println("list: incomplete=" + converted.isIncomplete + " first snippet=" + converted.items[0].isSnippet + " [" + cxEscape(converted.items[0].insertText) + "] second snippet=" + converted.items[1].isSnippet + " [" + converted.items[1].insertText + "]")
+}
+
+method runScratchCases() {
+    println("#### a scratch buffer")
+    var world = CxWorld(cxProject())
+    var source = "define class Box {\n    integer width\n}\n\nmethod main() {\n    var count = 1\n    var box = Box(2)\n    cou\n    box.wi\n    Bo\n}\n"
+    var context = world.space.contextFor(Document("untitled:Untitled-1", "novus", 1, source))
+    for (marker in ["    cou", "box.wi", "    Bo"]) {
+        var offset = source.indexOf(marker) + marker.length()
+        var list = world.engine.complete(context, offset, "")
+        var shown = []
+        for (item in list.items) {
+            if (item.sortText.startsWith("0") || item.sortText.startsWith("1") || item.sortText.startsWith("2")) {
+                shown.append(item.label)
+            }
+        }
+        println(marker.trim() + ": " + shown.join(" "))
+    }
+}

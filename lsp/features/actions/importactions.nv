@@ -1,0 +1,128 @@
+package actions
+
+import base/maybe
+import base/model
+import base/text
+import features/candidates
+import projects/closure
+import projects/workspace
+import syntax/outline
+
+private final ACTIONS_QUICKFIX = "quickfix"
+private final ACTIONS_ORGANIZE_KIND = "source.organizeImports"
+private final ACTIONS_CODE_MODULE_NOT_IMPORTED = "module-not-imported"
+private final ACTIONS_CODE_UNKNOWN_NAME = "unknown-name"
+private final ACTIONS_IMPORT_KEYWORD_LENGTH = 7
+
+// *Import 'x'* for `module-not-imported` and `unknown-name`, and *Organize imports*. The edit comes from `importEditFor` of
+// `candidates`, so a quick fix and an auto-import completion place the line alike (8.8). A diagnostic is only a hint from the
+// client: the code, the span and the name are checked against the document again before an action is built.
+define class ImportActions {
+    Settings settings
+    ActionsImportCandidates candidates
+
+    construct(Settings settings) {
+        this.settings = settings
+        this.candidates = ActionsImportCandidates()
+    }
+
+    method quickFixes(FileContext context, array<Diagnostic> diagnostics): array<CodeActionItem> {
+        var items = []
+        for (diagnostic in diagnostics) {
+            var name = this.nameAt(context, diagnostic)
+            if (name == "") {
+                continue
+            }
+            if (diagnostic.code == ACTIONS_CODE_MODULE_NOT_IMPORTED) {
+                this.fixModule(context, diagnostic, name, items)
+            }
+            if (diagnostic.code == ACTIONS_CODE_UNKNOWN_NAME) {
+                this.fixName(context, diagnostic, name, items)
+            }
+        }
+        return items
+    }
+
+    // The identifier the diagnostic points at, "" when the span is not inside the text, is not one word (so no search starts for it) or differs from `data`.
+    method nameAt(FileContext context, Diagnostic diagnostic): string {
+        var text = context.document.text
+        var span = diagnostic.span
+        if (span.start < 0 || span.end > text.length() || span.start >= span.end) {
+            return ""
+        }
+        var name = text.substring(span.start, span.end)
+        if (actionsIsWord(name) == false || (diagnostic.data != "" && diagnostic.data != name)) {
+            return ""
+        }
+        return name
+    }
+
+    method fixModule(FileContext context, Diagnostic diagnostic, string name, array<CodeActionItem> items) {
+        if (context.index().isStandardQualifier(name) == false || this.isImportedHere(context, name)) {
+            return
+        }
+        var target = ImportTarget(ImportKind.Package, name, stdFileKey(name), FileOrigin.Standard)
+        this.addImport(context, diagnostic, target, true, true, items)
+    }
+
+    method fixName(FileContext context, Diagnostic diagnostic, string name, array<CodeActionItem> items) {
+        var targets = this.candidates.targetsDeclaring(context, name)
+        for (target in targets) {
+            this.addImport(context, diagnostic, target, false, targets.length() == 1, items)
+        }
+    }
+
+    method isImportedHere(FileContext context, string name): bool {
+        for (declaration in context.syntax.imports) {
+            if (declaration.target == name) {
+                return true
+            }
+        }
+        return false
+    }
+
+    // One action per import line: a second diagnostic that the same import fixes is added to the action that exists. Only an import
+    // that is the single candidate is preferred, so a client never applies a guess between packages.
+    method addImport(FileContext context, Diagnostic diagnostic, ImportTarget target, bool isStandard, bool preferred, array<CodeActionItem> items) {
+        var line = importLineFor(target)
+        var edit = importEditFor(context.syntax, context.document.text, line, isStandard)
+        if (isNone(edit) || edit.newText == "") {
+            return
+        }
+        var title = "Import '" + line.substring(ACTIONS_IMPORT_KEYWORD_LENGTH, line.length()) + "'"
+        for (existing in items) {
+            if (existing.title == title) {
+                existing.diagnostics.append(diagnostic)
+                return
+            }
+        }
+        var item = CodeActionItem(title, ACTIONS_QUICKFIX)
+        item.edits = [FileEdit(context.document.filePath, [edit])]
+        item.diagnostics = [diagnostic]
+        item.preferred = preferred
+        items.append(item)
+    }
+
+    // Nothing (nil) when the file has no imports, when something other than import lines lies between them, or when they
+    // are in order already: an action that changes nothing is noise.
+    method organize(FileContext context): CodeActionItem {
+        var edit = ActionsOrganizer(context).edit()
+        if (isNone(edit)) {
+            return nothing()
+        }
+        var item = CodeActionItem("Organize imports", ACTIONS_ORGANIZE_KIND)
+        item.edits = [FileEdit(context.document.filePath, [edit])]
+        return item
+    }
+}
+
+// True when every character of the text belongs to an identifier.
+method actionsIsWord(string name): bool {
+    for (character in name.split("")) {
+        var isLetter = (character >= "a" && character <= "z") || (character >= "A" && character <= "Z")
+        if (isLetter == false && character != "_" && (character >= "0" && character <= "9") == false) {
+            return false
+        }
+    }
+    return name != ""
+}

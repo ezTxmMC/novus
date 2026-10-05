@@ -1,0 +1,115 @@
+package markup
+
+// Skips the attributes of one start tag (nvhTokens): values are quoted (with `{...}` inside), a `{...}` expression
+// or a bare word, and an attribute without `=` is a flag. `selfClosing` tells whether the tag ended in `/>`.
+define class MarkupAttributeScanner {
+    string text
+    integer length
+    bool selfClosing
+    MarkupBraceMatcher braces
+
+    construct(string text, MarkupBraceMatcher braces) {
+        this.text = text
+        this.length = text.length()
+        this.selfClosing = false
+        this.braces = braces
+    }
+
+    // The index behind the `>` that ends the tag, the end of the text when it is never closed.
+    method skipAttributes(integer from): integer {
+        var index = this.skipSpaces(from)
+        while (index < this.length) {
+            if (this.text.charAt(index) == ">") {
+                return index + 1
+            }
+            if (this.endsSelfClosing(index)) {
+                this.selfClosing = true
+                return index + 2
+            }
+            index = this.skipSpaces(this.skipAttribute(index))
+        }
+        return this.length
+    }
+
+    method endsSelfClosing(integer index): bool {
+        return this.text.charAt(index) == "/" && markupStartsAt(this.text, index, "/>")
+    }
+
+    method skipSpaces(integer from): integer {
+        var index = from
+        while (index < this.length && markupIsSpace(this.text.charAt(index))) {
+            index = index + 1
+        }
+        return index
+    }
+
+    // One attribute: its name, then `=` and a value when there is one. Moves forward by at least one byte.
+    method skipAttribute(integer start): integer {
+        var index = start
+        while (index < this.length && this.endsName(index) == false) {
+            index = index + 1
+        }
+        if (index == start) {
+            return start + 1
+        }
+        var equals = this.skipSpaces(index)
+        if (equals < this.length && this.text.charAt(equals) == "=") {
+            return this.skipValue(this.skipSpaces(equals + 1))
+        }
+        return index
+    }
+
+    method endsName(integer index): bool {
+        var current = this.text.charAt(index)
+        if (markupIsSpace(current) || current == "=" || current == ">") {
+            return true
+        }
+        return this.endsSelfClosing(index)
+    }
+
+    method skipValue(integer start): integer {
+        if (start >= this.length) {
+            return this.length
+        }
+        var current = this.text.charAt(start)
+        if (current == "\"" || current == "'") {
+            return this.skipQuoted(start, current)
+        }
+        if (current == "{") {
+            return this.skipExpression(start)
+        }
+        return this.skipBareValue(start)
+    }
+
+    method skipQuoted(integer start, string quote): integer {
+        var index = start + 1
+        while (index < this.length && this.text.charAt(index) != quote) {
+            index = this.skipQuotedPart(index)
+        }
+        return index + 1
+    }
+
+    // A `{` inside a quoted value starts an expression, unless it is escaped.
+    method skipQuotedPart(integer index): integer {
+        if (this.text.charAt(index) != "{" || this.text.charAt(index - 1) == "\\") {
+            return index + 1
+        }
+        return this.skipExpression(index)
+    }
+
+    method skipExpression(integer start): integer {
+        var close = this.braces.closeFrom(start)
+        if (close < 0) {
+            return start + 1
+        }
+        return close
+    }
+
+    method skipBareValue(integer start): integer {
+        var index = start
+        while (index < this.length && markupIsSpace(this.text.charAt(index)) == false && this.text.charAt(index) != ">") {
+            index = index + 1
+        }
+        return index
+    }
+}

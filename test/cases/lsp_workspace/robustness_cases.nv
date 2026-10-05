@@ -1,0 +1,63 @@
+package main
+
+import "novus/lsp/base/maybe"
+import "novus/lsp/base/platform"
+import "novus/lsp/projects/closure"
+import "novus/lsp/projects/stdlib"
+import "novus/lsp/projects/workspace"
+import @support
+
+// Nothing a client can send may abort the process (LSP-R08): odd texts, odd paths, events for files nobody knows.
+method runOddDocuments() {
+    println("== odd documents")
+    var world = WsWorld(wsSimpleProject())
+    var texts = {"/p/empty.nv": "", "/p/garbage.nv": "import\nimport @\nimport \"\"\nmethod (\n} } {", "/p/binary.nv": "method a() {\n" + chr(0) + chr(1) + "\n}\n", "/p/geo": "a directory used as a file", "rel.nv": "method r() {\n}\n"}
+    for (filePath in texts.keys()) {
+        var context = world.openText(filePath, 1, texts[filePath])
+        println("  " + filePath + " -> project [" + context.project.key() + "] file [" + context.closureFile.filePath + "] valid=" + context.project.valid)
+    }
+    var nvh = world.openText("/p/page.nvh", 1, "<?nv\nmethod broken(\n?>\n<p/>\n")
+    println("  /p/page.nvh -> " + nvh.syntax.fileKind + " decls=" + nvh.syntax.decls.length() + " issues>0=" + (nvh.syntax.issues.length() > 0))
+}
+
+method runOddEvents() {
+    println("== odd events")
+    var world = WsWorld(wsSimpleProject())
+    world.open("/p/main.nv", 1)
+    world.space.onFilesChangedOnDisk(["", "/", "relative.nv", "/p/project.nv", "/nowhere/project.nv"])
+    world.space.onDocumentClosed("/never/opened.nv")
+    world.space.onDocumentClosed("")
+    world.space.onDocumentChanged(Document("untitled:x", "novus", 1, "method x() {\n}\n"))
+    world.space.onDocumentChanged(Document("vscode-notebook-cell:/a#1", "novus", 1, "method y() {\n}\n"))
+    world.space.revalidate(0)
+    world.space.revalidate(-5)
+    world.space.setFolders(["", "/", "relative"])
+    wsCheck("paths that are no files", isNone(world.space.contextForPath("/p")) + " " + isNone(world.space.contextForPath("std:json")) + " " + isNone(world.space.projectFor("std:json")), "true true true")
+    wsCheck("the workspace still answers", world.open("/p/main.nv", 2).project.key(), "/p/project.nv")
+    wsCheck("a scratch buffer next to it", world.space.contextFor(Document("untitled:x", "novus", 1, "method x() {\n}\n")).project.key().length(), "0")
+}
+
+method runComponentCases() {
+    println("== .nvh components")
+    var files = {
+        "/n/project.nv": "project \"n\"\nmain \"main.nv\"\n",
+        "/n/main.nv": "import @page\nmethod main() {\n}\n",
+        "/n/page.nvh": "<?nv\nprop string title\nmethod greet(): string {\n    return title\n}\n?>\n<h1>{title}</h1>\n"
+    }
+    var world = WsWorld(files)
+    var context = world.open("/n/page.nvh", 1)
+    wsCheck("a component is a closure file with a class named after the file", context.closureFile.filePath + " " + context.syntax.fileKind + " " + context.index().typeNamed("page").decl.baseName + " " + context.closureFile.syntax.decls[0].members.length(), "/n/page.nvh nvh NvhComponent 2")
+    wsCheck("the web module is loaded for it", context.project.closure.loadedStdModules.contains("web"), "true")
+    var provider = CacheSourceProvider(world.cache)
+    wsCheck("the provider serves the cache", provider.syntaxOf("/n/main.nv") == world.cache.syntaxOf("/n/main.nv"), "true")
+}
+
+method runNulCases() {
+    println("== texts with a NUL byte")
+    var world = WsWorld(wsSimpleProject())
+    var first = "method a() {\n    var x = \"" + chr(0) + "one\"\n}\n"
+    var second = "method a() {\n    var x = \"" + chr(0) + "two\"\n}\n"
+    var context = world.openText("/p/lone.nv", 1, first)
+    var other = world.openText("/p/lone.nv", 2, second)
+    wsCheck("a change behind a NUL byte is a change", (context.syntax == other.syntax) + " " + (other.syntax.textHash == textHashOf(second)), "false true")
+}

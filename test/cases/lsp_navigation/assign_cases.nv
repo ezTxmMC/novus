@@ -1,0 +1,47 @@
+package main
+
+import "novus/lsp/features/navigation"
+import @support
+import @fixtures
+import @reference_cases
+import @rename_cases
+import @definition_cases
+
+private final NAV_TYPED_RETURN_TEXT = "method f(): integer {\n    var count = 1\n    count = 2\n    return count\n}\n\nmethod g(): string {\n    var text = \"a\"\n    text = \"b\"\n    return text\n}\n\nmethod main() {\n    var total = 1\n    try {\n        total = 2\n    } catch (e) {\n    }\n}\n"
+
+private final NAV_CLASS_RETURN_TEXT = "define class P {\n    integer size\n}\n\nmethod make(): P {\n    var item = P(1)\n    item = P(2)\n    return item\n}\n\ndefine class Q {\n    method build(): P {\n        var made = 1\n        made = 2\n        return made\n    }\n}\n"
+
+private final NAV_SHADOW_MEMBER_TEXT = "define class Circle {\n    float radius\n\n    method area(): float {\n        return radius * radius\n    }\n\n    method grow(float by): float {\n        return radius + by\n    }\n}\n\nprivate final TOTAL = 1\n\nmethod main() {\n    var count = 2\n    println(TOTAL + count)\n}\n\ndefine enum Color {\n    Red,\n    Green\n}\n"
+
+private final NAV_STD_RECEIVER_TEXT = "import json\n\ndefine class P {\n    integer size\n}\n\nmethod main() {\n    println(json.parse(\"1\").size)\n    println(readFile(\"x\").size)\n    var p = P(1)\n    println(p.size)\n}\n"
+
+method navSingle(string text, string needle, integer shift): NavWorld {
+    return NavWorld({"/t/project.nv": "project \"t\"\nmain \"main.nv\"\n", "/t/main.nv": navMarked(text, needle, shift)})
+}
+
+method runAssignmentCases() {
+    println("== assignments in blocks with a return type")
+    navReferences("local in a method returning integer", navSingle(NAV_TYPED_RETURN_TEXT, "count = 1", 1), true)
+    navDefinition("assignment target in a method returning integer", navSingle(NAV_TYPED_RETURN_TEXT, "count = 2", 1))
+    navReferences("local in a method returning string", navSingle(NAV_TYPED_RETURN_TEXT, "text = \"a\"", 1), true)
+    navReferences("local assigned inside a try block", navSingle(NAV_TYPED_RETURN_TEXT, "total = 1", 1), true)
+    navHighlights("assignment inside a try block", navSingle(NAV_TYPED_RETURN_TEXT, "total = 2", 1))
+    navReferences("local in a method returning a class", navSingle(NAV_CLASS_RETURN_TEXT, "item = P(1)", 1), true)
+    navDefinition("assignment target in a method returning a class", navSingle(NAV_CLASS_RETURN_TEXT, "made = 2", 1))
+    navReferences("local in a method of a class returning a class", navSingle(NAV_CLASS_RETURN_TEXT, "made = 1", 1), true)
+    navRename("local in a method returning integer", navSingle(NAV_TYPED_RETURN_TEXT, "count = 1", 1), "zzz")
+    navRename("local assigned inside a try block", navSingle(NAV_TYPED_RETURN_TEXT, "total = 1", 1), "sum")
+}
+
+method runRenameShadowCases() {
+    println("== rename that a variable would hide")
+    navRename("field to the name of a parameter used in another method", navSingle(NAV_SHADOW_MEMBER_TEXT, "radius\n", 0), "by")
+    navRename("field to a name that no variable has", navSingle(NAV_SHADOW_MEMBER_TEXT, "radius\n", 0), "extent")
+    navRename("global to the name of a local of a user", navSingle(NAV_SHADOW_MEMBER_TEXT, "TOTAL = 1", 1), "count")
+    navRename("enum constant to another constant", navSingle(NAV_SHADOW_MEMBER_TEXT, "Red,", 1), "Green")
+    navRename("field to a primitive type name", navSingle(NAV_SHADOW_MEMBER_TEXT, "radius\n", 0), "integer")
+    navRename("field to a contextual word", navSingle(NAV_SHADOW_MEMBER_TEXT, "radius\n", 0), "sync")
+    navRename("class to a primitive type name", navSingle(NAV_SHADOW_MEMBER_TEXT, "Circle {", 1), "string")
+    navRename("local to nil", navSingle(NAV_SHADOW_MEMBER_TEXT, "count = 2", 1), "nil")
+    navRename("member whose namesake belongs to a std value", navSingle(NAV_STD_RECEIVER_TEXT, "size\n", 0), "width")
+}

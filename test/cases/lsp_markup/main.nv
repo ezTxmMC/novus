@@ -1,0 +1,12 @@
+package main
+
+import @island_cases
+import @component_cases
+import @real_cases
+
+// lsp/syntax/markup: the islands of a .nvh component and the component as a SourceFile.
+method main() {
+    runIslandCases()
+    runComponentCases()
+    runRealCases()
+}

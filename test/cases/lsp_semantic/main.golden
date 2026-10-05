@@ -1,0 +1,239 @@
+== DESIGN 5.6: rule to fixtures
+  rule 1 project and root: 1 of 1 pinned: (lsp_workspace: ProjectModel.key and a program without a manifest)
+  rule 2 closure through imports: 1 of 1 pinned: files-are-found-only-through-imports
+  rule 3 packages and qualifiers: 2 of 2 pinned: qualifier-is-the-last-segment,package-main-folder-is-root-level
+  rule 4 the package line: 1 of 1 pinned: package-line-must-match-the-folder
+  rule 5 std modules: 2 of 2 pinned: local-folder-shadows-std,std-module-not-imported
+  rule 6 dependency imports: 1 of 1 pinned: dependency-root-level-is-unqualified
+  rule 7 names: 10 of 10 pinned: own-package-wins,root-wins-over-package-function,unique-package-function,ambiguous-package-function,ambiguous-package-global,class-method-wins-over-package-function,class-beats-root-function,core-builtin-beats-user-function,duplicate-class-definition,variables-in-loader-order
+  rule 8 overloads: 1 of 1 pinned: overloads-by-name-and-arity
+  rule 9 flat visibility: 1 of 1 pinned: visibility-is-flat
+  rule 10 main package wins: 1 of 1 pinned: root-wins-over-package-function
+== rule 7: call resolution
+ok   own package first (inside geo): resolved [geo.hello/0]
+ok   root level from main: resolved [hello/0]
+ok   root wins over the package function (inside util): resolved [area/1]
+ok   unique package function is callable unqualified: resolved [geo.unique/0]
+ok   two packages: ambiguous: ambiguous [geo.shared/0, draw.shared/0]
+  qualified resolved [geo.shared/0] resolved [draw.shared/0]
+ok   enclosing class method wins over the package function: resolved [Tool.helper/0]
+ok   outside the class the package function is reached: resolved [geo.helper/0]
+ok   a class beats a root function of the same name and arity: resolved [Thing]
+ok   core built-in beats the user function: unknown [] builtin=true
+ok   other built-in yields to the user function: resolved [env/1] builtin=false
+ok   a built-in without a user function: unknown [] builtin=true
+ok   not a built-in: unknown [] builtin=false
+== rule 7: variable resolution
+ok   root global beats a field of the same name: resolved [LEVEL]
+ok   field beats a package global: resolved [Box.ONLY]
+ok   local beats everything: resolved [local:LEVEL@311]
+ok   unique package global from the root: resolved [geo.ONLY]
+ok   own package global inside geo: resolved [geo.LEVEL]
+ok   global of two packages: ambiguous: ambiguous [geo.BOTH, draw.BOTH]
+ok   a function name is no variable: unknown []
+ok   a std module is no variable: unknown []
+ok   this is the enclosing class: resolved [Tool]
+ok   this outside a class: unknown []
+ok   thisType: Tool / unknown
+== rules 3 and 4: packages, qualifiers, package line
+ok   geo/shapes and draw/shapes share the qualifier shapes: shapes.f/0, shapes.f/0
+ok   lookupQualified merges both: resolved [shapes.f/0, shapes.f/0] true
+ok   package main in a folder means unqualified: resolved [xhelp/0]
+ok   package line against the folder: package-folder-mismatch
+== rules 2, 5, 6: closure, std, dependencies
+ok   a file nobody imports is no part of the program: unknown [] files=0
+ok   local json folder wins over std json: resolved [json.stringify/1] one std module less=true
+ok   the shadowed module is no std qualifier: false
+ok   std without any import: known as a qualifier, not loaded: true loaded=[]
+ok   visibility is flat: one import anywhere loads the module: true loaded=[strings]
+ok   std members are qualified: resolved [strings.repeat/2]
+ok   std functions are never reached unqualified: unknown []
+ok   dependency entry: empty qualifier: resolved [libHello/0]
+ok   dependency package: its qualifier: resolved [util.utilHello/0]
+ok   the entry's own package name is no qualifier: false
+ok   origin of the dependency functions: Dependency ext.example/lib
+== rule 8: overloads
+ok   arity 1: both files' overloads: resolved [f/1, f/1]
+ok   arity 2: resolved [f/2]
+ok   no overload of arity 3: unknown []
+== rule 7: types are global
+ok   first declaration wins: /proj/geo/a.nv
+ok   both declarations are listed: 2
+ok   the repeated one: Circle in /proj/geo/b.nv
+ok   unknown type: 
+== typeFromText and TypeRef
+  <array<string>> [array|string|true] array<string>
+  <map<string, integer>> [map|integer|true] map<string, integer>
+  <map<string,array<integer>>> [map|array<integer>|true] map<string, array<integer>>
+  <str> [string||true] string
+  <> [||false] unknown
+  <object> [object||false] object
+  <any> [any||false] any
+  <Circle> [Circle||true] Circle
+  <array> [array||true] array
+  <array<> [array||true] array
+  <map<integer>> [map|integer|true] map<string, integer>
+  <  array < string > > [array|string|true] array<string>
+  <void> [void||true] void
+ok   isArray isMap isString: true false true true false
+ok   the unknown type: [||false] unknown
+== typeOfLocal: declared types, initializers and loop variables
+  c (var): Circle
+  s (var): Circle
+  label (var): string
+  tags (var): array<string>
+  first (var): string
+  counts (var): map<string, integer>
+  total (var): integer
+  parts (var): array<string>
+  n (var): integer
+  upper (var): string
+  cloned (var): Circle
+  color (var): Color
+  all (var): array<Color>
+  text (var): string
+  flag (var): bool
+  neg (var): integer
+  m (var): map
+  list (var): array
+  parsed (var): integer
+  joined (var): string
+  shape (var): Shape
+  unknownCall (var): unknown
+  loopSelf (var): unknown
+  p1 (var): float
+  p2 (var): integer
+  p3 (var): array<string>
+  p4 (var): string
+  p5 (var): Color
+  p6 (var): string
+  p7 (var): string
+  p8 (var): integer
+  p9 (var): string
+  p10 (var): array<integer>
+  p11 (var): string
+  p12 (var): string
+  p13 (var): unknown
+  p14 (var): unknown
+  p15 (var): bool
+  p16 (var): bool
+  p17 (var): bool
+  loop t (loop): string
+  loop k (loop): string
+  loop col (loop): Color
+  loop ch (loop): string
+== typeOfChain: members, calls, indexes, modules, enums
+  c.clone().clone().area() -> [float||true] float
+  c.tags[0].length() -> [integer||true] integer
+  c.counts.keys() -> [array|string|true] array<string>
+  Color.Red.shade() -> [string||true] string
+  Color.values()[0] -> [Color||true] Color
+  strings.repeat("a", 2).toUpper() -> [string||true] string
+  make(1).label -> [string||true] string
+  label.length() -> [integer||true] integer
+  parts.pop() -> [string||true] string
+  counts.values() -> [array|integer|true] array<integer>
+  c.describe() -> [string||true] string
+  c.rename("x").describe() -> [string||true] string
+  Color.Purple -> [||false] unknown
+  this.x -> [||false] unknown
+  c.nope -> [||false] unknown
+  nothing(1).y -> [||false] unknown
+  strings.nope(1) -> [||false] unknown
+ok   an empty chain: [||false] unknown
+== names and types inside a derived class
+ok   an inherited method from the nearest base: resolved [Circle.describe/0]
+ok   an own method: resolved [Square.perimeter/0]
+ok   an inherited field of the grand base: resolved [Shape.label]
+ok   an own field: resolved [Square.side]
+ok   this.field through the bases: [float||true] float
+ok   a bare inherited field: [string||true] string
+ok   this is the class of the scope, not of the text the tokens came from: [Square||true] Square
+ok   members of Square: own, then Circle's, then Shape's, no override twice: Square.side, Square.perimeter/0, Square.summary/0, Circle.radius, Circle.tags, Circle.counts, Circle.area/0, Circle.describe/0, Circle.clone/0, Circle.rename/1, Shape.label
+== inference never loops
+ok   a local typed from a local, 10 steps: string
+ok   a chain of 100 locals ends in unknown: unknown
+ok   a local that names itself: unknown
+== ProgramIndex tables
+ok   types: Shape, Circle, Square, Color
+ok   typeNamed: Circle / 
+ok   functions of the root: make/1 | main/0
+ok   globals: LIMIT | 0
+ok   members of a type keep source order, constructor included: Circle.radius, Circle.tags, Circle.counts, Circle.construct/1, Circle.area/0, Circle.describe/0, Circle.clone/0, Circle.rename/1
+ok   enum members: Color.Red, Color.Green, Color.shade/0
+ok   declarers of a member name: Shape.describe/0, Circle.describe/0 | Shape.label | 00
+ok   all functions (the loaded std module included, sorted by name) and globals: main/0, make/1 | LIMIT | true
+ok   root level members of the qualifier, in source order: LIMIT, make/1, main/0
+ok   unknown qualifier and reserved keys: 0
+== ProgramIndex and the std library
+ok   every std module is a qualifier, nothing else is: true true
+ok   qualifiers are sorted and without the root: true false true false
+ok   the loaded module has its file: true
+ok   an unloaded module has members too: true true
+ok   origin of std symbols: Standard math
+ok   functions of loaded std modules are in the function table: strings.repeat/2
+ok   the functions of an unloaded module are not: 0
+== std classes are types only when a file imports their module
+ok   not imported: |
+ok   imported: toml Standard
+== Symbol keys and descriptions
+  Shape | Shape | member=false local=false
+  Shape.label | Shape.label: string | member=true local=false
+  Shape.describe/0 | Shape.describe(): string | member=true local=false
+  Circle | Circle | member=false local=false
+  Circle.radius | Circle.radius: float | member=true local=false
+  Circle.tags | Circle.tags: array<string> | member=true local=false
+  Circle.counts | Circle.counts: map<string,integer> | member=true local=false
+  Circle.construct/1 | Circle.construct(float radius) | member=true local=false
+  Circle.area/0 | Circle.area(): float | member=true local=false
+  Circle.describe/0 | Circle.describe(): string | member=true local=false
+  Circle.clone/0 | Circle.clone(): Circle | member=true local=false
+  Circle.rename/1 | Circle.rename(string label): Shape | member=true local=false
+  Square | Square | member=false local=false
+  Square.side | Square.side: float | member=true local=false
+  Square.perimeter/0 | Square.perimeter(): float | member=true local=false
+  Square.summary/0 | Square.summary(): string | member=true local=false
+  Color | Color | member=false local=false
+  Color.Red | Color.Red | member=true local=false
+  Color.Green | Color.Green | member=true local=false
+  Color.shade/0 | Color.shade(): string | member=true local=false
+  LIMIT | LIMIT | member=false local=false
+  make/1 | make(integer n): Circle | member=false local=false
+  main/0 | main() | member=false local=false
+ok   a local symbol: true c true false
+ok   a symbol without a file: |
+== ProgramIndex.refreshFile
+ok   same shape: refreshed: true moved=20 same file object true
+ok   another name: refused, nothing changed: false true
+ok   another count: refused: false
+== Resolver.scopeAt
+ok   inner block shadows: type=- callable=outer locals=[a:parameter:integer, b:parameter:string, x:var:string]
+ok   after the block: type=- callable=outer locals=[a:parameter:integer, b:parameter:string, x:var:integer]
+ok   constructor parameters: type=Keeper callable=construct locals=[held:parameter:integer]
+ok   method of a class: type=Keeper callable=keep locals=[extra:parameter:integer]
+ok   in the field list: type=Keeper callable=- locals=[]
+ok   in the signature of a method: type=- callable=outer locals=[]
+ok   between two declarations: type=- callable=- locals=[]
+ok   no file: type=- callable=- locals=[]
+== a file parsed without tokens still shows its parameters
+ok   parameters only: a:integer, b:string
+ok   the scan did not touch a file without tokens: 0
+== members of a type: own first, bases not overridden
+ok   Circle members: Circle.radius, Circle.tags, Circle.counts, Circle.area/0, Circle.describe/0, Circle.clone/0, Circle.rename/1, Shape.label
+ok   Color has no instance constants: Color.shade/0
+ok   constants of an enum: Color.Red, Color.Green
+ok   builtin and unknown receivers have none here: 0
+ok   lookupMember overridden method: resolved [Circle.describe/0]
+ok   lookupMember inherited field: resolved [Shape.label]
+ok   lookupMember unknown: unknown []
+== review fixes
+ok   isStandardQualifier of a typo: false false true
+ok   a string literal as a receiver: n=unknown m=unknown k=unknown j=unknown s=string plain=string
+ok   arity 1 finds the derived overload only: resolved [B.m/2]
+ok   arity 2 matches too: resolved [B.m/2]
+  <>> [>||false] >
+  <5> [5||false] 5
+  <array<string>x> [||false] unknown
+  <_x> [_x||true] _x
+  <array<>> [array||true] array
+  42=[integer||true] integer 1.5=[float||true] float 0xFF=[integer||true] integer 1e5=[||false] unknown 1.2.3=[||false] unknown -5=[||false] unknown .5=[||false] unknown 5.=[||false] unknown "s"=[string||true] string true=[bool||true] bool

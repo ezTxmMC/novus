@@ -30,6 +30,9 @@ static void nv_init_args(int argc, char **argv) {
     /* LF line endings on every platform (no CRLF translation) */
     _setmode(_fileno(stdout), _O_BINARY);
     _setmode(_fileno(stderr), _O_BINARY);
+    /* and no CRLF translation or 0x1A end mark in what is read: a framed
+     * protocol such as LSP counts bytes */
+    _setmode(_fileno(stdin), _O_BINARY);
 #endif
     /* the frame of main() lies above this one; 4 KB covers it if the system
      * cannot report the stack's real top */
@@ -117,7 +120,7 @@ static nv nv_parse_int(nv v) {
         return v;
     }
     if (nv_type_of(v) == NV_FLOAT) {
-        return nv_int((long long)v->f);
+        return nv_int(nv_d2i(nv_fval(v)));
     }
     return nv_int(atoll(nv_display(v)));
 }
@@ -185,8 +188,7 @@ static nv nv_env(nv name) {
 }
 
 static nv nv_exit(nv code) {
-    fflush(stdout);
-    exit((int)nv_as_int(code));
+    nv_terminate((int)nv_as_int(code));
     return nv_nil;
 }
 

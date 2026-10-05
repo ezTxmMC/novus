@@ -1,0 +1,10 @@
+map header within 40 bytes: yes
+sorted fill: 200 keys, position list: no, in key order: yes
+one key out of order: position list yes
+after iterating: 201 keys, position list: yes, in key order: yes
+grown by interleaved inserts: 600 keys, position list: yes, in key order: yes
+position list kept through the growth: yes
+after a removal: position list no
+after the removal: 599 keys, position list: no, in key order: yes
+removed key gone: yes, neighbour present: yes
+small and reversed: 10 keys, position list: no, in key order: yes

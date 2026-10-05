@@ -1,0 +1,180 @@
+package rpc
+
+import base/maybe
+import log
+
+private final RPC_MAX_BATCH = 1024
+private final RPC_EXIT_WITHOUT_SHUTDOWN = 1
+private final RPC_DID_CHANGE = "textDocument/didChange"
+private final RPC_DID_CLOSE = "textDocument/didClose"
+private final RPC_INVALID_TEXT = "invalid request"
+private final RPC_MODIFIED_TEXT = "content modified"
+
+// The main thread's loop: blocks on the inbox, drains what is already there, and handles one envelope at a
+// time. Handlers are atomic with respect to server state; only $/cancelRequest can arrive while one runs.
+define class MainLoop {
+    InboxChannel inbox
+    Router router
+    MessageWriter writer
+    CancelRegistry cancellations
+    bool stopped
+    integer exitCode
+    map<string, integer> lastChanges
+    // Additive (amendment 6, V113): how many envelopes one batch takes; test mode lowers it to 1 so that the answers of
+    // a scenario do not depend on how far the reader thread is (9.5-2).
+    integer maxBatch
+
+    construct(InboxChannel inbox, Router router, MessageWriter writer, CancelRegistry cancellations) {
+        this.inbox = inbox
+        this.router = router
+        this.writer = writer
+        this.cancellations = cancellations
+        this.stopped = false
+        this.exitCode = RPC_EXIT_WITHOUT_SHUTDOWN
+        this.lastChanges = {}
+        this.maxBatch = RPC_MAX_BATCH
+    }
+
+    // Returns the exit code that stop() recorded.
+    method run(): integer {
+        while (this.stopped == false) {
+            this.processBatch(this.drain(this.inbox.receive()))
+        }
+        return this.exitCode
+    }
+
+    // The first stop wins; the envelope in progress is finished (its other listeners still run), the rest is dropped.
+    method stop(integer exitCode) {
+        if (this.stopped) {
+            return
+        }
+        this.stopped = true
+        this.exitCode = exitCode
+    }
+
+    // Everything that is already queued, at most `maxBatch` (RPC_MAX_BATCH) envelopes so that a busy reader cannot starve the loop.
+    method drain(Envelope first): array<Envelope> {
+        var batch = [first]
+        while (batch.length() < this.maxBatch) {
+            var next = this.inbox.tryReceive()
+            if (isNone(next)) {
+                return batch
+            }
+            batch.push(next)
+        }
+        return batch
+    }
+
+    method processBatch(array<Envelope> batch) {
+        this.lastChanges = rpcLastChangeIndexes(batch)
+        var index = 0
+        while (index < batch.length() && this.stopped == false) {
+            this.processEnvelope(batch, index)
+            index = index + 1
+        }
+    }
+
+    // The last safety net of the server: nothing a handler or a listener does may end the main thread.
+    method processEnvelope(array<Envelope> batch, integer index) {
+        var outcome = runGuarded(RpcEnvelopeWork(this, batch, index))
+        if (outcome.failed) {
+            log.error("rpc: an envelope failed: " + outcome.message)
+        }
+    }
+
+    method handleEnvelope(array<Envelope> batch, integer index) {
+        var envelope = batch[index]
+        if (envelope.kind == ENVELOPE_MESSAGE) {
+            this.handleMessage(envelope.payload, index)
+            return
+        }
+        if (envelope.kind == ENVELOPE_FRAME_ERROR) {
+            this.writer.sendError(nothing(), envelope.payload["code"], envelope.payload["message"])
+            return
+        }
+        this.handleSignal(envelope)
+    }
+
+    // tick, checkDone, commandDone, workerFailed and eof all go to the listeners of their kind.
+    method handleSignal(Envelope envelope) {
+        if (envelope.kind == ENVELOPE_WORKER_FAILED) {
+            log.error("rpc: the worker " + envelope.payload.worker + " failed: " + envelope.payload.message)
+        }
+        this.router.dispatchEnvelope(envelope)
+        if (envelope.kind == ENVELOPE_EOF) {
+            this.stop(RPC_EXIT_WITHOUT_SHUTDOWN)
+        }
+    }
+
+    method handleMessage(object message, integer index) {
+        var kind = classifyMessage(message)
+        if (kind == RPC_KIND_INVALID) {
+            this.writer.sendError(rpcReplyIdOf(message), rpcInvalidRequest(), RPC_INVALID_TEXT)
+            return
+        }
+        if (kind == RPC_KIND_RESPONSE) {
+            this.router.routeResponse(message)
+            return
+        }
+        var request = requestFrom(message)
+        if (request.isNotification == false && this.isStale(request, index)) {
+            this.writer.sendError(request.id, rpcContentModified(), RPC_MODIFIED_TEXT)
+            this.cancellations.forget(request.id)
+            return
+        }
+        this.router.dispatch(request, this.writer, this.cancellations)
+    }
+
+    // A request on a document is answered -32801 when a later pending message changes or closes that document.
+    method isStale(Request request, integer index): bool {
+        var uri = requestDocumentUri(request)
+        if (uri == "") {
+            return false
+        }
+        return this.lastChanges.get(uri, -1) > index
+    }
+}
+
+// The index of the last didChange or didClose per document uri, found in one pass per batch so that every
+// request answers the staleness question with one lookup.
+method rpcLastChangeIndexes(array<Envelope> batch): map<string, integer> {
+    var lastChanges = {}
+    var index = 0
+    while (index < batch.length()) {
+        var uri = rpcChangedDocumentUri(batch[index])
+        if (uri != "") {
+            lastChanges[uri] = index
+        }
+        index = index + 1
+    }
+    return lastChanges
+}
+
+// "" unless the envelope is a didChange or didClose notification that names a document.
+method rpcChangedDocumentUri(Envelope envelope): string {
+    if (envelope.kind != ENVELOPE_MESSAGE || classifyMessage(envelope.payload) != RPC_KIND_NOTIFICATION) {
+        return ""
+    }
+    var name = envelope.payload["method"]
+    if (name != RPC_DID_CHANGE && name != RPC_DID_CLOSE) {
+        return ""
+    }
+    return requestDocumentUri(requestFrom(envelope.payload))
+}
+
+define class RpcEnvelopeWork based GuardedWork {
+    MainLoop loop
+    array<Envelope> batch
+    integer index
+
+    construct(MainLoop loop, array<Envelope> batch, integer index) {
+        this.loop = loop
+        this.batch = batch
+        this.index = index
+    }
+
+    method run(): object {
+        this.loop.handleEnvelope(this.batch, this.index)
+        return nothing()
+    }
+}

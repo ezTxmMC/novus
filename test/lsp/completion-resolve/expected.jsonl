@@ -1,0 +1,11 @@
+{"id":1,"jsonrpc":"2.0","result":{"capabilities":"@CAPABILITIES@","serverInfo":{"name":"novus-lsp","version":"0.1.0"}}}
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@ROOTURI@/main.nv","version":1}}
+{"id":2,"jsonrpc":"2.0","result":{"data":"@ROOTURI@/main.nv|Function|@ROOT@/deps/github.com/acme/geo@v1.0.0/lib.nv|40","detail":"import \"github.com/acme/geo\"","documentation":{"kind":"markdown","value":"```novus\nmethod distance(float first, float second): float\n```\n\nDistance between two numbers."},"kind":3,"label":"distance"}}
+{"id":3,"jsonrpc":"2.0","result":{"data":"@ROOTURI@/main.nv|Class|@ROOT@/deps/github.com/acme/geo@v1.0.0/lib.nv|152","detail":"define class Point","documentation":{"kind":"markdown","value":"```novus\ndefine class Point\n```\n\nA point of the plane."},"kind":7,"label":"Point","labelDetails":{"description":"github.com/acme/geo"},"sortText":"73_point"}}
+{"id":4,"jsonrpc":"2.0","result":{"data":"@ROOTURI@/main.nv|Module|std:strings|0","detail":"import strings","documentation":{"kind":"markdown","value":"**strings**\n\nString helpers beyond the builtin methods (length, charAt, substring, indexOf, contains, startsWith, endsWith, split, replace, trim, toUpper, toLower)."},"kind":9,"label":"strings"}}
+{"id":5,"jsonrpc":"2.0","result":{"kind":6,"label":"plain"}}
+{"id":6,"jsonrpc":"2.0","result":{"data":"@ROOTURI@/closed.nv|Function|std:strings|10","kind":3,"label":"elsewhere"}}
+{"id":7,"jsonrpc":"2.0","result":{"data":"one|two","kind":3,"label":"broken"}}
+{"id":8,"jsonrpc":"2.0","result":{"data":"@ROOTURI@/main.nv|Module|std:nothing|0","kind":9,"label":"unknown module"}}
+{"id":9,"jsonrpc":"2.0","result":{"data":17,"kind":3,"label":"number"}}
+{"id":99,"jsonrpc":"2.0","result":null}

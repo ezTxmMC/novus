@@ -1,0 +1,48 @@
+package model
+
+import base/text
+
+// Folding, semantic spans and code actions.
+define class FoldingEntry {
+    integer startLine
+    integer endLine
+    string kind
+
+    construct(integer startLine, integer endLine, string kind) {
+        this.startLine = startLine
+        this.endLine = endLine
+        this.kind = kind
+    }
+}
+
+define class SemanticSpan {
+    Span span
+    integer tokenType
+    integer modifiers
+
+    construct(Span span, integer tokenType, integer modifiers) {
+        this.span = span
+        this.tokenType = tokenType
+        this.modifiers = modifiers
+    }
+}
+
+define class CodeActionItem {
+    string title
+    string kind
+    array<FileEdit> edits
+    array<Diagnostic> diagnostics
+    bool preferred
+    string command
+    array<string> commandArguments
+
+    construct(string title, string kind) {
+        this.title = title
+        this.kind = kind
+        this.edits = []
+        this.diagnostics = []
+        this.preferred = false
+        this.command = ""
+        this.commandArguments = []
+    }
+}

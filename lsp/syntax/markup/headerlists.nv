@@ -1,0 +1,80 @@
+package markup
+
+import arrays
+import base/text
+import strings
+import syntax/lexing
+import syntax/outline
+
+private final MARKUP_ISSUE_KEY_WIDTH = 12
+private final MARKUP_SORT_SEPARATOR = "|"
+
+method markupConcat(array<object> first, array<object> second): array<object> {
+    var joined = []
+    for (item in first) {
+        joined.append(item)
+    }
+    for (item in second) {
+        joined.append(item)
+    }
+    return joined
+}
+
+// Both lists are in source order; the result is too.
+method markupMergeDecls(array<Decl> fields, array<Decl> members): array<Decl> {
+    var merged = []
+    var fieldIndex = 0
+    var memberIndex = 0
+    while (fieldIndex < fields.length() || memberIndex < members.length()) {
+        if (memberIndex >= members.length() || (fieldIndex < fields.length() && fields[fieldIndex].fullSpan.start < members[memberIndex].fullSpan.start)) {
+            merged.append(fields[fieldIndex])
+            fieldIndex = fieldIndex + 1
+            continue
+        }
+        merged.append(members[memberIndex])
+        memberIndex = memberIndex + 1
+    }
+    return merged
+}
+
+// The tokens that start outside every claimed span (both are in source order).
+method markupUnclaimedTokens(array<Token> tokens, array<Span> claimed): array<Token> {
+    var kept = []
+    var next = 0
+    for (token in tokens) {
+        while (next < claimed.length() && claimed[next].end <= token.start) {
+            next = next + 1
+        }
+        if (next >= claimed.length() || claimed[next].contains(token.start) == false) {
+            kept.append(token)
+        }
+    }
+    return kept
+}
+
+method markupSpansTouch(array<Span> spans, integer offset): bool {
+    for (span in spans) {
+        if (span.contains(offset)) {
+            return true
+        }
+    }
+    return false
+}
+
+// Issues ordered by their start; equal starts keep their order.
+method markupSortIssues(array<SyntaxIssue> issues): array<SyntaxIssue> {
+    var keys = []
+    var byKey = {}
+    var index = 0
+    while (index < issues.length()) {
+        var key = strings.padLeftWith("" + issues[index].span.start, MARKUP_ISSUE_KEY_WIDTH, "0") + MARKUP_SORT_SEPARATOR + strings.padLeftWith("" + index, MARKUP_ISSUE_KEY_WIDTH, "0")
+        keys.append(key)
+        byKey[key] = issues[index]
+        index = index + 1
+    }
+    var sorted = []
+    for (key in arrays.sort(keys)) {
+        sorted.append(byKey[key])
+    }
+    return sorted
+}

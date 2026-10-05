@@ -1,0 +1,22 @@
+{"id":1,"jsonrpc":"2.0","result":{"capabilities":"@CAPABILITIES@","serverInfo":{"name":"novus-lsp","version":"0.1.0"}}}
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@ROOTURI@/main.nv","version":1}}
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@ROOTURI@/geo/shape.nv","version":1}}
+{"id":2,"jsonrpc":"2.0","result":{"contents":{"kind":"markdown","value":"```novus\ndefine class Circle based Shape\n```\n\nA circle of a given radius.\n\n*package `geo` · shape.nv*"},"range":{"end":{"character":23,"line":10},"start":{"character":17,"line":10}}}}
+{"id":3,"jsonrpc":"2.0","result":{"contents":{"kind":"markdown","value":"```novus\n(method) Circle.area(): float\n```\n\n*package `geo` · shape.nv*"},"range":{"end":{"character":26,"line":11},"start":{"character":22,"line":11}}}}
+{"id":4,"jsonrpc":"2.0","result":{"contents":{"kind":"markdown","value":"```novus\n(function) geo.describe(Shape shape): string\n```\n\n*package `geo` · shape.nv*"},"range":{"end":{"character":24,"line":12},"start":{"character":16,"line":12}}}}
+{"id":5,"jsonrpc":"2.0","result":{"contents":{"kind":"markdown","value":"```novus\n(function) strings.repeat(string s, integer times): string\n```\n\n*std module `strings`*"},"range":{"end":{"character":26,"line":13},"start":{"character":20,"line":13}}}}
+{"id":6,"jsonrpc":"2.0","result":{"contents":{"kind":"markdown","value":"```novus\n(enum member) Color.Red\n```\n\n*main.nv*"},"range":{"end":{"character":25,"line":14},"start":{"character":22,"line":14}}}}
+{"id":7,"jsonrpc":"2.0","result":{"contents":{"kind":"markdown","value":"```novus\n(variable) total: integer\n```\n\nDeclared: `var total = helper(1)`"},"range":{"end":{"character":9,"line":16},"start":{"character":4,"line":16}}}}
+{"id":8,"jsonrpc":"2.0","result":{"contents":{"kind":"markdown","value":"```novus\n(function) geo.scaled(float factor): float\n```\n\nScales one value.\n\n*package `geo` · shape.nv*"},"range":{"end":{"character":18,"line":17},"start":{"character":12,"line":17}}}}
+{"id":9,"jsonrpc":"2.0","result":{"contents":{"kind":"markdown","value":"```novus\nimport geo\n```\n\nPackage folder `geo` with the files `shape.nv`."},"range":{"end":{"character":10,"line":0},"start":{"character":0,"line":0}}}}
+{"id":10,"jsonrpc":"2.0","result":{"contents":{"kind":"markdown","value":"```novus\nimport strings\n```\n\nStandard module `strings`."},"range":{"end":{"character":14,"line":1},"start":{"character":0,"line":1}}}}
+{"id":11,"jsonrpc":"2.0","result":{"contents":{"kind":"markdown","value":"```novus\nimport @helper\n```\n\nFile `helper.nv`."},"range":{"end":{"character":14,"line":2},"start":{"character":0,"line":2}}}}
+{"id":12,"jsonrpc":"2.0","result":{"contents":{"kind":"markdown","value":"```novus\nmethod\n```\n\nDeclares a method: `method name(type parameter): Type { ... }`. The parameter list and the return type are optional; `method main` is the entry point."},"range":{"end":{"character":6,"line":9},"start":{"character":0,"line":9}}}}
+{"id":13,"jsonrpc":"2.0","result":{"contents":{"kind":"markdown","value":"```novus\nfloat\n```\n\nA floating point number. Aliases: `double`, `doub`."},"range":{"end":{"character":9,"line":14},"start":{"character":4,"line":14}}}}
+{"id":14,"jsonrpc":"2.0","result":{"contents":{"kind":"markdown","value":"```novus\n(parameter) by: float\n```\n\nDeclared: `method grow(float by): float {`"},"range":{"end":{"character":30,"line":25},"start":{"character":28,"line":25}}}}
+{"id":15,"jsonrpc":"2.0","result":null}
+{"id":16,"jsonrpc":"2.0","result":{"activeParameter":0,"activeSignature":0,"signatures":[{"label":"Circle(float radius)","parameters":[{"label":"float radius"}]}]}}
+{"id":17,"jsonrpc":"2.0","result":{"activeParameter":1,"activeSignature":0,"signatures":[{"label":"repeat(string s, integer times): string","parameters":[{"label":"string s"},{"label":"integer times"}]}]}}
+{"id":18,"jsonrpc":"2.0","result":{"activeParameter":1,"activeSignature":1,"signatures":[{"documentation":{"kind":"markdown","value":"Scales one value."},"label":"scaled(float factor): float","parameters":[{"label":"float factor"}]},{"label":"scaled(float factor, float extra): float","parameters":[{"label":"float factor"},{"label":"float extra"}]}]}}
+{"id":19,"jsonrpc":"2.0","result":null}
+{"id":99,"jsonrpc":"2.0","result":null}

@@ -1,0 +1,89 @@
+package main
+
+import "novus/lsp/base/platform"
+import "novus/lsp/base/text"
+import "novus/lsp/projects/closure"
+import "novus/lsp/projects/manifest"
+import "novus/lsp/projects/modules"
+import "novus/lsp/projects/stdlib"
+import "novus/lsp/semantics/semantic"
+import "novus/lsp/syntax/outline"
+import "novus/lsp/syntax/parsing"
+import "novus/lsp/syntax/scanning"
+
+// What the workspace cache does for the closure builder: syntax of any file by its kind, with the editor options so
+// that tokens and locals exist (the resolver needs them to type locals).
+define class SemProvider based SourceProvider {
+    TextSource source
+
+    construct(TextSource source) {
+        this.source = source
+    }
+
+    method syntaxOf(string filePath): SourceFile {
+        return parseSourceText(filePath, this.source.textOf(filePath), editorParseOptions())
+    }
+}
+
+// One program in memory: layout, module table, closure, index and resolver, built like the workspace builds them.
+define class SemWorld {
+    map<string, string> files
+    MemoryTextSource source
+    ProjectLayout layout
+    ModuleTable modules
+    ProgramClosure closure
+    ProgramIndex index
+    Resolver resolver
+
+    construct(map<string, string> files, string mainPath) {
+        this.files = files
+        this.source = MemoryTextSource(files)
+        this.layout = findProjectLayout(this.source, mainPath)
+        this.modules = ModuleTableBuilder(this.source, "/cache").build(this.layout.manifest)
+        var builder = ClosureBuilder(this.layout, this.modules, this.source, SemProvider(this.source), standardLibrary())
+        this.closure = builder.build([])
+        this.index = ProgramIndex(this.closure, standardLibrary())
+        this.resolver = Resolver(this.index)
+    }
+
+    method scopeAt(string filePath, string marker): Scope {
+        var content = this.files[filePath]
+        var offset = content.indexOf(marker)
+        if (offset < 0) {
+            println("FAIL marker not found: " + marker + " in " + filePath)
+            return this.resolver.scopeAt(this.closure.fileAt(filePath), 0)
+        }
+        return this.resolver.scopeAt(this.closure.fileAt(filePath), offset)
+    }
+}
+
+method semKeys(array<Symbol> symbols): string {
+    var keys = []
+    for (symbol in symbols) {
+        keys.append(symbol.key)
+    }
+    return keys.join(", ")
+}
+
+method semShow(Resolution resolution): string {
+    return resolution.status + " [" + semKeys(resolution.candidates) + "]"
+}
+
+// The one line every check prints: `ok   label: actual` when the actual text is the expected one.
+method semCheck(string label, string actual, string expected) {
+    if (actual == expected) {
+        println("ok   " + label + ": " + actual)
+        return
+    }
+    println("FAIL " + label + ": got <" + actual + ">, expected <" + expected + ">")
+}
+
+method semCheckCall(SemWorld world, string label, string filePath, string marker, string name, integer arity, string expected) {
+    var scope = world.scopeAt(filePath, marker)
+    semCheck(label, semShow(world.resolver.lookupCall(scope, name, arity)), expected)
+}
+
+method semCheckName(SemWorld world, string label, string filePath, string marker, string name, string expected) {
+    var scope = world.scopeAt(filePath, marker)
+    semCheck(label, semShow(world.resolver.lookupName(scope, name)), expected)
+}

@@ -1,0 +1,19 @@
+package main
+
+import @support
+import @spacing_cases
+import @layout_cases
+import @indent_cases
+import @edit_cases
+import @corpus_cases
+
+// lsp/services/format: the spacing table, the layout of lines (blank lines, comments, line endings, tabs), the indentation,
+// the edits, and the whitespace-only and idempotence invariants over every .nv file of the repository.
+method main(): integer {
+    runSpacingCases()
+    runLayoutCases()
+    runIndentCases()
+    runEditCases()
+    runCorpusCases()
+    return finishChecks()
+}

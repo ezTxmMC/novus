@@ -1,0 +1,113 @@
+package lifecycle
+
+import base/maybe
+import base/text
+import log
+import server/jobs
+import server/protocol
+import server/rpc
+import server/session
+
+private final LIFECYCLE_TEXT_DOCUMENT = "textDocument"
+private final LIFECYCLE_CHANGES_KEY = "contentChanges"
+private final LIFECYCLE_VERSION_KEY = "version"
+private final LIFECYCLE_PUBLISH_METHOD = "textDocument/publishDiagnostics"
+private final LIFECYCLE_NO_VERSION = -1
+
+define class DidOpenHandler based RequestHandler {
+    Session session
+    DiagnosticScheduler scheduler
+    CheckCoordinator checks
+
+    construct(Session session, DiagnosticScheduler scheduler, CheckCoordinator checks) {
+        this.session = session
+        this.scheduler = scheduler
+        this.checks = checks
+    }
+
+    // The overlay is set before anything produces diagnostics, so the producers see the editor parse (6.31, V102).
+    method handle(Request request): object {
+        var document = decodeTextDocumentItem(request.params)
+        if (document.uri == "") {
+            log.warn("lifecycle: didOpen without a document uri was ignored")
+            return nothing()
+        }
+        this.session.documents.open(document)
+        this.session.workspace.onDocumentChanged(document)
+        this.scheduler.markDirty(document.uri)
+        this.checks.requestCheck(document.uri, "open")
+        return nothing()
+    }
+}
+
+define class DidChangeHandler based RequestHandler {
+    Session session
+    DiagnosticScheduler scheduler
+
+    construct(Session session, DiagnosticScheduler scheduler) {
+        this.session = session
+        this.scheduler = scheduler
+    }
+
+    // Both the incremental and the whole-text shape are applied (5.2); the document is changed in one step.
+    method handle(Request request): object {
+        var uri = decodeDocumentUri(request.params)
+        var document = this.session.documentFor(uri)
+        if (isNone(document)) {
+            log.debug("lifecycle: didChange for a document that is not open: " + uri)
+            return nothing()
+        }
+        var textDocument = protocolField(request.params, LIFECYCLE_TEXT_DOCUMENT)
+        var version = protocolWhole(textDocument, LIFECYCLE_VERSION_KEY, document.version)
+        var changes = decodeContentChanges(protocolField(request.params, LIFECYCLE_CHANGES_KEY))
+        applyTextChanges(document, this.session.codec, version, changes)
+        this.session.workspace.onDocumentChanged(document)
+        this.scheduler.markDirty(uri)
+        return nothing()
+    }
+}
+
+define class DidCloseHandler based RequestHandler {
+    Session session
+    MessageWriter writer
+    DiagnosticScheduler scheduler
+
+    construct(Session session, MessageWriter writer, DiagnosticScheduler scheduler) {
+        this.session = session
+        this.writer = writer
+        this.scheduler = scheduler
+    }
+
+    // The client is told that the closed file has no diagnostics any more.
+    method handle(Request request): object {
+        var uri = decodeDocumentUri(request.params)
+        if (uri == "") {
+            return nothing()
+        }
+        this.scheduler.forget(uri)
+        var document = this.session.documentFor(uri)
+        if (isSome(document)) {
+            this.session.workspace.onDocumentClosed(document.filePath)
+            this.session.documents.close(uri)
+        }
+        this.session.diagnostics.clear(uri)
+        this.writer.sendNotification(LIFECYCLE_PUBLISH_METHOD, this.scheduler.encoder.publishParams(uri, LIFECYCLE_NO_VERSION, []))
+        return nothing()
+    }
+}
+
+define class DidSaveHandler based RequestHandler {
+    Session session
+    CheckCoordinator checks
+
+    construct(Session session, CheckCoordinator checks) {
+        this.session = session
+        this.checks = checks
+    }
+
+    // The workspace needs no save event: the overlay already holds the text (6.13).
+    method handle(Request request): object {
+        this.checks.requestCheck(decodeDocumentUri(request.params), "save")
+        return nothing()
+    }
+}

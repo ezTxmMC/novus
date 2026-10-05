@@ -1,0 +1,107 @@
+package main
+
+import "novus/lsp/base/text"
+import "novus/lsp/syntax/lexing"
+import "novus/lsp/syntax/outline"
+import "novus/lsp/syntax/parsing"
+import "novus/lsp/syntax/scanning"
+
+private final MAIN_SOURCE = "method f(integer a, string b) {\n    var x = a + 1\n    integer y = x * 2\n    var x = 5\n    for (item in items) {\n        var z = item\n        var x = 7\n    }\n    if (a > 1) {\n        var inner = 2\n    } else {\n        var other = 3\n    }\n    map<string, integer> m = {}\n    var typed: array<integer> = [1]\n    var bare\n    var annotated: string\n    return x\n}\n"
+
+method lineOf(string source, integer offset): integer {
+    var line = 0
+    var at = 0
+    while (at < offset && at < source.length()) {
+        if (source.charAt(at) == "\n") {
+            line = line + 1
+        }
+        at = at + 1
+    }
+    return line
+}
+
+method firstDecl(string source): Decl {
+    return parseSourceText("t.nv", source, editorParseOptions()).decls[0]
+}
+
+// `origin name:type =<initializer> lines start-end` for every local, in declaration order.
+method renderLocals(string source, array<Local> locals): string {
+    var parts = []
+    for (local in locals) {
+        var initializer = ""
+        if (local.initializer.start >= 0) {
+            initializer = "=<" + source.substring(local.initializer.start, local.initializer.end).replace("\n", " ") + ">"
+        }
+        var scope = lineOf(source, local.scope.start) + "-" + lineOf(source, local.scope.end)
+        parts.append(local.origin + " " + local.name + ":" + local.typeText + initializer + " L" + scope)
+    }
+    return parts.join(" | ")
+}
+
+method visibleNames(string source, Decl decl, string marker): string {
+    var names = []
+    for (local in localsVisibleAt(decl, source.indexOf(marker, 0))) {
+        names.append(local.name)
+    }
+    return names.join(",")
+}
+
+method checkMainScopes() {
+    var decl = firstDecl(MAIN_SOURCE)
+    var expected = "parameter a:integer L0-18 | parameter b:string L0-18 | var x:=<a + 1> L1-18 | typed y:integer=<x * 2> L2-18 | loop item: L4-7 | var z:=<item> L5-7 | var x:=<7> L6-7 | var inner:=<2> L9-10 | var other:=<3> L11-12 | typed m:map<string,integer>=<{}> L13-18 | var typed:array<integer>=<[1]> L14-18 | var bare: L15-18 | var annotated:string L16-18"
+    expectEqual("locals/declaration-order-and-scopes", expected, renderLocals(MAIN_SOURCE, decl.locals))
+    expectEqual("locals/scanCallableLocals-equals-the-stored-ones", expected, renderLocals(MAIN_SOURCE, scanCallableLocals(decl, lexText(MAIN_SOURCE).tokens)))
+}
+
+method checkVisibility() {
+    var decl = firstDecl(MAIN_SOURCE)
+    expectEqual("visible/first-statement-sees-parameters", "a,b", visibleNames(MAIN_SOURCE, decl, "    var x = a + 1"))
+    expectEqual("visible/not-inside-its-own-initializer", "a,b", visibleNames(MAIN_SOURCE, decl, "+ 1\n"))
+    expectEqual("visible/after-the-first-declaration", "a,b,x", visibleNames(MAIN_SOURCE, decl, "    integer y"))
+    expectEqual("visible/loop-body-shadows-x", "a,b,x,y,item,z", visibleNames(MAIN_SOURCE, decl, "    }\n    if"))
+    expectEqual("visible/after-the-loop-the-outer-x-returns", "a,b,x,y", visibleNames(MAIN_SOURCE, decl, "    if (a > 1)"))
+    expectEqual("visible/if-branch", "a,b,x,y,inner", visibleNames(MAIN_SOURCE, decl, "    } else"))
+    expectEqual("visible/else-branch", "a,b,x,y,other", visibleNames(MAIN_SOURCE, decl, "    }\n    map"))
+    expectEqual("visible/end-of-body", "a,b,x,y,m,typed,bare,annotated", visibleNames(MAIN_SOURCE, decl, "    return x"))
+    expectEqual("visible/outside-the-body", "", visibleNames(MAIN_SOURCE + "tail", decl, "tail"))
+    var inner = localsVisibleAt(decl, MAIN_SOURCE.indexOf("    }\n    if", 0))
+    expectEqual("visible/the-inner-declaration-wins", "<7>", "<" + MAIN_SOURCE.substring(inner[2].initializer.start, inner[2].initializer.end) + ">")
+}
+
+method checkStatementBoundaries() {
+    var source = "method g() {\n    var a = b\n    c = 3\n    foo\n    bar = 1\n    var d = e.f(g)\n    -1\n    var h = 1 ; var i = 2\n    sync {\n        var s = 1\n    }\n    while (a < 3) {\n        var w = 1\n    }\n}\n"
+    var expected = "var a:=<b> L1-14 | typed bar:foo=<1> L4-14 | var d:=<e.f(g)     -1> L6-14 | var h:=<1> L7-14 | var i:=<2> L7-14 | var s:=<1> L9-10 | var w:=<1> L12-13"
+    expectEqual("locals/newlines-do-not-end-statements", expected, renderLocals(source, firstDecl(source).locals))
+}
+
+method checkGenerics() {
+    var source = "method h() {\n    map<string, array<integer>> g = {}\n    array<array<integer>> nested = []\n    var t: array<integer>= []\n}\n"
+    var report = scanningReadBody(firstDecl(source), lexText(source).tokens)
+    expectEqual("locals/generic-declarations", "typed g:map<string,array<integer>>=<{}> L1-4 | typed nested:array<array<integer>>=<[]> L2-4 | var t:array<integer>=<[]> L3-4", renderLocals(source, report.locals))
+    var codes = []
+    for (problem in report.problems) {
+        codes.append(problem.code + "/" + lineOf(source, problem.span.start) + "/" + problem.warning)
+    }
+    expectEqual("locals/generic-shift-warnings", "generic-shift-token/1/true generic-shift-token/2/true generic-shift-token/3/true", codes.join(" "))
+}
+
+method checkEdgeCases() {
+    expectEqual("locals/parameter-redeclared-is-an-assignment", "parameter a:integer L0-2", renderLocals("method p(integer a) {\n var a = 2\n}\n", firstDecl("method p(integer a) {\n var a = 2\n}\n").locals))
+    var unclosed = "method u() {\n var a = 1\n if (a) {\n var b = 2\n"
+    expectEqual("locals/unclosed-body-scopes-end-at-its-end", "var a:=<1> L1-4 | var b:=<2> L3-4", renderLocals(unclosed, firstDecl(unclosed).locals))
+    var ctor = "define class C {\n    construct(float r) {\n        var s = r\n    }\n}\n"
+    expectEqual("locals/constructor", "parameter r:float L1-3 | var s:=<r> L2-3", renderLocals(ctor, firstDecl(ctor).members[0].locals))
+    var braces = "method s() {\n var a = \"}{\"\n var b = 1\n}\n"
+    expectEqual("locals/braces-in-strings", "var a:=<\"}{\"> L1-3 | var b:=<1> L2-3", renderLocals(braces, firstDecl(braces).locals))
+    var abstractMethod = firstDecl("define abstract A {\n    abstract method run(integer n)\n}\n").members[0]
+    expectInt("locals/no-body-no-locals", 0, scanCallableLocals(abstractMethod, []).length())
+}
+
+method checkHandBuiltDecl() {
+    var source = "method m(integer p) { var q = p }"
+    var decl = Decl(DeclKind.Method, "m", Span(7, 8), Span(0, source.length()))
+    decl.bodySpan = Span(source.indexOf("{", 0), source.length())
+    decl.params = [Param("integer", "p", Span(17, 18))]
+    expectEqual("locals/hand-built-declaration", "parameter p:integer L0-0 | var q:=<p> L0-0", renderLocals(source, scanCallableLocals(decl, lexText(source).tokens)))
+    expectInt("locals/hand-built-without-tokens", 0, scanCallableLocals(decl, []).length())
+}

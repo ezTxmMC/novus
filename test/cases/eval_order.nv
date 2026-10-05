@@ -1,0 +1,318 @@
+package main
+
+import strings
+
+// Operands are evaluated left to right, whatever C compiler built the
+// program: gcc evaluates the arguments of a C call right to left, clang left
+// to right, and the code generator must not leave the order to either.
+// Every operand here logs its own evaluation; flush() prints the log.
+
+final TRACE = []
+final STATE = {"n": 0}
+
+// A global's initialiser is ordered too (it runs before main).
+final PREPARED = [note("g1"), note("g2"), note("g3")]
+
+method note(string name): string {
+    TRACE.append(name)
+    return name
+}
+
+method num(string name, integer value): integer {
+    TRACE.append(name)
+    return value
+}
+
+method flush(string label) {
+    println label + ": " + TRACE.join(" ")
+    TRACE.clear()
+}
+
+method bump(): integer {
+    TRACE.append("bump")
+    STATE["n"] = STATE["n"] + 1
+    return STATE["n"]
+}
+
+method first(): string {
+    return note("first")
+}
+
+method second(): string {
+    return note("second")
+}
+
+method join1(string a): string {
+    return a
+}
+
+method join2(string a, string b): string {
+    return a + b
+}
+
+method join3(string a, string b, string c): string {
+    return a + b + c
+}
+
+method join4(string a, string b, string c, string d): string {
+    return a + b + c + d
+}
+
+define class Box {
+    string label
+
+    method tag1(string a): string {
+        return label + a
+    }
+
+    method tag2(string a, string b): string {
+        return label + a + b
+    }
+
+    method tag3(string a, string b, string c): string {
+        return label + a + b + c
+    }
+
+    method tag4(string a, string b, string c, string d): string {
+        return label + a + b + c + d
+    }
+
+    method relabel(string value): string {
+        label = value
+        return label
+    }
+
+    method both(): string {
+        return join2(note("m1"), note("m2"))
+    }
+}
+
+define class Pair {
+    private final string left: get
+    private final string right: get
+
+    construct(string left, string right) {
+        this.left = left
+        this.right = right
+    }
+}
+
+define class Greeter {
+    private final string text: get
+
+    construct() {
+        this.text = join3(note("c1"), note("c2"), note("c3"))
+    }
+}
+
+define class Quad {
+    private final string joined: get
+
+    construct(string a, string b, string c, string d) {
+        this.joined = a + b + c + d
+    }
+}
+
+define class Point {
+    private final integer x: get
+    private final integer y: get
+}
+
+method makeBox(string name): Box {
+    var box = Box{label=note(name)}
+    return box
+}
+
+method makeList(string name): array<integer> {
+    TRACE.append(name)
+    return [10, 20, 30]
+}
+
+async method loaded(): string {
+    return join2(note("x"), note("y"))
+}
+
+method pipeline(): string {
+    return join3(note("g"), note("h"), note("i"))
+}
+
+method stringChains() {
+    var a = note("a") + "-" + note("b") + note("c")
+    println a
+    flush("chain")
+    var local = "x"
+    var b = local + note("p") + local + note("q") + "!"
+    println b
+    flush("chain with locals")
+    var c = "${first()}/${second()}"
+    println c
+    flush("interpolation")
+    var d = note("1") + note("2") + note("3") + note("4") + note("5") + note("6") + note("7") + note("8") + note("9") + note("10") + note("11") + note("12") + note("13") + note("14") + note("15") + note("16") + note("17") + note("18")
+    println d.length()
+    flush("long chain")
+}
+
+method binaryOperators() {
+    println num("x", 1) + num("y", 2) * num("z", 3)
+    flush("arithmetic")
+    println num("p", 10) - num("q", 4)
+    flush("minus")
+    println note("l") == note("r")
+    flush("string equality")
+    println num("l", 1) < num("r", 2)
+    flush("comparison")
+    var c = num("l", 3) >= num("r", 3)
+    println c
+    flush("comparison value")
+    if (num("a", 1) < num("b", 2) && num("c", 3) < num("d", 4)) {
+        println "both"
+    }
+    flush("condition")
+    if (num("a", 0) == 1 && num("b", 1) == 1) {
+        println "never"
+    }
+    flush("short circuit and")
+    if (num("a", 1) == 1 || num("b", 1) == 1) {
+        println "either"
+    }
+    flush("short circuit or")
+    var i = 0
+    while (num("c" + i, i) < num("limit", 2)) {
+        i = i + 1
+    }
+    flush("loop condition")
+}
+
+method globalsAndOperands() {
+    STATE["n"] = 0
+    var before = STATE["n"] + bump()
+    println before
+    flush("global read before call")
+    var after = bump() + STATE["n"]
+    println after
+    flush("global read after call")
+    var local = 5
+    println local + bump() + local
+    flush("locals around a call")
+}
+
+method fieldsAndOperands() {
+    var box = Box{label="old"}
+    println box.label + box.relabel("new")
+    flush("field read before a call that changes it")
+    var other = Box{label="old"}
+    println other.relabel("new") + other.label
+    flush("field read after a call that changes it")
+    var items = [1, 2, 3]
+    println items[0] + num("v", 5)
+    flush("element read before call")
+}
+
+method calls() {
+    println join1(note("a"))
+    flush("one argument")
+    println join2(note("a"), note("b"))
+    flush("two arguments")
+    println join3(note("a"), note("b"), note("c"))
+    flush("three arguments")
+    println join4(note("a"), note("b"), note("c"), note("d"))
+    flush("four arguments")
+    println join2(join2(note("a"), note("b")), join2(note("c"), note("d")))
+    flush("nested calls")
+    println join3(note("a"), "-", note("b"))
+    flush("literal between calls")
+    println strings.repeat(note("s"), num("n", 2))
+    flush("module call")
+    println pipeline()
+    flush("return of a call")
+}
+
+method methodCalls() {
+    var b = Box{label="B:"}
+    println b.tag1(note("a"))
+    flush("method one argument")
+    println b.tag2(note("a"), note("b"))
+    flush("method two arguments")
+    println b.tag3(note("a"), note("b"), note("c"))
+    flush("method three arguments")
+    println b.tag4(note("a"), note("b"), note("c"), note("d"))
+    flush("method four arguments")
+    println makeBox("recv").tag2(note("a"), note("b"))
+    flush("receiver before arguments")
+    println makeBox("recv").tag3(note("a"), note("b"), note("c"))
+    flush("receiver before three arguments")
+    var list = [1]
+    list.append(num("v", 2))
+    println list
+    flush("append")
+    var pair = Pair(note("l"), note("r"))
+    println pair.left() + pair.right()
+    flush("constructor")
+    var quad = Quad(note("a"), note("b"), note("c"), note("d"))
+    println quad.joined()
+    flush("constructor four arguments")
+}
+
+method literals() {
+    var items = [num("a", 1), num("b", 2), num("c", 3)]
+    println items
+    flush("array literal")
+    var table = {note("k1"): num("v1", 1), note("k2"): num("v2", 2)}
+    println table
+    flush("map literal")
+    var point = Point{x=num("x", 1), y=num("y", 2)}
+    println point
+    flush("object literal")
+    var nested = [[num("a", 1), num("b", 2)], [num("c", 3), num("d", 4)]]
+    println nested
+    flush("nested literals")
+}
+
+method indexing() {
+    println makeList("list")[num("i", 1)]
+    flush("index target before index")
+    var items = [1, 2, 3]
+    items[num("i", 1)] = num("v", 9)
+    println items
+    flush("index assignment")
+    var cell = Box{label="old"}
+    cell.label = note("new")
+    println cell.label
+    flush("member assignment")
+    makeBox("target").label = note("value")
+    flush("member assignment of a call result")
+}
+
+method bodies() {
+    var box = Box{label="B:"}
+    println box.both()
+    flush("class method body")
+    println Greeter().text()
+    flush("constructor body")
+    println await loaded()
+    flush("async method body")
+}
+
+method threads() {
+    println await thread join3(note("a"), note("b"), note("c"))
+    flush("thread arguments")
+    println await virtual join2(note("a"), note("b"))
+    flush("virtual arguments")
+    println await thread makeBox("recv").tag2(note("a"), note("b"))
+    flush("thread receiver and arguments")
+}
+
+method main {
+    println PREPARED
+    flush("global initialiser")
+    stringChains()
+    binaryOperators()
+    globalsAndOperands()
+    fieldsAndOperands()
+    calls()
+    methodCalls()
+    literals()
+    indexing()
+    bodies()
+    threads()
+}

@@ -1,0 +1,73 @@
+package main
+
+import path
+import @budget
+import @check
+import @runner
+import "novus/lsp/base/platform"
+
+private final FUZZ_TOOL_USAGE = "usage: fuzz_tool <repoRoot> [path-filter]"
+private final FUZZ_TOOL_USAGE_EXIT = 2
+private final FUZZ_TOOL_SOURCE_EXTENSIONS = [".nv", ".nvh"]
+private final FUZZ_TOOL_MAX_DEPTH = 64
+private final FUZZ_TOOL_MILLIS_PER_SECOND = 1000
+private final FUZZ_TOOL_PROGRESS_PREFIX = "fuzz "
+
+// Fuzz driver of the syntax layer (DESIGN 9.5-5): every corpus file is mutated deterministically (40 truncations, 20 byte
+// deletions, 20 insertions of `" { } ( ) / * $ ${` and 20 of a NUL byte, an LCG seeded per file) and lexed and parsed under
+// runGuarded; the invariants of check.nv must hold for every case. Exit code 0 means none was violated.
+//   fuzz_tool <repoRoot> [path-filter]   only the files whose repository-relative path contains the filter
+// stderr names each file before its cases run, so a hang can be located. The whole run is capped (60 s, DESIGN 9.5-5; the
+// environment variable FUZZ_TOOL_CAP_SECONDS changes it) and so is every file (FUZZ_TOOL_FILE_BUDGET_MILLIS).
+method main(array<string> args): integer {
+    if (args.length() < 1 || args.length() > 2) {
+        eprintln(FUZZ_TOOL_USAGE)
+        return FUZZ_TOOL_USAGE_EXIT
+    }
+    var filter = ""
+    if (args.length() == 2) {
+        filter = args[1]
+    }
+    return fuzzToolRun(args[0], filter)
+}
+
+method fuzzToolRun(string root, string filter): integer {
+    if (path.isDir(root) == false) {
+        eprintln("fuzz_tool: " + root + " is not a directory")
+        return FUZZ_TOOL_USAGE_EXIT
+    }
+    var started = nowMillis()
+    var context = FuzzToolContext(FuzzToolLimits(), FuzzToolTotals(), fuzzToolChecks())
+    for (file in walkSourceFiles(DiskTextSource(), root, FUZZ_TOOL_SOURCE_EXTENSIONS, FUZZ_TOOL_MAX_DEPTH)) {
+        if (nowMillis() - started >= context.limits.capMillis) {
+            println("the run took longer than the cap of " + context.limits.capMillis / FUZZ_TOOL_MILLIS_PER_SECOND + " s, stopped before " + file)
+            context.totals.slowCases = context.totals.slowCases + 1
+            break
+        }
+        fuzzToolRunFile(root, file, filter, context)
+    }
+    fuzzToolSummarize(context.totals, nowMillis() - started)
+    if (context.totals.problems() == 0) {
+        return 0
+    }
+    return 1
+}
+
+method fuzzToolRunFile(string root, string file, string filter, FuzzToolContext context) {
+    var relative = path.relative(root, file)
+    if (relative.contains(filter) == false) {
+        return
+    }
+    eprintln(FUZZ_TOOL_PROGRESS_PREFIX + relative)
+    FuzzToolFileRun(relative, context.checks, context.totals, context.limits.fileBudgetMillis).runAll(readTextFile(file))
+}
+
+method fuzzToolSummarize(FuzzToolTotals totals, integer elapsedMillis) {
+    println("summary fuzz.files " + totals.files)
+    println("summary fuzz.cases " + totals.cases)
+    println("summary fuzz.violations " + totals.violations)
+    println("summary fuzz.runtime-errors " + totals.runtimeErrors)
+    println("summary fuzz.slow-cases " + totals.slowCases)
+    println("reduced " + totals.reducedFiles + " large files to fewer cases")
+    println("elapsed " + elapsedMillis / FUZZ_TOOL_MILLIS_PER_SECOND + " s")
+}

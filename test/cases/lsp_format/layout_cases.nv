@@ -1,0 +1,116 @@
+package main
+
+import "novus/lsp/base/model"
+import "novus/lsp/syntax/lexing"
+
+method runBlankLineCases() {
+    expectText("blank lines collapse to one", "a=1\n\n\n\nb=2\n", "a = 1\n\nb = 2\n")
+    expectText("a single blank line stays", "a=1\n\nb=2\n", "a = 1\n\nb = 2\n")
+    expectText("blank lines with blanks in them", "a=1\n   \n\t\n  \nb=2\n", "a = 1\n\nb = 2\n")
+    var none = FormatSettings()
+    none.maxBlankLines = 0
+    expectWith("no blank lines allowed", none, "a=1\n\n\nb=2\n", "a = 1\nb = 2\n")
+    var many = FormatSettings()
+    many.maxBlankLines = 3
+    expectWith("three blank lines allowed", many, "a=1\n\n\n\n\n\nb=2\n", "a = 1\n\n\n\nb = 2\n")
+    var negative = FormatSettings()
+    negative.maxBlankLines = -5
+    expectWith("a negative limit means none", negative, "a=1\n\nb=2\n", "a = 1\nb = 2\n")
+    expectText("blank lines at the start are removed", "\n\n\na=1\n", "a = 1\n")
+    expectText("blank lines at the end are removed", "a=1\n\n\n\n", "a = 1\n")
+}
+
+method runTrailingCases() {
+    expectText("trailing blanks are removed", "a=1   \nb=2\t\n", "a = 1\nb = 2\n")
+    expectText("the final line break is added", "a=1", "a = 1\n")
+    expectText("one final line break stays", "a=1\n", "a = 1\n")
+    expectText("blanks before the end", "a=1\n   ", "a = 1\n")
+    expectText("empty file", "", "")
+    expectText("whitespace only file", "  \n\n\t\n", "")
+    expectText("comment only file", "   // hello   \n\n\n", "// hello\n")
+    expectText("a line comment loses its trailing blanks", "x=1 // note   \t\ny=2\n", "x = 1 // note\ny = 2\n")
+}
+
+method runCommentCases() {
+    expectText("trailing comment keeps its alignment", "x = 1      // note\ny=22     // other\n", "x = 1      // note\ny = 22     // other\n")
+    expectText("trailing comment gets a space", "x=1// note\n", "x = 1 // note\n")
+    expectText("block comment between tokens", "x=/*c*/1\n", "x = /*c*/ 1\n")
+    expectText("block comment keeps its content", "/* a\n    b */\nx=1\n", "/* a\n    b */\nx = 1\n")
+    expectText("code after a block comment", "/* a\n b */ x=1\n", "/* a\n b */ x = 1\n")
+    expectText("division is no comment", "x=a/b\n", "x = a / b\n")
+    expectText("doc comment lines", "// one\n// two\nmethod f(){\n// inside\nreturn 1\n}\n", "// one\n// two\nmethod f() {\n    // inside\n    return 1\n}\n")
+    expectText("comment before a closing brace", "method f(){\nx=1\n// last\n}\n", "method f() {\n    x = 1\n    // last\n}\n")
+}
+
+method runStringCases() {
+    expectText("string content is untouched", "x = \"a   b\\n  c\"\n", "x = \"a   b\\n  c\"\n")
+    expectText("multi line string is untouched", "x=\"first\n      second\n  third\"\ny=1\n", "x = \"first\n      second\n  third\"\ny = 1\n")
+    expectText("tokens after a multi line string", "x=\"a\nb\"+ y\n", "x = \"a\nb\" + y\n")
+    var open = "$" + "{"
+    expectText("interpolation is untouched", "x=1\n    y = \"" + open + " a+b }\"\n", "x = 1\ny = \"" + open + " a+b }\"\n")
+}
+
+method runLineEndingCases() {
+    expectText("crlf is kept", "a=1\r\n\r\n\r\nb=2   \r\n", "a = 1\r\n\r\nb = 2\r\n")
+    expectText("crlf indentation", "method f(){\r\nx=1\r\n}\r\n", "method f() {\r\n    x = 1\r\n}\r\n")
+    expectText("crlf gets its final line break", "a=1", "a = 1\n")
+    expectText("lf stays lf", "a=1\nb=2\n", "a = 1\nb = 2\n")
+    expectText("a lone carriage return is a blank", "a=1\rb=2\n", "a = 1 b = 2\n")
+    expectText("the first line break decides", "a=1\r\nb=2\nc=3\n", "a = 1\r\nb = 2\r\nc = 3\r\n")
+    expectText("a line break inside a string does not decide", "x=\"a\nb\"\r\ny=1\r\n", "x = \"a\nb\"\r\ny = 1\r\n")
+}
+
+method runRecoveryCases() {
+    var unterminated = "x = \"never closed\n  y=1\n"
+    expectText("unterminated string is returned as it is", unterminated, unterminated)
+    var comment = "x=1\n/* never closed\n  y=1\n"
+    expectText("unterminated comment is returned as it is", comment, comment)
+    expectText("a nul byte inside a gap keeps the gap", "a=1" + chr(0) + "  b=2\n", "a = 1" + chr(0) + "  b = 2\n")
+    expectText("a control byte inside a gap keeps the gap", "a" + chr(1) + "  =  1\n", "a" + chr(1) + "  = 1\n")
+    expectText("a nul byte after the last token", "a=1\n" + chr(0), "a = 1\n" + chr(0))
+    expectText("a nul byte at the start", chr(0) + "a=1\n", chr(0) + "a = 1\n")
+    expectText("a nul byte inside a string", "x=\"a" + chr(0) + "b\"  +y\n", "x = \"a" + chr(0) + "b\" + y\n")
+    expectText("stray braces do not break the layout", "}\n}\nx=1\n", "}\n}\nx = 1\n")
+}
+
+method runStaleLexCases() {
+    var formatter = Formatter(FormatSettings())
+    var older = lexText("a=1\n")
+    expectTrue("a lex result of a shorter text is refused", formatter.formatText("a=1\nb=2\n", older) == "a=1\nb=2\n")
+    expectTrue("a lex result of a longer text is refused", formatter.formatText("a=1", lexText("a=1\nb=2\n")) == "a=1")
+    expectTrue("an empty lex result is refused", formatter.formatText("a=1", LexResult([], [], [])) == "a=1")
+    println("edits with a stale lex result: " + formatter.editsFor(documentOf("a=1\nb=2\n"), older).length())
+}
+
+method runStabilityCases() {
+    var program = "package main\nimport   json\n\n@Deprecated{text=\"x\"}\ndefine class A based B{\n  array<string> items\n  construct(array<string> items){this.items=items}\n  method f(integer a):integer{\n  if(a<0){return -a}else{\n  var t=[1,2,\n  3]\n  return t[0]+a}\n  }\n}\n"
+    expectStable("a small program", program)
+    expectStable("crlf program", program.replace("\n", "\r\n"))
+    expectStable("squeezed program", program.replace(" ", ""))
+    expectStable("program with control bytes", program.replace("{", "{" + chr(1)))
+    expectStable("mixed line endings with a control byte", "a=1" + chr(1) + "\r\nb=2\nc=3\r\n")
+    expectStable("a lone carriage return", "a=1\rb=2\r\n")
+}
+
+method runDocumentKindCases() {
+    var manifest = Document("file:///work/project.nv", "novus", 1, "project   \"x\"\n")
+    var page = Document("file:///work/page.nvh", "novus", 1, "<div>a=1</div>\n")
+    var source = Document("file:///work/main.nv", "novus", 1, "a=1\n")
+    var formatter = Formatter(FormatSettings())
+    expectTrue("a manifest is not formatted", formatter.formatDocument(manifest, lexText(manifest.text)) == manifest.text)
+    expectTrue("a component is not formatted", formatter.formatDocument(page, lexText(page.text)) == page.text)
+    expectTrue("a source file is formatted", formatter.formatDocument(source, lexText(source.text)) == "a = 1\n")
+}
+
+method runLayoutCases() {
+    println("--- layout")
+    runBlankLineCases()
+    runTrailingCases()
+    runCommentCases()
+    runStringCases()
+    runLineEndingCases()
+    runRecoveryCases()
+    runStaleLexCases()
+    runStabilityCases()
+    runDocumentKindCases()
+}

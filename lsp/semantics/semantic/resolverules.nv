@@ -1,0 +1,132 @@
+package semantic
+
+import base/maybe
+import projects/closure
+import semantics/builtins
+import syntax/outline
+
+private final SEMANTIC_CORE_BUILTINS = ["readFile", "writeFile", "fileExists", "args", "parseInt", "chr", "ord", "typeOf"]
+
+// Call lookup in the order of the loader (compiler/codegen/calls.nv genCall): a function of the own package, a method
+// of the enclosing class (and its bases), a function that exactly one program package has (only when no root function
+// has that name and arity), a built-in function, a class, a function of the root level.
+define class SemanticCallRules {
+    Resolver resolver
+    ProgramIndex index
+
+    construct(Resolver resolver) {
+        this.resolver = resolver
+        this.index = resolver.index
+    }
+
+    method lookup(Scope scope, string name, integer arity): Resolution {
+        var named = this.index.functionsNamed(name)
+        var found = this.fromOwnPackage(scope, named, arity)
+        if (isNone(found)) {
+            found = this.fromEnclosingClass(scope, name, arity)
+        }
+        if (isNone(found)) {
+            found = this.fromProgramPackages(named, arity)
+        }
+        if (isNone(found) && this.isBuiltinCall(name)) {
+            return Resolution([], SEMANTIC_STATUS_UNKNOWN)
+        }
+        if (isNone(found)) {
+            found = this.fromClass(name)
+        }
+        if (isNone(found)) {
+            found = this.fromRoot(named, arity)
+        }
+        if (isNone(found)) {
+            return Resolution([], SEMANTIC_STATUS_UNKNOWN)
+        }
+        return found
+    }
+
+    method fromOwnPackage(Scope scope, array<Symbol> named, integer arity): Resolution {
+        if (isNone(scope.file) || scope.file.qualifier == "") {
+            return nothing()
+        }
+        var own = semanticWithArity(semanticInQualifier(named, scope.file.qualifier), arity)
+        if (own.length() == 0) {
+            return nothing()
+        }
+        return semanticResolution(own)
+    }
+
+    // The compiler takes the first class of the chain that has a method of that name, whatever its arity.
+    method fromEnclosingClass(Scope scope, string name, integer arity): Resolution {
+        if (isNone(scope.enclosingType)) {
+            return nothing()
+        }
+        var owner = semanticNamedType(scope.enclosingType.name)
+        var methods = []
+        for (member in this.resolver.lookup.findMember(owner, name, SEMANTIC_ANY_ARITY)) {
+            if (member.decl.isCallable()) {
+                methods.append(member)
+            }
+        }
+        if (methods.length() == 0) {
+            return nothing()
+        }
+        var ofOwner = semanticOfFirstOwner(methods)
+        var matching = semanticWithArity(ofOwner, arity)
+        if (matching.length() == 0) {
+            return semanticResolution(ofOwner)
+        }
+        return semanticResolution(matching)
+    }
+
+    method fromProgramPackages(array<Symbol> named, integer arity): Resolution {
+        var rootMatches = semanticWithArity(semanticInQualifier(named, ""), arity)
+        if (rootMatches.length() > 0) {
+            return nothing()
+        }
+        var candidates = semanticWithArity(semanticInProgramPackages(named), arity)
+        if (candidates.length() == 0) {
+            return nothing()
+        }
+        return semanticResolution(candidates)
+    }
+
+    // Any type, so that hover can show `define enum Color` for `Color(...)`; the compiler rejects an enum, an
+    // interface and an abstract class there, which is for the diagnostics to say.
+    method fromClass(string name): Resolution {
+        var type = this.index.typeNamed(name)
+        if (isNone(type)) {
+            return nothing()
+        }
+        return Resolution([type], SEMANTIC_STATUS_RESOLVED)
+    }
+
+    method fromRoot(array<Symbol> named, integer arity): Resolution {
+        var root = semanticWithArity(semanticInQualifier(named, ""), arity)
+        if (root.length() == 0) {
+            return nothing()
+        }
+        return semanticResolution(root)
+    }
+
+    // contract-note: a built-in has no Symbol, so lookup answers unknown and this method says why (DESIGN-NOTES.md 3).
+    // The 8 core built-ins beat every user function and class; the others (`exec`, `exit`, ...) only apply when no
+    // root function and no type has that name.
+    method isBuiltinCall(string name): bool {
+        if (SEMANTIC_CORE_BUILTINS.contains(name)) {
+            return true
+        }
+        if (this.isFreeBuiltin(name) == false) {
+            return false
+        }
+        var rootNamed = semanticInQualifier(this.index.functionsNamed(name), "")
+        return rootNamed.length() == 0 && isNone(this.index.typeNamed(name))
+    }
+
+    method isFreeBuiltin(string name): bool {
+        for (member in freeBuiltins()) {
+            if (member.name == name) {
+                return true
+            }
+        }
+        return false
+    }
+}

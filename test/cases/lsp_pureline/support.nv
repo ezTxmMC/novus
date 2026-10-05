@@ -1,0 +1,65 @@
+package main
+
+import strings
+import "novus/lsp/base/model"
+import "novus/lsp/base/platform"
+import "novus/lsp/base/text"
+import "novus/lsp/syntax/lexing"
+import "novus/lsp/syntax/outline"
+import "novus/lsp/syntax/parsing"
+import "novus/lsp/services/pureline"
+
+private final WORK_FILE = "/work/pkg/main.nv"
+
+method describe(Document document, Diagnostic diagnostic): string {
+    var line = document.lines.lineOf(diagnostic.span.start) + 1
+    var column = document.lines.byteColumn(diagnostic.span.start) + 1
+    var covered = document.text.substring(diagnostic.span.start, diagnostic.span.end)
+    if (covered.length() > 24) {
+        covered = covered.substring(0, 24) + "..."
+    }
+    return line + ":" + column + " " + diagnostic.severity + " " + diagnostic.source + " " + diagnostic.code + " [" + covered.replace("\n", "\\n") + "] " + diagnostic.message
+}
+
+method documentFor(string filePath, string source): Document {
+    return Document("file://" + filePath, "novus", 1, source)
+}
+
+// Lints one file with the editor parse (tokens and locals), as the lint coordinator does.
+method lintWith(PurelineSettings settings, string filePath, string source, TextSource files): array<string> {
+    var document = documentFor(filePath, source)
+    var syntax = parseSourceText(document.filePath, source, editorParseOptions())
+    var lines = []
+    for (diagnostic in PurelineLinter(settings).lint(document, syntax, files)) {
+        lines.append(describe(document, diagnostic))
+    }
+    return lines
+}
+
+method lintText(PurelineSettings settings, string source): array<string> {
+    return lintWith(settings, WORK_FILE, source, MemoryTextSource({ WORK_FILE: source }))
+}
+
+method show(string label, array<string> lines) {
+    println(label + ": " + lines.length() + " finding(s)")
+    for (line in lines) {
+        println("  " + line)
+    }
+}
+
+method showText(string label, string source) {
+    show(label, lintText(PurelineSettings(), source))
+}
+
+method showWith(string label, PurelineSettings settings, string source) {
+    show(label, lintText(settings, source))
+}
+
+method bodyOf(integer lines): string {
+    return strings.repeat("    x = 1\n", lines)
+}
+
+// A method whose braces enclose exactly `bodyLines` lines (the line of `{` and the line of `}` count).
+method methodWithLines(string name, integer bodyLines): string {
+    return "method " + name + "() {\n" + bodyOf(bodyLines - 2) + "}\n"
+}

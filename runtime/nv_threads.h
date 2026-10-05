@@ -568,6 +568,7 @@ static void *nv_os_task_main(void *arg) {
     result = a->fn(a->args, a->nargs);
     nv_root_free(a);
     nv_task_complete(task, result); /* the result is in a root block before this stack goes */
+    nv_sexp_release();
     nv_gc_thread_detach();
     return 0;
 }

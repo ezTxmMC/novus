@@ -1,0 +1,148 @@
+package format
+
+import base/model
+import base/text
+
+// The edits that turn the original text into the formatted one. Both texts hold the same non-blank bytes in the same order,
+// so every difference is a run of blanks; a run is replaced line by line when both sides have the same number of line breaks.
+// When the texts differ in anything else the result is empty: a formatter bug must never reach the user's file.
+private final FORMAT_DIFF_LINE_FEED = 10
+
+method minimalEdits(Document document, string formatted): array<TextEdit> {
+    return FormatDiff(document.text, formatted).edits()
+}
+
+define class FormatDiff {
+    string original
+    string formatted
+    integer left
+    integer right
+    array<TextEdit> found
+
+    construct(string original, string formatted) {
+        this.original = original
+        this.formatted = formatted
+        this.left = 0
+        this.right = 0
+        this.found = []
+    }
+
+    method edits(): array<TextEdit> {
+        while (this.left < this.original.length() && this.right < this.formatted.length()) {
+            if (this.sameByte()) {
+                this.left = this.left + 1
+                this.right = this.right + 1
+                continue
+            }
+            if (this.replaceRun() == false) {
+                return []
+            }
+        }
+        return this.finishTail()
+    }
+
+    method sameByte(): bool {
+        return ord(this.original.charAt(this.left)) == ord(this.formatted.charAt(this.right))
+    }
+
+    // The blanks at both positions are replaced as a pair; no blank on either side means the texts differ in content.
+    method replaceRun(): bool {
+        var leftEnd = formatBlankEnd(this.original, this.left)
+        var rightEnd = formatBlankEnd(this.formatted, this.right)
+        if (leftEnd == this.left && rightEnd == this.right) {
+            return false
+        }
+        this.addRun(this.left, leftEnd, this.right, rightEnd)
+        this.left = leftEnd
+        this.right = rightEnd
+        return true
+    }
+
+    method finishTail(): array<TextEdit> {
+        var leftEnd = formatBlankEnd(this.original, this.left)
+        var rightEnd = formatBlankEnd(this.formatted, this.right)
+        if (leftEnd != this.original.length() || rightEnd != this.formatted.length()) {
+            return []
+        }
+        this.addRun(this.left, leftEnd, this.right, rightEnd)
+        return this.found
+    }
+
+    method addRun(integer leftStart, integer leftEnd, integer rightStart, integer rightEnd) {
+        var oldRun = this.original.substring(leftStart, leftEnd)
+        var newRun = this.formatted.substring(rightStart, rightEnd)
+        var oldLines = formatSplitLines(oldRun)
+        var newLines = formatSplitLines(newRun)
+        if (oldLines.length() != newLines.length()) {
+            this.addDifference(leftStart, oldRun, newRun)
+            return
+        }
+        var index = 0
+        var offset = leftStart
+        while (index < oldLines.length()) {
+            this.addDifference(offset, oldLines[index], newLines[index])
+            offset = offset + oldLines[index].length() + 1
+            index = index + 1
+        }
+    }
+
+    // The part of the two blank runs that differs, as one edit at its original offset.
+    method addDifference(integer offset, string oldText, string newText) {
+        var prefix = formatCommonPrefix(oldText, newText)
+        var suffix = formatCommonSuffix(oldText, newText, prefix)
+        var oldEnd = oldText.length() - suffix
+        if (prefix == oldEnd && prefix == newText.length() - suffix) {
+            return
+        }
+        this.found.append(TextEdit(Span(offset + prefix, offset + oldEnd), newText.substring(prefix, newText.length() - suffix)))
+    }
+}
+
+method formatBlankEnd(string source, integer from): integer {
+    var index = from
+    while (index < source.length() && formatIsBlankByte(ord(source.charAt(index)))) {
+        index = index + 1
+    }
+    return index
+}
+
+// The pieces of a blank run between its line feeds (the feeds themselves are not part of a piece).
+method formatSplitLines(string run): array<string> {
+    var pieces = []
+    var start = 0
+    var index = 0
+    while (index < run.length()) {
+        if (ord(run.charAt(index)) == FORMAT_DIFF_LINE_FEED) {
+            pieces.append(run.substring(start, index))
+            start = index + 1
+        }
+        index = index + 1
+    }
+    pieces.append(run.substring(start, run.length()))
+    return pieces
+}
+
+method formatCommonPrefix(string first, string second): integer {
+    var limit = first.length()
+    if (second.length() < limit) {
+        limit = second.length()
+    }
+    var index = 0
+    while (index < limit && ord(first.charAt(index)) == ord(second.charAt(index))) {
+        index = index + 1
+    }
+    return index
+}
+
+method formatCommonSuffix(string first, string second, integer prefix): integer {
+    var limit = first.length()
+    if (second.length() < limit) {
+        limit = second.length()
+    }
+    limit = limit - prefix
+    var count = 0
+    while (count < limit && ord(first.charAt(first.length() - 1 - count)) == ord(second.charAt(second.length() - 1 - count))) {
+        count = count + 1
+    }
+    return count
+}

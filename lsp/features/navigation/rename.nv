@@ -1,0 +1,117 @@
+package navigation
+
+import base/maybe
+import base/model
+import base/text
+import projects/workspace
+import semantics/targets
+
+private final NAVIGATION_REASON_BUILTIN = "built-in names cannot be renamed"
+private final NAVIGATION_REASON_QUALIFIER = "packages and modules cannot be renamed"
+private final NAVIGATION_REASON_AMBIGUOUS = "ambiguous name: it is defined in more than one package"
+
+// Prepare and rename. `prepare` answers the span of the identifier whenever the cursor is on a declaration or a
+// reference (a refused one included, so that the client can show the reason); `refusal` is the reason or "".
+define class Renamer {
+    ReferenceFinder references
+    RenamePolicy policy
+
+    construct(ReferenceFinder references) {
+        this.references = references
+        this.policy = RenamePolicy()
+    }
+
+    method prepare(FileContext context, integer offset): Span {
+        var target = this.targetOf(context, offset)
+        if (isNone(target)) {
+            return nothing()
+        }
+        return target.span
+    }
+
+    method refusal(FileContext context, integer offset): string {
+        var target = this.targetOf(context, offset)
+        if (isNone(target)) {
+            return ""
+        }
+        if (target.isBuiltin()) {
+            return NAVIGATION_REASON_BUILTIN
+        }
+        if (target.kind == TARGETS_KIND_QUALIFIER) {
+            return NAVIGATION_REASON_QUALIFIER
+        }
+        if (target.isAmbiguous()) {
+            return NAVIGATION_REASON_AMBIGUOUS
+        }
+        return this.policy.decide(context, target.first()).reason
+    }
+
+    // Additive: why the new name cannot be used for the declaration under the cursor, "" when it can (invalid name,
+    // keyword, an existing declaration or variable of that name).
+    method problem(FileContext context, integer offset, string newName): string {
+        var target = this.targetOf(context, offset)
+        if (isNone(target) || target.isSymbol() == false) {
+            return ""
+        }
+        return this.policy.nameProblem(context, target.first(), newName)
+    }
+
+    method rename(FileContext context, integer offset, string newName): array<FileEdit> {
+        return this.rename(context, offset, newName, NeverCancelled())
+    }
+
+    // The edits of every occurrence in the closure, one `FileEdit` per file in closure order; empty when the rename is
+    // refused or the new name is not usable (`refusal`, `problem`).
+    method rename(FileContext context, integer offset, string newName, CancelCheck cancel): array<FileEdit> {
+        if (this.refusal(context, offset) != "" || this.problem(context, offset, newName) != "") {
+            return []
+        }
+        var locations = this.references.find(context, offset, true, cancel)
+        return navigationGroupEdits(locations, newName)
+    }
+
+    method targetOf(FileContext context, integer offset): IdentifierTarget {
+        var target = TargetFinder(context.resolver()).targetAt(context.closureFile, context.syntax, offset, false)
+        if (isNone(target) || target.kind == TARGETS_KIND_UNRESOLVED) {
+            return nothing()
+        }
+        return target
+    }
+}
+
+// One FileEdit per file, the edits of a file ascending by start and without duplicates.
+method navigationGroupEdits(array<Location> locations, string newName): array<FileEdit> {
+    var order = []
+    var byFile = {}
+    var seen = {}
+    for (location in locations) {
+        var key = location.filePath + "@" + location.span.start
+        if (seen.has(key)) {
+            continue
+        }
+        seen[key] = true
+        if (byFile.has(location.filePath) == false) {
+            byFile[location.filePath] = []
+            order.append(location.filePath)
+        }
+        byFile[location.filePath].append(TextEdit(location.span, newName))
+    }
+    var edits = []
+    for (filePath in order) {
+        edits.append(FileEdit(filePath, navigationSortedEdits(byFile[filePath])))
+    }
+    return edits
+}
+
+// Insertion sort: the occurrences of a file arrive in source order already, so this is a linear pass in practice.
+method navigationSortedEdits(array<TextEdit> edits): array<TextEdit> {
+    var sorted = []
+    for (edit in edits) {
+        var at = sorted.length()
+        while (at > 0 && sorted[at - 1].span.start > edit.span.start) {
+            at = at - 1
+        }
+        sorted.insert(at, edit)
+    }
+    return sorted
+}

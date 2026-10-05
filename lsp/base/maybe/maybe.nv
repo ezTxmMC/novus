@@ -1,0 +1,24 @@
+package maybe
+
+// Novus has no null literal: a bare return yields nil, and typeOf(nil) is "unknown".
+// nil == "" is true, so an absent value is never tested against an empty string.
+private final MAYBE_ABSENT_TYPE_NAME = "unknown"
+
+method nothing(): object {
+    return
+}
+
+method isNone(object value): bool {
+    return typeOf(value) == MAYBE_ABSENT_TYPE_NAME
+}
+
+method isSome(object value): bool {
+    return isNone(value) == false
+}
+
+method valueOr(object value, object fallback): object {
+    if (isNone(value)) {
+        return fallback
+    }
+    return value
+}

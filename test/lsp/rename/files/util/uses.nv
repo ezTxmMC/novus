@@ -1,0 +1,5 @@
+package util
+
+method twice(): integer {
+    return helper(3) + helper(4)
+}

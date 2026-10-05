@@ -1,0 +1,21 @@
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"rootUri":"@ROOTURI@","capabilities":{}}}
+{"jsonrpc":"2.0","method":"initialized","params":{}}
+{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"@ROOTURI@/main.nv","languageId":"novus","version":1,"text":"import geo\nimport strings\nimport @helper\n\ndefine enum Color {\n    Red,\n    Green\n}\n\nmethod main() {\n    var circle = Circle(2.0)\n    var area = circle.area()\n    println(geo.describe(circle))\n    println(strings.repeat(\"a\", 2))\n    var shade = Color.Red\n    var total = helper(1)\n    total = total + helper(2)\n    println(scaled(1.0) + scaled(1.0, 2.0))\n    println(area)\n}\n"}}}
+{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"@ROOTURI@/geo/shape.nv","languageId":"novus","version":1,"text":"package geo\n\n// A shape with an area.\ndefine abstract Shape {\n    abstract method area(): float\n\n    // The name of the shape.\n    method label(): string {\n        return \"shape\"\n    }\n}\n\n// A circle of a given radius.\ndefine class Circle based Shape {\n    float radius\n\n    construct(float radius) {\n        this.radius = radius\n    }\n\n    method area(): float {\n        return radius * radius\n    }\n\n    method grow(float by): float {\n        var next = radius + by\n        return next\n    }\n}\n\nmethod describe(Shape shape): string {\n    return shape.label()\n}\n\n// Scales one value.\nmethod scaled(float factor): float {\n    return factor\n}\n\nmethod scaled(float factor, float extra): float {\n    return factor + extra\n}\n"}}}
+{"jsonrpc":"2.0","id":2,"method":"textDocument/definition","params":{"textDocument":{"uri":"@ROOTURI@/main.nv"},"position":{"line":10,"character":18}}}
+{"jsonrpc":"2.0","id":3,"method":"textDocument/definition","params":{"textDocument":{"uri":"@ROOTURI@/main.nv"},"position":{"line":11,"character":23}}}
+{"jsonrpc":"2.0","id":4,"method":"textDocument/definition","params":{"textDocument":{"uri":"@ROOTURI@/main.nv"},"position":{"line":12,"character":18}}}
+{"jsonrpc":"2.0","id":5,"method":"textDocument/definition","params":{"textDocument":{"uri":"@ROOTURI@/main.nv"},"position":{"line":13,"character":21}}}
+{"jsonrpc":"2.0","id":6,"method":"textDocument/definition","params":{"textDocument":{"uri":"@ROOTURI@/main.nv"},"position":{"line":14,"character":23}}}
+{"jsonrpc":"2.0","id":7,"method":"textDocument/definition","params":{"textDocument":{"uri":"@ROOTURI@/main.nv"},"position":{"line":15,"character":17}}}
+{"jsonrpc":"2.0","id":8,"method":"textDocument/definition","params":{"textDocument":{"uri":"@ROOTURI@/main.nv"},"position":{"line":16,"character":13}}}
+{"jsonrpc":"2.0","id":9,"method":"textDocument/definition","params":{"textDocument":{"uri":"@ROOTURI@/main.nv"},"position":{"line":17,"character":13}}}
+{"jsonrpc":"2.0","id":10,"method":"textDocument/definition","params":{"textDocument":{"uri":"@ROOTURI@/main.nv"},"position":{"line":0,"character":8}}}
+{"jsonrpc":"2.0","id":11,"method":"textDocument/definition","params":{"textDocument":{"uri":"@ROOTURI@/main.nv"},"position":{"line":1,"character":8}}}
+{"jsonrpc":"2.0","id":12,"method":"textDocument/definition","params":{"textDocument":{"uri":"@ROOTURI@/main.nv"},"position":{"line":2,"character":9}}}
+{"jsonrpc":"2.0","id":13,"method":"textDocument/definition","params":{"textDocument":{"uri":"@ROOTURI@/geo/shape.nv"},"position":{"line":21,"character":16}}}
+{"jsonrpc":"2.0","id":14,"method":"textDocument/definition","params":{"textDocument":{"uri":"@ROOTURI@/geo/shape.nv"},"position":{"line":7,"character":12}}}
+{"jsonrpc":"2.0","id":15,"method":"textDocument/definition","params":{"textDocument":{"uri":"@ROOTURI@/main.nv"},"position":{"line":9,"character":2}}}
+{"jsonrpc":"2.0","id":16,"method":"textDocument/definition","params":{"textDocument":{"uri":"@ROOTURI@/geo/other.nv"},"position":{"line":0,"character":0}}}
+{"jsonrpc":"2.0","id":99,"method":"shutdown"}
+{"jsonrpc":"2.0","method":"exit"}

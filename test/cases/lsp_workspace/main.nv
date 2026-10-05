@@ -1,0 +1,45 @@
+package main
+
+import @cache_cases
+import @model_cases
+import @workspace_cases
+import @event_cases
+import @revalidation_cases
+import @robustness_cases
+import @fix_cases
+import @import_cases
+
+method main() {
+    runOverlayCases()
+    runParseOptionCases()
+    runKindCases()
+    runTokenCases()
+    runModelBasics()
+    runCheckEntryCases()
+    runDependencyCases()
+    runScanCases()
+    runContextCases()
+    runBodyEditCases()
+    runImportEditCases()
+    runOrphanCases()
+    runOrphanPackageCases()
+    runClosedBufferCases()
+    runManifestCases()
+    runDiskEventCases()
+    runProgramCases()
+    runScratchCases()
+    runFolderCases()
+    runDeletedManifestCases()
+    runDependencyManifestCases()
+    runRevalidationCases()
+    runRevalidationKinds()
+    runRevalidationScratch()
+    runDependencyIndexCases()
+    runStdSourceCases()
+    runOddDocuments()
+    runOddEvents()
+    runComponentCases()
+    runNulCases()
+    runWorkspaceFixes()
+    runImportLookupCases()
+}

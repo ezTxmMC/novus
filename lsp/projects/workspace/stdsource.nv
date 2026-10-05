@@ -1,0 +1,79 @@
+package workspace
+
+import base/maybe
+import base/platform
+import projects/manifest
+import projects/stdlib
+
+private final WORKSPACE_STD_DIRECTORY_PREFIX = "novus-lsp-std-"
+private final WORKSPACE_STD_EXTENSION = ".nv"
+
+// Materialises std module sources once into a temp directory so that the editor can open them: the copy is for the
+// editor only (nothing reads it back), it is written on first use and rewritten when its content differs. The
+// directory name carries the fingerprint of the embedded std, so two compiler builds never share a copy.
+define class StdSourceStore {
+    StdLibrary library
+    string directory
+    map<string, string> written
+
+    construct(StdLibrary library) {
+        this.library = library
+        this.directory = ""
+        this.written = {}
+    }
+
+    // The path of the copy of that std module; `""` for a name that is no std module or when writing fails.
+    method pathOf(string moduleName): string {
+        var existing = this.writtenAndPresent(moduleName)
+        if (existing != "") {
+            return existing
+        }
+        var module = this.library.module(moduleName)
+        if (isNone(module)) {
+            return ""
+        }
+        var folder = this.ensureDirectory()
+        if (folder == "") {
+            return ""
+        }
+        var target = manifestJoinPath(folder, moduleName + WORKSPACE_STD_EXTENSION)
+        if (this.materialise(target, module.source) == false) {
+            return ""
+        }
+        this.written[moduleName] = target
+        return target
+    }
+
+    // The cached path while the file is still there; a temp directory cleaner may have removed it.
+    method writtenAndPresent(string moduleName): string {
+        var target = this.written.get(moduleName, "")
+        if (target != "" && DiskTextSource().exists(target)) {
+            return target
+        }
+        this.written.remove(moduleName)
+        return ""
+    }
+
+    method materialise(string target, string content): bool {
+        if (readTextFile(target) == content) {
+            return true
+        }
+        return writeTextFile(target, content)
+    }
+
+    // The fingerprint reads every embedded source, so the directory is worked out once per process.
+    method ensureDirectory(): string {
+        if (this.directory != "" && makeDirectories(this.directory)) {
+            return this.directory
+        }
+        if (this.directory != "") {
+            return ""
+        }
+        var folder = manifestJoinPath(temporaryDirectory(), WORKSPACE_STD_DIRECTORY_PREFIX + this.library.fingerprint())
+        if (makeDirectories(folder) == false) {
+            return ""
+        }
+        this.directory = folder
+        return folder
+    }
+}

@@ -1,0 +1,32 @@
+2^-1074: roundtrip=true twice>=true json=4.94065645841247e-324
+2^-1022: roundtrip=true twice>=true json=2.2250738585072014e-308
+2^-200: roundtrip=true twice>=true json=6.223015277861142e-61
+2^-128: roundtrip=true twice>=true json=2.938735877055719e-39
+2^-127: roundtrip=true twice>=true json=5.877471754111438e-39
+2^-126: roundtrip=true twice>=true json=1.1754943508222875e-38
+2^-125: roundtrip=true twice>=true json=2.350988701644575e-38
+2^-1: roundtrip=true twice>=true json=0.5
+2^0: roundtrip=true twice>=true json=1.0
+2^1: roundtrip=true twice>=true json=2.0
+2^125: roundtrip=true twice>=true json=4.253529586511731e+37
+2^126: roundtrip=true twice>=true json=8.507059173023462e+37
+2^127: roundtrip=true twice>=true json=1.7014118346046923e+38
+2^128: roundtrip=true twice>=true json=3.402823669209385e+38
+2^129: roundtrip=true twice>=true json=6.80564733841877e+38
+2^1000: roundtrip=true twice>=true json=1.0715086071862673e+301
+2^1023: roundtrip=false twice>=true json=8.98846567431158e+307
+zero 0.000000 -0.000000 true false true
+sums 0.000000 -0.000000 -0.000000 0.000000
+div 0.000000 0.000000 -0.000000
+inf inf -inf true true
+nan false false false false false
+nan2 false false false true false
+boundary true false false true
+mixed 0.000000 1.500000 6.750000 0.250000 true true
+concat 1.500000 and x2.500000 2.500000x
+tenths 1.000000 false true
+a true 1.1754943508222875e-38
+b true 5.877471754111438e-39
+c true 1.7014118346046923e+38
+d true 3.402823669209385e+38
+[0.5,1.25,1.1754943508222875e-38,1.7014118346046923e+38,-0.0,0.0]

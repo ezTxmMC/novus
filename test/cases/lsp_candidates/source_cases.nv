@@ -1,0 +1,113 @@
+package main
+
+import "novus/lsp/base/model"
+import "novus/lsp/base/text"
+import "novus/lsp/features/candidates"
+import "novus/lsp/projects/workspace"
+import "novus/lsp/syntax/lexing"
+import "novus/lsp/syntax/scanning"
+import @support
+
+private final CA_MAIN = "/p/main.nv"
+
+method caMember(CaWorld world, FileContext context, string receiverText, string prefix, integer offset): array<CompletionItem> {
+    var tokens = lexText(receiverText).tokens
+    var request = CompletionContext("member", prefix, Span(offset, offset))
+    request.receiver = chainEndingAt(tokens, tokens.length() - 3)
+    return world.symbols.members(context, request)
+}
+
+method runLocalCases() {
+    println("#### SymbolSources.locals")
+    var world = CaWorld(caProject())
+    var source = "package main\n\ndefine class A {\n    integer count\n    method inc(integer by): integer {\n        var next = by + 1\n        for (item in [1, 2]) {\n            var inner = item\n            \n        }\n        var total = \n        return next\n    }\n}\n"
+    var context = world.open(CA_MAIN, source)
+    var inside = source.indexOf("var inner") + 20
+    caPrint("inside the loop", world.symbols.locals(context, caContext("statement", "", inside)))
+    var total = source.indexOf("var total = ") + 12
+    caPrint("the variable being declared is not offered", world.symbols.locals(context, caContext("expression", "", total)))
+    caPrint("a type context has no locals", world.symbols.locals(context, caContext("type", "", total)))
+    var scratch = world.open("", "var x = 1\n")
+    caPrint("a scratch buffer", world.symbols.locals(scratch, caContext("statement", "", 5)))
+}
+
+method runMemberSourceCases() {
+    println("#### MemberSources")
+    var world = CaWorld(caProject())
+    var context = world.open(CA_MAIN, "package main\n\nimport geo\n\nmethod main() {\n    var shape = Shape(\"a\", 1.0)\n    shape.\n}\n")
+    var offset = 80
+    caPrint("a class value", caMember(world, context, "shape.", "", offset))
+    caPrint("a package", caMember(world, context, "geo.", "", offset))
+    caPrint("an enum", caMember(world, context, "Color.", "", offset))
+    caPrintFirst("a std module that is not imported", caMember(world, context, "arrays.", "so", offset), 3)
+    caPrintFirst("an unknown name falls back to everything", caMember(world, context, "mystery.", "nam", offset), 4)
+    println("the user class members come last: " + caLabels(caMember(world, context, "mystery.", "nam", offset)).contains("label name size"))
+    caPrint("a string literal", caMember(world, context, "\"abc\".", "to", offset))
+    var inClass = world.open(CA_MAIN, "package main\n\ndefine class A {\n    integer count\n    method inc(integer by): integer {\n        return 1\n    }\n}\n")
+    var bareOffset = 100
+    caPrint("bare members inside a method", world.symbols.memberSources.bare(inClass, caContext("expression", "", bareOffset)))
+    caPrint("bare members outside a class", world.symbols.memberSources.bare(context, caContext("expression", "", offset)))
+}
+
+method runSymbolSourceCases() {
+    println("#### SymbolSources.projectSymbols and dependencySymbols")
+    var world = CaWorld(caProject())
+    var context = world.open(CA_MAIN, "package main\n\nimport geo\n\nmethod main() {\n}\n")
+    var at = 40
+    caPrint("types for a type slot", world.symbols.projectSymbols(context, caContext("type", "", at)))
+    caPrint("types for based", world.symbols.projectSymbols(context, caContext("basedClause", "", at)))
+    caPrint("annotations", world.symbols.projectSymbols(context, caContext("annotation", "", at)))
+    caPrint("dependency types", world.symbols.dependencySymbols(context, caContext("type", "", at)))
+    var expression = world.symbols.projectSymbols(context, caContext("expression", "", at))
+    println("== expressions: " + caLabels(expression))
+    println("== dependency expressions: " + caLabels(world.symbols.dependencySymbols(context, caContext("expression", "", at))))
+    println("== nothing for a member context: " + world.symbols.projectSymbols(context, caContext("member", "", at)).length())
+    world = CaWorld(caProject())
+    var withDependency = world.open(CA_MAIN, "package main\n\nimport \"ex.com/lib\"\n\nmethod main() {\n}\n")
+    caPrint("dependency types of an imported module", world.symbols.dependencySymbols(withDependency, caContext("type", "", at)))
+    caPrint("dependency functions of an imported module", filterNames(world.symbols.dependencySymbols(withDependency, caContext("expression", "", at)), ["libFunction", "LibThing"]))
+}
+
+method runHygieneCases() {
+    println("#### the import edit of a symbol that the file does not import")
+    var world = CaWorld(caProject())
+    var other = world.open("/p/other/thing.nv", "package other\n\ndefine class Thing {\n    integer id\n}\nmethod helper(integer n): integer {\n    return n\n}\n")
+    caPrint("a sibling file of the package needs nothing", filterNames(world.symbols.projectSymbols(other, caContext("type", "", 5)), ["Thing", "Shape"]))
+    world = CaWorld(caProject())
+    var main = world.open(CA_MAIN, "package main\n\nimport geo\n\nmethod main() {\n}\n")
+    caPrint("an imported package needs nothing, another one does", filterNames(world.symbols.projectSymbols(main, caContext("type", "", 5)), ["Shape", "Thing", "Round"]))
+    world = CaWorld(caProject())
+    world.settings.explicitImports = false
+    var loose = world.open(CA_MAIN, "package main\n\nimport geo\nimport other\n\nmethod main() {\n}\n")
+    caPrint("explicit imports off: loaded packages add nothing", filterNames(world.symbols.projectSymbols(loose, caContext("type", "", 5)), ["Shape", "Thing"]))
+    world = CaWorld(caProject())
+    world.settings.explicitImports = false
+    var unreached = world.open(CA_MAIN, "package main\n\nimport geo\n\nmethod main() {\n}\n")
+    caPrint("explicit imports off: unloaded packages still import", filterNames(world.symbols.projectSymbols(unreached, caContext("type", "", 5)), ["Shape", "Thing"]))
+    println("a folder that is no identifier is never offered: " + caLabels(filterNames(world.symbols.projectSymbols(unreached, caContext("type", "", 5)), ["Odd"])).length())
+}
+
+method filterNames(array<CompletionItem> items, array<string> names): array<CompletionItem> {
+    var kept = []
+    for (item in items) {
+        if (names.contains(item.label)) {
+            kept.append(item)
+        }
+    }
+    return kept
+}
+
+method runQualifiedCases() {
+    println("#### functions of other packages")
+    var world = CaWorld(caProject())
+    var context = world.open(CA_MAIN, "package main\n\nimport geo\nimport other\nimport @util\n\nmethod main() {\n}\n")
+    var items = world.symbols.projectSymbols(context, caContext("expression", "", 40))
+    caPrint("describe exists in two packages, helper at the root and in a package", filterNames(items, ["geo.describe", "other.describe", "describe", "helper", "other.helper", "legacy"]))
+    var constants = world.symbols.projectSymbols(context, caContext("expression", "Re", 40))
+    caPrint("the constant of a loaded enum", filterNames(constants, ["Color.Red", "Color.Green"]))
+    caPrint("a constant that does not match", filterNames(world.symbols.projectSymbols(context, caContext("expression", "Zz", 40)), ["Color.Red"]))
+    caPrint("no constants without a prefix", filterNames(world.symbols.projectSymbols(context, caContext("expression", "", 40)), ["Color.Red"]))
+    caPrint("deprecated functions are marked", filterNames(world.symbols.projectSymbols(context, caContext("expression", "leg", 40)), ["legacy", "geo.legacy"]))
+    var alone = world.open(CA_MAIN, "package main\n\nimport geo\n\nmethod main() {\n}\n")
+    caPrint("unloaded functions are written with their package", filterNames(world.symbols.projectSymbols(alone, caContext("expression", "", 40)), ["other.describe", "other.helper", "describe", "helper", "libFunction"]))
+}

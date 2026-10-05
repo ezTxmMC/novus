@@ -1,0 +1,6 @@
+project "github.com/ezTxmMC/novus-lsp-snippets-tool"
+version "0.1.0"
+main "main.nv"
+output "snippets_tool"
+require "novus/lsp"
+replace "novus/lsp" "../../../../lsp"

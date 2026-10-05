@@ -1,0 +1,11 @@
+square 4.000000 4.000000 m3.000000
+round circle! 3.000000 m3.000000
+square 9.000000 9.000000 m3.000000
+round circle! 12.000000 m3.000000
+28.000000
+4 1 3
+5
+error: unknown member 'length' on Square
+error: unknown member 'perimeter' on Square
+error: unknown method 'area()' on 'integer'
+set

@@ -1,0 +1,6 @@
+package main
+
+// Doubles a number.
+method twice(integer n): integer {
+    return n * 2
+}

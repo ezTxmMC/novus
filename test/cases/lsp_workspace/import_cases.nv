@@ -1,0 +1,43 @@
+package main
+
+import "novus/lsp/base/maybe"
+import "novus/lsp/base/text"
+import "novus/lsp/projects/closure"
+import "novus/lsp/projects/workspace"
+import "novus/lsp/syntax/outline"
+import @support
+
+// FileContext.lookupImport: where an import statement of the open file leads (amendment 6, V112).
+method importProject(): map<string, string> {
+    return {
+        "/q/project.nv": "project \"q\"\nmain \"main.nv\"\n",
+        "/q/main.nv": "import strings\nimport geo\nimport @helper\nimport nowhere\n\nmethod main() {\n}\n",
+        "/q/helper.nv": "method helper(): integer {\n    return 1\n}\n",
+        "/q/geo/shape.nv": "package geo\n\ndefine class Shape {\n}\n"
+    }
+}
+
+method importAnswer(FileContext context, integer index): string {
+    var resolution = context.lookupImport(context.syntax.imports[index])
+    if (resolution.found == false) {
+        return "not found: " + resolution.message
+    }
+    return resolution.kind + " " + resolution.target
+}
+
+method runImportLookupCases() {
+    println("== FileContext.lookupImport")
+    var world = WsWorld(importProject())
+    var context = world.open("/q/main.nv", 1)
+    wsCheck("a std module", importAnswer(context, 0), "standard strings")
+    wsCheck("a package folder", importAnswer(context, 1), "folder /q/geo")
+    wsCheck("a root file", importAnswer(context, 2), "file /q/helper.nv")
+    var lost = context.lookupImport(context.syntax.imports[3])
+    wsCheck("an import that leads nowhere says why", lost.found + " " + (lost.message.length() > 0), "false true")
+    var manifest = world.open("/q/project.nv", 1)
+    wsCheck("a manifest has no closure file and no lookup", manifest.lookupImport(context.syntax.imports[0]).found, "false")
+    var scratch = world.space.contextFor(Document("untitled:Untitled-1", "novus", 1, "import strings\n"))
+    wsCheck("a scratch buffer resolves std imports", importAnswer(scratch, 0), "standard strings")
+    var bare = FileContext(scratch.document, scratch.syntax, scratch.project, scratch.closureFile)
+    wsCheck("a context made by hand has no lookup", bare.lookupImport(scratch.syntax.imports[0]).message, "the context has no import lookup")
+}

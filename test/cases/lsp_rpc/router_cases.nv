@@ -1,0 +1,177 @@
+package main
+
+import "novus/lsp/server/rpc"
+import json
+
+define class RouterEchoHandler based RequestHandler {
+    construct() {
+    }
+
+    method handle(Request request): object {
+        return request.params
+    }
+}
+
+define class RouterFailHandler based RequestHandler {
+    construct() {
+    }
+
+    method handle(Request request): object {
+        failRequest(rpcInvalidParams(), "bad params for " + request.methodName)
+        return "not reached"
+    }
+}
+
+define class RouterCrashHandler based RequestHandler {
+    construct() {
+    }
+
+    method handle(Request request): object {
+        var empty = {}
+        return empty["absent"]
+    }
+}
+
+define class RouterNoteHandler based RequestHandler {
+    string label
+
+    construct(string label) {
+        this.label = label
+    }
+
+    method handle(Request request): object {
+        say(this.label + " handled " + request.methodName)
+        return {"never": "sent for a notification"}
+    }
+}
+
+define class RouterResponseHandler based ResponseHandler {
+    string label
+    bool crash
+
+    construct(string label, bool crash) {
+        this.label = label
+        this.crash = crash
+    }
+
+    method onResponse(object result, bool failed) {
+        say(this.label + ": result=" + json.stringify(result) + " failed=" + failed)
+        if (this.crash) {
+            var empty = {}
+            say(empty["absent"])
+        }
+    }
+}
+
+define class RouterTickListener based EnvelopeListener {
+    string label
+    bool crash
+
+    construct(string label, bool crash) {
+        this.label = label
+        this.crash = crash
+    }
+
+    method onEnvelope(Envelope envelope) {
+        say("listener " + this.label + " got " + envelope.kind)
+        if (this.crash) {
+            var empty = {}
+            say(empty["absent"])
+        }
+    }
+}
+
+method buildRouter(): Router {
+    var router = Router()
+    router.registerHandler("test/echo", RouterEchoHandler())
+    router.registerHandler("test/fail", RouterFailHandler())
+    router.registerHandler("test/crash", RouterCrashHandler())
+    router.registerHandler("test/note", RouterNoteHandler("note handler"))
+    router.registerHandler("gate/closed", RouterNoteHandler("SHOULD NOT RUN: gate/closed"))
+    router.registerHandler("gate/refused", RouterNoteHandler("SHOULD NOT RUN: gate/refused"))
+    return router
+}
+
+// An empty line after a label means that nothing was written to stdout.
+method dispatchShown(Router router, MessageWriter writer, CancelRegistry registry, string label, string jsonText) {
+    say("> " + label)
+    router.dispatch(requestFrom(json.tryParse(jsonText)), writer, registry)
+    say("")
+}
+
+method runDispatchCases() {
+    var router = buildRouter()
+    var writer = MessageWriter()
+    var registry = CancelRegistry()
+    sayCase("registered methods (sorted)", router.registeredMethods())
+    sayCase("hasHandler test/echo / nope", router.hasHandler("test/echo") + " " + router.hasHandler("nope"))
+    dispatchShown(router, writer, registry, "echo, integer id", "{\"id\":1,\"method\":\"test/echo\",\"params\":{\"a\":1}}")
+    dispatchShown(router, writer, registry, "echo, string id", "{\"id\":\"abc\",\"method\":\"test/echo\",\"params\":{}}")
+    dispatchShown(router, writer, registry, "echo, id 0", "{\"id\":0,\"method\":\"test/echo\"}")
+    dispatchShown(router, writer, registry, "handler fails with a code", "{\"id\":2,\"method\":\"test/fail\"}")
+    dispatchShown(router, writer, registry, "handler crashes", "{\"id\":3,\"method\":\"test/crash\"}")
+    dispatchShown(router, writer, registry, "unknown request", "{\"id\":4,\"method\":\"nope\"}")
+    dispatchShown(router, writer, registry, "unknown notification", "{\"method\":\"nope\"}")
+    dispatchShown(router, writer, registry, "unknown $/ notification", "{\"method\":\"$/setTrace\",\"params\":{}}")
+    dispatchShown(router, writer, registry, "notification handler runs, nothing is answered", "{\"method\":\"test/note\"}")
+    dispatchShown(router, writer, registry, "notification handler crashes (logged, not answered)", "{\"method\":\"test/crash\"}")
+    sayCase("tracked ids after notifications", registry.cancelled.keys())
+}
+
+method runResponseCases() {
+    var router = buildRouter()
+    router.expectResponse("novus-1", RouterResponseHandler("response 1", false))
+    router.expectResponse("novus-2", RouterResponseHandler("response 2", false))
+    router.expectResponse("novus-3", RouterResponseHandler("response 3", true))
+    router.routeResponse(json.tryParse("{\"id\":\"novus-1\",\"result\":{\"ok\":true}}"))
+    router.routeResponse(json.tryParse("{\"id\":\"novus-1\",\"result\":null}"))
+    router.routeResponse(json.tryParse("{\"id\":\"novus-2\",\"error\":{\"code\":-32601,\"message\":\"no\"}}"))
+    router.routeResponse(json.tryParse("{\"id\":\"novus-404\",\"result\":null}"))
+    router.routeResponse(json.tryParse("{\"id\":5,\"result\":null}"))
+    router.routeResponse(json.tryParse("{\"id\":\"novus-3\",\"result\":1}"))
+    sayCase("responses still pending", router.responses.pending.keys())
+}
+
+method runListenerCases() {
+    var router = buildRouter()
+    router.registerListener("tick", RouterTickListener("first", false))
+    router.registerListener("tick", RouterTickListener("crashing", true))
+    router.registerListener("tick", RouterTickListener("third", false))
+    router.registerListener("eof", RouterTickListener("eof", false))
+    say("> tick")
+    router.dispatchEnvelope(Envelope("tick", 1))
+    say("> eof")
+    router.dispatchEnvelope(Envelope("eof", nothingHere()))
+    say("> checkDone (no listener)")
+    router.dispatchEnvelope(Envelope("checkDone", nothingHere()))
+}
+
+method runWriterCases() {
+    var writer = MessageWriter()
+    say("> sendResult with a nil result")
+    writer.sendResult(1, nothingHere())
+    say("")
+    say("> sendError with a nil id")
+    writer.sendError(nothingHere(), -32700, "parse error")
+    say("")
+    say("> sendNotification")
+    writer.sendNotification("window/logMessage", {"type": 3, "message": "größe"})
+    say("")
+    say("> sendRequest returns the ids")
+    var first = writer.sendRequest("workspace/configuration", {"items": []})
+    say("")
+    var second = writer.sendRequest("client/registerCapability", {"registrations": []})
+    say("")
+    sayCase("request ids", first + " " + second)
+}
+
+method runRouterCases() {
+    say("--- router")
+    runDispatchCases()
+    runGateCases()
+    runBrokenGateCases()
+    runResponseCases()
+    runListenerCases()
+    say("--- writer")
+    runWriterCases()
+}

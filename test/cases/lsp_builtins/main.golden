@@ -1,0 +1,76 @@
+malformed rows: []
+any.demo 1..2 params=[a,b] -> bool | method demo(string a, integer b): bool | Either a or b | both.
+runtime dispatches length on every collection: true
+string: runtime 11, table 12, missing=[] extra=[]
+string has length: true
+array: runtime 9, table 10, missing=[] extra=[]
+array has length: true
+map: runtime 5, table 6, missing=[] extra=[]
+map has length: true
+any: length
+== string (12)
+string.charAt 1..1 params=[index] -> string
+string.substring 1..2 params=[start,end] -> string
+string.indexOf 1..2 params=[needle,from] -> integer
+string.contains 1..1 params=[needle] -> bool
+string.startsWith 1..1 params=[prefix] -> bool
+string.endsWith 1..1 params=[suffix] -> bool
+string.split 1..1 params=[separator] -> array<string>
+string.replace 2..2 params=[target,replacement] -> string
+string.trim 0..0 params=[] -> string
+string.toUpper 0..0 params=[] -> string
+string.toLower 0..0 params=[] -> string
+string.length 0..0 params=[] -> integer
+== array (10)
+array.append 1..-1 params=[value] -> void
+array.push 1..-1 params=[value] -> void
+array.pop 0..0 params=[] -> object
+array.contains 1..1 params=[value] -> bool
+array.indexOf 1..1 params=[value] -> integer
+array.join 0..1 params=[separator] -> string
+array.clear 0..0 params=[] -> void
+array.insert 2..2 params=[index,value] -> void
+array.remove 1..1 params=[index] -> void
+array.length 0..0 params=[] -> integer
+== map (6)
+map.has 1..1 params=[key] -> bool
+map.keys 0..0 params=[] -> array<string>
+map.values 0..0 params=[] -> array
+map.remove 1..1 params=[key] -> void
+map.get 2..2 params=[key,fallback] -> object
+map.length 0..0 params=[] -> integer
+member shape problems: 0
+receivers: string array map any
+str -> 12, array<integer> -> 10
+map<string, integer> -> 6, ' string ' -> 12
+unknown -> 0, empty -> 0
+free builtins: 15
+readFile writeFile fileExists removeFile readLine args parseInt parseFloat chr ord typeOf exec env exit platform
+code generator: 15, missing=[] extra=[]
+arity differs from the code generator: []
+.readFile 1..1 params=[path] -> string
+method readFile(string path): string
+method exit(integer code) | method fileExists(string path): bool
+@Deprecated{text="...", since="..."} (0..2)
+@Interface (0..0)
+@Abstract (0..0)
+@Warning (0..0)
+lexer keywords: 19, undocumented: []
+types: string integer float bool array map object, undocumented: []
+contextual: true true true
+Prints one value and a line break. A string interpolates expressions with ${expression}.
+Leaves the innermost loop. Outside a loop it passes `novusc check` and fails in the C compiler.
+manifest: project version main lib output novus require replace
+type: 
+nvhHeader: 
+toplevel: method async define import package private final var
+topLevel: method async define import package private final var
+class: construct method abstract private final
+classMember: construct method abstract private final
+statement: var if while for return break continue println print eprintln sync
+expression: true false await thread virtual
+defineKind: class abstract enum interface annotation
+basedClause: based
+fieldAccessor: get set
+nowhere: 
+statement stays at 11 words after a caller changed its copy

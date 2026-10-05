@@ -1,0 +1,5 @@
+<?nv
+prop string title = "Card"
+ref integer clicks = 0
+?>
+<div>{title}</div>

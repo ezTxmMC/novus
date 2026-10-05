@@ -1,0 +1,42 @@
+package geo
+
+// A shape with an area.
+define abstract Shape {
+    abstract method area(): float
+
+    // The name of the shape.
+    method label(): string {
+        return "shape"
+    }
+}
+
+// A circle of a given radius.
+define class Circle based Shape {
+    float radius
+
+    construct(float radius) {
+        this.radius = radius
+    }
+
+    method area(): float {
+        return radius * radius
+    }
+
+    method grow(float by): float {
+        var next = radius + by
+        return next
+    }
+}
+
+method describe(Shape shape): string {
+    return shape.label()
+}
+
+// Scales one value.
+method scaled(float factor): float {
+    return factor
+}
+
+method scaled(float factor, float extra): float {
+    return factor + extra
+}

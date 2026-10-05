@@ -1,0 +1,35 @@
+package main
+
+// A global initialiser that calls a method inherited from a base class: the
+// base class's method reads a global declared later, which must be ready.
+
+final FROM_CHILD = Child().seed()
+final FROM_GRANDCHILD = Grandchild().describe()
+final LATE = "late"
+final LATER = LATE + "r"
+
+define class Parent {
+    construct() {
+    }
+
+    method seed(): string {
+        return LATE
+    }
+
+    method describe(): string {
+        return LATER
+    }
+}
+
+define class Child based Parent {
+    construct() {
+    }
+}
+
+define class Grandchild based Child {
+}
+
+method main {
+    println FROM_CHILD
+    println FROM_GRANDCHILD
+}

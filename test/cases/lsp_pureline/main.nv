@@ -1,0 +1,20 @@
+package main
+
+import @support
+import @else_cases
+import @function_cases
+import @structure_cases
+import @naming_cases
+import @linter_cases
+import @corpus_cases
+
+// lsp/services/pureline: every rule on a bad and a good sample, the settings that move the limits, recovery on code that is
+// still being typed, the folder count through an in-memory source, and the rule list of the linter.
+method main() {
+    runElseCases()
+    runFunctionCases()
+    runStructureCases()
+    runNamingCases()
+    runLinterCases()
+    runCorpusCases()
+}

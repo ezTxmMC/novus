@@ -1,0 +1,154 @@
+package parsing
+
+import base/maybe
+import base/text
+import syntax/lexing
+import syntax/outline
+
+define class ParseOptions {
+    bool keepTokens
+    bool scanLocals
+    bool collectDocs
+
+    construct(bool keepTokens, bool scanLocals, bool collectDocs) {
+        this.keepTokens = keepTokens
+        this.scanLocals = scanLocals
+        this.collectDocs = collectDocs
+    }
+}
+
+method editorParseOptions(): ParseOptions {
+    return ParseOptions(true, true, true)
+}
+
+method indexParseOptions(): ParseOptions {
+    return ParseOptions(false, false, true)
+}
+
+// Builds declarations: the annotations read so far belong to the next declaration, and its doc comment is attached.
+define class ParsingDeclFactory {
+    ParsingCursor cursor
+    ParsingDocs docs
+    ParsingAnnotations annotationReader
+    array<AnnotationUse> annotations
+    integer annotationFirst
+
+    construct(ParsingCursor cursor, ParsingDocs docs, ParsingAnnotations annotationReader) {
+        this.cursor = cursor
+        this.docs = docs
+        this.annotationReader = annotationReader
+        this.annotations = []
+        this.annotationFirst = -1
+    }
+
+    method readAnnotation() {
+        if (this.annotationFirst < 0) {
+            this.annotationFirst = this.cursor.pos
+        }
+        var use = this.annotationReader.readAnnotation()
+        if (isSome(use)) {
+            this.annotations.append(use)
+        }
+    }
+
+    // The token index where the declaration starts: the first pending annotation, else `fallback`.
+    method firstIndexOr(integer fallback): integer {
+        if (this.annotationFirst >= 0) {
+            return this.annotationFirst
+        }
+        return fallback
+    }
+
+    method reset() {
+        this.annotations = []
+        this.annotationFirst = -1
+    }
+
+    method make(DeclKind kind, Token name, integer firstIndex, array<string> modifiers, string ownerName): Decl {
+        var startOffset = this.cursor.tokenAt(firstIndex).start
+        if (this.annotations.length() > 0) {
+            startOffset = this.annotations[0].span.start
+        }
+        var decl = Decl(kind, name.text, name.span(), Span(startOffset, name.end))
+        decl.modifiers = modifiers
+        decl.container = ownerName
+        for (use in this.annotations) {
+            decl.annotations.append(use)
+        }
+        return decl
+    }
+
+    method complete(Decl decl, array<Decl> sink, integer firstIndex) {
+        this.docs.attach(decl, firstIndex, this.cursor.pos - 1)
+        sink.append(decl)
+    }
+}
+
+// Every collaborator of one parse, wired once.
+define class ParsingParts {
+    ParsingCursor cursor
+    SourceFile file
+    array<Token> allTokens
+    ParsingMembers members
+    ParsingTopLevel top
+
+    construct(SourceFile file, array<Token> allTokens, array<Token> comments, ParseOptions options) {
+        this.file = file
+        this.allTokens = allTokens
+        var tokens = parsingWithoutUnknown(allTokens)
+        this.cursor = ParsingCursor(tokens)
+        var bodies = ParsingBodies(this.cursor, options)
+        var signatures = ParsingSignatures(this.cursor, bodies)
+        var docs = ParsingDocs(comments, tokens, options.collectDocs)
+        var factory = ParsingDeclFactory(this.cursor, docs, ParsingAnnotations(this.cursor, signatures))
+        this.members = ParsingMembers(this.cursor, signatures, factory)
+        var typeBodies = ParsingTypeBodies(this.cursor, signatures, this.members, factory)
+        var defines = ParsingDefines(this.cursor, file, factory, signatures, typeBodies)
+        var imports = ParsingImports(this.cursor, file)
+        this.top = ParsingTopLevel(this.cursor, file, imports, this.members, factory, signatures, defines)
+    }
+}
+
+// The compiler's lexer skips characters it does not know, so the parsers never see them; `SourceFile.tokens` keeps them.
+method parsingWithoutUnknown(array<Token> tokens): array<Token> {
+    var kept = []
+    for (token in tokens) {
+        if (token.kind != TokenKind.Unknown) {
+            kept.append(token)
+        }
+    }
+    return kept
+}
+
+// Which `{` never gets a matching `}` (one pass with a stack); only such a type body can be a loose one.
+define class ParsingBraces {
+    map<string, bool> unmatched
+
+    construct(array<Token> tokens) {
+        this.unmatched = {}
+        var open = []
+        var at = 0
+        while (at < tokens.length()) {
+            this.track(tokens[at], at, open)
+            at = at + 1
+        }
+        for (index in open) {
+            this.unmatched["" + index] = true
+        }
+    }
+
+    method track(Token token, integer index, array<integer> open) {
+        if (token.isPunct("{")) {
+            open.append(index)
+        }
+        if (token.isPunct("}") && open.length() > 0) {
+            open.pop()
+        }
+    }
+
+    // Members that are indented and a `{` without a match: a column-0 `method` then ends the body (5.4).
+    method isLoose(integer openIndex, Token firstMember): bool {
+        var indented = firstMember.column > 0 || firstMember.firstOnLine == false
+        return indented && this.unmatched.has("" + openIndex)
+    }
+}

@@ -1,0 +1,49 @@
+package main
+
+import "novus/lsp/base/model"
+import "novus/lsp/base/platform"
+import "novus/lsp/syntax/parsing"
+import "novus/lsp/services/pureline"
+
+method runRuleListCases() {
+    println("rule ids: " + purelineRuleIds().join(" "))
+    var ids = purelineRuleIds()
+    ids.append("changed")
+    println("rule ids are a copy: " + purelineRuleIds().length())
+    println("rules of a linter: " + PurelineLinter(PurelineSettings()).rules.length())
+}
+
+method runCombinedCases() {
+    var source = "package pkg\n\nmethod f(integer a) {\n    if (a) {\n        return 1\n    } else {\n        var tmp = 2\n    }\n}\n" + methodWithLines("long", 52)
+    showText("every rule on one file, rule by rule", source)
+    var flag = PurelineSettings()
+    flag.flagPlainElse = true
+    showWith("settings are read at use time", flag, "method f(a) {\n    if (a) {\n        x = 1\n    } else {\n        x = 2\n    }\n}\n")
+}
+
+method runLintKindCases() {
+    var settings = PurelineSettings()
+    println("an nv file is linted: " + (lintWith(settings, "/work/pkg/main.nv", "method f(integer a) {\n}\n", MemoryTextSource({})).length() == 1))
+    println("a manifest is not linted: " + lintWith(settings, "/work/pkg/project.nv", "method f(integer a) {\n}\n", MemoryTextSource({})).length())
+    println("a component is not linted: " + lintWith(settings, "/work/pkg/page.nvh", "method f(integer a) {\n}\n", MemoryTextSource({})).length())
+}
+
+method runSharedSettingsCases() {
+    var changing = PurelineSettings()
+    changing.functionReviewLines = 1
+    var linter = PurelineLinter(changing)
+    var document = documentFor("/work/pkg/main.nv", methodWithLines("m", 5))
+    var syntax = parseSourceText(document.filePath, document.text, editorParseOptions())
+    println("shared settings, before the change: " + linter.lint(document, syntax, MemoryTextSource({})).length())
+    changing.functionReviewLines = 10
+    println("shared settings, after the change: " + linter.lint(document, syntax, MemoryTextSource({})).length())
+    println("the linter holds its settings object: " + (linter.settings == changing))
+}
+
+method runLinterCases() {
+    println("--- linter")
+    runRuleListCases()
+    runCombinedCases()
+    runLintKindCases()
+    runSharedSettingsCases()
+}

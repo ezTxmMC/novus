@@ -1,0 +1,337 @@
+package main
+
+import os
+import path
+import strings
+
+// The cache of `novusc run`: a program that was compiled before is not
+// compiled again (the C compiler is a wrapper that counts its runs), a change
+// of source or flags is a miss, the least recently used program is evicted
+// when the cache is over its limit, NOVUS_CACHE=off bypasses it, and many
+// runs of one program at once leave exactly one entry and no staging files.
+// `check` never starts a C compiler. The cache only ever deletes files that
+// are named like its own, survives a folder that is missing or read only, and
+// reports a bad NOVUS_CACHE_LIMIT before it compiles anything.
+
+final RUN_OK = 0
+final SLEEP_MILLIS = 60
+final STAGING = "tmp-"
+final KEY_LENGTH = 32
+final LONG_AGO = "202001010000"
+final SOME_KEY = "0123456789abcdef0123456789abcdef"
+
+define class Sandbox {
+    private final string dir: get
+    private final string realCompiler: get
+}
+
+method newSandbox(): Sandbox {
+    var dir = path.join(os.temp(), "novus-run-cache-" + os.pid())
+    os.removeAll(dir)
+    os.mkdir(dir)
+    var real = os.env("NOVUS_CC")
+    if (real == "") {
+        real = "cc"
+        if (os.hasCommand("gcc")) {
+            real = "gcc"
+        }
+    }
+    var wrapper = "case \"$*\" in *--version*) ;; *) echo compiled >> \"$NOVUS_TEST_LOG\" ;; esac\nexec $NOVUS_REAL_CC \"$@\"\n"
+    os.writeFile(path.join(dir, "cc.sh"), wrapper)
+    return Sandbox(dir, real)
+}
+
+method compiler(): string {
+    var fromEnvironment = os.env("NOVUSC")
+    if (fromEnvironment == "") {
+        return "novusc"
+    }
+    return fromEnvironment
+}
+
+method programSource(string label): string {
+    return "package main\n\nmethod main {\n    println \"hello ${label}\"\n}\n"
+}
+
+// The environment every command of the sandbox starts with. `extra` comes
+// last, so it overrides.
+method environment(Sandbox box, string cache, string extra): string {
+    var wrapper = os.shellQuote("sh " + os.shellQuote(path.join(box.dir(), "cc.sh")))
+    var log = os.shellQuote(path.join(box.dir(), "log"))
+    return "NOVUS_CACHE=" + os.shellQuote(cache) + " NOVUS_CC=" + wrapper + " NOVUS_REAL_CC=" + os.shellQuote(box.realCompiler()) + " NOVUS_TEST_LOG=" + log + " " + extra
+}
+
+// Output of `novusc <command> <file>` in the sandbox.
+method novusc(Sandbox box, string cache, string extra, string command, string label, string options): string {
+    var file = path.join(box.dir(), label + ".nv")
+    os.writeFile(file, programSource(label))
+    var line = environment(box, cache, extra) + " " + os.shellQuote(compiler()) + " " + command + " " + os.shellQuote(file) + " " + options + " 2>&1"
+    return os.run(line)["output"].trim()
+}
+
+method runProgram(Sandbox box, string cache, string extra, string label): string {
+    return novusc(box, cache, extra, "run", label, "")
+}
+
+method compilations(Sandbox box): integer {
+    var log = path.join(box.dir(), "log")
+    if (os.isFile(log) == false) {
+        return 0
+    }
+    return os.readFile(log).trim().split("\n").length()
+}
+
+// The executables in a cache folder: names of a key, no stamps, no staging
+// files, no foreign file.
+method entries(string cache): array<string> {
+    var names = []
+    for (name in os.listDir(cache)) {
+        if (name.length() == KEY_LENGTH) {
+            names.append(name)
+        }
+    }
+    return names
+}
+
+method stagingFiles(string cache): integer {
+    var count = 0
+    for (name in os.listDir(cache)) {
+        if (name.startsWith(STAGING)) {
+            count = count + 1
+        }
+    }
+    return count
+}
+
+method hitsAndMisses(Sandbox box) {
+    var cache = path.join(box.dir(), "cache")
+    println runProgram(box, cache, "", "alpha")
+    println runProgram(box, cache, "", "alpha")
+    println "compilations after running alpha twice: ${compilations(box)}"
+    println "entries: ${entries(cache).length()}"
+    println runProgram(box, cache, "", "beta")
+    println "compilations after beta: ${compilations(box)}"
+    println runProgram(box, cache, "NOVUS_RUN_OPT=2", "alpha")
+    println "compilations after alpha with another optimization level: ${compilations(box)}"
+    println runProgram(box, cache, "NOVUS_RUN_OPT=2", "alpha")
+    println "compilations after repeating it: ${compilations(box)}"
+    println "entries: ${entries(cache).length()}"
+    println runProgram(box, cache, "NOVUS_CACHE=off", "alpha")
+    println "compilations with the cache off: ${compilations(box)}"
+    println "entries with the cache off: ${entries(cache).length()}"
+    println runProgram(box, cache, "NOVUS_RUN_OPT=9", "alpha")
+}
+
+// `novusc cache` lists the programs, `novusc cache clear` removes them.
+method cacheCommand(Sandbox box) {
+    var cache = path.join(box.dir(), "cache")
+    var line = environment(box, cache, "") + " " + os.shellQuote(compiler()) + " cache"
+    var report = os.run(line)["output"]
+    var programs = ""
+    for (row in report.split("\n")) {
+        if (row.startsWith("programs:")) {
+            programs = row
+        }
+    }
+    println "cache command: ${programs}"
+    os.run(line + " clear")
+    println "entries after cache clear: ${entries(cache).length()}"
+}
+
+method evictsLeastRecentlyUsed(Sandbox box) {
+    var cache = path.join(box.dir(), "lru")
+    runProgram(box, cache, "", "first")
+    var size = os.fileSize(path.join(cache, entries(cache)[0]))
+    var limit = "NOVUS_CACHE_LIMIT=" + (size * 5 / 2)
+    var notes = path.join(cache, "notes.txt")
+    os.writeFile(notes, "not a cache entry")
+    var before = compilations(box)
+    os.sleep(SLEEP_MILLIS)
+    runProgram(box, cache, limit, "second")
+    os.sleep(SLEEP_MILLIS)
+    println runProgram(box, cache, limit, "first")
+    os.sleep(SLEEP_MILLIS)
+    runProgram(box, cache, limit, "third")
+    println "entries after the third program: ${entries(cache).length()}"
+    println "compilations for second and third, first was a hit: ${compilations(box) - before}"
+    println runProgram(box, cache, limit, "first")
+    println "first was used more recently than second and is still cached: ${compilations(box) - before}"
+    println runProgram(box, cache, limit, "second")
+    println "second was evicted and compiles again: ${compilations(box) - before}"
+    println "a file that is no cache entry stays: ${os.isFile(notes)}"
+}
+
+method evictsEverythingElseAtLimitZero(Sandbox box) {
+    var cache = path.join(box.dir(), "zero")
+    runProgram(box, cache, "NOVUS_CACHE_LIMIT=0", "one")
+    runProgram(box, cache, "NOVUS_CACHE_LIMIT=0", "two")
+    println "limit 0 keeps only the newest program: ${entries(cache).length()}"
+    println runProgram(box, cache, "NOVUS_CACHE_LIMIT=10x", "one")
+}
+
+method manyRunsAtOnce(Sandbox box) {
+    var cache = path.join(box.dir(), "parallel")
+    var file = path.join(box.dir(), "gamma.nv")
+    os.writeFile(file, programSource("gamma"))
+    var one = environment(box, cache, "") + " " + os.shellQuote(compiler()) + " run " + os.shellQuote(file) + " 2>&1"
+    var burst = "(" + one + " & " + one + " & " + one + " & " + one + " & " + one + " & " + one + " & wait)"
+    var lines = os.run(burst)["output"].trim().split("\n")
+    var same = true
+    for (line in lines) {
+        same = same && line == "hello gamma"
+    }
+    println "six runs printed: ${lines.length()} lines, all hello gamma: ${same}"
+    println "entries: ${entries(cache).length()}, staging files left: ${stagingFiles(cache)}"
+    var later = runProgram(box, cache, "", "gamma")
+    println "later run: ${later}"
+}
+
+method unusableCache(Sandbox box) {
+    var blocker = path.join(box.dir(), "blocker")
+    os.writeFile(blocker, "a file where the cache folder should be")
+    println runProgram(box, blocker, "", "delta")
+}
+
+method buildThroughCache(Sandbox box) {
+    var cache = path.join(box.dir(), "build-cache")
+    var first = path.join(box.dir(), "built-1")
+    var second = path.join(box.dir(), "built-2")
+    var before = compilations(box)
+    novusc(box, cache, "", "build", "epsilon", "--cache -o " + os.shellQuote(first))
+    novusc(box, cache, "", "build", "epsilon", "--cache -o " + os.shellQuote(second))
+    println "build --cache twice compiled: ${compilations(box) - before}"
+    println os.run(os.shellQuote(first))["output"].trim()
+    println os.run(os.shellQuote(second))["output"].trim()
+}
+
+method checkNeedsNoCompiler(Sandbox box) {
+    var before = compilations(box)
+    println novusc(box, "off", "", "check", "zeta", "").replace(box.dir(), "<dir>")
+    println "compilations by check: ${compilations(box) - before}"
+}
+
+// Sets the modification time of every path to LONG_AGO (POSIX touch -t).
+method makeOld(array<string> paths) {
+    for (item in paths) {
+        os.run("touch -t " + LONG_AGO + " " + os.shellQuote(item))
+    }
+}
+
+// A folder that merely looks similar to the staging files of the cache is
+// never touched, however old; a real leftover of a killed compile is removed.
+method foreignFilesStay(Sandbox box) {
+    var cache = path.join(box.dir(), "foreign")
+    var notes = path.join(cache, "tmp-2024-notes")
+    var inside = path.join(notes, "f.txt")
+    var plain = path.join(cache, "tmp-1-1.txt")
+    var shortKey = path.join(cache, "tmp-5-abc")
+    var leftover = path.join(cache, "tmp-4242-" + SOME_KEY)
+    var leftoverSource = leftover + ".c"
+    os.mkdir(notes)
+    os.writeFile(inside, "precious")
+    os.writeFile(plain, "precious")
+    os.writeFile(shortKey, "precious")
+    os.writeFile(leftover, "killed compile")
+    os.writeFile(leftoverSource, "killed compile")
+    makeOld([inside, notes, plain, shortKey, leftover, leftoverSource])
+    var line = environment(box, cache, "") + " " + os.shellQuote(compiler()) + " cache 2>&1"
+    os.run(line)
+    println "old folder kept: ${os.isFile(inside)}"
+    println "old file named tmp-1-1.txt kept: ${os.isFile(plain)}"
+    println "old file with a short key kept: ${os.isFile(shortKey)}"
+    println "real staging leftovers removed: ${os.exists(leftover) == false && os.exists(leftoverSource) == false}"
+}
+
+// A cache folder that does not exist (yet) is an empty cache.
+method missingCacheFolder(Sandbox box) {
+    var cache = path.join(box.dir(), "does-not-exist-yet")
+    var line = environment(box, cache, "") + " " + os.shellQuote(compiler())
+    var report = os.run(line + " cache 2>&1")
+    var reportCode = report["code"]
+    println "cache of a missing folder, exit code ${reportCode}: " + report["output"].trim().split("\n")[1]
+    var cleared = os.run(line + " cache clear 2>&1")
+    var clearedCode = cleared["code"]
+    println "clear of a missing folder, exit code ${clearedCode}: " + cleared["output"].trim().replace(cache, "<cache>")
+    println "nothing was created by looking: ${os.exists(cache) == false}"
+}
+
+// A folder that exists but cannot be written does not stop `run`: the
+// program is compiled to a temporary file, and programs that are cached
+// already are used without recording their use.
+method readOnlyCache(Sandbox box) {
+    var cache = path.join(box.dir(), "readonly")
+    runProgram(box, cache, "", "cached")
+    os.run("chmod -R a-w " + os.shellQuote(cache))
+    var before = compilations(box)
+    println runProgram(box, cache, "", "cached")
+    println "a cached program in a read only folder is a hit: ${compilations(box) - before}"
+    println runProgram(box, cache, "", "uncached")
+    println "a new program is compiled to a temporary file: ${compilations(box) - before}"
+    println "and the folder has only the one entry: ${entries(cache).length()}"
+    os.run("chmod -R u+w " + os.shellQuote(cache))
+}
+
+// A bad limit is reported before the C compiler runs, also on a hit, and one
+// that does not fit an integer is not accepted.
+method limitIsCheckedEarly(Sandbox box) {
+    var cache = path.join(box.dir(), "limits")
+    runProgram(box, cache, "", "early")
+    var before = compilations(box)
+    println runProgram(box, cache, "NOVUS_CACHE_LIMIT=bogus", "early")
+    println runProgram(box, cache, "NOVUS_CACHE_LIMIT=bogus", "late")
+    println "compilations with a bad limit: ${compilations(box) - before}"
+    println "entries: ${entries(cache).length()}"
+    println runProgram(box, cache, "NOVUS_CACHE_LIMIT=99999999999999G", "early")
+    println runProgram(box, cache, "NOVUS_CACHE_LIMIT=9223372036854775808", "early")
+    println runProgram(box, cache, "NOVUS_CACHE_LIMIT=1024G", "early")
+}
+
+// NOVUS_CACHE=off in any case switches the cache off; it is not a folder name.
+method offInAnyCase(Sandbox box) {
+    var line = "cd " + os.shellQuote(box.dir()) + " && " + environment(box, "OFF", "") + " " + os.shellQuote(compiler()) + " run eta.nv 2>&1"
+    os.writeFile(path.join(box.dir(), "eta.nv"), programSource("eta"))
+    println os.run(line)["output"].trim()
+    var folder = path.join(box.dir(), "OFF")
+    println "no folder named OFF: ${os.exists(folder) == false}"
+}
+
+// build --cache replaces the output like a plain build, whatever it was, and
+// is refused with --no-runtime and --keep-c.
+method buildThroughCacheOutputs(Sandbox box) {
+    var cache = path.join(box.dir(), "build-outputs")
+    var existing = path.join(box.dir(), "existing")
+    os.writeFile(existing, "not a program")
+    os.run("chmod 644 " + os.shellQuote(existing))
+    println novusc(box, cache, "", "build", "theta", "--cache -o " + os.shellQuote(existing)).replace(box.dir(), "<dir>")
+    println "overwritten file runs: " + os.run(os.shellQuote(existing))["output"].trim()
+    var folder = path.join(box.dir(), "folder")
+    os.mkdir(folder)
+    println novusc(box, cache, "", "build", "theta", "--cache -o " + os.shellQuote(folder)).replace(box.dir(), "<dir>")
+    println novusc(box, cache, "", "build", "theta", "--cache --no-runtime").replace(box.dir(), "<dir>")
+    println novusc(box, cache, "", "build", "theta", "--cache --keep-c").replace(box.dir(), "<dir>")
+}
+
+// `check` has always ignored arguments it does not know.
+method checkIgnoresOtherArguments(Sandbox box) {
+    println novusc(box, "off", "", "check", "iota", "extra -v --whatever").replace(box.dir(), "<dir>")
+}
+
+method main {
+    var box = newSandbox()
+    hitsAndMisses(box)
+    cacheCommand(box)
+    evictsLeastRecentlyUsed(box)
+    evictsEverythingElseAtLimitZero(box)
+    manyRunsAtOnce(box)
+    unusableCache(box)
+    buildThroughCache(box)
+    checkNeedsNoCompiler(box)
+    foreignFilesStay(box)
+    missingCacheFolder(box)
+    readOnlyCache(box)
+    limitIsCheckedEarly(box)
+    offInAnyCase(box)
+    buildThroughCacheOutputs(box)
+    checkIgnoresOtherArguments(box)
+    os.removeAll(box.dir())
+}

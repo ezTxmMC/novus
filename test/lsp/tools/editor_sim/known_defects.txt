@@ -1,0 +1,12 @@
+D01-plaintext-hover  minor  hover contents for a plaintext-only client is a bare string (MarkedString)  lsp/features/hover, lsp/server/protocol/viewencoder.nv
+D02-lone-cr  minor  a lone CR is a line break for LSP clients but not for the server  lsp/base/text (LineIndex)
+D03-new-file-without-watcher  major  files created on disk are not found without didChangeWatchedFiles  lsp/projects/workspace/revalidation.nv
+D04-removed-folder-stays  minor  workspace/didChangeWorkspaceFolders removed keeps the project of the folder  lsp/projects/workspace/workspace.nv
+D05-vscode-command  major  completion items carry editor.action.triggerParameterHints for every client  lsp/features/candidates/documentation.nv
+D06-lenient-params  minor  requests with missing or mistyped params are answered instead of -32602  lsp/server/protocol/params.nv
+D07-silent-check-setup  minor  a missing novusc or a timed-out check is only logged at debug/warn on stderr  lsp/server/jobs/checkcoordinator.nv
+D08-semantic-tokens-quadratic  major  semanticTokens/full is quadratic in the file size (2.4 s for 275 KB) and blocks the main loop  lsp/features/semtok/scopes.nv, lsp/semantics/semantic (Resolver.scopeAt / SourceFile.declAt)
+D09-unwrapped-init-options  major  initializationOptions without the novus wrapper (the documented Helix setup) are ignored  lsp/server/lifecycle/initialize.nv:37
+D10-kinds-valueset  minor  SymbolKind/CompletionItemKind above 18 are sent to clients that declared no valueSet  lsp/server/protocol/itemencoder.nv
+D11-trigger-noise  minor  trigger characters / : < open the global list inside expressions  lsp/features/candidates (context detection)
+D12-orphans-on-exit  minor  a novusc child of a check that runs at exit keeps running (and its shadow tree stays in TMPDIR)  lsp/server/jobs/checkworker.nv, lsp/services/checker/runner.nv

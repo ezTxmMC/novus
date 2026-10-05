@@ -1,0 +1,99 @@
+package builtins
+
+// The words of the language: the 19 keywords of the lexer, the contextual words that are plain
+// identifiers except in one position, and the primitive types (grammar reference G 1.2 and 3).
+
+private final BUILTINS_INTERPOLATION = "$" + "{expression}"
+private final BUILTINS_PRIMITIVE_TYPES = ["string", "integer", "float", "bool", "array", "map", "object"]
+
+// Keyword lists per place, under the two spellings in use: the snippet scopes (toplevel, class)
+// and the completion contexts of DESIGN 8.2 (topLevel, classMember), compared in lower case.
+// Not answered on purpose (they give an empty list): `type` and `nvhHeader` (primitiveTypeNames and
+// the statement words decide there) and `this`, which only the caller can place (it knows the enclosing class).
+private final BUILTINS_SCOPE_KEYWORDS = {
+    "toplevel": ["method", "async", "define", "import", "package", "private", "final", "var"],
+    "class": ["construct", "method", "abstract", "private", "final"],
+    "classmember": ["construct", "method", "abstract", "private", "final"],
+    "statement": ["var", "if", "while", "for", "return", "break", "continue", "println", "print", "eprintln", "sync"],
+    "expression": ["true", "false", "await", "thread", "virtual"],
+    "definekind": ["class", "abstract", "enum", "interface", "annotation"],
+    "basedclause": ["based"],
+    "fieldaccessor": ["get", "set"],
+    "manifest": ["project", "version", "main", "lib", "output", "novus", "require", "replace"]
+}
+
+private final BUILTINS_WORD_DOCS = {
+    "package": "Declares the package of this file: the name of its folder, or `main` for the root package.",
+    "import": "Imports a package folder or standard module (`import json`, `import geo/shapes`), one project file (`import @helpers`) " +
+        "or a dependency (`import \"github.com/user/lib\"`). Only legal at top level.",
+    "method": "Declares a method: `method name(type parameter): Type { ... }`. The parameter list and the return type are optional; " +
+        "`method main` is the entry point.",
+    "var": "Declares a variable: `var name = value` or `var name: Type = value`. Redeclaring a name in the same block assigns to it.",
+    "println": "Prints one value and a line break. A string interpolates expressions with " + BUILTINS_INTERPOLATION + ".",
+    "print": "Prints one value without a line break.",
+    "eprintln": "Prints one value and a line break to standard error.",
+    "private": "Modifier of a constant (`private final NAME = value`). It is parsed and discarded: nothing is enforced.",
+    "final": "Modifier of a constant (`private final NAME = value`). It is parsed and discarded: nothing is enforced.",
+    "return": "Leaves the method; the value must be on the same line as `return`, a value on the next line is not returned.",
+    "if": "`if (condition) { ... } else if (condition) { ... } else { ... }`. The braces are required.",
+    "else": "The alternative branch of an `if`. Pureline prefers a guard clause that returns early.",
+    "while": "`while (condition) { ... }` repeats the block while the condition holds.",
+    "for": "`for (item in collection) { ... }` walks the elements of an array, the keys of a map (sorted) or the bytes of a string. " +
+        "There is no C-style `for`.",
+    "in": "Separates the loop variable from the collection in `for (item in items)`.",
+    "true": "The boolean literal true.",
+    "false": "The boolean literal false.",
+    "break": "Leaves the innermost loop. Outside a loop it passes `novusc check` and fails in the C compiler.",
+    "continue": "Continues with the next iteration of the innermost loop.",
+    "define": "Starts a declaration: `define class`, `define abstract`, `define enum`, `define interface` or `define annotation`.",
+    "class": "`define class Name [based Base] { ... }`: fields, one `construct` and methods. Without `construct` the class gets one " +
+        "over its fields in declaration order.",
+    "abstract": "`define abstract Name { ... }` declares an abstract class; `abstract method name(): Type` an abstract member without a body.",
+    "enum": "`define enum Name { A, B; members }`: the constants first, a `;` before any member. Use `Name.A` and `Name.values()`.",
+    "interface": "`define interface Name { member(): Type }`: signatures only; a class implements it with `based Name`.",
+    "annotation": "`define annotation Name { ... }` defines an annotation, used as `@Name{key=\"value\"}` before a method.",
+    "based": "`define class Name based Base`: the one base class, abstract class or interface of a type.",
+    "construct": "The constructor of a class: `construct(type parameter) { ... }`. Only the last one counts; fields have no initialisers.",
+    "this": "The current instance inside a class.",
+    "async": "`async method name(...)` at top level: a call starts a virtual thread and returns a task that `await` completes.",
+    "await": "`await task` waits for a task and returns its value.",
+    "thread": "`thread f(args)` runs the call on an operating-system thread and returns a task. Also a standard module.",
+    "virtual": "`virtual f(args)` runs the call on a virtual thread and returns a task.",
+    "sync": "`sync { ... }` runs the block under the program-wide lock, `sync (mutex) { ... }` under a mutex of `thread.mutex()`.",
+    "native": "After a method signature: `method f(...): T native \"symbol\"` binds the method to a runtime function.",
+    "variadic": "After `native \"symbol\"`: the runtime function takes any number of arguments (as `path.join`).",
+    "get": "After a field: `Type name: get` generates the getter `name()`.",
+    "set": "After a field: `Type name: set` generates the setter `name(value)`.",
+    "prop": "Only inside `<?nv ... ?>` of a `.nvh` component: a property set by the parent or the URL.",
+    "ref": "Only inside `<?nv ... ?>` of a `.nvh` component: reactive state of the component.",
+    "string": "Text, a UTF-8 byte buffer: `length()`, `charAt` and `substring` count bytes. Alias: `str`.",
+    "integer": "A 64-bit whole number; arithmetic wraps and `/` of two integers divides as integers (`x / 0` is 0). Alias: `int`.",
+    "float": "A floating point number. Aliases: `double`, `doub`.",
+    "bool": "`true` or `false`. Alias: `boolean`.",
+    "array": "An ordered collection, `array<Type>`; the type argument documents the elements and is not checked.",
+    "map": "A key/value collection, `map<K, V>`; in practice the keys are strings, and iteration is sorted by key.",
+    "object": "Any value: the type of dynamic results such as `json.parse`."
+}
+
+// Markdown for a keyword, a contextual word or a primitive type; "" for any other word.
+method keywordDocumentation(string word): string {
+    return BUILTINS_WORD_DOCS.get(word, "")
+}
+
+// The canonical names: aliases such as `int` and `str` are accepted by the compiler, never offered.
+method primitiveTypeNames(): array<string> {
+    return builtinsCopy(BUILTINS_PRIMITIVE_TYPES)
+}
+
+// The keywords that can start something at a place; unknown places give none.
+method keywordsForScope(string scope): array<string> {
+    return builtinsCopy(BUILTINS_SCOPE_KEYWORDS.get(scope.toLower(), []))
+}
+
+method builtinsCopy(array<string> words): array<string> {
+    var copy = []
+    for (word in words) {
+        copy.append(word)
+    }
+    return copy
+}

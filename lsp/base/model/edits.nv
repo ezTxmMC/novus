@@ -1,0 +1,24 @@
+package model
+
+import base/text
+
+// Text edits in domain terms.
+define class TextEdit {
+    Span span
+    string newText
+
+    construct(Span span, string newText) {
+        this.span = span
+        this.newText = newText
+    }
+}
+
+define class FileEdit {
+    string filePath
+    array<TextEdit> edits
+
+    construct(string filePath, array<TextEdit> edits) {
+        this.filePath = filePath
+        this.edits = edits
+    }
+}

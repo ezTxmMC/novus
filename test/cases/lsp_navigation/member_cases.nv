@@ -1,0 +1,73 @@
+package main
+
+import "novus/lsp/features/navigation"
+import "novus/lsp/base/model"
+import @support
+import @fixtures
+import @reference_cases
+import @rename_cases
+import @definition_cases
+
+private final NAV_MEMBERS_TEXT = "define class Box {\n    float width\n    float height\n\n    method area(): float {\n        return width * height\n    }\n}\n\ndefine class Crate {\n    float width\n}\n\ndefine class Rod {\n    integer length\n}\n\ndefine class Wide based Box {\n    method area(): float {\n        return width * 2.0\n    }\n}\n\nmethod measure(object box) {\n    return box.width + box.height\n}\n\nmethod typed(Box box): float {\n    return box.width + box.area()\n}\n\nmethod crate(Crate crate): float {\n    return crate.width\n}\n\nmethod counted(): integer {\n    var word = \"abc\"\n    return word.length()\n}\n\nmethod literal(): Box {\n    var width = 3.0\n    return Box{width=width, height=2.0}\n}\n\nmethod main() {\n    println(typed(literal()))\n}\n"
+
+method navInterpolated(string needle, integer shift): NavWorld {
+    var open = "$" + "{"
+    var text = NAV_MEMBERS_TEXT + "\nmethod describe(Box box): string {\n    var count = 2\n    return \"count " + open + "count} width " + open + "box.width} area " + open + "box.area()}\"\n}\n"
+    return NavWorld({
+        "/m/project.nv": "project \"m\"\nmain \"main.nv\"\n",
+        "/m/main.nv": navMarked(text, needle, shift)
+    })
+}
+
+method runInterpolationCases() {
+    println("== string interpolation")
+    navDefinition("local inside an interpolation", navInterpolated("count} width", 1))
+    navDefinition("member inside an interpolation", navInterpolated("box.width} area", 5))
+    navReferences("local used in a string", navInterpolated("var count", 5), true)
+    navReferences("method used in a string", navInterpolated("area(): float {\n        return width * height", 1), true)
+    navRename("local used in a string", navInterpolated("var count", 5), "total")
+    navRename("method used in a string", navInterpolated("area(): float {\n        return width * height", 1), "surface")
+    navRename("conflict with a name used in a string", navInterpolated("var count", 5), "box")
+    navHighlights("local used in a string", navInterpolated("count} width", 1))
+}
+
+method navMembers(string needle, integer shift): NavWorld {
+    return NavWorld({
+        "/m/project.nv": "project \"m\"\nmain \"main.nv\"\n",
+        "/m/main.nv": navMarked(NAV_MEMBERS_TEXT, needle, shift)
+    })
+}
+
+private final NAV_SHADOW_TEXT = "method shadow() {\n    var count = 1\n    if (count > 0) {\n        var count = 2\n        println(count)\n    }\n    println(count)\n}\n\nmethod loop(array items) {\n    for (item in items) {\n        println(item)\n    }\n    return items\n}\n\nmethod bare {\n    var total = 1\n    total = 2\n    println(total)\n}\n"
+
+method navShadow(string needle, integer shift): NavWorld {
+    return NavWorld({"/s/project.nv": "project \"s\"\nmain \"main.nv\"\n", "/s/main.nv": navMarked(NAV_SHADOW_TEXT, needle, shift)})
+}
+
+method runShadowCases() {
+    println("== shadowing")
+    navReferences("outer variable", navShadow("count = 1", 1), true)
+    navReferences("inner variable shadows the outer one", navShadow("count = 2", 1), true)
+    navReferences("loop variable", navShadow("item in", 1), true)
+    navReferences("parameter", navShadow("items)", 1), true)
+    navReferences("assignment in the body of a method without parentheses", navShadow("var total", 5), true)
+    navRename("outer variable", navShadow("count = 1", 1), "total")
+    navRename("inner variable", navShadow("count = 2", 1), "inner")
+}
+
+method runMemberCases() {
+    println("== members")
+    navReferences("a member name declared by two types: the typed receivers only", navMembers("width\n    float height", 1), true)
+    navReferences("a member declared once: unresolved receivers count", navMembers("float height", 7), true)
+    navReferences("override family", navMembers("area(): float {\n        return width * 2.0", 1), true)
+    navReferences("member of a built-in type is not the user's field", navMembers("integer length", 9), true)
+    navReferences("local that a literal key shares its name with", navMembers("var width", 5), true)
+    navRename("ambiguous member name is refused", navMembers("width\n    float height", 1), "span")
+    navRename("member declared once", navMembers("float height", 7), "tall")
+    navRename("member with its override and the literal key", navMembers("area(): float {\n        return width * 2.0", 1), "surface")
+    navRename("field that a string method shares its name with", navMembers("integer length", 9), "size")
+    navRename("local next to a literal key", navMembers("var width", 5), "wide")
+    navRename("built-in member is refused", navMembers("length()", 1), "size")
+    navRename("conflict with a member of the family", navMembers("float height", 7), "width")
+    navRename("conflict with a name used in the scope", navMembers("var width", 5), "Box")
+}

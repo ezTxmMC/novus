@@ -1,0 +1,129 @@
+package completion
+
+import base/maybe
+import features/candidates
+import projects/workspace
+import syntax/lexing
+import syntax/outline
+
+private final COMPLETION_IMPORT_WORD = "import"
+private final COMPLETION_LINE_COMMENT = "//"
+private final COMPLETION_BLOCK_MINIMUM = 4
+private final COMPLETION_LOWER_A = 97
+private final COMPLETION_LOWER_Z = 122
+private final COMPLETION_UPPER_A = 65
+private final COMPLETION_UPPER_Z = 90
+private final COMPLETION_DIGIT_ZERO = 48
+private final COMPLETION_DIGIT_NINE = 57
+private final COMPLETION_UNDERSCORE_CODE = 95
+
+// The positions where a declaration starts: a member in a class body, a declaration at the top level.
+define class DeclarationContextRule based ContextRule {
+    CompletionCursors cursors
+
+    construct(CompletionCursors cursors) {
+        this.cursors = cursors
+    }
+
+    method matches(FileContext context, integer offset): CompletionContext {
+        var cursor = this.cursors.cursorFor(context, offset)
+        if (cursor.inInterpolation) {
+            return nothing()
+        }
+        if (completionAtMemberLevel(context, cursor, offset)) {
+            return this.contextWhen(cursor, this.isMemberStart(cursor), CANDIDATES_KIND_CLASS_MEMBER)
+        }
+        if (cursor.opener() < 0) {
+            return this.contextWhen(cursor, this.isDeclarationStart(cursor), CANDIDATES_KIND_TOP_LEVEL)
+        }
+        return nothing()
+    }
+
+    method contextWhen(CompletionCursor cursor, bool applies, string kind): CompletionContext {
+        if (applies == false) {
+            return nothing()
+        }
+        return CompletionContext(kind, cursor.prefix, cursor.replaceSpan)
+    }
+
+    // At the start of a line, after the body's `{`, after a finished member, after a modifier.
+    method isMemberStart(CompletionCursor cursor): bool {
+        return cursor.startsLine() || cursor.isPunctBack(1, "{") || cursor.isPunctBack(1, "}") || cursor.isPunctBack(1, ";") ||
+            this.afterModifier(cursor)
+    }
+
+    method isDeclarationStart(CompletionCursor cursor): bool {
+        return cursor.startsLine() || cursor.isPunctBack(1, "}") || cursor.isPunctBack(1, ";") || this.afterModifier(cursor)
+    }
+
+    method afterModifier(CompletionCursor cursor): bool {
+        return cursor.isWordBack(1, "private") || cursor.isWordBack(1, "final") || cursor.isWordBack(1, "abstract")
+    }
+}
+
+// True when the offset is inside the braces of a method or constructor body (not in its header).
+method completionInCallableBody(FileContext context, integer offset): bool {
+    var callable = context.syntax.enclosingCallable(offset)
+    return isSome(callable) && callable.bodySpan.start >= 0 && offset > callable.bodySpan.start
+}
+
+// True when the innermost open bracket is the `{` of the enclosing class, enum or interface: a member is being written.
+method completionAtMemberLevel(FileContext context, CompletionCursor cursor, integer offset): bool {
+    var typeDecl = context.syntax.enclosingType(offset)
+    if (isNone(typeDecl) || typeDecl.bodySpan.start < 0 || offset <= typeDecl.bodySpan.start) {
+        return false
+    }
+    var open = cursor.openerToken()
+    return completionInCallableBody(context, offset) == false && isSome(open) && open.isPunct("{") && open.start == typeDecl.bodySpan.start
+}
+
+// A `{` that opens the body of a declaration, as opposed to an object or map literal.
+method completionIsDeclarationBrace(FileContext context, Token brace, integer offset): bool {
+    for (decl in [context.syntax.declAt(offset), context.syntax.enclosingType(offset), context.syntax.enclosingCallable(offset)]) {
+        if (isSome(decl) && decl.bodySpan.start == brace.start) {
+            return true
+        }
+    }
+    return false
+}
+
+method completionIsImportString(array<Token> tokens, integer index): bool {
+    var at = index - 1
+    while (at >= 0 && tokens[at].kind == TokenKind.Unknown) {
+        at = at - 1
+    }
+    return at >= 0 && tokens[at].isKeyword(COMPLETION_IMPORT_WORD)
+}
+
+// A line comment includes its end (typing at the end of the line is inside it), a block comment ends after its `*/`.
+method completionInsideComment(array<Token> comments, integer offset): bool {
+    var low = 0
+    var high = comments.length()
+    while (low < high) {
+        var middle = (low + high) / 2
+        if (comments[middle].start < offset) {
+            low = middle + 1
+            continue
+        }
+        high = middle
+    }
+    if (low == 0) {
+        return false
+    }
+    var comment = comments[low - 1]
+    if (comment.text.startsWith(COMPLETION_LINE_COMMENT)) {
+        return offset <= comment.end
+    }
+    return offset < comment.end || (offset == comment.end && completionIsClosedBlock(comment) == false)
+}
+
+// The lexer keeps an unclosed block comment as a comment (and reports it as an issue): it is closed when `*/` ends it.
+method completionIsClosedBlock(Token comment): bool {
+    return comment.text.length() >= COMPLETION_BLOCK_MINIMUM && comment.text.endsWith("*/")
+}
+
+method completionIsWordByte(string character): bool {
+    var code = ord(character)
+    var isLetter = (code >= COMPLETION_LOWER_A && code <= COMPLETION_LOWER_Z) || (code >= COMPLETION_UPPER_A && code <= COMPLETION_UPPER_Z)
+    return isLetter || (code >= COMPLETION_DIGIT_ZERO && code <= COMPLETION_DIGIT_NINE) || code == COMPLETION_UNDERSCORE_CODE
+}

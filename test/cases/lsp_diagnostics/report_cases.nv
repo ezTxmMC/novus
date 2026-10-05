@@ -1,0 +1,17 @@
+package main
+
+import "novus/lsp/base/maybe"
+import "novus/lsp/base/model"
+import "novus/lsp/base/text"
+import @support
+
+method runReportCases() {
+    println("== diagnosticReportLines: path:line:column: source severity code: message, in position order")
+    var world = DgWorld({
+        "/p/project.nv": "project \"p\"\nbogus \"x\"\n",
+        "/p/main.nv": "println(\"top\")\n\nmethod main() {\n    println(missingFunction())\n    var unused = 1\n}\n"
+    })
+    dgShow("main.nv", diagnosticReportLines(world.space, world.settings, "/p/main.nv"))
+    dgShow("project.nv", diagnosticReportLines(world.space, world.settings, "/p/project.nv"))
+    dgShow("a file that does not exist", diagnosticReportLines(world.space, world.settings, "/p/none.nv"))
+}

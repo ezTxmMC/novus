@@ -1,0 +1,92 @@
+package jobs
+
+import base/maybe
+import base/text
+import server/session
+
+private final JOBS_WATCH_FORCED = "forced"
+private final JOBS_WATCH_REVISION = "revision"
+
+// Remembers at which project revision each open document was published, so that a rebuild of the project
+// (another file changed a declaration) republishes the documents it affects (6.31).
+define class JobsProjectWatch {
+    Session session
+    map<string, integer> projectRevisions
+    map<string, integer> publishedRevisions
+    map<string, bool> invalidSeen
+
+    construct(Session session, map<string, integer> projectRevisions) {
+        this.session = session
+        this.projectRevisions = projectRevisions
+        this.publishedRevisions = {}
+        this.invalidSeen = {}
+    }
+
+    method note(Document document) {
+        var project = this.session.workspace.projectFor(document.filePath)
+        if (isSome(project)) {
+            this.publishedRevisions[document.uri] = project.revision
+        }
+    }
+
+    method forget(string uri) {
+        this.publishedRevisions.remove(uri)
+    }
+
+    // Open documents that are not already waiting for their own publication, in uri order. A tick that finds
+    // no project changed costs one pass over the projects, not one lookup per document.
+    method staleDocuments(map<string, integer> dirty): array<string> {
+        var changed = this.changedProjects()
+        var stale = []
+        if (changed.length() == 0) {
+            return stale
+        }
+        for (uri in this.session.documents.uris()) {
+            if (dirty.has(uri) == false && this.isStale(uri, changed)) {
+                stale.push(uri)
+            }
+        }
+        return stale
+    }
+
+    method isStale(string uri, map<string, string> changed): bool {
+        var document = this.session.documentFor(uri)
+        var project = this.session.workspace.projectFor(document.filePath)
+        if (isNone(project) || changed.has(project.key()) == false) {
+            return false
+        }
+        if (changed[project.key()] == JOBS_WATCH_FORCED) {
+            return true
+        }
+        return this.publishedRevisions.get(uri, project.revision) != project.revision
+    }
+
+    // Projects whose revision moved since the last look, and projects that became invalid since it (a
+    // dependency changed on disk: every document of such a project is published again, once).
+    method changedProjects(): map<string, string> {
+        var changed = {}
+        for (project in this.session.workspace.allProjects()) {
+            var key = project.key()
+            if (this.projectRevisions.get(key, -1) != project.revision) {
+                changed[key] = JOBS_WATCH_REVISION
+            }
+            this.projectRevisions[key] = project.revision
+            if (this.becameInvalid(project, key)) {
+                changed[key] = JOBS_WATCH_FORCED
+            }
+        }
+        return changed
+    }
+
+    method becameInvalid(object project, string key): bool {
+        if (project.valid) {
+            this.invalidSeen.remove(key)
+            return false
+        }
+        if (this.invalidSeen.has(key)) {
+            return false
+        }
+        this.invalidSeen[key] = true
+        return true
+    }
+}

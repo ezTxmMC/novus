@@ -1,0 +1,129 @@
+package main
+
+// Every call site remembers the class it saw last and where the member is.
+// Whatever it sees - one class, several, no object at all - the call does what
+// the named member of that value does.
+
+method tryRun(object task): object native "nv_try_run"
+method tryFailed(): bool native "nv_try_failed"
+method tryError(): string native "nv_try_error"
+
+define abstract Shape {
+    private string name: get, set
+
+    abstract method area(): float
+
+    method describe(): string {
+        return name + " " + area()
+    }
+
+    method scale(float k, integer times): float {
+        return area() * k * times
+    }
+
+    method mix(integer a, float b, string c): string {
+        return c + (a + b)
+    }
+}
+
+define class Square based Shape {
+    private float side: get, set
+
+    construct(float side) {
+        this.name = "square"
+        this.side = side
+    }
+
+    method area(): float {
+        return side * side
+    }
+}
+
+define class Circle based Shape {
+    private float r: get, set
+
+    construct(float r) {
+        this.name = "circle"
+        this.r = r
+    }
+
+    method area(): float {
+        return 3 * r * r
+    }
+
+    method describe(): string {
+        return "round " + super_describe()
+    }
+
+    method super_describe(): string {
+        return name + "!"
+    }
+}
+
+// a method and a field of the same name: the field wins, as before
+define class Twin {
+    private integer size: get, set
+
+    method size(): integer {
+        return 99
+    }
+
+    method over(integer a): integer {
+        return a
+    }
+
+    method over(integer a, integer b): integer {
+        return a + b
+    }
+}
+
+define class Probe {
+    method run() {
+        var shapes = [Square(2), Circle(1), Square(3), Circle(2)]
+        var total = 0.0
+        for (s in shapes) {
+            println s.describe() + " " + s.scale(0.5, 2) + " " + s.mix(1, 2, "m")
+            total = total + s.area()
+        }
+        println total
+        var t = Twin{size = 4}
+        println t.size() + " " + t.over(1) + " " + t.over(1, 2)
+        t.size(5.5)
+        println t.size()
+        var many = [Square(1), 5, "text", [1, 2], { "k": 1 }, Circle(1)]
+        for (v in many) {
+            println v.length()
+        }
+    }
+}
+
+define class BadMember {
+    method run() {
+        var s = Square(1)
+        println s.perimeter()
+    }
+}
+
+define class BadNumber {
+    method run() {
+        var n = 5
+        println n.area()
+    }
+}
+
+define class BadSetter {
+    method run() {
+        var s = Square(1)
+        s.area(3)
+        println "set"
+    }
+}
+
+method main {
+    for (task in [Probe(), BadMember(), BadNumber(), BadSetter()]) {
+        tryRun(task)
+        if (tryFailed()) {
+            println "error: " + tryError()
+        }
+    }
+}

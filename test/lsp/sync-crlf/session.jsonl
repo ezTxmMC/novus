@@ -1,0 +1,8 @@
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"rootUri":"@ROOTURI@","capabilities":{}}}
+{"jsonrpc":"2.0","method":"initialized","params":{}}
+{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"@ROOTURI@/crlf.nv","languageId":"novus","version":1,"text":"package main\r\n\r\nmethod main() {\r\n    var s = 1\r\n}\r\n"}}}
+{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"@ROOTURI@/crlf.nv","version":2},"contentChanges":[{"range":{"start":{"line":3,"character":12},"end":{"line":3,"character":13}},"text":"("}]}}
+{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"@ROOTURI@/crlf.nv","version":3},"contentChanges":[{"range":{"start":{"line":3,"character":12},"end":{"line":3,"character":13}},"text":"2"}]}}
+{"jsonrpc":"2.0","method":"textDocument/didClose","params":{"textDocument":{"uri":"@ROOTURI@/crlf.nv"}}}
+{"jsonrpc":"2.0","id":99,"method":"shutdown"}
+{"jsonrpc":"2.0","method":"exit"}

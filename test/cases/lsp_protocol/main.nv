@@ -1,0 +1,34 @@
+package main
+
+import @show
+import @decode
+import @capabilitytests
+import @encodetests
+import @itemtests
+import @tokentests
+import @regressiontests
+
+method main {
+    testClientInfo()
+    testPositionDecoders()
+    testChangeDecoders()
+    testContextDiagnostics()
+    testWorkspaceDecoders()
+    testFormattingAndCommands()
+    testCapabilities()
+    testInitializeResult()
+    testBasicEncoders()
+    testDiagnosticEncoders()
+    testSharedState()
+    testClipping()
+    testCompletionItems()
+    testSymbols()
+    testDeepOutline()
+    testViews()
+    testCodeActions()
+    testTokenBasics()
+    testTokenOverlaps()
+    testTokenLines()
+    testTokenScale()
+    testRegressions()
+}

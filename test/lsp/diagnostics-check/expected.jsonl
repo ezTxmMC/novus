@@ -1,0 +1,13 @@
+{"id":1,"jsonrpc":"2.0","result":{"capabilities":"@CAPABILITIES@","serverInfo":{"name":"novus-lsp","version":"0.1.0"}}}
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@ROOTURI@/main.nv","version":1}}
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@ROOTURI@/main.nv","version":2}}
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[{"code":"compile-error","message":"expected '}' but found 'BROKEN'","range":{"end":{"character":13,"line":3},"start":{"character":7,"line":3}},"severity":1,"source":"novusc"}],"uri":"@ROOTURI@/main.nv","version":2}}
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[{"code":"compile-error","message":"expected '}' but found 'BROKEN'","range":{"end":{"character":13,"line":3},"start":{"character":7,"line":3}},"severity":1,"source":"novusc"}],"uri":"@ROOTURI@/main.nv","version":3}}
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[{"code":"compile-error","message":"expected '}' but found 'BROKEN'","range":{"end":{"character":0,"line":5},"start":{"character":7,"line":3}},"severity":1,"source":"novusc"}],"uri":"@ROOTURI@/main.nv","version":4}}
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@ROOTURI@/main.nv","version":4}}
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@ROOTURI@/main.nv","version":5}}
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[{"code":"compile-error","message":"unknown member 'helper'","range":{"end":{"character":13,"line":2},"start":{"character":7,"line":2}},"severity":1,"source":"novusc"}],"uri":"@ROOTURI@/lib.nv"}}
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@ROOTURI@/main.nv","version":6}}
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@ROOTURI@/lib.nv"}}
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@ROOTURI@/main.nv"}}
+{"id":99,"jsonrpc":"2.0","result":null}

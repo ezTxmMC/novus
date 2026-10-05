@@ -1,0 +1,112 @@
+package rpc
+
+import base/platform
+import json
+import log
+import thread
+
+private final RPC_VERSION = "2.0"
+private final RPC_REQUEST_ID_PREFIX = "novus-"
+private final RPC_MAX_CHARACTER_BYTES = 4
+private final RPC_TWO_BYTES = 2
+private final RPC_THREE_BYTES = 3
+private final RPC_CONTINUATION_FIRST = 128
+private final RPC_LEAD_FIRST = 192
+private final RPC_TWO_BYTE_LEAD_END = 224
+private final RPC_THREE_BYTE_LEAD_END = 240
+
+// The single writer of stdout. Frames are built before the lock is taken: the body of a lock
+// contains only the I/O primitive (LSP-R14), so a failure while encoding can never leave it held.
+define class MessageWriter {
+    integer lock
+    integer requestCounter
+
+    construct() {
+        this.lock = thread.mutex()
+        this.requestCounter = 0
+    }
+
+    method sendResult(object id, object result) {
+        var delivered = this.deliver({"jsonrpc": RPC_VERSION, "id": id, "result": result})
+        if (delivered == false) {
+            this.sendError(id, rpcInternalError(), "the result could not be encoded")
+        }
+    }
+
+    method sendError(object id, integer code, string message) {
+        var error = {"code": code, "message": rpcWithoutPartialCharacter(message)}
+        this.deliver({"jsonrpc": RPC_VERSION, "id": id, "error": error})
+    }
+
+    method sendNotification(string methodName, object params) {
+        this.deliver({"jsonrpc": RPC_VERSION, "method": methodName, "params": params})
+    }
+
+    // Returns the id of the request ("novus-<n>"), which the answer carries back to ResponseRouter.
+    method sendRequest(string methodName, object params): string {
+        this.requestCounter = this.requestCounter + 1
+        var id = RPC_REQUEST_ID_PREFIX + this.requestCounter
+        this.deliver({"jsonrpc": RPC_VERSION, "id": id, "method": methodName, "params": params})
+        return id
+    }
+
+    method deliver(map<string, object> payload): bool {
+        var outcome = runGuarded(RpcStringifyWork(payload))
+        if (outcome.failed) {
+            log.error("rpc: cannot encode an outgoing message: " + outcome.message)
+            return false
+        }
+        var frame = encodeFrame(outcome.value)
+        sync (this.lock) {
+            stdoutWriteFrame(frame)
+        }
+        return true
+    }
+}
+
+define class RpcStringifyWork based GuardedWork {
+    map<string, object> payload
+
+    construct(map<string, object> payload) {
+        this.payload = payload
+    }
+
+    method run(): object {
+        return json.stringify(this.payload)
+    }
+}
+
+// The runtime cuts a trap message at 4095 bytes, possibly inside a character; the client must not see U+FFFD for it.
+method rpcWithoutPartialCharacter(string text): string {
+    var length = text.length()
+    var distance = 1
+    while (distance <= RPC_MAX_CHARACTER_BYTES && distance <= length) {
+        var byte = ord(text.charAt(length - distance))
+        if (byte < RPC_CONTINUATION_FIRST) {
+            return text
+        }
+        if (byte >= RPC_LEAD_FIRST) {
+            return rpcDropIfIncomplete(text, byte, distance)
+        }
+        distance = distance + 1
+    }
+    return text
+}
+
+// The last character starts `distance` bytes before the end of the text and has the lead byte `lead`.
+method rpcDropIfIncomplete(string text, integer lead, integer distance): string {
+    if (rpcSequenceLength(lead) <= distance) {
+        return text
+    }
+    return text.substring(0, text.length() - distance)
+}
+
+method rpcSequenceLength(integer lead): integer {
+    if (lead < RPC_TWO_BYTE_LEAD_END) {
+        return RPC_TWO_BYTES
+    }
+    if (lead < RPC_THREE_BYTE_LEAD_END) {
+        return RPC_THREE_BYTES
+    }
+    return RPC_MAX_CHARACTER_BYTES
+}

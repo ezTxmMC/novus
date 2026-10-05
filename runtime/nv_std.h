@@ -8,14 +8,14 @@
 
 static nv nv_math_sqrt(nv x) { return nv_float(sqrt(nv_as_double(x))); }
 static nv nv_math_pow(nv b, nv e) { return nv_float(pow(nv_as_double(b), nv_as_double(e))); }
-static nv nv_math_floor(nv x) { return nv_int((long long)floor(nv_as_double(x))); }
+static nv nv_math_floor(nv x) { return nv_int(nv_d2i(floor(nv_as_double(x)))); }
 /* The nearest value a 32 bit float can hold. A program that has to agree
  * with one written in a language whose floats are 32 bit - a file format, a
  * protocol, another implementation of the same arithmetic - needs the
  * narrowing to happen where that program has it. */
 static nv nv_math_to_float32(nv x) { return nv_float((double)(float)nv_as_double(x)); }
-static nv nv_math_ceil(nv x) { return nv_int((long long)ceil(nv_as_double(x))); }
-static nv nv_math_round(nv x) { return nv_int((long long)floor(nv_as_double(x) + 0.5)); }
+static nv nv_math_ceil(nv x) { return nv_int(nv_d2i(ceil(nv_as_double(x)))); }
+static nv nv_math_round(nv x) { return nv_int(nv_d2i(floor(nv_as_double(x) + 0.5))); }
 static nv nv_math_sin(nv x) { return nv_float(sin(nv_as_double(x))); }
 static nv nv_math_cos(nv x) { return nv_float(cos(nv_as_double(x))); }
 static nv nv_math_tan(nv x) { return nv_float(tan(nv_as_double(x))); }
@@ -97,21 +97,23 @@ static nv nv_fmt_fixed(nv x, nv decimals) {
 }
 
 static nv nv_hash_fnv1a(nv text) {
-    const unsigned char *p = (const unsigned char *)nv_display(text);
+    size_t len, i;
+    const unsigned char *p = (const unsigned char *)nv_arg_text(text, &len);
     unsigned long long h = 14695981039346656037ULL;
-    for (; *p; p++) {
-        h ^= *p;
+    for (i = 0; i < len; i++) {
+        h ^= p[i];
         h *= 1099511628211ULL;
     }
     return nv_int((long long)(h >> 2));
 }
 
 static nv nv_hash_crc32(nv text) {
-    const unsigned char *p = (const unsigned char *)nv_display(text);
+    size_t len, i;
+    const unsigned char *p = (const unsigned char *)nv_arg_text(text, &len);
     unsigned int crc = 0xFFFFFFFFu;
-    for (; *p; p++) {
+    for (i = 0; i < len; i++) {
         int k;
-        crc ^= *p;
+        crc ^= p[i];
         for (k = 0; k < 8; k++) {
             crc = (crc >> 1) ^ (0xEDB88320u & (0u - (crc & 1u)));
         }
@@ -155,7 +157,7 @@ static int nv_sort_cmp(const void *a, const void *b) {
         double x = nv_as_double(l), y = nv_as_double(r);
         return x < y ? -1 : (x > y ? 1 : 0);
     }
-    return strcmp(nv_data(l), nv_data(r));
+    return nv_data_compare(l, r);
 }
 
 /* Specialised comparators: no type dispatch and no string materialisation
@@ -167,7 +169,9 @@ static int nv_sort_cmp_tagged(const void *a, const void *b) {
 }
 
 static int nv_sort_cmp_text(const void *a, const void *b) {
-    return strcmp(nv_cstr(*(const nv *)a), nv_cstr(*(const nv *)b));
+    nv l = *(const nv *)a;
+    nv r = *(const nv *)b;
+    return nv_text_compare(l->s, (size_t)l->slen, r->s, (size_t)r->slen);
 }
 
 /* Introsort over raw 64-bit values: no indirect call per comparison, which
@@ -266,6 +270,139 @@ static nv nv_arr_sorted(nv a) {
         qsort(out->a->items, (size_t)out->a->len, sizeof(nv), text ? nv_sort_cmp_text : nv_sort_cmp);
     }
     return out;
+}
+
+/* ---------------------------------------------------------------- */
+/* unique                                                            */
+/* ---------------------------------------------------------------- */
+
+/* nv_equals is not an equivalence over all values (1 == "1" and 1 == 1.0,
+ * but "1" and 1.0 need not agree; heap integers and floats compare as
+ * doubles while small integers compare exactly), so a hash can only stand
+ * in for it where it is one: an array of strings only, or of numbers that a
+ * double holds exactly. Anything else keeps the pairwise comparison. */
+enum { NV_UNIQUE_STRINGS, NV_UNIQUE_NUMBERS, NV_UNIQUE_ANY };
+
+#define NV_EXACT_DOUBLE_INT ((long long)1 << 53)
+
+static int nv_unique_number(nv value) {
+    if (nv_is_tagged(value)) {
+        long long n = nv_ival(value);
+        return n >= -NV_EXACT_DOUBLE_INT && n <= NV_EXACT_DOUBLE_INT;
+    }
+    return nv_type_of(value) == NV_FLOAT;
+}
+
+static int nv_unique_kind(NvArr *a) {
+    int i, strings = 1, numbers = 1;
+    for (i = 0; i < a->len && (strings || numbers); i++) {
+        int isString = !nv_is_tagged(a->items[i]) && nv_type_of(a->items[i]) == NV_STR;
+        strings = strings && isString;
+        numbers = numbers && nv_unique_number(a->items[i]);
+    }
+    if (strings) {
+        return NV_UNIQUE_STRINGS;
+    }
+    return numbers ? NV_UNIQUE_NUMBERS : NV_UNIQUE_ANY;
+}
+
+/* Numbers are equal when their doubles are; 0.0 and -0.0 are, NaN never. */
+static double nv_unique_double(nv value) {
+    double d = nv_as_double(value);
+    return d == 0.0 ? 0.0 : d;
+}
+
+static unsigned nv_unique_hash(nv value, int kind) {
+    unsigned long long bits;
+    unsigned h = 2166136261u;
+    int i;
+    if (kind == NV_UNIQUE_STRINGS) {
+        for (i = 0; i < value->slen; i++) {
+            h = (h ^ (unsigned char)value->s[i]) * 16777619u;
+        }
+        return h;
+    }
+    {
+        double d = nv_unique_double(value);
+        memcpy(&bits, &d, sizeof bits);
+    }
+    bits ^= bits >> 33;
+    bits *= 0xff51afd7ed558ccdULL;
+    bits ^= bits >> 33;
+    return (unsigned)bits;
+}
+
+static int nv_unique_same(nv a, nv b, int kind) {
+    if (kind == NV_UNIQUE_STRINGS) {
+        return nv_str_equal(a, b);
+    }
+    return nv_unique_double(a) == nv_unique_double(b);
+}
+
+/* NaN equals nothing, itself included, so it is always a first occurrence and
+ * never needs a place in the table: they would all share one slot and make
+ * every probe walk past all the ones before. */
+static int nv_unique_never_equal(nv value, int kind) {
+    return kind != NV_UNIQUE_STRINGS && nv_unique_double(value) != nv_unique_double(value);
+}
+
+/* Each value once, first occurrences in their order: the table holds
+ * positions in `out` (plus one) and is a power of two at least twice as big
+ * as the input. */
+static nv nv_arr_unique_hashed(NvArr *a, int kind) {
+    nv out = nv_new(NV_ARR);
+    unsigned mask = 1;
+    int *table;
+    int i;
+    while (mask < (unsigned)a->len * 2) {
+        mask *= 2;
+    }
+    table = (int *)nv_alloc_atomic(sizeof(int) * (size_t)mask);
+    memset(table, 0, sizeof(int) * (size_t)mask);
+    mask--;
+    out->a = nv_arr_with_capacity(a->len);
+    for (i = 0; i < a->len; i++) {
+        nv value = a->items[i];
+        unsigned slot;
+        if (nv_unique_never_equal(value, kind)) {
+            nv_arr_push(out->a, value);
+            continue;
+        }
+        slot = nv_unique_hash(value, kind) & mask;
+        while (table[slot] && !nv_unique_same(out->a->items[table[slot] - 1], value, kind)) {
+            slot = (slot + 1) & mask;
+        }
+        if (!table[slot]) {
+            nv_arr_push(out->a, value);
+            table[slot] = out->a->len;
+        }
+    }
+    return out;
+}
+
+static nv nv_arr_unique_pairwise(NvArr *a) {
+    nv out = nv_new(NV_ARR);
+    int i;
+    out->a = nv_arr_new_cap(a->len);
+    for (i = 0; i < a->len; i++) {
+        if (nv_arr_index_of(out, a->items[i]) < 0) {
+            nv_arr_push(out->a, a->items[i]);
+        }
+    }
+    return out;
+}
+
+/* Every value once, in the order of first occurrence, equal as `==` and
+ * contains() say (a hash where that is an equivalence, otherwise pairwise).
+ * Like the `for` loop it replaces it also takes what `for` walks: the
+ * characters of a string, the keys of a map. */
+static nv nv_arr_unique(nv items) {
+    NvArr *a = nv_iter_live(items);
+    int kind = nv_unique_kind(a);
+    if (kind == NV_UNIQUE_ANY || a->len < 2) {
+        return nv_arr_unique_pairwise(a);
+    }
+    return nv_arr_unique_hashed(a, kind);
 }
 
 

@@ -1,0 +1,69 @@
+package lexing
+
+import base/text
+
+// One pass over the bytes of a range. Every iteration of `run` advances the cursor (LSP-R12).
+define class LexingRun {
+    LexingCursor cursor
+    StringScanner strings
+
+    construct(string text, integer start, integer limit) {
+        this.cursor = LexingCursor(text, start, limit)
+        this.strings = StringScanner(text)
+        this.strings.search = this.cursor.search
+    }
+
+    method run(): LexResult {
+        while (this.cursor.pos < this.cursor.limit) {
+            this.step()
+        }
+        this.cursor.addEndOfFile()
+        return this.cursor.result()
+    }
+
+    method step() {
+        var code = this.cursor.byteAt(this.cursor.pos)
+        if (code == LEXING_NEWLINE_BYTE) {
+            this.cursor.pos = this.cursor.pos + 1
+            this.cursor.line = this.cursor.line + 1
+            this.cursor.lineStart = this.cursor.pos
+            return
+        }
+        if (code <= LEXING_SPACE_BYTE) {
+            this.cursor.pos = this.cursor.pos + 1
+            return
+        }
+        this.scanItem(code)
+    }
+
+    method scanItem(integer code) {
+        if (lexingIsWordStart(code)) {
+            lexingScanWord(this.cursor)
+            return
+        }
+        if (lexingIsDigit(code)) {
+            lexingScanNumber(this.cursor)
+            return
+        }
+        if (code == LEXING_QUOTE_BYTE) {
+            this.scanStringLiteral()
+            return
+        }
+        if (code == LEXING_SLASH_BYTE && lexingScanComment(this.cursor)) {
+            return
+        }
+        if (lexingScanPunct(this.cursor)) {
+            return
+        }
+        lexingScanUnknown(this.cursor)
+    }
+
+    method scanStringLiteral() {
+        var scratch = []
+        var scanned = this.strings.scanString(this.cursor.pos, this.cursor.limit, scratch)
+        for (issue in scratch) {
+            this.cursor.addIssue(issue)
+        }
+        this.cursor.adoptToken(scanned)
+    }
+}

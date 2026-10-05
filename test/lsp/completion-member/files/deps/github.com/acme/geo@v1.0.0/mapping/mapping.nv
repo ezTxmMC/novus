@@ -1,0 +1,6 @@
+package mapping
+
+// Projects a value.
+method project(float value): float {
+    return value
+}

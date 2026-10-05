@@ -1,0 +1,40 @@
+package main
+
+import arrays
+import math
+
+// NaN is never equal to anything, itself included, so arrays.unique keeps
+// every one of them - and has to do it without comparing each against all the
+// ones before, which a hundred thousand of them would turn into minutes
+// (this case has a short timeout for that).
+
+final NANS = 100000
+final SAMPLE = 4
+
+method notANumber(): float {
+    return math.sqrt(0 - 1.0)
+}
+
+method main {
+    var all = []
+    var count = 0
+    while (count < NANS) {
+        all.append(notANumber())
+        count = count + 1
+    }
+    println "${arrays.unique(all).length()} of ${all.length()}"
+
+    var mixed = [1.5, notANumber(), 2.5, notANumber(), 1.5, 2.5, 0.0, -0.0]
+    println "${arrays.unique(mixed).length()} of ${mixed.length()}"
+    println "${arrays.unique(mixed)[0]} ${arrays.unique(mixed)[2]} ${arrays.unique(mixed)[4]}"
+
+    var sample = []
+    var i = 0
+    while (i < SAMPLE) {
+        sample.append(notANumber())
+        sample.append(i % 2)
+        i = i + 1
+    }
+    println "${arrays.unique(sample).length()} of ${sample.length()}"
+    println "${arrays.unique(sample)[1]} ${arrays.unique(sample)[3]}"
+}

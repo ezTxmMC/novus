@@ -1,0 +1,105 @@
+package platform
+
+import base/maybe
+import os
+
+private final PLATFORM_TIMEOUT_EXIT_CODE = 124
+private final PLATFORM_WINDOWS = "windows"
+private final PLATFORM_NOT_STARTED_CODE = -1
+private final PLATFORM_CODE_KEY = "code"
+private final PLATFORM_OUTPUT_KEY = "output"
+
+define class CommandResult {
+    integer exitCode
+    string output
+    bool started
+    bool timedOut
+
+    construct(integer exitCode, string output, bool started, bool timedOut) {
+        this.exitCode = exitCode
+        this.output = output
+        this.started = started
+        this.timedOut = timedOut
+    }
+}
+
+define class PlatformRunTask {
+    string line
+
+    construct(string line) {
+        this.line = line
+    }
+
+    method run(): object {
+        return os.run(this.line)
+    }
+}
+
+define class PlatformQuoteTask {
+    string argument
+
+    construct(string argument) {
+        this.argument = argument
+    }
+
+    method run(): object {
+        return os.shellQuote(this.argument)
+    }
+}
+
+method runCommand(string command, integer timeoutSeconds): CommandResult {
+    var prefix = platformTimeoutPrefix(timeoutSeconds)
+    return platformExecute(prefix + command, prefix != "")
+}
+
+// The line is `cd <dir> && <timeout><command>`: a timeout in front of `cd` would exit 127 and skip the command.
+method runCommandIn(string workDir, string command, integer timeoutSeconds): CommandResult {
+    var quoted = shellQuote(workDir)
+    if (quoted == "") {
+        return CommandResult(PLATFORM_NOT_STARTED_CODE, "", false, false)
+    }
+    var prefix = platformTimeoutPrefix(timeoutSeconds)
+    if (operatingSystem() == PLATFORM_WINDOWS) {
+        return platformExecute("cd /d " + quoted + " && " + command + " <NUL", false)
+    }
+    return platformExecute("cd " + quoted + " && " + prefix + command, prefix != "")
+}
+
+// "" means the line gets no limit: no timeout requested, Windows (its `timeout` is another program) or no such command.
+method platformTimeoutPrefix(integer timeoutSeconds): string {
+    if (timeoutSeconds <= 0 || operatingSystem() == PLATFORM_WINDOWS) {
+        return ""
+    }
+    if (commandExists("timeout") == false) {
+        return ""
+    }
+    return "timeout " + timeoutSeconds + " "
+}
+
+method platformExecute(string line, bool limited): CommandResult {
+    var raw = platformAttempt(PlatformRunTask(line))
+    if (isNone(raw)) {
+        return CommandResult(PLATFORM_NOT_STARTED_CODE, "", false, false)
+    }
+    var code = raw.get(PLATFORM_CODE_KEY, PLATFORM_NOT_STARTED_CODE)
+    var output = raw.get(PLATFORM_OUTPUT_KEY, "")
+    return CommandResult(code, output, true, limited && code == PLATFORM_TIMEOUT_EXIT_CODE)
+}
+
+// "" when the argument cannot be quoted (a line break on Windows); callers then do not run.
+method shellQuote(string argument): string {
+    return valueOr(platformAttempt(PlatformQuoteTask(argument)), "")
+}
+
+// Looked up with the shell of the platform, with stdin closed like every other command.
+method commandExists(string name): bool {
+    var quoted = shellQuote(name)
+    if (quoted == "") {
+        return false
+    }
+    var probe = "command -v " + quoted + " >/dev/null 2>&1"
+    if (operatingSystem() == PLATFORM_WINDOWS) {
+        probe = "where " + quoted + " >nul 2>&1"
+    }
+    return platformExecute(probe, false).exitCode == 0
+}

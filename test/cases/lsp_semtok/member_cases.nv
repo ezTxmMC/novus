@@ -1,0 +1,70 @@
+package main
+
+import "novus/lsp/features/semtok"
+import @support
+
+// What a name after a dot is: the receiver decides when it is a module, an enum, `this` or a typed local; otherwise
+// the types of the program that declare a member of that name decide.
+method runMemberCases() {
+    println("== names after a dot")
+    var source = stLines([
+        "import geo",
+        "import strings",
+        "",
+        "define enum Kind {",
+        "    Round, Square",
+        "}",
+        "",
+        "define class Thing {",
+        "    integer total",
+        "    Thing next",
+        "",
+        "    method bump(integer by): integer {",
+        "        this.total = this.total + by",
+        "        return this.next.total",
+        "    }",
+        "}",
+        "",
+        "method main(array<string> args) {",
+        "    var thing = Thing{total=0}",
+        "    var names = [\"a\"]",
+        "    thing.bump(1)",
+        "    thing.total",
+        "    thing.missing",
+        "    thing.missing()",
+        "    thing.bump(1, 2)",
+        "    names.append(\"b\")",
+        "    args.length()",
+        "    strings.repeat(\"a\", 2)",
+        "    strings.nothing",
+        "    strings.nothing(1)",
+        "    Kind.Round",
+        "    Kind.values()",
+        "    Kind.Nothing",
+        "    geo.describe(thing)",
+        "    thing.next.next.total",
+        "}"
+    ])
+    var world = StWorld(stGeoProject(source))
+    var spans = world.spans("/p/main.nv", source)
+    stProbe(source, spans, "this.total = ", "total")
+    stProbe(source, spans, "this.total + by", "total")
+    stProbe(source, spans, "return this.next.total", "next")
+    stProbe(source, spans, "return this.next.total", "total")
+    stProbe(source, spans, "    thing.bump(1)\n", "bump")
+    stProbe(source, spans, "    thing.total\n", "total")
+    stProbe(source, spans, "thing.missing\n", "missing")
+    stProbe(source, spans, "thing.missing()", "missing")
+    stProbe(source, spans, "thing.bump(1, 2)", "bump")
+    stProbe(source, spans, "names.append", "append")
+    stProbe(source, spans, "args.length", "length")
+    stProbe(source, spans, "strings.repeat", "repeat")
+    stProbe(source, spans, "strings.nothing\n", "nothing")
+    stProbe(source, spans, "strings.nothing(1)", "nothing")
+    stProbe(source, spans, "Kind.Round\n", "Round")
+    stProbe(source, spans, "Kind.values()", "values")
+    stProbe(source, spans, "Kind.Nothing", "Nothing")
+    stProbe(source, spans, "geo.describe(thing)", "describe")
+    stProbe(source, spans, "thing.next.next.total", "next")
+    stProbe(source, spans, "next.next.total", "total")
+}

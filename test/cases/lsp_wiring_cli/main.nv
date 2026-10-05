@@ -1,0 +1,11 @@
+package main
+
+import "novus/lsp/server/wiring"
+
+// runCommandLine without a server: --version and --help print through platform.stdoutWriteText and
+// return 0 before anything is built.
+method main() {
+    println("version exit code: " + runCommandLine(["--version"]))
+    println("help exit code: " + runCommandLine(["--stdio", "--help"]))
+    println("version wins over other arguments: " + runCommandLine(["--clientProcessId=1", "--version", "--help"]))
+}

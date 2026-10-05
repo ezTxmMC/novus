@@ -1,0 +1,50 @@
+package main
+
+// The same where the operands have no kind (untyped results next to floats).
+method a(): float {
+    println("a")
+    return 1.5
+}
+method u() {
+    println("u")
+    return 2
+}
+method v() {
+    println("v")
+    return 2.5
+}
+method w(): string {
+    println("w")
+    return "str"
+}
+method i1(): integer {
+    println("i1")
+    return 7
+}
+
+define class O {
+    private float f: get, set
+    construct() { this.f = 1.0 }
+    method m(): float {
+        return this.f
+    }
+    method g(O other): float {
+        return this.f * other.f() - u() * this.f
+    }
+}
+
+method main {
+    println(a() - u())
+    println(u() - a())
+    println(a() * v() - u())
+    println(u() * a() - v() / a())
+    println(a() / u() + v())
+    println(i1() * u() - a())
+    println(a() % v())
+    println(u() % a())
+    var o = O()
+    println(o.g(O()))
+    var arr = [u(), v()]
+    println(arr[0] - a() * arr[1])
+    println(a() - w())
+}

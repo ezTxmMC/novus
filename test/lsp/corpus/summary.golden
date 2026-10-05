@@ -1,0 +1,31 @@
+# Counters of test/run_lsp_corpus.sh (lsp/DESIGN.md 9.5-4 (c)). `== key n`: exact, `>= key n`: floor.
+# Regenerate with test/run_lsp_corpus.sh --update after reviewing why a counter moved.
+>= compare.accepted 339
+== compare.accepted-with-own-error 0
+== compare.accepted-with-own-warning 0
+>= compare.checked 346
+>= compare.closure-files 900
+== compare.different-line-exempt 1
+== compare.failed-to-run 0
+>= compare.needs-network 0
+== compare.rejected-other 5
+== compare.rejected-syntax 2
+== compare.rejected-syntax-missed 0
+== compare.semantic-compared 3
+== compare.semantic-missed 0
+>= diagnose.files 1100
+== diagnose.skipped 0
+>= fuzz.cases 77584
+>= fuzz.files 772
+== fuzz.runtime-errors 0
+== fuzz.skipped 0
+== fuzz.slow-cases 0
+== fuzz.violations 0
+== syntax.accepted 0
+>= syntax.files.manifest 30
+>= syntax.files.nv 728
+>= syntax.files.nvh 14
+== syntax.known-bad 2
+== syntax.missing 0
+== syntax.skipped 0
+== syntax.unexpected 0

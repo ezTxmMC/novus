@@ -1,0 +1,108 @@
+package main
+
+import arrays
+
+// Taking entries out of a map: every lookup, the length and the sorted key
+// list must agree with a plain model (two parallel arrays) after each of a
+// few thousand random insertions and removals. The map is big enough to have a
+// hash index, and the keys collide often, so removing an entry has to repair
+// the probe runs behind it.
+
+final KEY_SPACE = 211
+final STEPS = 6000
+final REPORT_EVERY = 1000
+final LCG_MULTIPLIER = 1103515245
+final LCG_INCREMENT = 12345
+final LCG_MODULUS = 2147483648
+final REMOVE_ONE_IN = 3
+
+method nextRandom(integer state): integer {
+    return (state * LCG_MULTIPLIER + LCG_INCREMENT) % LCG_MODULUS
+}
+
+method indexOfKey(array keys, string key): integer {
+    var i = 0
+    while (i < keys.length()) {
+        if (keys[i] == key) {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+method sameKeyOrder(array actual, array expected): bool {
+    if (actual.length() != expected.length()) {
+        return false
+    }
+    var i = 0
+    while (i < actual.length()) {
+        if (actual[i] != expected[i]) {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+method sameContents(map actual, array modelKeys, array modelValues): bool {
+    if (actual.length() != modelKeys.length()) {
+        return false
+    }
+    var i = 0
+    while (i < modelKeys.length()) {
+        if (actual.has(modelKeys[i]) == false || actual[modelKeys[i]] != modelValues[i]) {
+            return false
+        }
+        i = i + 1
+    }
+    return sameKeyOrder(actual.keys(), arrays.sort(modelKeys))
+}
+
+method removeFromModel(array keys, array values, string key) {
+    var at = indexOfKey(keys, key)
+    if (at < 0) {
+        return
+    }
+    keys.remove(at)
+    values.remove(at)
+}
+
+method main {
+    var actual = {}
+    var modelKeys = []
+    var modelValues = []
+    var state = 42
+    var mismatches = 0
+    var step = 0
+    while (step < STEPS) {
+        state = nextRandom(state)
+        var key = "key" + (state / 7) % KEY_SPACE
+        state = nextRandom(state)
+        if (state / 11 % REMOVE_ONE_IN == 0) {
+            actual.remove(key)
+            removeFromModel(modelKeys, modelValues, key)
+        } else {
+            removeFromModel(modelKeys, modelValues, key)
+            modelKeys.append(key)
+            modelValues.append(step)
+            actual[key] = step
+        }
+        if (actual.has(key) != (indexOfKey(modelKeys, key) >= 0)) {
+            mismatches = mismatches + 1
+        }
+        step = step + 1
+        if (step % REPORT_EVERY == 0) {
+            println "step ${step}: ${actual.length()} entries, contents agree: ${sameContents(actual, modelKeys, modelValues)}"
+        }
+    }
+    println "lookup mismatches: ${mismatches}"
+
+    // draining the map from every side leaves it empty and usable again
+    for (key in actual.keys()) {
+        actual.remove(key)
+    }
+    println "after draining: ${actual.length()} ${actual.keys()}"
+    actual["again"] = 1
+    println actual
+}

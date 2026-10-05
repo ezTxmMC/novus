@@ -1,0 +1,74 @@
+package main
+
+import "novus/lsp/base/platform"
+import "novus/lsp/projects/manifest"
+
+method layoutFiles(): map<string, string> {
+    return {
+        "/proj/project.nv": "project \"p\"\nmain \"cmd/main.nv\"\n",
+        "/proj/cmd/main.nv": "package main",
+        "/proj/geo/a.nv": "package geo",
+        "/proj/geo/deep/er/b.nv": "package er",
+        "/loose/tool.nv": "package main",
+        "/dirmanifest/project.nv/inner.nv": "x",
+        "/dirmanifest/sub/s.nv": "x",
+        "/outer/project.nv": "project \"outer\"\n",
+        "/outer/inner/project.nv": "project \"inner\"\nlib \"inner.nv\"\n",
+        "/outer/inner/x/y.nv": "package x"
+    }
+}
+
+method showLayout(string title, TextSource source, string startPath) {
+    var layout = findProjectLayout(source, startPath)
+    println("== " + title)
+    println("  root=[" + layout.root + "] manifest=[" + layout.manifestPath + "] main=[" + layout.mainFile + "] hasManifest=" + layout.hasManifest() + " name=[" + layout.manifest.projectName + "]")
+}
+
+method deepFiles(integer levels): map<string, string> {
+    var folder = ""
+    var i = 0
+    while (i < levels) {
+        folder = folder + "/d"
+        i = i + 1
+    }
+    return {"/project.nv": "project \"top\"\n", folder + "/f.nv": "x"}
+}
+
+method runLayoutCases() {
+    var source = MemoryTextSource(layoutFiles())
+    showLayout("file in a package folder", source, "/proj/geo/a.nv")
+    showLayout("deeply nested file", source, "/proj/geo/deep/er/b.nv")
+    showLayout("the main file itself", source, "/proj/cmd/main.nv")
+    showLayout("the project folder", source, "/proj")
+    showLayout("a folder start", source, "/proj/geo")
+    showLayout("a file that does not exist yet", source, "/proj/geo/new.nv")
+    showLayout("no manifest: the file is the program", source, "/loose/tool.nv")
+    showLayout("no manifest: a folder has no main", source, "/loose")
+    showLayout("project.nv as a folder is no manifest", source, "/dirmanifest/sub/s.nv")
+    showLayout("nearest manifest wins", source, "/outer/inner/x/y.nv")
+    showLayout("outer manifest", source, "/outer/other.nv")
+    showLayout("scratch buffer", source, "")
+    showLayout("unnormalised path", source, "/proj/geo/../cmd/./main.nv")
+    showLayout("a relative path ends at the current folder", MemoryTextSource({"project.nv": "project \"rel\"\n", "sub/x.nv": "x"}), "sub/x.nv")
+    showLayout("the working folder is no ancestor of a .. path", MemoryTextSource({"project.nv": "project \"cwd\"\n", "../x/f.nv": "x"}), "../x/f.nv")
+    showLayout("a .. path climbs further up", MemoryTextSource({"../../project.nv": "project \"up\"\n", "../x/f.nv": "x"}), "../x/f.nv")
+    showLayout("a .. path finds the manifest next to it", MemoryTextSource({"../project.nv": "project \"near\"\n", "../x/f.nv": "x"}), "../x/f.nv")
+    showDepth("a file 63 folders below the manifest finds it", 63)
+    showDepth("a file 64 folders below the manifest does not", 64)
+}
+
+method pathOfDeepFile(integer levels): string {
+    var folder = ""
+    var i = 0
+    while (i < levels) {
+        folder = folder + "/d"
+        i = i + 1
+    }
+    return folder + "/f.nv"
+}
+
+method showDepth(string title, integer levels) {
+    var layout = findProjectLayout(MemoryTextSource(deepFiles(levels)), pathOfDeepFile(levels))
+    println("== " + title)
+    println("  root length " + layout.root.length() + " hasManifest=" + layout.hasManifest() + " main=" + layout.mainFile.length())
+}

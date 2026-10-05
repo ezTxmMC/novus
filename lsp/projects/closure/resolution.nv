@@ -1,0 +1,121 @@
+package closure
+
+import base/platform
+import base/text
+import projects/manifest
+import syntax/markup
+
+private final CLOSURE_COMPONENT_FOLDERS = [".", "components", "../components"]
+private final CLOSURE_KIND_FOLDER = "folder"
+private final CLOSURE_KIND_FILE = "file"
+private final CLOSURE_KIND_STANDARD = "standard"
+
+// Where an import is read from: the project root, the directory of a dependency module, or a std module (root "").
+// Package and `@file` imports are resolved below this root and give files of the same origin.
+define class ClosureScope {
+    string root
+    FileOrigin origin
+    string moduleName
+
+    construct(string root, FileOrigin origin, string moduleName) {
+        this.root = root
+        this.origin = origin
+        this.moduleName = moduleName
+    }
+}
+
+// The answer of ImportResolver.lookup: what an import names, or why it names nothing.
+define class ClosureResolution {
+    bool found
+    string message
+    string kind
+    string target
+    FileOrigin origin
+    string root
+    string moduleName
+
+    construct(bool found, string message, string kind, string target, ClosureScope scope) {
+        this.found = found
+        this.message = message
+        this.kind = kind
+        this.target = target
+        this.origin = scope.origin
+        this.root = scope.root
+        this.moduleName = scope.moduleName
+    }
+
+    method isFolder(): bool {
+        return this.kind == CLOSURE_KIND_FOLDER
+    }
+
+    method isFile(): bool {
+        return this.kind == CLOSURE_KIND_FILE
+    }
+
+    method isStandard(): bool {
+        return this.kind == CLOSURE_KIND_STANDARD
+    }
+
+    method scope(): ClosureScope {
+        return ClosureScope(this.root, this.origin, this.moduleName)
+    }
+}
+
+method closureUnresolved(string message): ClosureResolution {
+    return ClosureResolution(false, message, "", "", ClosureScope("", FileOrigin.Project, ""))
+}
+
+method closureFolderOf(string folder, ClosureScope scope): ClosureResolution {
+    return ClosureResolution(true, "", CLOSURE_KIND_FOLDER, folder, scope)
+}
+
+method closureFileOf(string filePath, ClosureScope scope): ClosureResolution {
+    return ClosureResolution(true, "", CLOSURE_KIND_FILE, filePath, scope)
+}
+
+method closureStandardOf(string moduleName): ClosureResolution {
+    return ClosureResolution(true, "", CLOSURE_KIND_STANDARD, moduleName, ClosureScope("", FileOrigin.Standard, moduleName))
+}
+
+// The `@file` targets (relative to the root, no extension) of the components a .nvh file uses by tag: `<Item>` is
+// Item.nvh next to the file, in components/ below it or in ../components/ (nvh.nv, transpileNvh). A component that
+// lies outside the root cannot be imported and is left out, like the compiler does.
+method closureComponentImports(ClosureFile file, TextSource source): array<string> {
+    var text = source.textOf(file.filePath)
+    var own = componentClassName(file.filePath)
+    var targets = []
+    var seen = {}
+    for (island in componentTagNames(text)) {
+        var tag = text.substring(island.span.start, island.span.end)
+        if (tag == own || seen.has(tag)) {
+            continue
+        }
+        seen[tag] = true
+        var target = closureComponentTarget(file, source, tag)
+        if (target != "") {
+            targets.append(target)
+        }
+    }
+    return targets
+}
+
+method closureComponentTarget(ClosureFile file, TextSource source, string tag): string {
+    var directory = manifestDirectoryOf(file.filePath)
+    for (sub in CLOSURE_COMPONENT_FOLDERS) {
+        var folder = closureJoin(directory, sub)
+        if (source.exists(closureJoin(folder, tag + ".nvh"))) {
+            return closureComponentImport(closurePackagePath(file.root, folder), tag)
+        }
+    }
+    return ""
+}
+
+method closureComponentImport(string packagePath, string tag): string {
+    if (packagePath == "") {
+        return tag
+    }
+    if (packagePath == "?") {
+        return ""
+    }
+    return packagePath + "/" + tag
+}

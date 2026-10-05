@@ -1,0 +1,178 @@
+--- output
+parse success line: 0 finding(s)
+parse empty output: 0 finding(s)
+parse file and line: 1 finding(s)
+  [/work/main.nv] line=3 position=true message=[unknown variable 'y']
+parse file line and column one: 1 finding(s)
+  [/work/main.nv] line=2 position=true message=[unexpected end of file in expression]
+parse class without position: 1 finding(s)
+  [] line=0 position=false message=[class X: duplicate definition of 'X']
+parse program without position: 1 finding(s)
+  [] line=0 position=false message=[program: no 'method main' found]
+parse file without line: 1 finding(s)
+  [/work/main.nv] line=0 position=false message=[no package 'nosuch': there is no folder ../nosuch]
+parse nvh file: 1 finding(s)
+  [/work/page.nvh] line=12 position=true message=[expected '}']
+parse message with colons and a later line number: 1 finding(s)
+  [/work/a.nv] line=5 position=true message=[expected 'x' but found ':12: y']
+parse windows drive: 1 finding(s)
+  [/real/b.nv] line=7 position=true message=[bad thing]
+parse windows drive with column: 1 finding(s)
+  [/real/geo/c.nv] line=7 position=true message=[bad]
+parse empty message: 1 finding(s)
+  [/work/a.nv] line=4 position=true message=[]
+parse no space after the colon is no location: 1 finding(s)
+  [] line=0 position=false message=[/work/a.nv:4:x]
+parse a line number with ten digits is no location: 1 finding(s)
+  [] line=0 position=false message=[/work/a.nv:1234567890: x]
+parse colon at the start: 1 finding(s)
+  [] line=0 position=false message=[:3: x]
+parse bare error word: 0 finding(s)
+parse a message that mentions a file is no path: 1 finding(s)
+  [] line=0 position=false message=[duplicate definition of 'a.nv: x']
+parse a relative name with a space is no path: 1 finding(s)
+  [] line=0 position=false message=[some file.nv: x]
+parse an absolute path with a space stays a path: 1 finding(s)
+  [/my work/a.nv] line=0 position=false message=[no package 'q']
+parse noise lines are ignored: 1 finding(s)
+  [/work/a.nv] line=1 position=true message=[oops]
+parse crlf line endings: 2 finding(s)
+  [/work/a.nv] line=1 position=true message=[first]
+  [/work/a.nv] line=2 position=true message=[second]
+parse several errors keep their order: 2 finding(s)
+  [/work/b.nv] line=9 position=true message=[nine]
+  [/work/a.nv] line=1 position=true message=[one]
+parse no final newline: 1 finding(s)
+  [/work/a.nv] line=8 position=true message=[last]
+parse shadow path moves to the real root: 1 finding(s)
+  [/home/user/proj/geo/geo.nv] line=2 position=true message=[unknown variable 'zzz']
+parse work directory with a trailing slash: 1 finding(s)
+  [/home/user/proj/main.nv] line=2 position=true message=[x]
+parse a path outside the work directory stays: 1 finding(s)
+  [/elsewhere/lib.nv] line=2 position=true message=[x]
+parse a directory with the same prefix is not inside: 1 finding(s)
+  [/tmp/shadow-10/main.nv] line=2 position=true message=[x]
+parse relative path is read against the work directory: 1 finding(s)
+  [/home/user/proj/geo/geo.nv] line=2 position=true message=[x]
+parse no work directory leaves the path: 1 finding(s)
+  [geo/geo.nv] line=2 position=true message=[x]
+parse position-less file moves too: 1 finding(s)
+  [/home/user/proj/main.nv] line=0 position=false message=[no package 'q']
+anchor: [/work/main.nv] line=0 position=false message=[class X: duplicate definition of 'X']
+anchor: [/work/b.nv] line=3 position=true message=[x]
+--- convert
+convert whole line: 1 diagnostic(s)
+  1 novusc compile-error 36-52 covers [println(missing)] message=[syntax trouble here]
+convert quoted identifier on the line: 1 diagnostic(s)
+  1 novusc compile-error 44-51 covers [missing] message=[unknown variable 'missing']
+convert quoted identifier not on the line: 1 diagnostic(s)
+  1 novusc compile-error 36-52 covers [println(missing)] message=[unknown variable 'other']
+convert quoted word that is no identifier: 1 diagnostic(s)
+  1 novusc compile-error 36-52 covers [println(missing)] message=[expected '}' but found 'x y']
+convert second quoted identifier: 1 diagnostic(s)
+  1 novusc compile-error 22-27 covers [total] message=['zzz' is not 'total']
+convert identifier only as part of a longer word: 1 diagnostic(s)
+  1 novusc compile-error 18-31 covers [var total = 1] message=[unknown variable 'tot']
+convert first line: 1 diagnostic(s)
+  1 novusc compile-error 7-11 covers [main] message=[unknown variable 'main']
+convert last line: 1 diagnostic(s)
+  1 novusc compile-error 53-54 covers [}] message=[unexpected '}']
+convert blank line is a zero length range: 1 diagnostic(s)
+  1 novusc compile-error 6-6 covers [] message=[x]
+convert whitespace only line: 1 diagnostic(s)
+  1 novusc compile-error 10-10 covers [] message=[x]
+convert indentation and trailing blanks are trimmed: 1 diagnostic(s)
+  1 novusc compile-error 13-17 covers [beta] message=[x]
+convert line past the end clamps to the last line: 1 diagnostic(s)
+  1 novusc compile-error 20-20 covers [] message=[x]
+convert line zero is the first line: 1 diagnostic(s)
+  1 novusc compile-error 0-5 covers [alpha] message=[x]
+convert negative line is the first line: 1 diagnostic(s)
+  1 novusc compile-error 0-5 covers [alpha] message=[x]
+convert empty text: 1 diagnostic(s)
+  1 novusc compile-error 0-0 covers [] message=[x]
+convert crlf text: 1 diagnostic(s)
+  1 novusc compile-error 9-14 covers [thing] message=[unknown variable 'thing']
+convert only the findings of the file: 1 diagnostic(s)
+  1 novusc compile-error 0-13 covers [method main {] message=[mine]
+convert position-less finding goes on line 0: 1 diagnostic(s)
+  1 novusc compile-error 0-13 covers [method main {] message=[class X: duplicate definition of 'X']
+convert path spelling with backslashes: 1 diagnostic(s)
+  1 novusc compile-error 14-15 covers [}] message=[x]
+convert no findings: 0 diagnostic(s)
+--- locate
+search hit in the second directory: [/opt/nv/bin/novusc]
+search first hit wins: [/opt/nv/bin/novusc]
+search empty entries are skipped: [/opt/nv/bin/novusc]
+search no hit: []
+search empty path value: []
+search a directory of that name is no hit: []
+locate configured file wins: true
+locate configured directory is no novusc: true
+locate configured missing file is skipped: true
+locate workspace build folder: true
+locate workspace search: true
+locate nothing in an empty workspace list: true
+locate bare command that exists: true
+locate bare command that does not exist: true
+--- shadow
+shadow has a directory: true
+shadow entry is the entry inside the tree: true
+shadow files: geo/geo.nv, main.nv, project.nv
+shadow main text: [buffer main]
+shadow geo text: [package geo|// disk text]
+manifest moved replace targets:
+  | project "x/y"
+  | version "0.1.0"
+  | main "main.nv"
+  | 
+  | require "novus/lib"
+  | replace "novus/lib" "../<container>/lib"
+  | replace "novus/abs" "/abs/dir"
+  | replace "novus/here" "../<container>/proj/vendor/here"
+  | 
+real tree untouched: disk main
+cleanup removes the shadow tree: true
+second cleanup is harmless: true
+no shadow directory left over: 0
+manifest buffer manifest wins over the disk one:
+  | project "buffer/manifest"
+  | main "main.nv"
+  | replace "a/b" "../<container>/b"
+  | 
+project without manifest has none in the shadow: main.nv
+entry outside the project root: [][]
+empty project root: []
+a path below a file cannot be written: []
+a failed build leaves no directory: 0
+cleanup of an empty tree does nothing
+traversal: shadow files: dot.nv, kept.nv, main.nv, project.nv
+traversal: skipped overlays: 2
+traversal: nothing written next to the shadow: true
+traversal: an entry that climbs out of the root: []
+traversal: below: [b.nv][][a/b.nv][b.nv]
+--- runner
+run success: ok=true skipped=false detail=[]
+run error with a line: ok=false skipped=false detail=[] finding=[<root>/main.nv:2 true unknown variable 'y']
+run error on stderr: ok=false skipped=false detail=[] finding=[<root>/main.nv:4 true from stderr]
+run position-less error is anchored to the entry: ok=false skipped=false detail=[] finding=[<root>/main.nv:0 false class X: duplicate definition of 'X']
+run exactly two arguments: ok=false skipped=false detail=[] finding=[<root>/main.nv:1 true first=check count=2]
+run stdin is closed: ok=true skipped=false detail=[]
+run failure without a message: ok=false skipped=true detail=[novusc exited with code 3]
+run failure with foreign text: ok=false skipped=true detail=[novusc exited with code 139: segmentation trouble]
+run missing novusc: skipped=true ok=false findings=0 detail starts as expected=true
+run no novusc configured: ok=false skipped=true detail=[novusc was not found]
+entry is true
+run carries the request id: true
+run carries the snapshot versions: 3
+run measures a duration: true
+run a timeout is a skipped run without a verdict: true
+run a timeout names itself in the detail: true
+run dirty buffer is what novusc reads, paths come back real: ok=false skipped=false detail=[] finding=[<root>/main.nv:1 true sees [buffer text]]
+the shadow directory is not the project: true
+the shadow directory is removed afterwards: true
+run without overlays the disk text is read: ok=false skipped=false detail=[] finding=[<root>/main.nv:1 true sees [disk text]]
+run an unsaved buffer outside the root is reported: ok=true skipped=false detail=[1 unsaved buffer(s) outside the project root were checked from disk]
+run a zero timeout still succeeds: true
+clamp: 60 60 7 600
+run entry path with space and quotes: ok=false skipped=false detail=[] finding=[<root>/main.nv:1 true [<root>/main.nv]]

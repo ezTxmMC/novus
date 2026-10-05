@@ -1,0 +1,403 @@
+#### matchQuality
+[foo] [foo] -> 0
+[foo] [fo] -> 1
+[Foo] [fo] -> 2
+[foo] [] -> 1
+[getOrDefault] [gOD] -> 3
+[getOrDefault] [god] -> 3
+[getOrDefault] [gd] -> 3
+[foo] [x] -> 9
+[foo] [fooo] -> 9
+[readFile] [rf] -> 3
+[readFile] [r] -> 1
+[] [a] -> 9
+[] [] -> 1
+[charAt] [CHAR] -> 2
+[a_b_c] [abc] -> 3
+[println] [pln] -> 3
+#### rankItems
+prefix fo: fo foo Foo foobar FOX flow fop
+  10_fo fo
+  11_foo foo
+  22_foo Foo
+  31_foobar foobar
+  42_fox FOX
+  53_flow flow
+  81_fop fop
+empty prefix: zeta bar fo foo Foo foobar FOX flow far fop
+sort texts of the empty prefix: 01_zeta 11_bar 11_fo 11_foo 21_foo 31_foobar 41_fox 51_flow 71_far 81_fop
+#### snippets and keywords
+  00_if if (Snippet) documentation=[`if (condition) { ..]
+  61_iff iff (Snippet) documentation=[]
+empty prefix: println while if iff | 51_println 51_while 61_if 61_iff
+  21_exec exec (Function) method exec(): integer
+  61_exec exec (Snippet) Run a shell command
+exact snippet prefix first: sout SOUT soutv | 00_sout 00_sout 61_soutv
+#### duplicates and stable order
+kept 3: 11_area 11_area 11_area
+the first of equal items stays: true
+equal sort texts keep the input order: a:Field b:Field b:Method
+a list of 1200: 147 match item11, first item11, last item911
+the separator is chr(1): true, index width 6
+#### importLineFor
+import os
+import geo/shapes
+import @geo/circle
+import "github.com/user/lib"
+import "github.com/user/lib/pkg/file"
+#### a std import goes into the std group
+before the first that sorts after it: @14-14 package main\n\nimport json\nimport os\nimport strings\n\nimport geo\n\nmethod main() {\n}\n
+between two: @24-24 package main\n\nimport os\nimport path\nimport strings\n\nimport geo\n\nmethod main() {\n}\n
+after the last of the group: @38-38 package main\n\nimport os\nimport strings\nimport thread\n\nimport geo\n\nmethod main() {\n}\n
+already imported: no edit
+a project import is not a std import: no edit
+#### a project import goes into the project group
+in the middle: @36-36 package main\n\nimport os\n\nimport geo\nimport other\nimport util\n\nmethod main() {\n}\n
+before the first: @25-25 package main\n\nimport os\n\nimport alpha\nimport geo\nimport util\n\nmethod main() {\n}\n
+after the last: @47-47 package main\n\nimport os\n\nimport geo\nimport util\nimport zeta\n\nmethod main() {\n}\n
+a file import sorts before the folders: @25-25 package main\n\nimport os\n\nimport @helper\nimport geo\nimport util\n\nmethod main() {\n}\n
+a dependency import sorts before the files: @25-25 package main\n\nimport os\n\nimport "ex.com/lib"\nimport geo\nimport util\n\nmethod main() {\n}\n
+already imported: no edit
+#### a group that does not exist yet
+std group before the project imports: @14-14 package main\n\nimport os\n\nimport geo\n\nmethod main() {\n}\n
+project group after the std imports: @23-23 package main\n\nimport os\n\nimport geo\n\nmethod main() {\n}\n
+std group before several project imports: @14-14 package main\n\nimport strings\n\nimport geo\nimport util\n\nmethod main() {\n}\n
+project group after several std imports: @38-38 package main\n\nimport os\nimport strings\n\nimport util\n\nmethod main() {\n}\n
+#### the first import of a file
+blank line below the package line: @14-14 package main\n\nimport os\n\nmethod main() {\n}\n
+code right below the package line: @12-12 package main\n\nimport os\n\nmethod main() {\n}\n
+the package line is the whole file: @12-12 package main\n\nimport os\n
+the package line ends with a line break: @12-12 package main\n\nimport os\n\n
+no package line: @0-0 import os\n\nmethod main() {\n}\n
+an empty file: @0-0 import os\n\n
+a project import into a file without imports: @14-14 package main\n\nimport geo\n\nmethod main() {\n}\n
+two lines at once: @14-14 package main\n\nimport json\nimport thread\n\nmethod main() {\n}\n
+a comment before the package line: @24-24 // header\npackage main\n\nimport os\n\nmethod main() {\n}\n
+#### line endings follow the file
+crlf, first import: @16-16 package main\r\n\r\nimport os\r\n\r\nmethod main() {\r\n}\r\n
+crlf, code below the package line: @12-12 package main\r\n\r\nimport os\r\n\r\nmethod main() {\r\n}\r\n
+crlf, into the std group: @27-27 package main\r\n\r\nimport os\r\nimport path\r\nimport strings\r\n\r\nimport geo\r\n
+crlf, new project group: @25-25 package main\r\n\r\nimport os\r\n\r\nimport geo\r\n\r\nmethod main() {\r\n}\r\n
+lf in a file without line breaks at all: @12-12 package main\n\nimport geo\n
+#### a comment at the end of an import line
+new project group after a commented import: @44-44 package main\n\nimport strings // text helpers\n\nimport zeta\n\nmethod main() {\n}\n
+after the last of the group: @44-44 package main\n\nimport strings // text helpers\nimport thread\n\nmethod main() {\n}\n
+before a later import: @14-14 package main\n\nimport os\nimport strings // text helpers\n\nmethod main() {\n}\n
+after a block comment: @69-69 package main\n\nimport os\n\nimport geo // shapes\nimport util /* tools */\nimport zeta\n\nmethod main() {\n}\n
+crlf: @38-38 package main\r\n\r\nimport strings // text\r\n\r\nimport zeta\r\n\r\nmethod main() {\r\n}\r\n
+the last line without a line break: @36-36 package main\n\nimport strings // text\n\nimport zeta
+#### withheld candidates and bare names
+describe (geo): withheld=false bare=false
+describe (other): withheld=false bare=false
+helper (other): withheld=false bare=false
+helper (): withheld=true bare=false
+Shape: withheld=true bare=true
+Thing: withheld=true bare=true
+Color: withheld=true bare=true
+unloaded root function helper(integer n): integer: withheld=true
+unloaded root function fresh(integer n): integer: withheld=false
+unloaded root function fresh(): withheld=false
+#### SymbolSources.locals
+== inside the loop (5)
+  0 by (Variable) parameter by: integer
+  0 next (Variable) var next
+  0 item (Variable) loop item
+  0 inner (Variable) var inner
+  0 this (Variable) this: A
+== the variable being declared is not offered (3)
+  0 by (Variable) parameter by: integer
+  0 next (Variable) var next
+  0 this (Variable) this: A
+== a type context has no locals (0)
+== a scratch buffer (0)
+#### MemberSources
+== a class value (3)
+  1 name (Field) string name
+  1 size (Field) float size
+  1 area (Method) method area(): float => area()
+== a package (2)
+  1 describe (Function) method describe(Shape shape): string => describe($1)
+  1 legacy (Function) method legacy() => legacy() deprecated
+== an enum (3)
+  1 Red (EnumMember) Red
+  1 Green (EnumMember) Green
+  1 values (Method) method values(): array<Color> => values()
+== a std module that is not imported (16)
+  1 sort (Function) method sort(array<object> items): array<object> => sort($1) +edit@14[import arrays\n\n]
+  1 sortDesc (Function) method sortDesc(array<object> items): array<object> => sortDesc($1) +edit@14[import arrays\n\n]
+  1 reverse (Function) method reverse(array<object> items): array<object> => reverse($1) +edit@14[import arrays\n\n]
+== an unknown name falls back to everything (27)
+  1 append (Method) method append(object value) => append($1)
+  1 charAt (Method) method charAt(integer index): string => charAt($1)
+  1 clear (Method) method clear() => clear()
+  1 contains (Method) method contains(string needle): bool => contains($1)
+the user class members come last: true
+== a string literal (12)
+  1 charAt (Method) method charAt(integer index): string => charAt($1)
+  1 substring (Method) method substring(integer start, integer end): string => substring($1)
+  1 indexOf (Method) method indexOf(string needle, integer from): integer => indexOf($1)
+  1 contains (Method) method contains(string needle): bool => contains($1)
+  1 startsWith (Method) method startsWith(string prefix): bool => startsWith($1)
+  1 endsWith (Method) method endsWith(string suffix): bool => endsWith($1)
+  1 split (Method) method split(string separator): array<string> => split($1)
+  1 replace (Method) method replace(string target, string replacement): string => replace($1)
+  1 trim (Method) method trim(): string => trim()
+  1 toUpper (Method) method toUpper(): string => toUpper()
+  1 toLower (Method) method toLower(): string => toLower()
+  1 length (Method) method length(): integer => length()
+== bare members inside a method (2)
+  1 count (Field) integer count
+  1 inc (Method) method inc(integer by): integer => inc($1)
+== bare members outside a class (0)
+#### SymbolSources.projectSymbols and dependencySymbols
+== types for a type slot (5)
+  2 Named (Interface) define interface Named
+  2 Shape (Class) define class Shape
+  2 Color (Enum) define enum Color
+  7 Round (Class) import geo/shapes +edit@24[\nimport geo/shapes]
+  7 Thing (Class) import other +edit@24[\nimport other]
+== types for based (4)
+  2 Named (Interface) define interface Named
+  2 Shape (Class) define class Shape
+  7 Round (Class) import geo/shapes +edit@24[\nimport geo/shapes]
+  7 Thing (Class) import other +edit@24[\nimport other]
+== annotations (1)
+  2 Audited (Struct) define annotation Audited
+== dependency types (1)
+  7 LibThing (Class) import "ex.com/lib" +edit@14[import "ex.com/lib"\n]
+== expressions: Shape Shape{} Color describe legacy Round Round{} Thing Thing{} other.describe other.helper helper
+== dependency expressions: libFunction LibThing LibThing{} sub.subFunction
+== nothing for a member context: 0
+== dependency types of an imported module (1)
+  3 LibThing (Class) define class LibThing
+== dependency functions of an imported module (2)
+  3 LibThing (Class) define class LibThing => LibThing($1)
+  3 libFunction (Function) method libFunction(integer a): integer => libFunction($1)
+#### the import edit of a symbol that the file does not import
+== a sibling file of the package needs nothing (2)
+  2 Thing (Class) define class Thing
+  2 Shape (Class) import geo +edit@15[import geo\n\n]
+== an imported package needs nothing, another one does (3)
+  2 Shape (Class) define class Shape
+  7 Round (Class) import geo/shapes +edit@24[\nimport geo/shapes]
+  7 Thing (Class) import other +edit@24[\nimport other]
+== explicit imports off: loaded packages add nothing (2)
+  2 Shape (Class) define class Shape
+  2 Thing (Class) define class Thing
+== explicit imports off: unloaded packages still import (2)
+  2 Shape (Class) define class Shape
+  7 Thing (Class) import other +edit@24[\nimport other]
+a folder that is no identifier is never offered: 0
+#### functions of other packages
+== describe exists in two packages, helper at the root and in a package (5)
+  2 geo.describe (Function) qualified: describe exists in several packages => geo.describe($1)
+  2 other.describe (Function) qualified: describe exists in several packages => other.describe($1)
+  2 other.helper (Function) qualified: helper exists in several packages => other.helper($1)
+  2 helper (Function) method helper(integer n): integer => helper($1)
+  2 legacy (Function) method legacy() => legacy() deprecated
+== the constant of a loaded enum (2)
+  2 Color.Red (EnumMember) Color => Color.Red
+  2 Color.Green (EnumMember) Color => Color.Green
+== a constant that does not match (0)
+== no constants without a prefix (0)
+== deprecated functions are marked (1)
+  2 legacy (Function) method legacy() => legacy() deprecated
+== unloaded functions are written with their package (4)
+  2 describe (Function) method describe(Shape shape): string => describe($1)
+  7 other.describe (Function) import other => other.describe($1) +edit@24[\nimport other]
+  7 other.helper (Function) import other => other.helper($1) +edit@24[\nimport other]
+  7 helper (Function) import @util => helper($1) +edit@14[import @util\n]
+#### ModuleSources.standardModules
+== import target: strings is imported: false, arrays is offered: true
+== expression: imported, unloaded and package names (3)
+  7 arrays (Module) import arrays +edit@25[import arrays\n]
+  4 strings (Module) std module
+  2 geo (Module) package
+== a type context offers no modules (0)
+== a local folder hides the std module: false false
+#### ModuleSources.importPaths
+== importTarget (5)
+  2 geo (Folder) package folder
+  2 lib (Folder) package folder
+  2 other (Folder) package folder
+  5 @ (Keyword) import a single file
+  5 " (Keyword) import a dependency module
+== importFile at the root (4)
+  2 geo (Folder) package folder
+  2 lib (Folder) package folder
+  2 other (Folder) package folder
+  2 util (File) file
+== importFile in a folder (3)
+  2 shapes (Folder) package folder
+  2 extra (File) file
+  2 shape (File) file
+== importFile in a folder that does not exist (0)
+== importNested (1)
+  2 shapes (Folder) package folder
+== importNested of a folder without children (0)
+== importModule (1)
+  3 ex.com/lib (Module) module
+== importModule with the beginning of a key (1)
+  3 com/lib (Module) module
+== importModule below a key (2)
+  3 lib (File) file
+  3 sub (Folder) package folder
+== importModule below a folder of the module (1)
+  3 extra (File) file
+== importModule of an unknown module (0)
+== another kind (0)
+== importTarget without dependencies has no quote (2)
+  2 geo (Folder) package folder
+  5 @ (Keyword) import a single file
+== a module that is not fetched is listed, nothing below it (1)
+  3 nowhere.example/dep (Module) module, not fetched
+== below a module that is not fetched (0)
+#### ModuleSources.manifestItems
+== require: the manifest's modules and the cache (4)
+  3 ex.com/lib (Module) required
+  3 example.org/team/tool (Module) cached
+  3 github.com/acme/geo (Module) cached
+  3 github.com/acme/other (Module) cached
+== replace: only the modules of the manifest (1)
+  3 ex.com/lib (Module) required
+== replace directory (5)
+  2 .. (Folder) parent directory
+  2 geo (Folder) directory
+  2 lib (Folder) directory
+  2 my-dir (Folder) directory
+  2 other (Folder) directory
+== replace directory below a folder (2)
+  2 .. (Folder) parent directory
+  2 sub (Folder) directory
+== replace directory two levels down (1)
+  2 .. (Folder) parent directory
+== a directive has no items here (0)
+#### LexicalSources.keywordsAndBuiltins
+defineKind: class abstract enum interface annotation
+fieldAccessor: get set
+classMember: construct method abstract private final @
+topLevel: method async define import package private final var @
+type: 
+member: 
+importTarget: 
+basedClause: based
+statement: 26 items: var if while for return break continue println print eprintln sync readFile writeFile fileExists removeFile readLine args parseInt parseFloat chr ord typeOf exec env exit platform
+expression: 20 items: true false await thread virtual readFile writeFile fileExists removeFile readLine args parseInt parseFloat chr ord typeOf exec env exit platform
+== a builtin function (1)
+  5 readFile (Function) method readFile(string path): string => readFile($1)
+its documentation: Reads a whole file; the empty string when it cannot be opened.
+a keyword: 5 while (Keyword) keyword | `while (condition) { ... }` re
+== annotations (4)
+  5 Deprecated (Struct) @Deprecated{text="...", since="..."} => Deprecated{text="$1"}
+  5 Interface (Struct) @Interface
+  5 Abstract (Struct) @Abstract
+  5 Warning (Struct) @Warning
+== the keywords of an nvh header (6)
+  5 prop (Keyword) keyword
+  5 ref (Keyword) keyword
+  5 var (Keyword) keyword
+  5 method (Keyword) keyword
+  5 define (Keyword) keyword
+  5 import (Keyword) keyword
+manifest directive: project version main lib output novus require replace
+manifest module string: 0
+#### LexicalSources.snippetItems
+statement: 104 snippets
+expression: 3 snippets
+classMember: 20 snippets
+topLevel: 49 snippets
+nvhHeader: 2 snippets
+nvhOutside: 2 snippets
+type: 0 snippets
+member: 0 snippets
+importTarget: 0 snippets
+annotation: 0 snippets
+manifest directive: project manifest require replace lib mainfile manifestfull projectfull
+manifest value: 0
+== statement snippet sout (1)
+  6 sout (Snippet) Print a line => println "${1:text}"
+== statement snippet println (1)
+  6 println (Snippet) Print a line => println "${1:text}"
+== statement snippet soutv (1)
+  6 soutv (Snippet) Print a variable with its name => println "${1:value} = \${${1}}"
+== statement snippet fori (1)
+  6 fori (Snippet) Counted loop (a while loop: Novus has no C-style for). Do not use continue inside it (the increment would be skipped); use forrange => var ${1:i} = 0\nwhile (${1} < ${2:count}) {\n    $0\n    ${1} = ${1} + 1\n}
+== statement snippet foreach (1)
+  6 foreach (Snippet) For-in over an array => for (${1:item} in ${2:items}) {\n    $0\n}
+== statement snippet jsonparse (1)
+  6 jsonparse (Snippet) Parse JSON text (aborts on invalid input) => var ${1:data} = json.parse(${2:text}) +edit@14[import json\n\n]
+== statement snippet ifelse (1)
+  6 ifelse (Snippet) If / else => if (${1:condition}) {\n    ${2}\n} else {\n    $0\n}
+== top-level snippet psvm (1)
+  6 psvm (Snippet) Program entry point receiving the command line arguments => method main(array<string> args) {\n    $0\n}
+== top-level snippet maine (1)
+  6 maine (Snippet) Entry point whose return value is the exit code => method main(array<string> args): integer {\n    $0\n    return ${1:0}\n}
+== top-level snippet class (1)
+  6 class (Snippet) Class with fields and a constructor => define class ${1:Name} {\n    ${2:string} ${3:field}\n\n    construct(${2} ${3}) {\n        this.${3} = ${3}\n    }\n\n    $0\n}
+snippet fields: isSnippet=true filterText=sout bucket=6 detail=Print a line
+indent of a tab: for (${1:item} in ${2:items}) {\n\t$0\n}
+indent of two spaces: for (${1:item} in ${2:items}) {\n  $0\n}
+#### the std imports of a snippet
+== no imports yet (1)
+  6 httpget (Snippet) HTTP GET returning the body => var ${1:body} = http.get("${2:https://example.com}") +edit@14[import http\n\n]
+== another std import in the group (1)
+  6 httpget (Snippet) HTTP GET returning the body => var ${1:body} = http.get("${2:https://example.com}") +edit@14[import http\n]
+== the import is there (1)
+  6 httpjson (Snippet) HTTP GET parsed as JSON => var ${1:data} = http.getJson("${2:https://example.com/data.json}")
+== a snippet that needs no import (1)
+  6 sout (Snippet) Print a line => println "${1:text}"
+#### typeNames and fieldNames
+== type slot (7)
+  5 string (Keyword) type
+  5 integer (Keyword) type
+  5 float (Keyword) type
+  5 bool (Keyword) type
+  5 array (Keyword) type => array<$1>
+  5 map (Keyword) type => map<$1, $2>
+  5 object (Keyword) type
+class member field type: string integer float bool array map object
+a statement has no type names: 0
+== fields of a class (2)
+  1 name (Field) string name => name=
+  1 size (Field) float size => size=
+== without the field that is set (1)
+  1 size (Field) float size => size=
+== everything set (0)
+== an unknown class (0)
+== a built-in annotation (2)
+  1 text (Field) string text => text=
+  1 since (Field) string since => since=
+== a built-in annotation with one argument set (1)
+  1 text (Field) string text => text=
+== an annotation without arguments (0)
+== an annotation of the project (0)
+== another kind (0)
+#### no label appears twice (7.7)
+statement: 130 offered, 120 ranked, duplicates []
+expression: 23 offered, 23 ranked, duplicates []
+classMember: 26 offered, 24 ranked, duplicates []
+topLevel: 58 offered, 53 ranked, duplicates []
+nvhHeader: 8 offered, 6 ranked, duplicates []
+nvhOutside: 2 offered, 2 ranked, duplicates []
+manifest: 16 offered, 12 ranked
+#### unloaded files on disk
+== a named pipe is skipped (2)
+  7 Alpha (Class) import @real => Alpha() +edit@14[import @real\n\n]
+  7 Alpha{} (Struct) object literal => Alpha{$1} +edit@14[import @real\n\n]
+== the same request again (2)
+  7 Alpha (Class) import @real => Alpha() +edit@14[import @real\n\n]
+  7 Alpha{} (Struct) object literal => Alpha{$1} +edit@14[import @real\n\n]
+== the file changed on disk (2)
+  7 Beta (Class) import @real => Beta() +edit@14[import @real\n\n]
+  7 Beta{} (Struct) object literal => Beta{$1} +edit@14[import @real\n\n]
+#### a method with many locals
+being declared: total
+locals: 30001, being declared: 1
+within the time limit: true
+the last local is offered: true
+the local being declared is not: true
+#### many unloaded files
+bounded: true, still many: true
+== a name in the last file (2)
+  7 Zed (Class) import zeta => Zed() +edit@14[import zeta\n\n]
+  7 Zed{} (Struct) object literal => Zed{$1} +edit@14[import zeta\n\n]

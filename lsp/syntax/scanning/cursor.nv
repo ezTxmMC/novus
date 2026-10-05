@@ -1,0 +1,190 @@
+package scanning
+
+import base/text
+import syntax/lexing
+
+private final SCANNING_OPENERS = { "(": true, "[": true, "{": true }
+private final SCANNING_CLOSERS = { ")": true, "]": true, "}": true }
+private final SCANNING_DEFINE_KINDS = { "class": true, "abstract": true, "enum": true, "interface": true, "annotation": true }
+private final SCANNING_PREVIEW_LENGTH = 24
+private final SCANNING_CONTINUATION_FIRST = 128
+private final SCANNING_CONTINUATION_LAST = 191
+
+method scanningIsOpener(string punct): bool {
+    return SCANNING_OPENERS.has(punct)
+}
+
+method scanningIsCloser(string punct): bool {
+    return SCANNING_CLOSERS.has(punct)
+}
+
+// A token that starts a declaration and can never occur inside a body, a list or an expression: it ends them (5.4).
+method scanningIsDeclarationStart(ScanningCursor cursor, integer index): bool {
+    if (cursor.has(index) == false || cursor.tokens[index].firstOnLine == false) {
+        return false
+    }
+    var token = cursor.tokens[index]
+    if (token.kind == TokenKind.Keyword) {
+        return token.text == "method" || token.text == "import" || token.text == "private" || token.text == "final"
+    }
+    if (token.isPunct("@")) {
+        return true
+    }
+    return scanningIsDefineKind(cursor, index) || cursor.isIdentWord(index, "async") && cursor.isKeyword(index + 1, "method")
+}
+
+// `define class` and its siblings; `define name` alone can be a local whose type is called `define`.
+method scanningIsDefineKind(ScanningCursor cursor, integer index): bool {
+    return cursor.isIdentWord(index, "define") && cursor.isIdent(index + 1) && SCANNING_DEFINE_KINDS.has(cursor.tokens[index + 1].text)
+}
+
+// A token as a message shows it: quoted, on one line and only a short preview of a long literal.
+method scanningDescribeToken(Token token): string {
+    var text = token.text
+    if (text.length() > SCANNING_PREVIEW_LENGTH) {
+        text = text.substring(0, scanningPreviewCut(text)) + "..."
+    }
+    return "'" + text.replace("\n", "\\n").replace("\r", "\\r") + "'"
+}
+
+// The cut never lands inside a multi-byte character.
+method scanningPreviewCut(string text): integer {
+    var cut = SCANNING_PREVIEW_LENGTH
+    var code = ord(text.charAt(cut))
+    while (cut > 0 && code >= SCANNING_CONTINUATION_FIRST && code <= SCANNING_CONTINUATION_LAST) {
+        cut = cut - 1
+        code = ord(text.charAt(cut))
+    }
+    return cut
+}
+
+// Read access to a token array bounded by an exclusive index; every query is false outside the bounds.
+define class ScanningCursor {
+    array<Token> tokens
+    integer limit
+    integer stopIndex
+
+    construct(array<Token> tokens, integer limit) {
+        this.tokens = tokens
+        this.limit = limit
+        this.stopIndex = limit
+        if (limit > tokens.length()) {
+            this.limit = tokens.length()
+        }
+    }
+
+    method has(integer index): bool {
+        return index >= 0 && index < this.limit
+    }
+
+    method isPunct(integer index, string punct): bool {
+        return this.has(index) && this.tokens[index].isPunct(punct)
+    }
+
+    method isKeyword(integer index, string word): bool {
+        return this.has(index) && this.tokens[index].isKeyword(word)
+    }
+
+    method isIdentWord(integer index, string word): bool {
+        return this.has(index) && this.tokens[index].isIdent(word)
+    }
+
+    method isKind(integer index, TokenKind kind): bool {
+        return this.has(index) && this.tokens[index].kind == kind
+    }
+
+    method isIdent(integer index): bool {
+        return this.isKind(index, TokenKind.Ident)
+    }
+
+    method sameLine(integer first, integer second): bool {
+        return this.has(first) && this.has(second) && this.tokens[first].line == this.tokens[second].line
+    }
+
+    // The span of the token, or the empty span after the last token when the index is out of range.
+    method spanAt(integer index): Span {
+        if (this.has(index)) {
+            return Span(this.tokens[index].start, this.tokens[index].end)
+        }
+        return Span(this.endOffset(), this.endOffset())
+    }
+
+    method endOffset(): integer {
+        if (this.limit == 0) {
+            return 0
+        }
+        return this.tokens[this.limit - 1].end
+    }
+
+    method describeAt(integer index): string {
+        if (this.has(index) == false) {
+            return "the end of the block"
+        }
+        return scanningDescribeToken(this.tokens[index])
+    }
+
+    // The concatenated token texts of [from, to), the way the compiler builds type names.
+    method textBetween(integer from, integer to): string {
+        var pieces = []
+        var index = from
+        while (index < to && index < this.limit) {
+            pieces.append(this.tokens[index].text)
+            index = index + 1
+        }
+        return pieces.join("")
+    }
+
+    // Index of the bracket that closes the one at `open` (all three kinds share one counter), -1 when unclosed;
+    // an unclosed group ends at the next declaration start or at the limit, which `stopIndex` then holds.
+    method matchingClose(integer open): integer {
+        var depth = 0
+        var index = open
+        while (index < this.limit) {
+            if (index > open && scanningIsDeclarationStart(this, index)) {
+                break
+            }
+            var token = this.tokens[index]
+            if (token.kind == TokenKind.Punct && scanningIsOpener(token.value)) {
+                depth = depth + 1
+            }
+            if (token.kind == TokenKind.Punct && scanningIsCloser(token.value)) {
+                depth = depth - 1
+            }
+            if (depth == 0) {
+                return index
+            }
+            index = index + 1
+        }
+        this.stopIndex = index
+        return -1
+    }
+
+    // Index behind the bracket group that opens at `open`; an unclosed group runs to the limit.
+    method afterGroup(integer open): integer {
+        var close = this.matchingClose(open)
+        if (close < 0) {
+            return this.limit
+        }
+        return close + 1
+    }
+
+    // Index of the bracket that opens the one at `close`, -1 when there is none before the start of the array.
+    method matchingOpen(integer close): integer {
+        var depth = 0
+        var index = close
+        while (index >= 0) {
+            var token = this.tokens[index]
+            if (token.kind == TokenKind.Punct && scanningIsCloser(token.value)) {
+                depth = depth + 1
+            }
+            if (token.kind == TokenKind.Punct && scanningIsOpener(token.value)) {
+                depth = depth - 1
+            }
+            if (depth == 0) {
+                return index
+            }
+            index = index - 1
+        }
+        return -1
+    }
+}

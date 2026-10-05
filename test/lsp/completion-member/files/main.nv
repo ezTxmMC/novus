@@ -1,0 +1,8 @@
+package main
+
+import geo
+
+method run() {
+    var shape = Shape("round", 2.5)
+    println(shape.name)
+}

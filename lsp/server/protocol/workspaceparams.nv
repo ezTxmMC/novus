@@ -1,0 +1,124 @@
+package protocol
+
+import base/model
+import base/text
+import json
+
+// Decoding workspace-level parameters: folders, folder changes, watched files, formatting options, commands.
+private final WATCH_CREATED = 1
+private final WATCH_CHANGED = 2
+private final WATCH_DELETED = 3
+private final PROTOCOL_MIN_TAB_SIZE = 1
+// A client number must not decide how much memory one indentation level takes.
+private final PROTOCOL_MAX_TAB_SIZE = 64
+
+define class FolderChange {
+    array<string> added
+    array<string> removed
+
+    construct(array<string> added, array<string> removed) {
+        this.added = added
+        this.removed = removed
+    }
+}
+
+define class WatchedEvent {
+    string filePath
+    integer changeType
+
+    construct(string filePath, integer changeType) {
+        this.filePath = filePath
+        this.changeType = changeType
+    }
+}
+
+define class CommandCall {
+    string command
+    array<string> arguments
+
+    construct(string command, array<string> arguments) {
+        this.command = command
+        this.arguments = arguments
+    }
+}
+
+// The paths of a list of {uri, name} folders; folders that are not files are dropped.
+method protocolFolderPaths(object folders): array<string> {
+    var paths = []
+    for (folder in protocolItems(folders)) {
+        var folderPath = uriToFilePath(protocolText(folder, "uri", ""))
+        if (folderPath != "") {
+            paths.append(folderPath)
+        }
+    }
+    return paths
+}
+
+method protocolRootPaths(map<string, object> params): array<string> {
+    var rootUri = uriToFilePath(protocolText(params, "rootUri", ""))
+    if (rootUri != "") {
+        return [rootUri]
+    }
+    var rootPath = protocolText(params, "rootPath", "")
+    if (rootPath != "") {
+        return [rootPath]
+    }
+    return []
+}
+
+method decodeWorkspaceFolders(map<string, object> params): array<string> {
+    var folders = protocolFolderPaths(protocolField(params, "workspaceFolders"))
+    if (folders.length() > 0) {
+        return folders
+    }
+    return protocolRootPaths(params)
+}
+
+method decodeFolderChange(map<string, object> params): FolderChange {
+    var event = protocolField(params, "event")
+    return FolderChange(protocolFolderPaths(protocolField(event, "added")), protocolFolderPaths(protocolField(event, "removed")))
+}
+
+method protocolIsWatchType(integer changeType): bool {
+    return changeType == WATCH_CREATED || changeType == WATCH_CHANGED || changeType == WATCH_DELETED
+}
+
+method decodeWatchedEvents(map<string, object> params): array<WatchedEvent> {
+    var events = []
+    for (change in protocolList(params, "changes")) {
+        var changedPath = uriToFilePath(protocolText(change, "uri", ""))
+        var changeType = protocolWhole(change, "type", 0)
+        if (changedPath != "" && protocolIsWatchType(changeType)) {
+            events.append(WatchedEvent(changedPath, changeType))
+        }
+    }
+    return events
+}
+
+// What the client does not state keeps the defaults of FormatSettings.
+method decodeFormattingOptions(map<string, object> params): FormatSettings {
+    var settings = FormatSettings()
+    var options = protocolField(params, "options")
+    var tabSize = protocolWhole(options, "tabSize", settings.tabSize)
+    if (tabSize >= PROTOCOL_MIN_TAB_SIZE && tabSize <= PROTOCOL_MAX_TAB_SIZE) {
+        settings.tabSize = tabSize
+    }
+    settings.insertSpaces = protocolFlag(options, "insertSpaces", settings.insertSpaces)
+    return settings
+}
+
+// Arguments are text for the domain; structured ones are kept as their JSON text.
+method protocolArgumentText(object argument): string {
+    if (typeOf(argument) == "string") {
+        return argument
+    }
+    return json.stringify(argument)
+}
+
+method decodeCommand(map<string, object> params): CommandCall {
+    var arguments = []
+    for (argument in protocolList(params, "arguments")) {
+        arguments.append(protocolArgumentText(argument))
+    }
+    return CommandCall(protocolText(params, "command", ""), arguments)
+}

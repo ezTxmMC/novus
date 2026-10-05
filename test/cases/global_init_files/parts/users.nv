@@ -1,0 +1,8 @@
+package main
+
+final NAMES = [FIRST_NAME, SECOND_NAME]
+final BOTH = [NAMES[1], Kind.LEFT]
+
+method totalCount(): integer {
+    return NAMES.length() + BOTH.length()
+}

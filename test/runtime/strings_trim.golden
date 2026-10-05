@@ -1,0 +1,6 @@
+padded: [padded] length 6, view of the original: no, same object: no, terminated: yes, stable: yes
+untouched: [no padding] length 10, view of the original: no, same object: yes, terminated: yes, stable: yes
+only blanks: [] length 0, view of the original: no, same object: no, terminated: yes, stable: yes
+empty: [] length 0, view of the original: no, same object: yes, terminated: yes, stable: yes
+one character: [x] length 1, view of the original: no, same object: no, terminated: yes, stable: yes
+a megabyte with one blank at each end: [xxxxxxxxxxxx] length 999998, view of the original: no, same object: no, terminated: yes, stable: yes

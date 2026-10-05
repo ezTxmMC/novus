@@ -1,0 +1,69 @@
+package main
+
+import "novus/lsp/base/text"
+import "novus/lsp/syntax/lexing"
+
+private final KIND_LETTERS = { "Ident": "I", "Keyword": "K", "Integer": "N", "Float": "F", "String": "S", "Punct": "P", "Comment": "C", "Unknown": "U", "EndOfFile": "E" }
+
+// A string literal cannot contain the two characters of an interpolation, so test sources write `@{` instead.
+method dollar(string template): string {
+    return template.replace("@" + "{", "$" + "{")
+}
+
+// Control characters made visible, so a decoded value fits on one line of a golden file.
+method visible(string value): string {
+    return value.replace(chr(10), "\\n").replace(chr(13), "\\r").replace(chr(9), "\\t").replace(chr(0), "\\0")
+}
+
+// `K:var` for a keyword; `N:0xFF=255` when the canonical value differs from the raw text.
+method renderToken(Token token): string {
+    var kind = KIND_LETTERS["" + token.kind]
+    var text = visible(token.text)
+    if (token.value != token.text) {
+        return kind + ":" + text + "=" + visible(token.value)
+    }
+    return kind + ":" + text
+}
+
+method renderTokens(LexResult lexed): string {
+    var parts = []
+    for (token in lexed.tokens) {
+        if (token.isEnd() == false) {
+            parts.append(renderToken(token))
+        }
+    }
+    return parts.join(" ")
+}
+
+method lex(string source): string {
+    return renderTokens(lexText(source))
+}
+
+method renderIssues(LexResult lexed): string {
+    var parts = []
+    for (issue in lexed.issues) {
+        var severity = "error"
+        if (issue.warning) {
+            severity = "warning"
+        }
+        parts.append(issue.code + "@" + issue.span.start + "-" + issue.span.end + "/" + severity)
+    }
+    return parts.join(" ")
+}
+
+method renderSpans(array<Span> spans): string {
+    var parts = []
+    for (span in spans) {
+        parts.append("[" + span.start + "," + span.end + ")")
+    }
+    return parts.join(" ")
+}
+
+// Position of a token as line:column, with `*` when it is the first on its line.
+method renderPosition(Token token): string {
+    var mark = ""
+    if (token.firstOnLine) {
+        mark = "*"
+    }
+    return token.line + ":" + token.column + mark
+}

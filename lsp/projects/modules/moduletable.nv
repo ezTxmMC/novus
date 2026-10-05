@@ -1,0 +1,118 @@
+package modules
+
+import base/maybe
+
+private final MODULES_PATH_SEPARATOR = "/"
+
+// Ready: the directory exists. NotFetched: required but not in the cache (novusc would clone it).
+// ReplaceMissing: a `replace` points at a directory that does not exist.
+define enum ModuleStatus {
+    Ready, NotFetched, ReplaceMissing
+}
+
+define class ModuleEntry {
+    string module
+    string version
+    string dir
+    string entryFile
+    ModuleStatus status
+    string declaredIn
+    bool direct
+    bool replaced
+
+    construct(string module, string version, string dir, ModuleStatus status, string declaredIn) {
+        this.module = module
+        this.version = version
+        this.dir = dir
+        this.entryFile = ""
+        this.status = status
+        this.declaredIn = declaredIn
+        this.direct = false
+        this.replaced = false
+    }
+
+    method isReady(): bool {
+        return this.status == ModuleStatus.Ready
+    }
+}
+
+// The entry an import path names and what is left of the path behind the module key. `rest` is "" for the module
+// itself and for `module/` alike: tell them apart by comparing the import path with `entry.module`.
+define class ModuleMatch {
+    ModuleEntry entry
+    string rest
+
+    construct(ModuleEntry entry, string rest) {
+        this.entry = entry
+        this.rest = rest
+    }
+}
+
+// Every module the project requires, directly or through other manifests, in resolution order.
+define class ModuleTable {
+    array<ModuleEntry> entries
+    map<string, ModuleEntry> byModule
+
+    construct() {
+        this.entries = []
+        this.byModule = {}
+    }
+
+    method add(ModuleEntry entry) {
+        this.entries.append(entry)
+        this.byModule[entry.module] = entry
+    }
+
+    // The entry with the longest module key that `importPath` equals or continues after a slash, whatever its status.
+    method find(string importPath): ModuleMatch {
+        var best = nothing()
+        for (entry in this.entries) {
+            if (this.isKeyOf(importPath, entry.module) && this.isLonger(entry, best)) {
+                best = entry
+            }
+        }
+        if (isNone(best)) {
+            return nothing()
+        }
+        return ModuleMatch(best, this.restOf(importPath, best.module))
+    }
+
+    method isKeyOf(string importPath, string module): bool {
+        return importPath == module || importPath.startsWith(module + MODULES_PATH_SEPARATOR)
+    }
+
+    method isLonger(ModuleEntry candidate, ModuleEntry best): bool {
+        return isNone(best) || candidate.module.length() > best.module.length()
+    }
+
+    method restOf(string importPath, string module): string {
+        if (importPath == module) {
+            return ""
+        }
+        return importPath.substring(module.length() + 1, importPath.length())
+    }
+
+    method has(string module): bool {
+        return this.byModule.has(module)
+    }
+
+    method notReady(): array<ModuleEntry> {
+        var found = []
+        for (entry in this.entries) {
+            if (entry.isReady() == false) {
+                found.append(entry)
+            }
+        }
+        return found
+    }
+
+    method readyEntries(): array<ModuleEntry> {
+        var found = []
+        for (entry in this.entries) {
+            if (entry.isReady()) {
+                found.append(entry)
+            }
+        }
+        return found
+    }
+}

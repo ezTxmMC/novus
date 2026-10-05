@@ -1,0 +1,69 @@
+package main
+
+import path
+import @compare
+import @corpus
+import @issues
+import "novus/lsp/base/platform"
+
+// Corpus checks of the syntax layer (DESIGN 9.5-4); `test/run_lsp_corpus.sh` builds and runs this tool.
+//   syntax_tool <repoRoot> <known_bad_file>
+//       (a) every `.nv`, `.nvh` and `project.nv` below the root, by file kind: zero own issues, and at least one for every
+//           file listed in <known_bad_file>; prints `summary <key> <n>` lines
+//   syntax_tool compare <repoRoot> <novusc> <different_line_file> <semantic_file>
+//       (b) `<novusc> check` of every single-file program against the own layer (syntax and, since Wave 4, the semantic rules
+//           over every user file of an accepted program; the semantic fixtures need a finding at the line the compiler names);
+//           prints `summary <key> <n>` lines
+//   syntax_tool report <file>
+//       the own issues of one file
+private final SYNTAX_TOOL_USAGE = "usage: syntax_tool <repoRoot> <known_bad_file> | syntax_tool compare <repoRoot> <novusc> <different_line_file> <semantic_file> | syntax_tool report <file>"
+private final SYNTAX_TOOL_USAGE_EXIT = 2
+
+method main(array<string> args): integer {
+    if (args.length() == 2 && args[0] == "report") {
+        return syntaxToolRun([args[1]], [], args)
+    }
+    if (args.length() == 5 && args[0] == "compare") {
+        return syntaxToolRun([args[3], args[4]], [args[1]], args)
+    }
+    if (args.length() == 2) {
+        return syntaxToolRun([args[1]], [args[0]], args)
+    }
+    eprintln(SYNTAX_TOOL_USAGE)
+    return SYNTAX_TOOL_USAGE_EXIT
+}
+
+// A missing input is an error, not an empty one: readTextFile gives "" for a file that does not exist, which would make a
+// misspelled list or root look like a clean corpus (LSP-R08 asks the tools to say what they could not read).
+method syntaxToolRun(array<string> files, array<string> directories, array<string> args): integer {
+    for (file in files) {
+        if (path.isFile(file) == false) {
+            eprintln("syntax_tool: " + file + " is not a file")
+            return SYNTAX_TOOL_USAGE_EXIT
+        }
+    }
+    for (directory in directories) {
+        if (path.isDir(directory) == false) {
+            eprintln("syntax_tool: " + directory + " is not a directory")
+            return SYNTAX_TOOL_USAGE_EXIT
+        }
+    }
+    return syntaxToolDispatch(args)
+}
+
+method syntaxToolDispatch(array<string> args): integer {
+    if (args.length() == 5) {
+        return syntaxToolCompare(args[1], args[2], args[3], args[4])
+    }
+    if (args[0] == "report") {
+        return syntaxToolReport(args[1])
+    }
+    return syntaxToolCheckCorpus(args[0], args[1])
+}
+
+method syntaxToolReport(string filePath): integer {
+    for (issue in syntaxToolIssuesOf(filePath, readTextFile(filePath))) {
+        println(issue.describe(filePath))
+    }
+    return 0
+}

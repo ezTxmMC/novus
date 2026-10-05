@@ -1,0 +1,135 @@
+package platform
+
+import base/maybe
+import math
+import os
+import strings
+
+private final PLATFORM_TEMP_ATTEMPTS = 100
+private final PLATFORM_MICROS_PER_SECOND = 1000000
+private final PLATFORM_CURRENT_SEGMENT = "."
+private final PLATFORM_PARENT_SEGMENT = ".."
+private final PLATFORM_BACKSLASH = "\\"
+
+define class PlatformWriteTask {
+    string filePath
+    string content
+
+    construct(string filePath, string content) {
+        this.filePath = filePath
+        this.content = content
+    }
+
+    method run(): object {
+        os.writeFile(this.filePath, this.content)
+        return true
+    }
+}
+
+define class PlatformListTask {
+    string dirPath
+
+    construct(string dirPath) {
+        this.dirPath = dirPath
+    }
+
+    method run(): object {
+        return os.listDir(this.dirPath)
+    }
+}
+
+// "" for anything that is not a readable regular file: os.readFile would try a directory.
+method readTextFile(string filePath): string {
+    if (os.isFile(filePath) == false) {
+        return ""
+    }
+    return os.readFile(filePath)
+}
+
+method writeTextFile(string filePath, string content): bool {
+    return isSome(platformAttempt(PlatformWriteTask(filePath, content)))
+}
+
+method makeDirectories(string dirPath): bool {
+    return os.mkdir(dirPath)
+}
+
+// Never follows a link: os.removeAll would delete the content of a linked directory. Refuses (false) the
+// filesystem root, the home directory and a path that ends in "." or ".." (it names a directory that stays).
+method removeTree(string targetPath): bool {
+    if (platformIsRemovable(targetPath) == false) {
+        return false
+    }
+    platformRemoveEverything(targetPath)
+    return os.exists(targetPath) == false && os.isSymlink(targetPath) == false
+}
+
+method platformIsRemovable(string targetPath): bool {
+    var normalized = platformTrimmedPath(targetPath)
+    if (normalized == "" || normalized == platformTrimmedPath(os.home())) {
+        return false
+    }
+    var lastSegment = normalized.substring(strings.lastIndexOf(normalized, PLATFORM_PATH_SEPARATOR) + 1, normalized.length())
+    return lastSegment != PLATFORM_CURRENT_SEGMENT && lastSegment != PLATFORM_PARENT_SEGMENT
+}
+
+// Forward slashes only and no trailing slash: "/" becomes "".
+method platformTrimmedPath(string anyPath): string {
+    var normalized = anyPath.replace(PLATFORM_BACKSLASH, PLATFORM_PATH_SEPARATOR)
+    while (normalized.endsWith(PLATFORM_PATH_SEPARATOR)) {
+        normalized = normalized.substring(0, normalized.length() - 1)
+    }
+    return normalized
+}
+
+// No depth limit and no recursion: the directories are collected first, then removed last to first, which
+// empties every child before its parent.
+method platformRemoveEverything(string targetPath) {
+    var directories = []
+    var pending = [targetPath]
+    while (pending.length() > 0) {
+        platformRemoveOrDescend(pending.pop(), pending, directories)
+    }
+    var index = directories.length() - 1
+    while (index >= 0) {
+        os.rmdir(directories[index])
+        index = index - 1
+    }
+}
+
+method platformRemoveOrDescend(string entryPath, array<string> pending, array<string> directories) {
+    if (os.isSymlink(entryPath) || os.isDir(entryPath) == false) {
+        os.remove(entryPath)
+        return
+    }
+    directories.push(entryPath)
+    for (entry in listDirectoryEntries(entryPath)) {
+        pending.push(platformJoinPath(entryPath, entry))
+    }
+}
+
+// A fresh directory below temporaryDirectory(); "" when none could be made.
+method createTempDirectory(string prefix): string {
+    var stem = os.temp() + PLATFORM_PATH_SEPARATOR + prefix + os.pid() + "-" + math.floor(os.clock() * PLATFORM_MICROS_PER_SECOND) + "-"
+    var attempt = 0
+    while (attempt < PLATFORM_TEMP_ATTEMPTS) {
+        var candidate = stem + attempt
+        if (os.exists(candidate) == false && os.mkdir(candidate)) {
+            return candidate
+        }
+        attempt = attempt + 1
+    }
+    return ""
+}
+
+method realPath(string target): string {
+    return os.realpath(target)
+}
+
+// Sorted bare names; [] for a missing path or a file.
+method listDirectoryEntries(string dirPath): array<string> {
+    if (os.isDir(dirPath) == false) {
+        return []
+    }
+    return valueOr(platformAttempt(PlatformListTask(dirPath)), [])
+}

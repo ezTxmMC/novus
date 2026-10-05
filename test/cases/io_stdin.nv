@@ -1,0 +1,76 @@
+package main
+
+import io
+
+// io.readBytes / io.eof: LSP style framing on stdin (see io_stdin.stdin).
+
+final HEADER_PREFIX = "Content-Length: "
+final PREVIEW_LENGTH = 24
+final TAIL_LENGTH = 10
+
+method contentLength(): integer {
+    var length = -1
+    var line = io.readLine()
+    while (line != "") {
+        if (line.startsWith(HEADER_PREFIX)) {
+            length = parseInt(line.substring(HEADER_PREFIX.length(), line.length()))
+        }
+        line = io.readLine()
+    }
+    return length
+}
+
+method hasNul(string body): bool {
+    var index = 0
+    while (index < body.length()) {
+        if (ord(body.charAt(index)) == 0) {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+
+// The string builtins stop at a NUL byte, so a body with one is not shown as text.
+method preview(string body): string {
+    if (hasNul(body)) {
+        return "(binary)"
+    }
+    if (body.length() <= PREVIEW_LENGTH) {
+        return body.replace("\n", "|").replace("\r", "~")
+    }
+    return body.substring(0, PREVIEW_LENGTH)
+}
+
+method byteList(string body): string {
+    var codes = []
+    var index = 0
+    while (index < body.length()) {
+        codes.append(ord(body.charAt(index)))
+        index = index + 1
+    }
+    return codes.join(",")
+}
+
+method main {
+    var frames = 0
+    while (!io.eof()) {
+        var length = contentLength()
+        var body = io.readBytes(length)
+        frames = frames + 1
+        println "frame ${frames}: announced ${length}, got ${body.length()}"
+        if (body.length() <= PREVIEW_LENGTH) {
+            println "  bytes ${byteList(body)}"
+        }
+        println "  text ${preview(body)}"
+        if (body.length() > PREVIEW_LENGTH) {
+            println "  tail ${body.substring(body.length() - TAIL_LENGTH, body.length())}"
+        }
+    }
+    println "frames ${frames}"
+    println "eof ${io.eof()}"
+    println "after eof ${io.readBytes(5).length()}"
+    println "zero ${io.readBytes(0).length()}"
+    println "negative ${io.readBytes(-4).length()}"
+    println "line after eof [${io.readLine()}]"
+}

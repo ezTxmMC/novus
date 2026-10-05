@@ -1,0 +1,123 @@
+package jobs
+
+import base/maybe
+import base/text
+import log
+import services/checker
+import server/session
+
+private final JOBS_SOURCE_NOVUSC = "novusc"
+
+// Applies one check result: drops a stale one, replaces the findings of the previous run, publishes the changes (5.9 steps 7 and 8).
+define class JobsResultApplier {
+    Session session
+    DiagnosticScheduler scheduler
+    map<string, array<string>> lastCheckUris
+    map<string, map<string, integer>> snapshotHashes
+
+    construct(Session session, DiagnosticScheduler scheduler, map<string, array<string>> lastCheckUris) {
+        this.session = session
+        this.scheduler = scheduler
+        this.lastCheckUris = lastCheckUris
+        this.snapshotHashes = {}
+    }
+
+    // The editors restart version numbers at 1 after a close, so the version alone cannot tell a reopened buffer from the checked one.
+    method rememberSnapshot(CheckRequest request) {
+        var hashes = {}
+        for (filePath in request.snapshotVersions.keys()) {
+            hashes[filePath] = textHashOf(request.overlays.get(filePath, ""))
+        }
+        this.snapshotHashes[jobsRequestKey(request.requestId)] = hashes
+    }
+
+    method forgetSnapshot(integer requestId) {
+        this.snapshotHashes.remove(jobsRequestKey(requestId))
+    }
+
+    method apply(string key, CheckResult result) {
+        var hashes = this.snapshotHashes.get(jobsRequestKey(result.requestId), {})
+        this.forgetSnapshot(result.requestId)
+        if (this.isStale(result, hashes)) {
+            log.debug("jobs: dropped the stale result of check " + result.requestId)
+            return
+        }
+        if (result.skipped) {
+            log.debug("jobs: check " + result.requestId + " gave no verdict: " + result.detail)
+            return
+        }
+        this.replaceFindings(key, result)
+    }
+
+    // A dirty buffer that changed (or closed) since the request was built makes the checked text obsolete.
+    method isStale(CheckResult result, map<string, integer> hashes): bool {
+        for (filePath in result.snapshotVersions.keys()) {
+            var document = this.session.documents.findByPath(filePath)
+            if (isNone(document) || document.version != result.snapshotVersions[filePath]) {
+                return true
+            }
+            if (hashes.has(filePath) && document.textHash != hashes[filePath]) {
+                return true
+            }
+        }
+        return false
+    }
+
+    method replaceFindings(string key, CheckResult result) {
+        var previous = this.lastCheckUris.get(key, [])
+        for (uri in previous) {
+            this.session.diagnostics.replace(uri, JOBS_SOURCE_NOVUSC, [])
+        }
+        var fresh = this.storeFindings(result)
+        this.lastCheckUris[key] = fresh
+        for (uri in jobsUnion(previous, fresh)) {
+            this.scheduler.publishStored(uri)
+            this.dropIfEmptyAndClosed(uri)
+        }
+    }
+
+    // One list per distinct file of the findings, converted with the line index of the buffer that was checked (V94).
+    method storeFindings(CheckResult result): array<string> {
+        var uris = []
+        var seen = {}
+        for (finding in result.findings) {
+            if (seen.has(finding.filePath)) {
+                continue
+            }
+            seen[finding.filePath] = true
+            var diagnostics = findingsToDiagnostics(result, this.session.workspace.files, finding.filePath)
+            var uri = this.uriOfPath(finding.filePath)
+            this.session.diagnostics.replace(uri, JOBS_SOURCE_NOVUSC, diagnostics)
+            uris.push(uri)
+        }
+        return uris
+    }
+
+    // The uri exactly as the client sent it when the file is open.
+    method uriOfPath(string filePath): string {
+        var document = this.session.documents.findByPath(filePath)
+        if (isSome(document)) {
+            return document.uri
+        }
+        return filePathToUri(filePath)
+    }
+
+    // A file that is not open keeps nothing in the store once its list is empty.
+    method dropIfEmptyAndClosed(string uri) {
+        if (this.session.documents.has(uri) == false && this.session.diagnostics.merged(uri).length() == 0) {
+            this.session.diagnostics.clear(uri)
+        }
+    }
+}
+
+// The members of both lists once each, ascending.
+method jobsUnion(array<string> first, array<string> second): array<string> {
+    var members = {}
+    for (item in first) {
+        members[item] = true
+    }
+    for (item in second) {
+        members[item] = true
+    }
+    return members.keys()
+}

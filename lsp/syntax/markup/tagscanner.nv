@@ -1,0 +1,148 @@
+package markup
+
+import base/text
+import bytes
+
+private final MARKUP_COMPONENT_FIRST_LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+private final MARKUP_RAW_ELEMENTS = ["script", "style"]
+private final MARKUP_TAG_PUNCTUATION = ["-", ":", "."]
+private final MARKUP_CODE_OPENERS = ["<?nv", "<?="]
+
+// Walks the template of a component the way the compiler's nvhTokens does and collects the spans of the start-tag
+// names of components. It is tolerant where the compiler gives up (an unclosed brace or tag): the scan goes on.
+define class MarkupTagScanner {
+    string text
+    integer length
+    array<Span> tags
+    MarkupBraceMatcher braces
+
+    construct(string text) {
+        this.text = text
+        this.length = text.length()
+        this.tags = []
+        this.braces = MarkupBraceMatcher(text)
+    }
+
+    method scanFrom(integer start): array<Span> {
+        var index = start
+        while (index < this.length) {
+            index = this.step(index)
+        }
+        return this.tags
+    }
+
+    // Always returns an index above `index`, so the scan ends.
+    method step(integer index): integer {
+        var current = this.text.charAt(index)
+        if (current == "\\") {
+            return this.skipEscape(index)
+        }
+        if (current == "{") {
+            return this.skipBraces(index)
+        }
+        if (current == "<") {
+            return this.scanMarkup(index)
+        }
+        return index + 1
+    }
+
+    method skipEscape(integer index): integer {
+        if (index + 1 < this.length && (this.text.charAt(index + 1) == "{" || this.text.charAt(index + 1) == "}")) {
+            return index + 2
+        }
+        return index + 1
+    }
+
+    method skipBraces(integer index): integer {
+        var close = this.braces.closeFrom(index)
+        if (close < 0) {
+            return index + 1
+        }
+        return close
+    }
+
+    method scanMarkup(integer index): integer {
+        if (this.startsCode(index)) {
+            return this.skipPast("?>", index, 2)
+        }
+        if (markupStartsAt(this.text, index, "<!--")) {
+            return this.skipPast("-->", index, 3)
+        }
+        if (markupStartsAt(this.text, index, "<!")) {
+            return this.skipPast(">", index, 1)
+        }
+        if (markupStartsAt(this.text, index, "</") && markupIsAlpha(this.charAfter(index, 2))) {
+            return this.skipPast(">", index, 1)
+        }
+        if (markupIsAlpha(this.charAfter(index, 1))) {
+            return this.scanStartTag(index)
+        }
+        return index + 1
+    }
+
+    method startsCode(integer index): bool {
+        for (opener in MARKUP_CODE_OPENERS) {
+            if (markupStartsAt(this.text, index, opener)) {
+                return true
+            }
+        }
+        return false
+    }
+
+    method charAfter(integer index, integer offset): string {
+        if (index + offset >= this.length) {
+            return ""
+        }
+        return this.text.charAt(index + offset)
+    }
+
+    // The index behind the first `terminator` at or after `index`, the end of the text when there is none.
+    method skipPast(string terminator, integer index, integer width): integer {
+        var found = bytes.indexOf(this.text, terminator, index)
+        if (found < 0) {
+            return this.length
+        }
+        return found + width
+    }
+
+    method scanStartTag(integer index): integer {
+        var nameEnd = index + 1
+        while (nameEnd < this.length && this.isTagCharacter(this.text.charAt(nameEnd))) {
+            nameEnd = nameEnd + 1
+        }
+        var name = this.text.substring(index + 1, nameEnd)
+        if (MARKUP_COMPONENT_FIRST_LETTERS.contains(name.charAt(0))) {
+            this.tags.append(Span(index + 1, nameEnd))
+        }
+        var attributes = MarkupAttributeScanner(this.text, this.braces)
+        var tagEnd = attributes.skipAttributes(nameEnd)
+        if (attributes.selfClosing || MARKUP_RAW_ELEMENTS.contains(name.toLower()) == false) {
+            return tagEnd
+        }
+        return this.skipRawContent(name.toLower(), tagEnd)
+    }
+
+    method isTagCharacter(string character): bool {
+        return markupIsAlpha(character) || markupIsDigit(character) || MARKUP_TAG_PUNCTUATION.contains(character)
+    }
+
+    // The text of <script> and <style> is no markup: it runs to the closing tag, which is matched without case.
+    method skipRawContent(string element, integer from): integer {
+        var at = bytes.indexOf(this.text, "</", from)
+        while (at >= 0) {
+            if (this.closesElement(element, at)) {
+                return this.skipPast(">", at, 1)
+            }
+            at = bytes.indexOf(this.text, "</", at + 2)
+        }
+        return this.length
+    }
+
+    method closesElement(string element, integer at): bool {
+        var start = at + 2
+        if (start + element.length() > this.length) {
+            return false
+        }
+        return this.text.substring(start, start + element.length()).toLower() == element
+    }
+}

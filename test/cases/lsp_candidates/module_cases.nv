@@ -1,0 +1,85 @@
+package main
+
+import "novus/lsp/base/model"
+import "novus/lsp/base/platform"
+import "novus/lsp/features/candidates"
+import "novus/lsp/projects/modules"
+import @support
+
+private final CA_MAIN = "/p/main.nv"
+private final CA_MANIFEST = "/p/project.nv"
+
+method caPathContext(string kind, string typeName, string prefix): CompletionContext {
+    var request = CompletionContext(kind, prefix, Span(0, 0))
+    request.typeName = typeName
+    return request
+}
+
+method runStandardModuleCases() {
+    println("#### ModuleSources.standardModules")
+    var world = CaWorld(caProject())
+    var context = world.open(CA_MAIN, "package main\n\nimport geo\nimport strings\n\nmethod main() {\n}\n")
+    var target = world.modules.standardModules(context, caContext("importTarget", "", 40))
+    println("== import target: strings is imported: " + caLabels(target).contains("strings") + ", arrays is offered: " + caLabels(target).contains("arrays"))
+    var expression = world.modules.standardModules(context, caContext("expression", "", 40))
+    var names = []
+    for (item in expression) {
+        if (["strings", "arrays", "geo", "other", "lib"].contains(item.label)) {
+            names.append(item)
+        }
+    }
+    caPrint("expression: imported, unloaded and package names", names)
+    caPrint("a type context offers no modules", world.modules.standardModules(context, caContext("type", "", 40)))
+    var shadow = CaWorld({"/s/main.nv": "method main() {\n}\n", "/s/json/json.nv": "package json\nmethod parse(string t): string {\n    return t\n}\n"})
+    var shadowContext = shadow.open("/s/main.nv", "method main() {\n}\n")
+    println("== a local folder hides the std module: " + caLabels(shadow.modules.standardModules(shadowContext, caContext("importTarget", "", 5))).contains("json") + " " + caLabels(shadow.modules.standardModules(shadowContext, caContext("expression", "", 5))).contains("json"))
+}
+
+method runImportPathCases() {
+    println("#### ModuleSources.importPaths")
+    var world = CaWorld(caProject())
+    var context = world.open(CA_MAIN, "package main\n\nimport geo\n\nmethod main() {\n}\n")
+    caPrint("importTarget", world.modules.importPaths(context, caPathContext("importTarget", "", "")))
+    caPrint("importFile at the root", world.modules.importPaths(context, caPathContext("importFile", "", "")))
+    caPrint("importFile in a folder", world.modules.importPaths(context, caPathContext("importFile", "geo/", "")))
+    caPrint("importFile in a folder that does not exist", world.modules.importPaths(context, caPathContext("importFile", "nowhere/", "")))
+    caPrint("importNested", world.modules.importPaths(context, caPathContext("importNested", "geo/", "")))
+    caPrint("importNested of a folder without children", world.modules.importPaths(context, caPathContext("importNested", "other/", "")))
+    caPrint("importModule", world.modules.importPaths(context, caPathContext("importModule", "", "")))
+    caPrint("importModule with the beginning of a key", world.modules.importPaths(context, caPathContext("importModule", "ex.", "co")))
+    caPrint("importModule below a key", world.modules.importPaths(context, caPathContext("importModule", "ex.com/lib/", "")))
+    caPrint("importModule below a folder of the module", world.modules.importPaths(context, caPathContext("importModule", "ex.com/lib/sub/", "")))
+    caPrint("importModule of an unknown module", world.modules.importPaths(context, caPathContext("importModule", "other.org/", "")))
+    caPrint("another kind", world.modules.importPaths(context, caPathContext("statement", "", "")))
+    var noModules = CaWorld({"/s/main.nv": "method main() {\n}\n", "/s/geo/a.nv": "package geo\n"})
+    caPrint("importTarget without dependencies has no quote", noModules.modules.importPaths(noModules.open("/s/main.nv", "method main() {\n}\n"), caPathContext("importTarget", "", "")))
+    var unfetched = CaWorld({"/s/project.nv": "project \"s\"\nrequire \"nowhere.example/dep\"\n", "/s/main.nv": "method main() {\n}\n"})
+    caPrint("a module that is not fetched is listed, nothing below it", unfetched.modules.importPaths(unfetched.open("/s/main.nv", "method main() {\n}\n"), caPathContext("importModule", "", "")))
+    caPrint("below a module that is not fetched", unfetched.modules.importPaths(unfetched.open("/s/main.nv", "method main() {\n}\n"), caPathContext("importModule", "nowhere.example/dep/", "")))
+}
+
+method runManifestItemCases() {
+    println("#### ModuleSources.manifestItems")
+    var cacheDirectory = dependencyCacheDirectory()
+    var files = caProject()
+    files[cacheDirectory + "/github.com/acme/geo@v1.0.0/lib.nv"] = "method geoFunction() {\n}\n"
+    files[cacheDirectory + "/github.com/acme/geo@v1.1.0/lib.nv"] = "method geoFunction() {\n}\n"
+    files[cacheDirectory + "/github.com/acme/other@latest/lib.nv"] = "method otherFunction() {\n}\n"
+    files[cacheDirectory + "/example.org/team/tool@v2/lib.nv"] = "method toolFunction() {\n}\n"
+    files[cacheDirectory + "/example.org/stray.txt"] = "not a module"
+    var world = CaWorld(files)
+    var context = world.open(CA_MANIFEST, "project \"p\"\nrequire \"ex.com/lib\"\nreplace \"ex.com/lib\" \"lib\"\n")
+    caPrint("require: the manifest's modules and the cache", world.modules.manifestItems(context, caManifestContext("requireModule", "", "")))
+    caPrint("replace: only the modules of the manifest", world.modules.manifestItems(context, caManifestContext("replaceModule", "", "")))
+    caPrint("replace directory", world.modules.manifestItems(context, caManifestContext("replaceDir", "", "")))
+    caPrint("replace directory below a folder", world.modules.manifestItems(context, caManifestContext("replaceDir", "lib/", "")))
+    caPrint("replace directory two levels down", world.modules.manifestItems(context, caManifestContext("replaceDir", "lib/sub/", "")))
+    caPrint("a directive has no items here", world.modules.manifestItems(context, caManifestContext("directive", "", "")))
+}
+
+method caManifestContext(string detail, string typeName, string prefix): CompletionContext {
+    var request = CompletionContext("manifest", prefix, Span(0, 0))
+    request.detail = detail
+    request.typeName = typeName
+    return request
+}

@@ -1,0 +1,195 @@
+package semantic
+
+private final SEMANTIC_TYPE_ARRAY = "array"
+private final SEMANTIC_TYPE_MAP = "map"
+private final SEMANTIC_TYPE_STRING = "string"
+private final SEMANTIC_TYPE_STRING_ALIAS = "str"
+private final SEMANTIC_TYPE_INTEGER = "integer"
+private final SEMANTIC_TYPE_FLOAT = "float"
+private final SEMANTIC_TYPE_BOOL = "bool"
+private final SEMANTIC_TYPE_OBJECT = "object"
+private final SEMANTIC_TYPE_ANY = "any"
+private final SEMANTIC_GENERIC_OPEN = "<"
+private final SEMANTIC_GENERIC_CLOSE = ">"
+private final SEMANTIC_ARGUMENT_SEPARATOR = ","
+private final SEMANTIC_UNDERSCORE_CODE = 95
+private final SEMANTIC_LOWER_A_CODE = 97
+private final SEMANTIC_LOWER_Z_CODE = 122
+private final SEMANTIC_UPPER_A_CODE = 65
+private final SEMANTIC_UPPER_Z_CODE = 90
+private final SEMANTIC_MAP_KEY_TYPE = "string"
+private final SEMANTIC_UNKNOWN_DISPLAY = "unknown"
+
+// A very small type model: the base name plus, for arrays and maps, the element type (the value type of a map; its
+// keys are strings). `known` says that the base type was determined; `object` and `any` are never known, they only
+// say that the value can be anything.
+define class TypeRef {
+    string name
+    string element
+    bool known
+
+    construct(string name, string element, bool known) {
+        this.name = name
+        this.element = element
+        this.known = known
+    }
+
+    method isArray(): bool {
+        return this.known && this.name == SEMANTIC_TYPE_ARRAY
+    }
+
+    method isMap(): bool {
+        return this.known && this.name == SEMANTIC_TYPE_MAP
+    }
+
+    method isString(): bool {
+        return this.known && this.name == SEMANTIC_TYPE_STRING
+    }
+
+    // The text a hover or a completion detail shows; an unknown type is `unknown` unless it has a name (`object`).
+    method display(): string {
+        if (this.known == false) {
+            return semanticDisplayOfUnknown(this.name)
+        }
+        if (this.element == "") {
+            return this.name
+        }
+        if (this.name == SEMANTIC_TYPE_MAP) {
+            return SEMANTIC_TYPE_MAP + SEMANTIC_GENERIC_OPEN + SEMANTIC_MAP_KEY_TYPE + ", " + this.element + SEMANTIC_GENERIC_CLOSE
+        }
+        return this.name + SEMANTIC_GENERIC_OPEN + this.element + SEMANTIC_GENERIC_CLOSE
+    }
+}
+
+method semanticDisplayOfUnknown(string name): string {
+    if (name == "") {
+        return SEMANTIC_UNKNOWN_DISPLAY
+    }
+    return name
+}
+
+method unknownType(): TypeRef {
+    return TypeRef("", "", false)
+}
+
+// Reads `array<string>`, `map<string, integer>`, `Circle` and the like; spaces are ignored, an empty text and the
+// words `object` and `any` give a type that is not known.
+method typeFromText(string typeText): TypeRef {
+    var compact = semanticWithoutSpaces(typeText)
+    if (compact == "") {
+        return unknownType()
+    }
+    var open = compact.indexOf(SEMANTIC_GENERIC_OPEN)
+    if (open < 0) {
+        return semanticPlainType(compact)
+    }
+    if (semanticHasTextAfterClose(compact)) {
+        return unknownType()
+    }
+    var head = semanticHeadName(compact.substring(0, open))
+    var inner = semanticInnerArguments(compact, open)
+    return semanticGenericType(head, inner)
+}
+
+method semanticWithoutSpaces(string source): string {
+    var kept = []
+    for (character in source) {
+        if (character != " " && character != "\t" && character != "\n" && character != "\r") {
+            kept.append(character)
+        }
+    }
+    return kept.join("")
+}
+
+method semanticHeadName(string head): string {
+    if (head == SEMANTIC_TYPE_STRING_ALIAS) {
+        return SEMANTIC_TYPE_STRING
+    }
+    return head
+}
+
+method semanticPlainType(string name): TypeRef {
+    var head = semanticHeadName(name)
+    if (head == SEMANTIC_TYPE_OBJECT || head == SEMANTIC_TYPE_ANY) {
+        return TypeRef(head, "", false)
+    }
+    return TypeRef(head, "", semanticIsIdentifierHead(head))
+}
+
+// `known` means the head is a name: a type text such as `>` or `5` is not one. A missing `>` is allowed (typing as you type).
+method semanticIsIdentifierHead(string head): bool {
+    if (head == "") {
+        return false
+    }
+    var code = ord(head.charAt(0))
+    var isUpper = code >= SEMANTIC_UPPER_A_CODE && code <= SEMANTIC_UPPER_Z_CODE
+    var isLower = code >= SEMANTIC_LOWER_A_CODE && code <= SEMANTIC_LOWER_Z_CODE
+    return isUpper || isLower || code == SEMANTIC_UNDERSCORE_CODE
+}
+
+// `array<string>x`: the angle brackets close before the text ends, or close more than they open.
+method semanticHasTextAfterClose(string compact): bool {
+    var depth = 0
+    var i = 0
+    while (i < compact.length()) {
+        var character = compact.charAt(i)
+        if (character == SEMANTIC_GENERIC_OPEN) {
+            depth = depth + 1
+        }
+        if (character == SEMANTIC_GENERIC_CLOSE) {
+            depth = depth - 1
+        }
+        if (depth < 0 || (depth == 0 && character == SEMANTIC_GENERIC_CLOSE && i < compact.length() - 1)) {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+
+// The text between the first `<` and the last `>`; everything behind `<` when the closing bracket is missing.
+method semanticInnerArguments(string compact, integer open): string {
+    var close = compact.length()
+    if (compact.endsWith(SEMANTIC_GENERIC_CLOSE)) {
+        close = compact.length() - 1
+    }
+    if (close <= open + 1) {
+        return ""
+    }
+    return compact.substring(open + 1, close)
+}
+
+method semanticGenericType(string head, string inner): TypeRef {
+    if (head == SEMANTIC_TYPE_ARRAY) {
+        return TypeRef(head, inner, true)
+    }
+    if (head == SEMANTIC_TYPE_MAP) {
+        return TypeRef(head, semanticMapValueType(inner), true)
+    }
+    return TypeRef(head, "", semanticIsIdentifierHead(head))
+}
+
+// `string,array<integer>` gives `array<integer>`: the part behind the first comma outside of angle brackets.
+method semanticMapValueType(string inner): string {
+    var depth = 0
+    var i = 0
+    while (i < inner.length()) {
+        var character = inner.charAt(i)
+        if (character == SEMANTIC_GENERIC_OPEN) {
+            depth = depth + 1
+        }
+        if (character == SEMANTIC_GENERIC_CLOSE) {
+            depth = depth - 1
+        }
+        if (character == SEMANTIC_ARGUMENT_SEPARATOR && depth == 0) {
+            return inner.substring(i + 1, inner.length())
+        }
+        i = i + 1
+    }
+    return inner
+}
+
+// A type with a name and no element, for example the class of an object.
+method semanticNamedType(string name): TypeRef {
+    return TypeRef(name, "", name != "")
+}

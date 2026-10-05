@@ -1,0 +1,83 @@
+package main
+
+import "novus/lsp/base/maybe"
+import "novus/lsp/base/model"
+import "novus/lsp/base/text"
+import @support
+
+method runImportActionCases() {
+    println("== Import 'x' for module-not-imported: where the line goes (8.8)")
+    var bare = AcWorld({
+        "/p/project.nv": "project \"p\"\n",
+        "/p/main.nv": "package main\n\nmethod main() {\n    println(strings.repeat(\"a\", 2))\n}\n"
+    })
+    acShow("after the package line", bare.document("/p/main.nv"), bare.actionsFor("/p/main.nv"))
+    var grouped = AcWorld({
+        "/p/project.nv": "project \"p\"\n",
+        "/p/main.nv": "import json\nimport math\n\nimport geo\n\nmethod main() {\n    println(strings.repeat(\"a\", 2))\n    println(geo.area())\n}\n",
+        "/p/geo/shape.nv": "package geo\n\nmethod area(): integer {\n    return 1\n}\n"
+    })
+    acShow("into the std group, sorted", grouped.document("/p/main.nv"), grouped.actionsFor("/p/main.nv"))
+    var crlf = AcWorld({
+        "/p/project.nv": "project \"p\"\n",
+        "/p/main.nv": "package main\r\n\r\nimport json\r\n\r\nmethod main() {\r\n    println(strings.repeat(\"a\", 2))\r\n}\r\n"
+    })
+    acShow("a file with CRLF", crlf.document("/p/main.nv"), crlf.actionsFor("/p/main.nv"))
+    runNameCases()
+    runForgedCases()
+}
+
+method runNameCases() {
+    println("== Import 'x' for unknown-name: the packages that declare the name")
+    var world = AcWorld({
+        "/p/project.nv": "project \"p\"\n",
+        "/p/main.nv": "package main\n\nmethod main() {\n    println(helper(1))\n    println(Widget().size)\n    println(nowhere(2))\n}\n",
+        "/p/a/a.nv": "package a\n\nmethod helper(integer x): integer {\n    return x\n}\n",
+        "/p/b/b.nv": "package b\n\nmethod helper(integer x): integer {\n    return x + 1\n}\n\ndefine class Widget {\n    integer size\n}\n"
+    })
+    acShow("helper is declared by two packages, Widget by one, nowhere by none", world.document("/p/main.nv"), world.actionsFor("/p/main.nv"))
+    var files = AcWorld({
+        "/p/project.nv": "project \"p\"\n",
+        "/p/main.nv": "package main\n\nmethod main() {\n    println(tool())\n}\n",
+        "/p/util/tools.nv": "package util\n\nmethod tool(): integer {\n    return 1\n}\n"
+    })
+    acShow("a folder that main.nv does not import", files.document("/p/main.nv"), files.actionsFor("/p/main.nv"))
+}
+
+method runForgedCases() {
+    println("== a diagnostic is a hint from the client: the span, the code and the name are checked")
+    var world = AcWorld({
+        "/p/project.nv": "project \"p\"\n",
+        "/p/main.nv": "package main\n\nmethod main() {\n    println(strings.repeat(\"a\", 2))\n}\n"
+    })
+    var document = world.document("/p/main.nv")
+    var everything = Span(0, document.text.length())
+    var real = world.diagnosticsOf(document)[0]
+    var wrongSpan = Diagnostic(Span(0, 7), Severity.Error, "novus", "module-not-imported", "forged")
+    wrongSpan.data = "strings"
+    var wrongData = Diagnostic(real.span, Severity.Error, "novus", "module-not-imported", "forged")
+    wrongData.data = "json"
+    var outside = Diagnostic(Span(500, 507), Severity.Error, "novus", "module-not-imported", "forged")
+    outside.data = "strings"
+    var notAModule = Diagnostic(Span(real.span.start, real.span.start + 4), Severity.Error, "novus", "module-not-imported", "forged")
+    notAModule.data = "stri"
+    acShow("a span over other text", document, world.actionsWith(document, everything, [wrongSpan]))
+    acShow("data that is not the text", document, world.actionsWith(document, everything, [wrongData]))
+    acShow("a span outside the document", document, world.actionsWith(document, everything, [outside]))
+    acShow("a word that is no std module", document, world.actionsWith(document, everything, [notAModule]))
+    var phrase = Diagnostic(Span(real.span.start, real.span.start + 14), Severity.Warning, "novus", "unknown-name", "forged")
+    acShow("an unknown-name span over 'strings.repeat' is no one word", document, world.actionsWith(document, everything, [phrase]))
+    acShow("the real diagnostic outside the requested range", document, world.actionsWith(document, Span(0, 5), [real]))
+    acShow("the real diagnostic inside it", document, world.actionsWith(document, Span(real.span.start, real.span.start), [real]))
+    var imported = AcWorld({
+        "/p/project.nv": "project \"p\"\n",
+        "/p/main.nv": "import strings\n\nmethod main() {\n    println(strings.repeat(\"a\", 2))\n}\n"
+    })
+    var stale = Diagnostic(Span(46, 53), Severity.Error, "novus", "module-not-imported", "stale")
+    stale.data = "strings"
+    var staleDocument = imported.document("/p/main.nv")
+    acShow("a stale diagnostic for a module that is imported now", staleDocument, imported.actionsWith(staleDocument, Span(0, 100), [stale]))
+    var scratch = Document("untitled:Untitled-1", "novus", 1, "method main() {\n    println(strings.repeat(\"a\", 2))\n}\n")
+    var scratchWorld = AcWorld({})
+    acShow("a scratch buffer has no path to address an edit", scratch, scratchWorld.actionsWith(scratch, Span(0, 80), scratchWorld.own.produce(scratch)))
+}

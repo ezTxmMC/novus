@@ -1,0 +1,180 @@
+package hover
+
+import base/maybe
+import base/text
+import projects/closure
+import semantics/semantic
+import syntax/outline
+
+private final HOVER_FENCE_OPEN = "```novus\n"
+private final HOVER_FENCE_CLOSE = "\n```"
+private final HOVER_SEPARATOR = "\n\n"
+private final HOVER_FOOTER_SEPARATOR = " · "
+private final HOVER_MODIFIER_FINAL = "final"
+private final HOVER_BACKTICK = "`"
+private final HOVER_MAX_INLINE_BYTES = 160
+private final HOVER_ELLIPSIS = "…"
+
+method hoverFence(array<string> lines): string {
+    return HOVER_FENCE_OPEN + lines.join("\n") + HOVER_FENCE_CLOSE
+}
+
+// An inline code span of source text. The delimiter is longer than any backtick run inside the text, so no text can end
+// the span early, and a very long line is cut (at a character boundary) instead of filling the hover.
+method hoverInlineCode(string text): string {
+    var shown = truncateUtf8(text, HOVER_MAX_INLINE_BYTES)
+    if (shown.length() < text.length()) {
+        shown = shown + HOVER_ELLIPSIS
+    }
+    var longest = hoverLongestBacktickRun(shown)
+    var delimiter = hoverBackticks(longest + 1)
+    if (longest == 0) {
+        return delimiter + shown + delimiter
+    }
+    return delimiter + " " + shown + " " + delimiter
+}
+
+method hoverLongestBacktickRun(string text): integer {
+    var longest = 0
+    var i = 0
+    while (i < text.length()) {
+        var run = hoverBacktickRunAt(text, i)
+        if (run > longest) {
+            longest = run
+        }
+        i = i + run + 1
+    }
+    return longest
+}
+
+method hoverBacktickRunAt(string text, integer start): integer {
+    var end = start
+    while (end < text.length() && text.charAt(end) == HOVER_BACKTICK) {
+        end = end + 1
+    }
+    return end - start
+}
+
+method hoverBackticks(integer count): string {
+    var fence = ""
+    var i = 0
+    while (i < count) {
+        fence = fence + HOVER_BACKTICK
+        i = i + 1
+    }
+    return fence
+}
+
+// The word that tells what kind of declaration a hover is about, in front of its signature.
+method hoverKindWord(Decl decl): string {
+    if (decl.kind == DeclKind.Constructor) {
+        return "constructor"
+    }
+    if (decl.isCallable() && decl.container != "") {
+        return "method"
+    }
+    if (decl.isCallable()) {
+        return "function"
+    }
+    if (decl.kind == DeclKind.Field) {
+        return "field"
+    }
+    if (decl.kind == DeclKind.EnumConstant) {
+        return "enum member"
+    }
+    if (decl.hasModifier(HOVER_MODIFIER_FINAL)) {
+        return "constant"
+    }
+    return "variable"
+}
+
+// One line of the code block for a declaration: types read as their `define` line, everything else as
+// `(kind) owner.name(parameters): type`.
+method hoverSignatureLine(Symbol symbol): string {
+    var decl = symbol.decl
+    if (decl.isType()) {
+        return decl.signatureText()
+    }
+    if (decl.kind == DeclKind.Constructor) {
+        return "(constructor) " + symbol.container + "(" + decl.paramsText() + ")"
+    }
+    var word = hoverKindWord(decl)
+    if (symbol.isMember() && decl.isCallable() == false && decl.kind != DeclKind.Field && decl.kind != DeclKind.EnumConstant) {
+        word = "member"
+    }
+    return "(" + word + ") " + symbol.describe()
+}
+
+// Where a declaration lives: its package or module and its file, for the footer of a hover.
+method hoverOriginText(Symbol symbol): string {
+    var file = symbol.file
+    if (isNone(file)) {
+        return ""
+    }
+    var parts = []
+    if (file.origin == FileOrigin.Standard) {
+        parts.append("std module `" + file.moduleName + "`")
+        return parts.join(HOVER_FOOTER_SEPARATOR)
+    }
+    if (file.origin == FileOrigin.Dependency) {
+        parts.append("dependency `" + file.moduleName + "`")
+    }
+    if (file.qualifier != "") {
+        parts.append("package `" + file.qualifier + "`")
+    }
+    var name = hoverBaseName(file.filePath)
+    if (name != "") {
+        parts.append(name)
+    }
+    return parts.join(HOVER_FOOTER_SEPARATOR)
+}
+
+method hoverBaseName(string filePath): string {
+    var cut = filePath.length()
+    while (cut > 0 && filePath.charAt(cut - 1) != "/") {
+        cut = cut - 1
+    }
+    return filePath.substring(cut, filePath.length())
+}
+
+// The markdown of a hover on resolved declarations: the signatures, a deprecation notice, the documentation and the
+// origin. Overloads of one function are listed together.
+define class HoverSymbolText {
+    construct() {
+    }
+
+    method render(array<Symbol> symbols): string {
+        var lines = []
+        var docs = []
+        var deprecated = false
+        for (symbol in symbols) {
+            lines.append(hoverSignatureLine(symbol))
+            if (symbol.decl.doc != "" && docs.contains(symbol.decl.doc) == false) {
+                docs.append(symbol.decl.doc)
+            }
+            deprecated = deprecated || symbol.decl.isDeprecated()
+        }
+        var parts = [hoverFence(lines)]
+        if (deprecated) {
+            parts.append("**Deprecated**")
+        }
+        if (docs.length() > 0) {
+            parts.append(docs.join(HOVER_SEPARATOR))
+        }
+        var origin = hoverOriginText(symbols[0])
+        if (origin != "") {
+            parts.append("*" + origin + "*")
+        }
+        return parts.join(HOVER_SEPARATOR)
+    }
+
+    // Candidates of several packages: the call has to be written qualified.
+    method ambiguous(array<Symbol> symbols): string {
+        var lines = ["**Ambiguous**: defined in more than one package"]
+        for (symbol in symbols) {
+            lines.append("- `" + symbol.describe() + "` (" + hoverOriginText(symbol) + ")")
+        }
+        lines.append("Write the call qualified, for example `" + symbols[0].qualifier + "." + symbols[0].name() + "(...)`.")
+        return lines.join("\n")
+    }
+}

@@ -1,0 +1,92 @@
+package main
+
+import @support
+
+private final CX_MAIN = "/p/main.nv"
+
+method runMemberCases() {
+    println("#### member")
+    var world = CxWorld(cxProject())
+    cxShow("members of a class value", world, CX_MAIN, "package main\n\nimport geo\n\nmethod main() {\n    var shape = Shape(\"a\", 1.0)\n    shape.<|>\n}\n", 8)
+    cxShow("members with a prefix and a call chain", world, CX_MAIN, "package main\n\nimport geo\n\nmethod main() {\n    var shape = Shape(\"a\", 1.0)\n    shape.name.sub<|>\n}\n", 8)
+    cxShow("members of this", world, CX_MAIN, "package main\n\ndefine class A {\n    integer count\n    method inc(): integer {\n        return this.<|>\n    }\n}\n", 8)
+    cxShow("members of a parameter typed by a class", world, CX_MAIN, "package main\n\nimport geo\n\nmethod f(Shape shape) {\n    shape.ar<|>\n}\n", 8)
+    cxShow("functions of a package", world, CX_MAIN, "package main\n\nimport geo\n\nmethod main() {\n    geo.<|>\n}\n", 8)
+    cxShow("members of a std module that is imported", world, CX_MAIN, "package main\n\nimport strings\n\nmethod main() {\n    strings.pad<|>\n}\n", 8)
+    cxShow("members of a std module that is not imported", world, CX_MAIN, "package main\n\nimport geo\n\nmethod main() {\n    strings.pad<|>\n}\n", 8)
+    cxShow("constants of an enum", world, CX_MAIN, "package main\n\nimport geo\n\nmethod main() {\n    var c = Color.<|>\n}\n", 8)
+    cxShow("a class name has no instance members", world, CX_MAIN, "package main\n\nimport geo\n\nmethod main() {\n    var c = Shape.<|>\n}\n", 8)
+    cxShow("members of a string", world, CX_MAIN, "package main\n\nmethod f(string text) {\n    text.<|>\n}\n", 3)
+    cxShow("string method result", world, CX_MAIN, "package main\n\nmethod f(string text) {\n    text.trim().sta<|>\n}\n", 8)
+    cxShow("members of an array element", world, CX_MAIN, "package main\n\nmethod f(array<string> items) {\n    items[0].tri<|>\n}\n", 8)
+    cxShow("members of an array", world, CX_MAIN, "package main\n\nmethod f(array<string> items) {\n    items.ap<|>\n}\n", 8)
+    cxShow("members of a map", world, CX_MAIN, "package main\n\nmethod f(map<string, integer> table) {\n    table.ha<|>\n}\n", 8)
+    cxShow("unknown type offers every member", world, CX_MAIN, "package main\n\nimport geo\n\nmethod f(object value) {\n    value.nam<|>\n}\n", 8)
+    cxShow("nothing before the dot", world, CX_MAIN, "package main\n\nmethod f() {\n    .<|>\n}\n", 3)
+    cxShow("member inside an interpolation", world, CX_MAIN, "package main\n\nmethod f(string text) {\n    var s = \"" + "$" + "{text.up<|>}\"\n}\n", 8)
+}
+
+method runDeclarationStartCases() {
+    println("#### classMember and topLevel")
+    var world = CxWorld(cxProject())
+    cxShow("class member at the start", world, CX_MAIN, "package main\n\ndefine class A {\n    cons<|>\n}\n", 12)
+    cxShow("class member after a field", world, CX_MAIN, "package main\n\ndefine class A {\n    integer x\n    str<|>\n}\n", 12)
+    cxShow("class member after a modifier", world, CX_MAIN, "package main\n\ndefine class A {\n    private fin<|>\n}\n", 12)
+    cxShow("class member in an enum", world, CX_MAIN, "package main\n\ndefine enum Level { Low, High;\n    abs<|>\n}\n", 12)
+    cxShow("class member field type", world, CX_MAIN, "package main\n\ndefine class A {\n    flo<|>\n}\n", 12)
+    cxShow("a field name is nothing", world, CX_MAIN, "package main\n\ndefine class A {\n    integer <|>\n}\n", 12)
+    cxShow("top level at the start", world, CX_MAIN, "package main\n\nmet<|>\n", 12)
+    cxShow("top level after a method", world, CX_MAIN, "package main\n\nmethod f() {\n}\n\ndef<|>\n", 12)
+    cxShow("top level on an empty file", world, CX_MAIN, "<|>", 12)
+    cxShow("top level after a modifier", world, CX_MAIN, "package main\n\nprivate fin<|>\n", 12)
+    cxShow("a name after method is nothing", world, CX_MAIN, "package main\n\nmethod <|>\n", 12)
+}
+
+method runStatementCases() {
+    println("#### statement and expression")
+    var world = CxWorld(cxProject())
+    cxShow("statement after the brace of a body", world, CX_MAIN, "package main\n\nmethod f(integer count) {\n    cou<|>\n}\n", 6)
+    cxShow("statement keyword and snippet", world, CX_MAIN, "package main\n\nmethod f(integer count) {\n    ret<|>\n}\n", 6)
+    cxShow("statement after a block", world, CX_MAIN, "package main\n\nmethod f(integer count) {\n    if (count > 1) {\n    }\n    whi<|>\n}\n", 6)
+    cxShow("statement after an expression on the line above", world, CX_MAIN, "package main\n\nmethod f(integer count) {\n    var a = count\n    cou<|>\n}\n", 6)
+    cxShow("statement inside a block", world, CX_MAIN, "package main\n\nmethod f(integer count) {\n    while (count > 1) {\n        bre<|>\n    }\n}\n", 6)
+    cxShow("statement offers classes and builtins", world, CX_MAIN, "package main\n\nimport geo\n\nmethod f() {\n    Sha<|>\n}\n", 6)
+    cxShow("statement offers the free builtins", world, CX_MAIN, "package main\n\nmethod f() {\n    parse<|>\n}\n", 6)
+    cxShow("statement offers an unimported package class", world, CX_MAIN, "package main\n\nmethod f() {\n    Thin<|>\n}\n", 6)
+    cxShow("expression after the equals sign", world, CX_MAIN, "package main\n\nmethod f(integer count) {\n    var total = cou<|>\n}\n", 6)
+    cxShow("expression does not offer the variable being declared", world, CX_MAIN, "package main\n\nmethod f(integer count) {\n    var total = tot<|>\n}\n", 6)
+    cxShow("expression in call arguments", world, CX_MAIN, "package main\n\nmethod f(integer count) {\n    println(1, cou<|>)\n}\n", 6)
+    cxShow("expression after return", world, CX_MAIN, "package main\n\nmethod f(integer count): integer {\n    return cou<|>\n}\n", 6)
+    cxShow("expression after an operator", world, CX_MAIN, "package main\n\nmethod f(integer count): integer {\n    return 1 + cou<|>\n}\n", 6)
+    cxShow("expression in a map literal", world, CX_MAIN, "package main\n\nmethod f(integer count) {\n    var m = {\"a\": cou<|>}\n}\n", 6)
+    cxShow("expression after a colon of a map", world, CX_MAIN, "package main\n\nmethod f(integer count) {\n    var m = {cou<|>}\n}\n", 6)
+    cxShow("expression in a global initialiser", world, CX_MAIN, "package main\n\nprivate final LIMIT = 10\nprivate final DOUBLE = LIM<|>\n", 6)
+    cxShow("expression offers the constants of an enum once something is typed", world, CX_MAIN, "package main\n\nimport geo\n\nmethod f() {\n    var c = Gre<|>\n}\n", 6)
+    cxShow("expression offers the enum itself, not its constants, for another prefix", world, CX_MAIN, "package main\n\nimport geo\n\nmethod f() {\n    var c = Col<|>\n}\n", 6)
+    cxShow("expression after a word that takes an operand", world, CX_MAIN, "package main\n\nmethod f() {\n    var t = await cou<|>\n}\n", 6)
+    cxShow("expression with the keyword true", world, CX_MAIN, "package main\n\nmethod f() {\n    var t = tr<|>\n}\n", 6)
+    cxShow("an operand on the same line gives nothing", world, CX_MAIN, "package main\n\nmethod f(integer a) {\n    var b = a <|>\n}\n", 6)
+    cxShow("after the loop variable", world, CX_MAIN, "package main\n\nmethod f(array<string> items) {\n    for (item in items) {\n        ite<|>\n    }\n}\n", 6)
+    cxShow("after var is a name", world, CX_MAIN, "package main\n\nmethod f() {\n    var cou<|>\n}\n", 6)
+}
+
+method runOddInputCases() {
+    println("#### odd inputs")
+    var world = CxWorld(cxProject())
+    cxShowContext("unterminated import string", world, CX_MAIN, "package main\n\nimport \"ex.com/li<|>")
+    cxShowContext("unterminated string elsewhere", world, CX_MAIN, "package main\n\nmethod f() {\n    var s = \"abc<|>")
+    cxShowContext("unterminated block comment", world, CX_MAIN, "package main\n\n/* open <|>")
+    cxShowContext("crlf line endings", world, CX_MAIN, "package main\r\n\r\nmethod f(integer count) {\r\n    cou<|>\r\n}\r\n")
+    cxShowContext("nested calls", world, CX_MAIN, "package main\n\nmethod f(integer count) {\n    println(max(min(<|>")
+    cxShowContext("index brackets", world, CX_MAIN, "package main\n\nmethod f(array<integer> items) {\n    var a = items[<|>")
+    cxShowContext("after a multi-byte string", world, CX_MAIN, "package main\n\nmethod f(integer count) {\n    var s = \"é😀\"\n    cou<|>\n}\n")
+    cxShowContext("an unknown byte before the cursor", world, CX_MAIN, "package main\n\nmethod f(integer count) {\n    var a = # cou<|>\n}\n")
+    cxShowContext("a method that is never closed", world, CX_MAIN, "package main\n\nmethod f(integer count) {\n    if (count > 1) {\n        cou<|>")
+    cxShowContext("an empty file", world, CX_MAIN, "<|>")
+    cxShowContext("only a prefix", world, CX_MAIN, "pa<|>")
+    cxShowContext("inside a prefix", world, CX_MAIN, "package main\n\nmethod f(integer count) {\n    co<|>unt\n}\n")
+    cxShowContext("right before an identifier", world, CX_MAIN, "package main\n\nmethod f(integer count) {\n    <|>count\n}\n")
+    cxShowContext("a keyword is a prefix too", world, CX_MAIN, "package main\n\nmethod f(integer count) {\n    ret<|>\n}\n")
+    cxShowContext("a float literal before the dot", world, CX_MAIN, "package main\n\nmethod f() {\n    var a = 1.5.<|>\n}\n")
+    cxShowContext("two dots", world, CX_MAIN, "package main\n\nmethod f(string s) {\n    s..<|>\n}\n")
+}

@@ -1,0 +1,2 @@
+project "sem"
+main "main.nv"

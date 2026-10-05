@@ -1,0 +1,53 @@
+package main
+
+import @support
+
+method dependencyFiles(): map<string, string> {
+    return {
+        "/p/project.nv": "project \"p\"\nrequire \"g.example/geo\" \"v1\"\nrequire \"g.example/gone\" \"v1\"\nrequire \"g.example/loc\"\nreplace \"g.example/loc\" \"../loc\"\nrequire \"g.example/lost\"\nreplace \"g.example/lost\" \"../lost\"\n",
+        "/p/main.nv": "package main\nimport \"g.example/geo\"\nimport \"g.example/geo/shapes\"\nimport \"g.example/geo/util\"\nimport \"g.example/geo/nothing\"\nimport \"g.example/gone\"\nimport \"g.example/loc\"\nimport \"g.example/lost\"\nimport \"g.example/inner\"\nimport \"g.example/stranger\"\n",
+        "/cache/g.example/geo@v1/project.nv": "project \"g.example/geo\"\nrequire \"g.example/inner\" \"v2\"\n",
+        "/cache/g.example/geo@v1/main.nv": "package geo\nimport shapes\nimport @util\n",
+        "/cache/g.example/geo@v1/shapes/s.nv": "package shapes\nimport strings\n",
+        "/cache/g.example/geo@v1/util.nv": "package main\n",
+        "/cache/g.example/geo@v1/internal/i.nv": "package internal\n",
+        "/cache/g.example/inner@v2/project.nv": "project \"g.example/inner\"\nlib \"src/entry.nv\"\n",
+        "/cache/g.example/inner@v2/src/entry.nv": "package src\nimport @helper\n",
+        "/cache/g.example/inner@v2/helper.nv": "package helper\n",
+        "/loc/lib.nv": "package loc\nimport sub\n",
+        "/loc/sub/x.nv": "package sub\n"
+    }
+}
+
+method runDependencyCases() {
+    var world = TestWorld(dependencyFiles(), "/p/main.nv", [])
+    showClosure("dependencies: entry, package, file, transitive, replace, statuses", world)
+    println("  not ready: " + moduleStatuses(world.modules.notReady()))
+    for (file in world.closure.files) {
+        if (file.origin == FileOrigin.Dependency) {
+            println("  " + file.filePath + " moduleName=" + file.moduleName)
+        }
+    }
+}
+
+method trailingSlashFiles(): map<string, string> {
+    return {
+        "/p/project.nv": "project \"p\"\nrequire \"ex.com/lib\" \"v1\"\n",
+        "/p/main.nv": "package main\nimport \"ex.com/lib/\"\n",
+        "/cache/ex.com/lib@v1/main.nv": "package lib\n",
+        "/cache/ex.com/lib@v1/other.nv": "package lib\n"
+    }
+}
+
+// novusc treats `module/` as the module root folder: every source file of it, not just the entry file.
+method runTrailingSlashCases() {
+    showClosure("a module import with a trailing slash loads the whole module root", TestWorld(trailingSlashFiles(), "/p/main.nv", []))
+}
+
+method moduleStatuses(array<ModuleEntry> entries): array<string> {
+    var found = []
+    for (entry in entries) {
+        found.append(entry.module + ":" + entry.status)
+    }
+    return found
+}

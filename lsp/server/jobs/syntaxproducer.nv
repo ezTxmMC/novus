@@ -1,0 +1,44 @@
+package jobs
+
+import base/model
+import base/text
+import server/session
+
+private final JOBS_SYNTAX_SOURCE = "novus"
+
+// Maps SourceFile.issues to diagnostics of source "novus"; adds no checks of its own (5.9).
+// var locals only: jobs does not depend on outline, so no SourceFile or SyntaxIssue is named here.
+define class SyntaxIssueProducer based DiagnosticProducer {
+    Session session
+
+    construct(Session session) {
+        this.session = session
+    }
+
+    method produce(Document document): array<Diagnostic> {
+        var diagnostics = []
+        if (this.session.settings.ownDiagnostics == false) {
+            return diagnostics
+        }
+        var context = this.session.workspace.contextFor(document)
+        if (isNone(context)) {
+            return diagnostics
+        }
+        for (issue in context.syntax.issues) {
+            diagnostics.push(jobsDiagnosticOfIssue(issue))
+        }
+        return diagnostics
+    }
+}
+
+// Hint when the issue says so, else Warning when it is one, else Error (V40).
+method jobsDiagnosticOfIssue(object issue): Diagnostic {
+    var severity = Severity.Error
+    if (issue.warning) {
+        severity = Severity.Warning
+    }
+    if (issue.isHint()) {
+        severity = Severity.Hint
+    }
+    return Diagnostic(issue.span, severity, JOBS_SYNTAX_SOURCE, issue.code, issue.message)
+}

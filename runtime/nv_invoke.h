@@ -59,6 +59,125 @@ static NvMember *nv_resolve_member(NvClass *c, const char *name, int arity) {
     return e;
 }
 
+/* The methods of a string. A string method is the most frequent dynamic call
+ * of a program that scans text, so the list is searched by first letter
+ * before any name is compared: the general chain below would spend a strcmp on
+ * every name ahead of it. */
+static nv nv_str_char_at(nv t, long long i) {
+    if (i < 0 || i >= t->slen) {
+        nv_error("charAt index %lld out of bounds (length %d)", i, t->slen);
+    }
+    return nv_strn(t->s + i, 1);
+}
+
+static nv nv_str_unknown_method(nv t, const char *name) {
+    nv_error("unknown method '%s()' on '%s'", name, nv_type_name(t));
+    return nv_nil;
+}
+
+static nv nv_str_m_length(nv t, nv *args, int n) {
+    (void)args;
+    (void)n;
+    return nv_int(t->slen);
+}
+
+static nv nv_str_m_char_at(nv t, nv *args, int n) {
+    return nv_str_char_at(t, n > 0 ? nv_as_int(args[0]) : 0);
+}
+
+static nv nv_str_m_contains(nv t, nv *args, int n) {
+    return nv_bool(n > 0 && nv_str_index_of(t, args[0], 0) >= 0);
+}
+
+static nv nv_str_m_substring(nv t, nv *args, int n) {
+    long long start = n > 0 ? nv_as_int(args[0]) : 0;
+    long long end = n > 1 ? nv_as_int(args[1]) : t->slen;
+    return nv_substr(t, start, end);
+}
+
+static nv nv_str_m_starts_with(nv t, nv *args, int n) {
+    size_t prefixLen = 0;
+    const char *prefix = "";
+    if (n > 0) {
+        prefix = nv_arg_text(args[0], &prefixLen);
+    }
+    return nv_bool(prefixLen <= (size_t)t->slen && memcmp(t->s, prefix, prefixLen) == 0);
+}
+
+static nv nv_str_m_ends_with(nv t, nv *args, int n) {
+    size_t suffixLen = 0;
+    const char *suffix = "";
+    if (n > 0) {
+        suffix = nv_arg_text(args[0], &suffixLen);
+    }
+    return nv_bool(suffixLen <= (size_t)t->slen && memcmp(t->s + t->slen - suffixLen, suffix, suffixLen) == 0);
+}
+
+static nv nv_str_m_split(nv t, nv *args, int n) {
+    return nv_str_split(t, n > 0 ? args[0] : nv_str(""));
+}
+
+static nv nv_str_m_index_of(nv t, nv *args, int n) {
+    return nv_int(n > 0 ? nv_str_index_of(t, args[0], n > 1 ? nv_as_int(args[1]) : 0) : -1);
+}
+
+static nv nv_str_m_replace(nv t, nv *args, int n) {
+    if (n != 2) {
+        return nv_str_unknown_method(t, "replace");
+    }
+    return nv_str_replace(t, args[0], args[1]);
+}
+
+static nv nv_str_m_trim(nv t, nv *args, int n) {
+    (void)args;
+    (void)n;
+    return nv_str_trim(t);
+}
+
+static nv nv_str_m_to_upper(nv t, nv *args, int n) {
+    (void)args;
+    (void)n;
+    return nv_str_case(t, 1);
+}
+
+static nv nv_str_m_to_lower(nv t, nv *args, int n) {
+    (void)args;
+    (void)n;
+    return nv_str_case(t, 0);
+}
+
+typedef nv (*NvStrMethod)(nv t, nv *args, int n);
+
+typedef struct NvStrEntry {
+    const char *name;
+    NvStrMethod fn;
+} NvStrEntry;
+
+static const NvStrEntry nv_str_methods[] = {
+    {"length", nv_str_m_length},
+    {"charAt", nv_str_m_char_at},
+    {"contains", nv_str_m_contains},
+    {"substring", nv_str_m_substring},
+    {"startsWith", nv_str_m_starts_with},
+    {"split", nv_str_m_split},
+    {"indexOf", nv_str_m_index_of},
+    {"endsWith", nv_str_m_ends_with},
+    {"replace", nv_str_m_replace},
+    {"trim", nv_str_m_trim},
+    {"toUpper", nv_str_m_to_upper},
+    {"toLower", nv_str_m_to_lower},
+};
+
+static nv nv_str_invoke(nv t, const char *name, nv *args, int n) {
+    size_t i;
+    for (i = 0; i < sizeof(nv_str_methods) / sizeof(nv_str_methods[0]); i++) {
+        if (nv_str_methods[i].name[0] == name[0] && strcmp(nv_str_methods[i].name, name) == 0) {
+            return nv_str_methods[i].fn(t, args, n);
+        }
+    }
+    return nv_str_unknown_method(t, name);
+}
+
 static nv nv_invoke_args(nv t, const char *name, nv *args, int n) {
     if (nv_type_of(t) == NV_OBJ) {
         NvMember *e = nv_resolve_member(t->o->cls, name, n);
@@ -73,6 +192,9 @@ static nv nv_invoke_args(nv t, const char *name, nv *args, int n) {
             return nv_nil;                         /* setter */
         }
         nv_error("unknown member '%s' on %s", name, t->o->cls->name);
+    }
+    if (nv_type_of(t) == NV_STR) {
+        return nv_str_invoke(t, name, args, n);
     }
     if (strcmp(name, "length") == 0) {
         if (nv_type_of(t) == NV_ARR) {
@@ -149,7 +271,7 @@ static nv nv_invoke_args(nv t, const char *name, nv *args, int n) {
             nv_map_order(t->m);
             out->a = nv_arr_new_cap(t->m->len);
             for (i = 0; i < t->m->len; i++) {
-                nv_arr_push(out->a, nv_map_key_view(t->m->items[i].key));
+                nv_arr_push(out->a, nv_map_key_view(nv_map_nth(t->m, i)->key));
             }
             return out;
         }
@@ -159,7 +281,7 @@ static nv nv_invoke_args(nv t, const char *name, nv *args, int n) {
             nv_map_order(t->m);
             out->a = nv_arr_new_cap(t->m->len);
             for (i = 0; i < t->m->len; i++) {
-                nv_arr_push(out->a, t->m->items[i].val);
+                nv_arr_push(out->a, nv_map_nth(t->m, i)->val);
             }
             return out;
         }
@@ -172,51 +294,6 @@ static nv nv_invoke_args(nv t, const char *name, nv *args, int n) {
         if (strcmp(name, "get") == 0 && n == 2) {
             nv v = nv_map_get(t->m, nv_display(args[0]));
             return v ? v : args[1];
-        }
-    }
-    if (nv_type_of(t) == NV_STR) {
-        if (strcmp(name, "charAt") == 0) {
-            long long i = n > 0 ? nv_as_int(args[0]) : 0;
-            if (i < 0 || i >= t->slen) {
-                nv_error("charAt index %lld out of bounds (length %d)", i, t->slen);
-            }
-            return nv_strn(t->s + i, 1);
-        }
-        if (strcmp(name, "substring") == 0) {
-            long long start = n > 0 ? nv_as_int(args[0]) : 0;
-            long long end = n > 1 ? nv_as_int(args[1]) : t->slen;
-            return nv_substr(t, start, end);
-        }
-        if (strcmp(name, "indexOf") == 0) {
-            return nv_int(n > 0 ? nv_str_index_of(t, args[0], n > 1 ? nv_as_int(args[1]) : 0) : -1);
-        }
-        if (strcmp(name, "contains") == 0) {
-            return nv_bool(n > 0 && nv_str_index_of(t, args[0], 0) >= 0);
-        }
-        if (strcmp(name, "startsWith") == 0) {
-            const char *p = n > 0 ? nv_display(args[0]) : "";
-            size_t pl = strlen(p);
-            return nv_bool(pl <= (size_t)t->slen && memcmp(t->s, p, pl) == 0);
-        }
-        if (strcmp(name, "endsWith") == 0) {
-            const char *p = n > 0 ? nv_display(args[0]) : "";
-            size_t pl = strlen(p);
-            return nv_bool(pl <= (size_t)t->slen && memcmp(t->s + t->slen - pl, p, pl) == 0);
-        }
-        if (strcmp(name, "split") == 0) {
-            return nv_str_split(t, n > 0 ? args[0] : nv_str(""));
-        }
-        if (strcmp(name, "replace") == 0 && n == 2) {
-            return nv_str_replace(t, args[0], args[1]);
-        }
-        if (strcmp(name, "trim") == 0) {
-            return nv_str_trim(t);
-        }
-        if (strcmp(name, "toUpper") == 0) {
-            return nv_str_case(t, 1);
-        }
-        if (strcmp(name, "toLower") == 0) {
-            return nv_str_case(t, 0);
         }
     }
     nv_error("unknown method '%s()' on '%s'", name, nv_type_name(t));
@@ -238,12 +315,18 @@ static inline nv nv_invoke0(nv t, const char *name) {
  * stack array directly. `nv_invoke` stays for the variadic cases. */
 static inline nv nv_invoke1(nv t, const char *name, nv a) {
     nv args[1];
+    if (nv_is_ptr(t) && t->type == NV_STR && strcmp(name, "charAt") == 0) {
+        return nv_str_char_at(t, nv_as_int(a));
+    }
     args[0] = a;
     return nv_invoke_args(t, name, args, 1);
 }
 
 static inline nv nv_invoke2(nv t, const char *name, nv a, nv b) {
     nv args[2];
+    if (nv_is_ptr(t) && t->type == NV_STR && strcmp(name, "substring") == 0) {
+        return nv_substr(t, nv_as_int(a), nv_as_int(b));
+    }
     args[0] = a;
     args[1] = b;
     return nv_invoke_args(t, name, args, 2);
@@ -255,6 +338,84 @@ static inline nv nv_invoke3(nv t, const char *name, nv a, nv b, nv c) {
     args[1] = b;
     args[2] = c;
     return nv_invoke_args(t, name, args, 3);
+}
+
+/* ------------------------------------------------------------------ */
+/* Inline caches                                                       */
+/* ------------------------------------------------------------------ */
+
+/* Every `target.name(args)` call site of a program has one cache of its own
+ * (the generated code declares nv_ics[], one per site, per thread): the
+ * class the site saw last and what the name resolved to there - a field slot
+ * or a method. A site that keeps seeing the same class - almost all of
+ * them - then needs one compare instead of a lookup in nv_mcache, which is
+ * shared by every site and thrashes when a few hot names collide. A miss
+ * resolves like nv_invoke_args does and refills the cache, so what happens
+ * is the same either way; the cache only remembers where the member is. */
+typedef struct NvIc {
+    NvClass *cls;
+    int slot;          /* >= 0: field slot, -1: method */
+    signed char kind;  /* nv_type_kind of ftype */
+    const char *ftype;
+    NvMethodFn fn;
+} NvIc;
+
+/* Fills `ic` for the object `t`; 0 when its class has no such member. */
+static NV_NOINLINE int nv_ic_fill(NvIc *ic, nv t, const char *name, int n) {
+    NvMember *e = nv_resolve_member(t->o->cls, name, n);
+    if (!e) {
+        return 0;
+    }
+    ic->cls = t->o->cls;
+    ic->slot = e->slot;
+    ic->kind = e->kind;
+    ic->ftype = e->ftype;
+    ic->fn = e->fn;
+    return 1;
+}
+
+static inline int nv_is_object(nv t) { return nv_is_ptr(t) && t->type == NV_OBJ; }
+
+static inline nv nv_ic0(NvIc *ic, nv t, const char *name) {
+    if (nv_is_object(t) && (ic->cls == t->o->cls || nv_ic_fill(ic, t, name, 0))) {
+        return ic->slot >= 0 ? nv_fields(t->o)[ic->slot] : ic->fn(t, 0, 0);
+    }
+    return nv_invoke_args(t, name, 0, 0);
+}
+
+/* The one argument form: a setter of a field or a method of one parameter. */
+static inline nv nv_ic1(NvIc *ic, nv t, const char *name, nv a) {
+    nv args[1];
+    if (nv_is_object(t) && (ic->cls == t->o->cls || nv_ic_fill(ic, t, name, 1))) {
+        if (ic->slot >= 0) {
+            nv_fields(t->o)[ic->slot] = nv_coerce_kind(a, ic->kind, ic->ftype);
+            return nv_nil;
+        }
+        args[0] = a;
+        return ic->fn(t, args, 1);
+    }
+    return nv_invoke1(t, name, a);
+}
+
+static nv nv_ic2(NvIc *ic, nv t, const char *name, nv a, nv b) {
+    nv args[2];
+    if (nv_is_object(t) && (ic->cls == t->o->cls || nv_ic_fill(ic, t, name, 2)) && ic->slot < 0) {
+        args[0] = a;
+        args[1] = b;
+        return ic->fn(t, args, 2);
+    }
+    return nv_invoke2(t, name, a, b);
+}
+
+static nv nv_ic3(NvIc *ic, nv t, const char *name, nv a, nv b, nv c) {
+    nv args[3];
+    if (nv_is_object(t) && (ic->cls == t->o->cls || nv_ic_fill(ic, t, name, 3)) && ic->slot < 0) {
+        args[0] = a;
+        args[1] = b;
+        args[2] = c;
+        return ic->fn(t, args, 3);
+    }
+    return nv_invoke3(t, name, a, b, c);
 }
 
 /* `x.length()` and `x.has(k)` are, after append, the most frequent dynamic
@@ -344,7 +505,7 @@ static NvArr *nv_iter(nv v) {
         nv_map_order(v->m);
         out = nv_arr_with_capacity(v->m->len);
         for (i = 0; i < v->m->len; i++) {
-            nv_arr_push(out, nv_map_key_view(v->m->items[i].key));
+            nv_arr_push(out, nv_map_key_view(nv_map_nth(v->m, i)->key));
         }
         return out;
     }
@@ -365,6 +526,7 @@ static nv nv_try_run(nv task) {
     jmp_buf here;
     jmp_buf *outer = nv_trap;
     nv volatile result = nv_nil;
+    int visiting = nv_visit_depth;
     nv_trap_failed = 0;
     nv_trap = &here;
     if (setjmp(here) == 0) {
@@ -372,6 +534,7 @@ static nv nv_try_run(nv task) {
         nv_trap_failed = 0;
     } else {
         nv_trap_failed = 1;
+        nv_visit_depth = visiting; /* the traversal that failed never left its containers */
         result = nv_nil;
     }
     nv_trap = outer;

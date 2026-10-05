@@ -1,0 +1,79 @@
+package checker
+
+import base/maybe
+import base/platform
+
+// `novusc check` output: `ok: <file>` or `error: <file>:<line>[:<column>]: <message>`; the position-less forms are
+// `error: <file>: <message>` and `error: <message>`. Every other line (progress text, warnings) is ignored.
+private final CHECKER_ERROR_PREFIX = "error: "
+private final CHECKER_SOURCE_EXTENSIONS = [".nv", ".nvh"]
+private final CHECKER_FILE_SEPARATOR = ": "
+private final CHECKER_NOT_IN_PATH = [" ", "'", "\""]
+
+method parseCheckOutput(string output, string workDir, string realRoot): array<CheckFinding> {
+    var findings = []
+    var mapper = CheckerPathMapper(workDir, realRoot)
+    for (rawLine in output.split("\n")) {
+        var finding = checkerFindingOf(rawLine.trim(), mapper)
+        if (isSome(finding)) {
+            findings.append(finding)
+        }
+    }
+    return findings
+}
+
+// Position-less findings belong to the entry file of the run.
+method checkerAnchorFindings(array<CheckFinding> findings, string entryFile) {
+    for (finding in findings) {
+        if (finding.filePath == "") {
+            finding.filePath = entryFile
+        }
+    }
+}
+
+method checkerFindingOf(string line, CheckerPathMapper mapper): CheckFinding {
+    if (line.startsWith(CHECKER_ERROR_PREFIX) == false) {
+        return nothing()
+    }
+    var rest = line.substring(CHECKER_ERROR_PREFIX.length(), line.length())
+    var located = checkerSplitLocation(rest)
+    if (isSome(located)) {
+        return CheckFinding(mapper.map(located.filePath), located.line, located.message, true)
+    }
+    var named = checkerSplitFileOnly(rest)
+    if (isSome(named)) {
+        return CheckFinding(mapper.map(named.filePath), 0, named.message, false)
+    }
+    return CheckFinding("", 0, rest, false)
+}
+
+// `<file>.nv: <message>`: a source file without a line (import and package errors).
+method checkerSplitFileOnly(string rest): CheckerLocation {
+    var separator = rest.indexOf(CHECKER_FILE_SEPARATOR)
+    if (separator <= 0) {
+        return nothing()
+    }
+    var candidate = rest.substring(0, separator)
+    if (checkerLooksLikePath(candidate) == false) {
+        return nothing()
+    }
+    for (extension in CHECKER_SOURCE_EXTENSIONS) {
+        if (candidate.endsWith(extension)) {
+            return CheckerLocation(candidate, 0, rest.substring(separator + CHECKER_FILE_SEPARATOR.length(), rest.length()))
+        }
+    }
+    return nothing()
+}
+
+// A relative file name holds no space and no quote; a message that merely mentions a file does. An absolute path may hold both.
+method checkerLooksLikePath(string candidate): bool {
+    if (checkerIsAbsolute(candidate)) {
+        return true
+    }
+    for (forbidden in CHECKER_NOT_IN_PATH) {
+        if (candidate.contains(forbidden)) {
+            return false
+        }
+    }
+    return true
+}

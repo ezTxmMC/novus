@@ -1,0 +1,92 @@
+package text
+
+import bytes
+
+// Line start table over one text; all columns here are BYTE columns.
+private final TEXT_LINE_FEED = "\n"
+private final TEXT_CARRIAGE_RETURN = "\r"
+
+// A lone \r is not a line break (the compiler does not treat it as one either).
+// bytes.indexOf is used because String.indexOf stops at a NUL byte and would drop every line after it.
+method textLineStarts(string source): array<integer> {
+    var starts = [0]
+    var found = bytes.indexOf(source, TEXT_LINE_FEED, 0)
+    while (found >= 0) {
+        starts.append(found + 1)
+        found = bytes.indexOf(source, TEXT_LINE_FEED, found + 1)
+    }
+    return starts
+}
+
+define class LineIndex {
+    string text
+    array<integer> starts
+
+    construct(string text) {
+        this.text = text
+        this.starts = textLineStarts(text)
+    }
+
+    method lineCount(): integer {
+        return this.starts.length()
+    }
+
+    method clampLine(integer line): integer {
+        if (line < 0) {
+            return 0
+        }
+        if (line >= this.starts.length()) {
+            return this.starts.length() - 1
+        }
+        return line
+    }
+
+    method lineStart(integer line): integer {
+        return this.starts[this.clampLine(line)]
+    }
+
+    // Excludes the \n and a \r in front of it.
+    method lineEnd(integer line): integer {
+        var index = this.clampLine(line)
+        if (index == this.starts.length() - 1) {
+            return this.text.length()
+        }
+        var end = this.starts[index + 1] - 1
+        if (end > this.starts[index] && this.text.charAt(end - 1) == TEXT_CARRIAGE_RETURN) {
+            return end - 1
+        }
+        return end
+    }
+
+    method lineOf(integer offset): integer {
+        var target = offset
+        if (target > this.text.length()) {
+            target = this.text.length()
+        }
+        var low = 0
+        var high = this.starts.length() - 1
+        while (low < high) {
+            var middle = (low + high + 1) / 2
+            if (this.starts[middle] > target) {
+                high = middle - 1
+                continue
+            }
+            low = middle
+        }
+        return low
+    }
+
+    method byteColumn(integer offset): integer {
+        var line = this.lineOf(offset)
+        var column = offset - this.starts[line]
+        if (column < 0) {
+            return 0
+        }
+        return column
+    }
+
+    method lineText(integer line): string {
+        var index = this.clampLine(line)
+        return this.text.substring(this.starts[index], this.lineEnd(index))
+    }
+}

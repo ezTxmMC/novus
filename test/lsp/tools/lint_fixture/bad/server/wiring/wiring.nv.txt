@@ -1,0 +1,7 @@
+package wiring
+
+import server/beta
+
+method wiringStart() {
+    return
+}

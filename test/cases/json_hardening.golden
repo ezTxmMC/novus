@@ -1,0 +1,76 @@
+pair: 4 bytes, valid UTF-8 true, first 128512
+pair in text: 6 bytes, valid UTF-8 true, first 97
+lone high: 3 bytes, valid UTF-8 true, first 65533
+lone low: 3 bytes, valid UTF-8 true, first 65533
+high then letter: 4 bytes, valid UTF-8 true, first 65533
+high then high: 7 bytes, valid UTF-8 true, first 65533
+reversed: 6 bytes, valid UTF-8 true, first 65533
+bmp: 5 bytes, valid UTF-8 true, first 233
+true
+"a\u0000b"
+3 0
+{"k":"a\u0000b"}
+{a: [1, 2.500000, true]}
+unknown
+unknown
+unknown
+unknown
+unknown
+unknown
+43
+array
+unknown
+unknown
+isValid true  0
+isValid true  -0
+isValid true  10
+isValid true  1.5
+isValid true  -1.5e+10
+isValid true  1E5
+isValid true  0.0e-1
+isValid true  ""
+isValid true  "\u00e9\n\/"
+isValid true  []
+isValid true  {}
+isValid true  [1, 2, {"a": null}]
+isValid true   true 
+isValid true  false
+isValid true  null
+isValid false  
+isValid false  [01]
+isValid false  01
+isValid false  1.
+isValid false  .5
+isValid false  -
+isValid false  +1
+isValid false  1e
+isValid false  1e+
+isValid false  [1-2]
+isValid false  1.2.3
+isValid false  "a<LF>b"
+isValid false  "a<TAB>b"
+isValid false  "\x"
+isValid false  "\u12"
+isValid false  "\u12G4"
+isValid false  "abc
+isValid false  [1,]
+isValid false  [1 2]
+isValid false  {"a" 1}
+isValid false  {a: 1}
+isValid false  {"a": 1,}
+isValid false  tru
+isValid false  nulll
+isValid false  [
+isValid false  {"a":
+true
+false
+false
+parse: true json parse error at position 256: nesting is deeper than 256 levels
+parse at the limit: false
+stringify at the limit: 512 bytes
+stringify: true json stringify error: nesting is deeper than 256 levels
+stringify 256 levels: 512 bytes, valid true
+pretty 256 levels: 131072 bytes
+display 300 levels: 600 bytes
+{"name":"loop","self":null}
+404

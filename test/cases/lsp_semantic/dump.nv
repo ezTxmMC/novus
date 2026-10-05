@@ -1,0 +1,20 @@
+package main
+
+import os
+import path
+import @fixtures_more
+
+// `novusc run main.nv dump <dir>` writes every fixture as a directory under <dir> (with the file `expected` holding
+// what the real compiler must do) so that verify_compiler.sh can run build/novusc on them. Not part of the golden run.
+method dumpFixtures(string target) {
+    for (fixture in semFixtures()) {
+        var folder = target + "/" + fixture.name
+        for (filePath in fixture.files.keys()) {
+            var relative = filePath.substring("/proj/".length(), filePath.length())
+            var destination = folder + "/" + relative
+            os.mkdir(path.dirname(destination))
+            os.writeFile(destination, fixture.files[filePath])
+        }
+        os.writeFile(folder + "/expected", fixture.expected)
+    }
+}

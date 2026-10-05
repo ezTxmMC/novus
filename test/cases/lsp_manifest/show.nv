@@ -1,0 +1,37 @@
+package main
+
+import "novus/lsp/projects/manifest"
+
+method showSpans(array<Span> spans): string {
+    var parts = []
+    for (span in spans) {
+        parts.append("" + span.start + "-" + span.end)
+    }
+    return "[" + parts.join(" ") + "]"
+}
+
+method showDirective(ManifestDirective directive) {
+    println("  directive line " + directive.line + " " + directive.key + " " + directive.values + " key " + directive.keySpan.start + "-" + directive.keySpan.end + " values " + showSpans(directive.valueSpans))
+}
+
+method showRequirement(Requirement requirement) {
+    println("  require " + requirement.module + " @ " + requirement.version + " line " + requirement.line + " span " + requirement.span.start + "-" + requirement.span.end)
+}
+
+method showManifest(string title, string filePath, string text) {
+    var file = parseManifestText(filePath, text)
+    println("== " + title)
+    println("  dir=" + file.dir + " name=[" + file.projectName + "] version=[" + file.version + "] main=[" + file.mainFile + "] lib=[" + file.libFile + "] output=[" + file.outputName + "]")
+    println("  entry=" + file.entryFile() + " mainPath=" + file.mainPath() + " executable=" + file.effectiveOutputName())
+    for (directive in file.directives) {
+        showDirective(directive)
+    }
+    for (requirement in file.requires) {
+        showRequirement(requirement)
+    }
+    println("  replaces " + file.replaces)
+    for (issue in file.issues) {
+        println("  issue line " + issue.line + " span " + issue.span.start + "-" + issue.span.end + " [" + issue.code() + "]: " + issue.message + " warning=" + issue.isWarning())
+    }
+    return
+}

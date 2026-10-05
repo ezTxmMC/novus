@@ -1,0 +1,38 @@
+package jobs
+
+import base/maybe
+import base/model
+import base/text
+import services/pureline
+import server/session
+
+// The DiagnosticProducer of source "pureline": an empty list while the layer is switched off (5.9).
+define class LintCoordinator based DiagnosticProducer {
+    Session session
+    PurelineLinter linter
+
+    construct(Session session, PurelineLinter linter) {
+        this.session = session
+        this.linter = linter
+    }
+
+    // The linter works on the editor parse of the open document, never on a parse of its own (V96, V101).
+    method lintDocument(string uri): array<Diagnostic> {
+        var document = this.session.documentFor(uri)
+        if (isNone(document)) {
+            return []
+        }
+        var context = this.session.workspace.contextFor(document)
+        if (isNone(context)) {
+            return []
+        }
+        return this.linter.lint(document, context.syntax, this.session.workspace.files)
+    }
+
+    method produce(Document document): array<Diagnostic> {
+        if (this.session.settings.pureline.enabled == false) {
+            return []
+        }
+        return this.lintDocument(document.uri)
+    }
+}

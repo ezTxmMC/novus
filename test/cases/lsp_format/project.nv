@@ -1,0 +1,7 @@
+project "lsp-test"
+version "0.1.0"
+main "main.nv"
+output "lsp-format-test"
+
+require "novus/lsp"
+replace "novus/lsp" "../../../lsp"

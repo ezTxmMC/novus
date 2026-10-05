@@ -1,0 +1,136 @@
+package main
+
+import os
+import "novus/lsp/base/platform"
+import "novus/lsp/projects/closure"
+import "novus/lsp/projects/manifest"
+import "novus/lsp/projects/modules"
+import "novus/lsp/projects/stdlib"
+import "novus/lsp/base/text"
+import "novus/lsp/syntax/outline"
+import @support
+
+method targetFiles(): map<string, string> {
+    return {
+        "/p/project.nv": "project \"p\"\nrequire \"d.example/lib\" \"v1\"\nrequire \"d.example/absent\" \"v1\"\n",
+        "/p/main.nv": "x",
+        "/p/helpers.nv": "x",
+        "/p/geo/circle.nv": "x",
+        "/p/geo/shapes/square.nv": "x",
+        "/p/geo/shapes/deep/cube.nv": "x",
+        "/p/json/mine.nv": "x",
+        "/p/web/Page.nvh": "x",
+        "/p/docs/readme.txt": "x",
+        "/p/.git/hooks.nv": "x",
+        "/p/build/out.nv": "x",
+        "/p/node_modules/m/m.nv": "x",
+        "/p/only/sub/s.nv": "x",
+        "/cache/d.example/lib@v1/project.nv": "project \"lib\"\nlib \"entry.nv\"\n",
+        "/cache/d.example/lib@v1/entry.nv": "x",
+        "/cache/d.example/lib@v1/top.nv": "x",
+        "/cache/d.example/lib@v1/pkg/a.nv": "x",
+        "/cache/d.example/lib@v1/pkg/inner/b.nv": "x"
+    }
+}
+
+method showTargets(string title, array<ImportTarget> targets, bool hideStd, integer hiddenCount) {
+    println("== " + title)
+    var standard = 0
+    for (target in targets) {
+        if (target.origin == FileOrigin.Standard) {
+            standard = standard + 1
+        }
+        if (target.origin != FileOrigin.Standard || hideStd == false) {
+            println("  " + target.kind + " " + target.text + " -> " + target.filePath + " " + target.origin)
+        }
+    }
+    println("  standard targets: every module except the hidden ones " + (standard == standardLibrary().moduleNames().length() - hiddenCount))
+}
+
+method runListing() {
+    var source = MemoryTextSource(targetFiles())
+    var layout = findProjectLayout(source, "/p/main.nv")
+    var table = ModuleTableBuilder(source, "/cache").build(layout.manifest)
+    var library = standardLibrary()
+    var targets = importableTargets(layout, table, source, library)
+    showTargets("importable targets", targets, true, 2)
+    var names = []
+    for (target in targets) {
+        if (target.origin == FileOrigin.Standard) {
+            names.append(target.text)
+        }
+    }
+    println("  std os " + names.contains("os") + " std json (hidden by the local json folder) " + names.contains("json") + " std web (hidden by the local web folder) " + names.contains("web") + " std unicode " + names.contains("unicode"))
+    println("  every std target is a std key " + (stdModuleOfKey(targets[0].filePath) == targets[0].text))
+}
+
+method decl(ImportKind kind, string target): ImportDecl {
+    return ImportDecl(kind, target, Span(0, 0), Span(0, 0))
+}
+
+method showResolved(string label, ImportTarget target) {
+    if (typeOf(target) == "unknown") {
+        println("  " + label + " -> nothing")
+        return
+    }
+    println("  " + label + " -> " + target.kind + " " + target.text + " " + target.filePath + " " + target.origin)
+}
+
+method runResolve() {
+    var source = MemoryTextSource(targetFiles())
+    var layout = findProjectLayout(source, "/p/main.nv")
+    var table = ModuleTableBuilder(source, "/cache").build(layout.manifest)
+    var library = standardLibrary()
+    println("== resolveImport")
+    showResolved("package geo", resolveImport(layout, table, source, library, decl(ImportKind.Package, "geo")))
+    showResolved("package geo/shapes", resolveImport(layout, table, source, library, decl(ImportKind.Package, "geo/shapes")))
+    showResolved("package os (std)", resolveImport(layout, table, source, library, decl(ImportKind.Package, "os")))
+    showResolved("package json (local folder wins)", resolveImport(layout, table, source, library, decl(ImportKind.Package, "json")))
+    showResolved("package docs (no sources)", resolveImport(layout, table, source, library, decl(ImportKind.Package, "docs")))
+    showResolved("package nope", resolveImport(layout, table, source, library, decl(ImportKind.Package, "nope")))
+    showResolved("file helpers", resolveImport(layout, table, source, library, decl(ImportKind.File, "helpers")))
+    showResolved("file web/Page (nvh)", resolveImport(layout, table, source, library, decl(ImportKind.File, "web/Page")))
+    showResolved("file missing", resolveImport(layout, table, source, library, decl(ImportKind.File, "missing")))
+    showResolved("module entry", resolveImport(layout, table, source, library, decl(ImportKind.Module, "d.example/lib")))
+    showResolved("module package", resolveImport(layout, table, source, library, decl(ImportKind.Module, "d.example/lib/pkg")))
+    showResolved("module file", resolveImport(layout, table, source, library, decl(ImportKind.Module, "d.example/lib/top")))
+    showResolved("module not fetched", resolveImport(layout, table, source, library, decl(ImportKind.Module, "d.example/absent")))
+    showResolved("module unknown", resolveImport(layout, table, source, library, decl(ImportKind.Module, "x.example/y")))
+}
+
+// A relative layout root ("." in a project started from its own folder) lists the same paths the closure has.
+method runRelativeRoot() {
+    var root = createTempDirectory("lsp-targets-")
+    makeDirectories(root + "/geo")
+    writeTextFile(root + "/project.nv", "project \"rel\"\n")
+    writeTextFile(root + "/main.nv", "package main\nimport geo\n")
+    writeTextFile(root + "/geo/f13.nv", "package geo\n")
+    var before = os.cwd()
+    os.chdir(root)
+    var source = DiskTextSource()
+    var layout = findProjectLayout(source, "main.nv")
+    var table = ModuleTable()
+    var targets = importableTargets(layout, table, source, standardLibrary())
+    var closure = ClosureBuilder(layout, table, source, TestProvider(source), standardLibrary()).build([])
+    os.chdir(before)
+    removeTree(root)
+    println("== a relative root")
+    println("  root=[" + layout.root + "]")
+    for (target in targets) {
+        if (target.origin == FileOrigin.Project) {
+            println("  " + target.kind + " " + target.text + " -> " + target.filePath)
+        }
+    }
+    for (file in closure.files) {
+        println("  closure " + file.filePath)
+    }
+}
+
+method runTargetCases() {
+    runListing()
+    runResolve()
+    runRelativeRoot()
+    var resolver = ImportResolver(findProjectLayout(MemoryTextSource({}), "/q/a.nv"), ModuleTable(), MemoryTextSource({}), standardLibrary())
+    println("== resolver of a bare project")
+    println("  targets are the std modules only " + (resolver.targets().length() == standardLibrary().moduleNames().length()) + ", std os resolves " + (typeOf(resolver.resolve(decl(ImportKind.Package, "os"))) != "unknown"))
+}

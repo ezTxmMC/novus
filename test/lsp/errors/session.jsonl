@@ -1,0 +1,11 @@
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"rootUri":"@ROOTURI@","capabilities":{}}}
+{"jsonrpc":"2.0","id":7,"method":"nope/one","params":{}}
+{"jsonrpc":"2.0","id":"abc","method":"nope/two"}
+{"jsonrpc":"2.0","id":0,"method":"nope/three","params":[1,2]}
+{"jsonrpc":"2.0","method":"nope/notification","params":{}}
+{"jsonrpc":"2.0","method":"$/setTrace","params":{"value":"off"}}
+{"jsonrpc":"2.0","method":"$/progress","params":{}}
+{"jsonrpc":"2.0","id":"novus-99","result":null}
+{"jsonrpc":"2.0","id":99,"error":{"code":-1,"message":"nobody asked"}}
+{"jsonrpc":"2.0","id":8,"method":"shutdown"}
+{"jsonrpc":"2.0","method":"exit"}

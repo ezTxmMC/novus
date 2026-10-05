@@ -1,0 +1,124 @@
+package snippets
+
+// Snippets of project.nv and of .nvh components (DESIGN Appendix A), and the verification wrappers
+// that only they need: the manifest and .nvh modes and the project fixtures of the import snippets.
+
+private final SNIPPETS_LIBRARY_MODULE = "github.com/user/lib"
+private final SNIPPETS_COMPONENT_HEADER = "<?nv\nref integer count = 0\nref bool condition = true\nref array items = []\n" +
+    "ref string text = \"\"\n\nmethod bump() {\n    count = count + 1\n}\n?>\n"
+private final SNIPPETS_IMPORT_FIXTURE = {
+    "p/geo/circle.nv": "package geo\nmethod circleArea(integer r): integer {\n    return r\n}\n",
+    "p/geo/shapes/shapes.nv": "package shapes\nmethod shapeName(): string {\n    return \"s\"\n}\n",
+    "module/lib.nv": "package module\nmethod moduleHello(): string {\n    return \"hi\"\n}\n",
+    "p/project.nv": "project \"t\"\nrequire \"github.com/user/module\"\nreplace \"github.com/user/module\" \"../module\"\n"
+}
+
+method manifestSnippets(): array<Snippet> {
+    var manifest = [SNIPPETS_SCOPE_MANIFEST]
+    var verify = SNIPPETS_VERIFY_MANIFEST
+    var fullBody = "project \"#{1:github.com/user/app}\"\nversion \"#{2:0.1.0}\"\nmain \"main.nv\"\noutput \"#{3:app}\"\n\n" +
+        "require \"#{4:github.com/user/lib}\" \"#{5:latest}\"\n#0"
+    return [
+        Snippet("mf_project", ["project", "manifest"], "project.nv header", manifest,
+            "project \"#{1:github.com/user/app}\"\nversion \"#{2:0.1.0}\"\nmain \"#{3:main.nv}\"\noutput \"#{4:app}\"").withVerify(verify),
+        Snippet("mf_require", ["require"], "Dependency (git tag, branch, commit or latest)", manifest,
+            "require \"#{1:github.com/user/lib}\" \"#{2:latest}\"").withVerify(verify).withFixtures({SNIPPETS_FIXTURE_KEY: SNIPPETS_FIXTURE_REQUIRE}),
+        Snippet("mf_replace", ["replace"], "Use a local checkout instead of fetching (relative path)", manifest,
+            "replace \"#{1:github.com/user/lib}\" \"#{2:../lib}\"").withVerify(verify).withFixtures({SNIPPETS_FIXTURE_KEY: SNIPPETS_FIXTURE_REPLACE}),
+        Snippet("mf_lib", ["lib"], "Entry file when imported as a dependency", manifest,
+            "lib \"#{1:lib.nv}\"").withVerify(verify),
+        Snippet("mf_main", ["mainfile"], "Entry file of the program", manifest,
+            "main \"#{1:main.nv}\"").withVerify(verify),
+        Snippet("mf_full", ["manifestfull", "projectfull"], "Complete project.nv with a dependency", manifest,
+            fullBody).withVerify(verify).withFixtures({SNIPPETS_FIXTURE_KEY: SNIPPETS_FIXTURE_REQUIRE})
+    ]
+}
+
+method componentSnippets(): array<Snippet> {
+    return snippetsConcat([snippetsComponentFile(), snippetsComponentParts()])
+}
+
+method snippetsComponentFile(): array<Snippet> {
+    var body = "<?nv\nprop string #{1:label} = \"#{2:Count}\"\nref integer #{3:count} = 0\n\n" +
+        "method #{4:increment}() {\n\t#3 = #3 + 1\n}\n?>\n<div class=\"#{5:counter}\">\n" +
+        "\t<button @click=\"#4()\">#{6:+}</button>\n\t<span>{#1}: {#3}</span>\n</div>\n#0"
+    return [
+        Snippet("nvh_component", ["component", "nvh"], "Component with a prop, state and a handler", [SNIPPETS_SCOPE_NVH],
+            body).withVerify(SNIPPETS_VERIFY_NVH)
+    ]
+}
+
+method snippetsComponentParts(): array<Snippet> {
+    var block = [SNIPPETS_SCOPE_NVH_BLOCK]
+    var template = [SNIPPETS_SCOPE_NVH_TEMPLATE]
+    var tag = [SNIPPETS_SCOPE_NVH_TAG]
+    var element = SNIPPETS_VERIFY_NVH_ELEMENT
+    return [
+        Snippet("nvh_prop", ["prop"], "Property set by the parent or the URL", block,
+            "prop #{1:string} #{2:name} = \"#{3:value}\"").withVerify(SNIPPETS_VERIFY_NVH_BLOCK),
+        Snippet("nvh_ref", ["ref"], "Reactive state of the component", block,
+            "ref #{1:integer} #{2:count} = #{3:0}").withVerify(SNIPPETS_VERIFY_NVH_BLOCK),
+        Snippet("nvh_if", ["nvif", "if"], "Conditional template block (inside an element)", template,
+            "{##if #{1:condition}}\n\t#0\n{:else}\n\t#{2}\n{/if}").withVerify(element),
+        Snippet("nvh_for", ["nvfor", "for"], "Loop in the template (inside an element)", template,
+            "{##for #{1:item}, #{2:i} in #{3:items}}\n\t<li>{#1}</li>\n{/for}").withVerify(element),
+        Snippet("nvh_click", ["click", "@click"], "Click handler attribute", tag,
+            "@click=\"#{1:handler}()\"").withVerify(SNIPPETS_VERIFY_NVH_ATTR).withOverrides({1: "bump"}),
+        Snippet("nvh_bind", ["bind"], "Two-way binding to a ref", tag,
+            "bind=\"#{1:name}\"").withVerify(SNIPPETS_VERIFY_NVH_ATTR).withOverrides({1: "count"}),
+        Snippet("nvh_html", ["html", "@html"], "Unescaped HTML expression", template,
+            "{@html #{1:expression}}").withVerify(element).withOverrides({1: "text"})
+    ]
+}
+
+// The three import snippets need real packages next to the program, importm a required module.
+method snippetsAddImportFixtures(SnippetsProject project, Snippet snippet) {
+    var kind = snippet.fixtures.get(SNIPPETS_FIXTURE_KEY, "")
+    if (kind != SNIPPETS_FIXTURE_GEO_CIRCLE && kind != SNIPPETS_FIXTURE_GEO_SHAPES && kind != SNIPPETS_FIXTURE_MODULE) {
+        return
+    }
+    for (file in SNIPPETS_IMPORT_FIXTURE) {
+        project.files[file] = SNIPPETS_IMPORT_FIXTURE[file]
+    }
+}
+
+// A manifest snippet becomes the project.nv of a program with a local library; the fixture
+// completes the require/replace pair, and a manifest without project line gets one.
+method snippetsManifestProject(Snippet snippet, string expansion): SnippetsProject {
+    var project = SnippetsProject("main.nv", false)
+    project.files["p/main.nv"] = "package main\nmethod main {\n}\n"
+    project.files["p/lib.nv"] = "package main\nmethod entry() {\n}\n"
+    project.files["lib/lib.nv"] = "package lib\nmethod libHello(): string {\n    return \"hi\"\n}\n"
+    var text = expansion + "\n"
+    var kind = snippet.fixtures.get(SNIPPETS_FIXTURE_KEY, "")
+    if (kind == SNIPPETS_FIXTURE_REQUIRE) {
+        text = text + "replace \"" + SNIPPETS_LIBRARY_MODULE + "\" \"../lib\"\n"
+    }
+    if (kind == SNIPPETS_FIXTURE_REPLACE) {
+        text = "require \"" + SNIPPETS_LIBRARY_MODULE + "\"\n" + text
+    }
+    if (text.startsWith("project") == false) {
+        text = "project \"t\"\n" + text
+    }
+    project.files["p/project.nv"] = text
+    return project
+}
+
+method snippetsComponentProject(Snippet snippet, string expansion): SnippetsProject {
+    var project = SnippetsProject("comp.nvh", false)
+    project.files["p/comp.nvh"] = snippetsComponentText(snippet.verify, expansion)
+    return project
+}
+
+method snippetsComponentText(string mode, string expansion): string {
+    if (mode == SNIPPETS_VERIFY_NVH_BLOCK) {
+        return "<?nv\n" + expansion + "\n?>\n<div></div>\n"
+    }
+    if (mode == SNIPPETS_VERIFY_NVH_ELEMENT) {
+        return SNIPPETS_COMPONENT_HEADER + "<div>\n" + snippetsIndent(expansion) + "\n</div>\n"
+    }
+    if (mode == SNIPPETS_VERIFY_NVH_ATTR) {
+        return SNIPPETS_COMPONENT_HEADER + "<div>\n    <button " + expansion + ">x</button>\n</div>\n"
+    }
+    return expansion + "\n"
+}

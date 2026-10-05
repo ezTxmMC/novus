@@ -1,0 +1,80 @@
+package text
+
+// Boundary-safe cutting so JSON never carries half a character.
+private final TEXT_UTF8_CONTINUATION_MIN = 128
+private final TEXT_UTF8_CONTINUATION_MAX = 191
+private final TEXT_UTF8_TWO_BYTE_LEAD_MIN = 194
+private final TEXT_UTF8_THREE_BYTE_LEAD_MIN = 224
+private final TEXT_UTF8_FOUR_BYTE_LEAD_MIN = 240
+private final TEXT_UTF8_FOUR_BYTE_LEAD_MAX = 244
+private final TEXT_UTF8_LEAD_SEARCH_LIMIT = 3
+private final TEXT_UTF8_TWO_BYTES = 2
+private final TEXT_UTF8_THREE_BYTES = 3
+private final TEXT_UTF8_FOUR_BYTES = 4
+
+method textUtf8IsContinuation(integer byte): bool {
+    return byte >= TEXT_UTF8_CONTINUATION_MIN && byte <= TEXT_UTF8_CONTINUATION_MAX
+}
+
+// Length of the sequence a lead byte announces; 0 for a byte that cannot start one.
+method textUtf8SequenceLength(integer byte): integer {
+    if (byte < TEXT_UTF8_TWO_BYTE_LEAD_MIN) {
+        return 0
+    }
+    if (byte < TEXT_UTF8_THREE_BYTE_LEAD_MIN) {
+        return TEXT_UTF8_TWO_BYTES
+    }
+    if (byte < TEXT_UTF8_FOUR_BYTE_LEAD_MIN) {
+        return TEXT_UTF8_THREE_BYTES
+    }
+    if (byte <= TEXT_UTF8_FOUR_BYTE_LEAD_MAX) {
+        return TEXT_UTF8_FOUR_BYTES
+    }
+    return 0
+}
+
+// True when the continuation byte at offset belongs to a sequence that began before it.
+method textUtf8IsInsideSequence(string text, integer offset): bool {
+    var distance = 1
+    while (distance <= TEXT_UTF8_LEAD_SEARCH_LIMIT && offset - distance >= 0) {
+        var byte = ord(text.charAt(offset - distance))
+        if (textUtf8IsContinuation(byte) == false) {
+            return distance < textUtf8SequenceLength(byte)
+        }
+        distance = distance + 1
+    }
+    return false
+}
+
+method isCharBoundary(string text, integer offset): bool {
+    if (offset <= 0 || offset >= text.length()) {
+        return true
+    }
+    if (textUtf8IsContinuation(ord(text.charAt(offset))) == false) {
+        return true
+    }
+    return textUtf8IsInsideSequence(text, offset) == false
+}
+
+method truncateUtf8(string text, integer maxBytes): string {
+    if (maxBytes <= 0) {
+        return ""
+    }
+    if (text.length() <= maxBytes) {
+        return text
+    }
+    var cut = maxBytes
+    while (cut > 0 && isCharBoundary(text, cut) == false) {
+        cut = cut - 1
+    }
+    return text.substring(0, cut)
+}
+
+// An offset inside a character belongs to the character's first byte.
+method textSnapToBoundary(string source, integer offset): integer {
+    var snapped = offset
+    while (snapped > 0 && isCharBoundary(source, snapped) == false) {
+        snapped = snapped - 1
+    }
+    return snapped
+}

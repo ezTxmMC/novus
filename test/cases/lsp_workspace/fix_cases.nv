@@ -1,0 +1,120 @@
+package main
+
+import "novus/lsp/base/maybe"
+import "novus/lsp/base/platform"
+import "novus/lsp/projects/modules"
+import "novus/lsp/projects/stdlib"
+import "novus/lsp/projects/workspace"
+import @support
+
+// Review round: closing an orphan, a clock that goes backwards, empty folders and open buffers in the dependency
+// stamp, a vanished std copy and buffers that are no Novus source.
+method runWorkspaceFixes() {
+    println("== review fixes")
+    runOrphanClose()
+    runOrphanFolderClose()
+    runClockBackwards()
+    runDependencyHole()
+    runDependencyOverlay()
+    runStdSourceVanished()
+    runNonNovusBuffer()
+}
+
+method orphanProject(): map<string, string> {
+    return {
+        "/od/project.nv": "project \"od\"\nmain \"main.nv\"\n",
+        "/od/main.nv": "define class Dup {\n}\n\nmethod main() {\n}\n",
+        "/od/other.nv": "define class Dup {\n}\n\nmethod onlyHere() {\n}\n",
+        "/od/lib/a.nv": "package lib\n\nmethod fromA() {\n}\n",
+        "/od/lib/b.nv": "package lib\n\nmethod fromB() {\n}\n"
+    }
+}
+
+method orphanSummary(WsWorld world): string {
+    var index = world.model("/od/main.nv").index
+    return "dupes=" + index.duplicateTypeDeclarations().length() + " onlyHere=" + index.functionsNamed("onlyHere").length() + " fromB=" + index.functionsNamed("fromB").length() + " valid=" + world.model("/od/main.nv").valid
+}
+
+method runOrphanClose() {
+    var world = WsWorld(orphanProject())
+    world.open("/od/main.nv", 1)
+    world.open("/od/other.nv", 1)
+    wsCheck("an open orphan is in the program", orphanSummary(world), "dupes=1 onlyHere=1 fromB=0 valid=true")
+    world.space.onDocumentClosed("/od/other.nv")
+    wsCheck("closing it takes it out again, with its text equal to the disk", orphanSummary(world), "dupes=0 onlyHere=0 fromB=0 valid=true")
+}
+
+method runOrphanFolderClose() {
+    var world = WsWorld(orphanProject())
+    world.open("/od/main.nv", 1)
+    world.open("/od/lib/a.nv", 1)
+    wsCheck("an orphan of a package folder brings its siblings", orphanSummary(world), "dupes=0 onlyHere=0 fromB=1 valid=true")
+    world.space.onDocumentClosed("/od/lib/a.nv")
+    wsCheck("closing it takes the siblings out too", orphanSummary(world), "dupes=0 onlyHere=0 fromB=0 valid=true")
+    world.open("/od/main.nv", 1)
+    var reached = world.open("/od/main.nv", 2)
+    world.space.onDocumentClosed("/od/main.nv")
+    wsCheck("a file that the imports reach keeps the model", reached.project.valid, "true")
+}
+
+method runClockBackwards() {
+    var world = WsWorld(wsSimpleProject())
+    var model = world.open("/p/main.nv", 1).project
+    world.space.revalidate(5000)
+    world.source.erase("/p/geo/extra.nv")
+    world.space.revalidate(100)
+    wsCheck("a clock that went backwards counts as due", model.valid, "false")
+    var rebuilt = world.open("/p/main.nv", 1).project
+    var scan = rebuilt.scanFor(world.cache, 5000)
+    var same = rebuilt.scanFor(world.cache, 5000)
+    var behind = rebuilt.scanFor(world.cache, 100)
+    wsCheck("the cached scan is not fresh when the clock is behind its stamp", (same == scan) + " " + (behind == scan), "true false")
+}
+
+method runDependencyHole() {
+    var files = dependencyFiles()
+    files["/deps/ex.com/lib@v1/hole/notes.md"] = "no source yet\n"
+    var world = WsWorld(files)
+    var entry = ModuleEntry("ex.com/lib", "v1", "/deps/ex.com/lib@v1", ModuleStatus.Ready, "/p/project.nv")
+    var index = DependencyIndex()
+    var before = index.filesOfModule(world.cache, entry).length()
+    world.source.write("/deps/ex.com/lib@v1/hole/new.nv", "package hole\n\nmethod fresh() {\n}\n")
+    wsCheck("a source file in a folder that held none is found", before + " -> " + index.filesOfModule(world.cache, entry).length(), "3 -> 4")
+}
+
+method runDependencyOverlay() {
+    var world = WsWorld(dependencyFiles())
+    var entry = ModuleEntry("ex.com/lib", "v1", "/deps/ex.com/lib@v1", ModuleStatus.Ready, "/p/project.nv")
+    var index = DependencyIndex()
+    var first = index.filesOfModule(world.cache, entry)
+    world.cache.setOverlay("/deps/ex.com/lib@v1/lib.nv", "package lib\n\nmethod fromBuffer() {\n}\n")
+    var second = index.filesOfModule(world.cache, entry)
+    wsCheck("an unsaved edit of a dependency file is seen", first[0].syntax.decls[0].name + " -> " + second[0].syntax.decls[0].name, "libFn -> fromBuffer")
+    world.cache.clearOverlay("/deps/ex.com/lib@v1/lib.nv")
+    wsCheck("and so is the end of that edit", index.filesOfModule(world.cache, entry)[0].syntax.decls[0].name, "libFn")
+}
+
+method runStdSourceVanished() {
+    var store = StdSourceStore(standardLibrary())
+    var path = store.pathOf("csv")
+    removeTree(path)
+    var again = store.pathOf("csv")
+    wsCheck("a copy that was deleted is written again", (again == path) + " " + (readTextFile(path) == standardLibrary().module("csv").source), "true true")
+    var own = StdSourceStore(standardLibrary())
+    own.directory = createTempDirectory("novus-lsp-test-")
+    var inside = own.pathOf("csv")
+    removeTree(own.directory)
+    var restored = own.pathOf("csv")
+    wsCheck("so is its directory", (restored == inside) + " " + (readTextFile(inside) == standardLibrary().module("csv").source), "true true")
+    removeTree(own.directory)
+}
+
+method runNonNovusBuffer() {
+    var world = WsWorld(orphanProject())
+    var note = Document(filePathToUri("/od/notes.md"), "markdown", 1, "define class Dup {\n}\n\nmethod fromNotes() {\n}\n")
+    var context = world.space.contextFor(note)
+    var model = world.model("/od/main.nv")
+    wsCheck("a markdown buffer is no part of the program", context.project.closure.has("/od/notes.md") + " " + model.index.functionsNamed("fromNotes").length() + " " + model.index.duplicateTypeDeclarations().length(), "false 0 0")
+    world.space.onDocumentChanged(Document(filePathToUri("/od/data.json"), "json", 1, "{}"))
+    wsCheck("and does not make the model stale", wsSummary(model), "key=/od/project.nv valid=true revision=" + model.revision)
+}

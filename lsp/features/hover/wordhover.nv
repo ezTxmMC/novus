@@ -1,0 +1,186 @@
+package hover
+
+import base/maybe
+import base/model
+import base/text
+import projects/closure
+import projects/workspace
+import semantics/builtins
+import semantics/semantic
+import semantics/targets
+import syntax/lexing
+import syntax/outline
+
+private final HOVER_MAX_LISTED_FILES = 12
+private final HOVER_ANNOTATION_MARK = "@"
+
+method hoverPlural(integer count, string singular, string plural): string {
+    if (count == 1) {
+        return singular
+    }
+    return plural
+}
+
+// The builtin member of that name in a table; nil when there is none.
+method hoverBuiltinNamed(array<BuiltinMember> table, string name): BuiltinMember {
+    for (member in table) {
+        if (member.name == name) {
+            return member
+        }
+    }
+    return nothing()
+}
+
+method hoverBuiltinMarkdown(BuiltinMember member): string {
+    return hoverFence([member.signature]) + "\n\n" + member.documentation
+}
+
+// Hover on what has no declaration in the program: import statements, free built-in functions, members of the
+// built-in types, annotations, keywords and the primitive types, and package or module names.
+define class WordHover {
+    construct() {
+    }
+
+    method hover(FileContext context, integer offset): HoverInfo {
+        if (isNone(context.closureFile)) {
+            return nothing()
+        }
+        var imported = HoverImports().hover(context, offset)
+        if (isSome(imported)) {
+            return imported
+        }
+        var target = TargetFinder(context.resolver()).targetAt(context.closureFile, context.syntax, offset, true)
+        if (isSome(target)) {
+            return this.targetHover(context, target)
+        }
+        return this.keywordHover(context, offset)
+    }
+
+    method targetHover(FileContext context, IdentifierTarget target): HoverInfo {
+        var markdown = ""
+        if (target.kind == TARGETS_KIND_FREE_BUILTIN) {
+            markdown = this.freeBuiltin(target.token.text)
+        }
+        if (target.kind == TARGETS_KIND_BUILTIN_MEMBER || target.kind == TARGETS_KIND_UNRESOLVED) {
+            markdown = this.builtinMember(target)
+        }
+        if (target.kind == TARGETS_KIND_QUALIFIER) {
+            markdown = this.qualifier(context, target.token.text)
+        }
+        if (markdown == "") {
+            return nothing()
+        }
+        return HoverInfo(markdown, target.token.span())
+    }
+
+    method freeBuiltin(string name): string {
+        var member = hoverBuiltinNamed(freeBuiltins(), name)
+        if (isNone(member)) {
+            return ""
+        }
+        return hoverBuiltinMarkdown(member)
+    }
+
+    // The documentation of a member of a built-in type; a receiver without a type or a user type has none.
+    method builtinMember(IdentifierTarget target): string {
+        if (target.receiver == "") {
+            return ""
+        }
+        var member = hoverBuiltinNamed(builtinMembersOf(target.receiver), target.token.text)
+        if (isNone(member)) {
+            return ""
+        }
+        return hoverBuiltinMarkdown(member)
+    }
+
+    method qualifier(FileContext context, string name): string {
+        var parts = []
+        var count = context.resolver().qualifierMembers(name).length()
+        if (context.index().isStandardQualifier(name)) {
+            parts.append(hoverFence(["std module " + name]))
+            parts.append("The standard module `" + name + "` has " + count + " functions and constants. Import it with `import " + name + "`.")
+            return parts.join("\n\n")
+        }
+        var files = context.project.closure.filesOfQualifier(name)
+        parts.append(hoverFence(["package " + name]))
+        parts.append(files.length() + hoverPlural(files.length(), " file", " files") + ", " + count + " functions and constants.")
+        return parts.join("\n\n")
+    }
+
+    // A keyword, a primitive type, a contextual word or an annotation name; never a word after a dot.
+    method keywordHover(FileContext context, integer offset): HoverInfo {
+        var tokens = context.syntax.tokens
+        var index = hoverWordIndex(tokens, offset)
+        if (index < 0 || (index > 0 && tokens[index - 1].isPunct("."))) {
+            return nothing()
+        }
+        var word = tokens[index].text
+        if (index > 0 && tokens[index - 1].isPunct(HOVER_ANNOTATION_MARK)) {
+            return this.annotation(tokens[index])
+        }
+        var documentation = keywordDocumentation(word)
+        if (documentation == "") {
+            return nothing()
+        }
+        return HoverInfo(hoverFence([word]) + "\n\n" + documentation, tokens[index].span())
+    }
+
+    method annotation(Token token): HoverInfo {
+        var member = hoverBuiltinNamed(builtinAnnotations(), token.text)
+        if (isNone(member)) {
+            return nothing()
+        }
+        return HoverInfo(hoverBuiltinMarkdown(member), token.span())
+    }
+}
+
+// Hover on an import statement: what it leads to, by the lookup of the loader (`FileContext.lookupImport`).
+define class HoverImports {
+    construct() {
+    }
+
+    method hover(FileContext context, integer offset): HoverInfo {
+        for (declaration in context.syntax.imports) {
+            if (declaration.span.touches(offset)) {
+                return HoverInfo(this.describe(context, declaration), declaration.span)
+            }
+        }
+        return nothing()
+    }
+
+    method describe(FileContext context, ImportDecl declaration): string {
+        var head = hoverFence([context.document.text.substring(declaration.span.start, declaration.span.end)])
+        var resolution = context.lookupImport(declaration)
+        if (resolution.found == false) {
+            return head + "\n\nNot found: " + resolution.message
+        }
+        if (resolution.isStandard()) {
+            return head + "\n\nStandard module `" + resolution.target + "`."
+        }
+        if (resolution.isFile()) {
+            return head + "\n\nFile `" + hoverBaseName(resolution.target) + "`." + this.dependencyNote(resolution)
+        }
+        return head + "\n\nPackage folder `" + hoverBaseName(resolution.target) + "` with " + this.fileList(context, resolution.target) + "." + this.dependencyNote(resolution)
+    }
+
+    method dependencyNote(ClosureResolution resolution): string {
+        if (resolution.origin == FileOrigin.Dependency) {
+            return " From the dependency `" + resolution.moduleName + "`."
+        }
+        return ""
+    }
+
+    method fileList(FileContext context, string folder): string {
+        var names = []
+        var prefix = folder + "/"
+        for (file in context.project.closure.files) {
+            if (file.filePath.startsWith(prefix) && names.length() < HOVER_MAX_LISTED_FILES) {
+                names.append("`" + hoverBaseName(file.filePath) + "`")
+            }
+        }
+        if (names.length() == 0) {
+            return "no loaded files"
+        }
+        return "the files " + names.join(", ")
+    }
+}

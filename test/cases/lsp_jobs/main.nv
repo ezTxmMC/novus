@@ -1,0 +1,20 @@
+package main
+
+import @fixture
+import @state_cases
+import @planner_cases
+import @producer_cases
+import @watch_cases
+import @applier_cases
+
+// lsp/server/jobs without a writer or a thread: the reason matrix, the per-project state of the coordinator,
+// the request planner (overlays, snapshot versions, every refusal), the stale rule, the idle timer, the two
+// producers and the revision watch. The protocol scenarios cover the scheduler and the coordinator end to end.
+method main() {
+    runStateCases()
+    runPlannerCases()
+    runProducerCases()
+    runWatchCases()
+    runApplierCases()
+    runSnapshotCases()
+}

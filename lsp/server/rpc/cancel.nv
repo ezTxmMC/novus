@@ -1,0 +1,77 @@
+package rpc
+
+import base/model
+import thread
+
+private final RPC_KEY_SEPARATOR = ":"
+private final RPC_TYPE_INTEGER = "integer"
+private final RPC_TYPE_STRING = "string"
+
+// Shared by the reader thread (track, cancel) and the main loop (isCancelled, forget). The map holds
+// one entry per request in flight: false while it is running, true once the client cancelled it.
+// Every lock body follows LSP-R14: the key is computed first and only non-raising operations run inside.
+define class CancelRegistry {
+    integer lock
+    map<string, bool> cancelled
+
+    construct() {
+        this.lock = thread.mutex()
+        this.cancelled = {}
+    }
+
+    method track(object id) {
+        var key = cancelKey(id)
+        sync (this.lock) {
+            this.cancelled[key] = false
+        }
+    }
+
+    // Ids that were never tracked (already answered, or invented by the client) are ignored.
+    method cancel(object id) {
+        var key = cancelKey(id)
+        sync (this.lock) {
+            if (this.cancelled.has(key)) {
+                this.cancelled[key] = true
+            }
+        }
+    }
+
+    method isCancelled(object id): bool {
+        var key = cancelKey(id)
+        var flag = false
+        sync (this.lock) {
+            flag = this.cancelled.get(key, false)
+        }
+        return flag
+    }
+
+    method forget(object id) {
+        var key = cancelKey(id)
+        sync (this.lock) {
+            this.cancelled.remove(key)
+        }
+    }
+}
+
+// "integer:1" and "string:1" are different requests; any other id type never matches a tracked request.
+method cancelKey(object id): string {
+    var kind = typeOf(id)
+    if (kind == RPC_TYPE_INTEGER || kind == RPC_TYPE_STRING) {
+        return kind + RPC_KEY_SEPARATOR + id
+    }
+    return kind + RPC_KEY_SEPARATOR
+}
+
+define class RequestCancelCheck based CancelCheck {
+    CancelRegistry registry
+    object id
+
+    construct(CancelRegistry registry, object id) {
+        this.registry = registry
+        this.id = id
+    }
+
+    method isCancelled(): bool {
+        return this.registry.isCancelled(this.id)
+    }
+}

@@ -1,0 +1,144 @@
+package main
+
+import math
+
+// Fields declared integer or float are read unboxed, from `this` and from
+// objects whose class the compiler can tell. The class of the object is
+// checked; subclasses, other classes and the dynamic cases behave as before.
+
+define class Vec {
+    private float x: get, set
+    private float y: get, set
+    private integer n: get, set
+    private string name: get, set
+
+    construct(float x, float y, integer n) {
+        this.x = x
+        this.y = y
+        this.n = n
+        this.name = "v"
+    }
+
+    method length(): float {
+        return math.sqrt(x * x + y * y)
+    }
+
+    method dot(Vec other): float {
+        return x * other.x() + y * other.y()
+    }
+
+    method scaled(float k): Vec {
+        return Vec(x * k, y * k, n + 1)
+    }
+
+    method bump() {
+        n = n + 1
+        x = x + n
+        this.y = this.y * 2
+    }
+
+    method ratio(): float {
+        return x / (n + 1) - y % 3
+    }
+}
+
+// a subclass with fields of its own and an own method of the same name as
+// a field of the base
+define class Vec3 based Vec {
+    private float z: get, set
+
+    construct(float x, float y, float z) {
+        this.x = x
+        this.y = y
+        this.n = 3
+        this.name = "v3"
+        this.z = z
+    }
+
+    method length(): float {
+        return math.sqrt(x * x + y * y + z * z)
+    }
+
+    method dot(Vec other): float {
+        return x * other.x() + y * other.y() + z
+    }
+}
+
+// not related to Vec, but has fields of the same names
+define class Pair {
+    private float x: get, set
+    private float y: get, set
+
+    construct(float x, float y) {
+        this.x = x
+        this.y = y
+    }
+}
+
+method sumX(array<Vec> vs): float {
+    var s = 0.0
+    var i = 0
+    while (i < vs.length()) {
+        var v = vs[i]
+        s = s + v.x() * 2 - v.y() / 2
+        i = i + 1
+    }
+    return s
+}
+
+method counts(array<Vec> vs): integer {
+    var total = 0
+    for (v in vs) {
+        total = total + v.n()
+    }
+    var i = 0
+    while (i < vs.length()) {
+        var w = vs[i]
+        total = total + w.n() * 2
+        i = i + 1
+    }
+    return total
+}
+
+method main {
+    var a = Vec(3.0, 4.0, 2)
+    var b = Vec3(1.0, 2.0, 5.5)
+    var c = Vec(0, 1, 1.9)
+    println a.length() + " " + b.length() + " " + c.length()
+    println a.dot(b) + " " + b.dot(a) + " " + a.dot(a)
+    println sumX([a, b, c])
+    println counts([a, b, c])
+    a.bump()
+    println a.x() + " " + a.y() + " " + a.n()
+    println a.ratio() + " " + b.ratio()
+    var d = a.scaled(0.5)
+    println d.x() + " " + d.y() + " " + d.n()
+
+    // a stored value is converted to the declared kind on every path
+    c.x(7)
+    c.n(2.9)
+    println c.x() + " " + c.n()
+    c.x = 8
+    c.n = 3.99
+    println c.x() + " " + c.n()
+    var e = Vec{x = 1, y = 2, n = 5.5}
+    println e.x() + " " + e.y() + " " + e.n()
+
+    // objects of another class in a typed position: the dynamic answer
+    var xs = [a, Pair(2.5, 1.5), b]
+    println xs[1].x() + " " + xs[1].y()
+    println sumX([a, b])
+    var t = [Pair(1.0, 2.0)]
+    println sumX2(t)
+}
+
+method sumX2(array<Vec> vs): float {
+    var s = 0.0
+    var i = 0
+    while (i < vs.length()) {
+        var v = vs[i]
+        s = s + v.x() * 2 - v.y()
+        i = i + 1
+    }
+    return s
+}

@@ -1,0 +1,160 @@
+package closure
+
+import base/maybe
+import base/platform
+import projects/manifest
+import projects/modules
+import projects/stdlib
+import syntax/outline
+
+private final CLOSURE_WEB_IMPLICIT = "web"
+
+// Resolves the imports of a project the way compiler/loader/loader.nv does: a package folder below the root, else
+// a std module; `@file` below the root; `"module/pkg/file"` through the module table. Resolution never fails
+// loudly: an import that names nothing is answered with a message.
+define class ImportResolver {
+    ProjectLayout layout
+    ModuleTable modules
+    TextSource source
+    StdLibrary library
+
+    construct(ProjectLayout layout, ModuleTable modules, TextSource source, StdLibrary library) {
+        this.layout = layout
+        this.modules = modules
+        this.source = source
+        this.library = library
+    }
+
+    // What an import of the project's own files names; nil when it names nothing.
+    method resolve(ImportDecl declaration): ImportTarget {
+        var scope = ClosureScope(this.layout.root, FileOrigin.Project, "")
+        var resolution = this.lookup(scope, declaration)
+        if (resolution.found == false) {
+            return nothing()
+        }
+        return this.targetOf(declaration, resolution)
+    }
+
+    method targets(): array<ImportTarget> {
+        return ClosureTargetLister(this.layout, this.modules, this.source, this.library).list()
+    }
+
+    method targetOf(ImportDecl declaration, ClosureResolution resolution): ImportTarget {
+        if (resolution.isStandard()) {
+            return ImportTarget(declaration.kind, declaration.target, stdFileKey(resolution.target), FileOrigin.Standard)
+        }
+        return ImportTarget(declaration.kind, declaration.target, resolution.target, resolution.origin)
+    }
+
+    // The full answer for an import written in a file of `scope`.
+    method lookup(ClosureScope scope, ImportDecl declaration): ClosureResolution {
+        if (declaration.kind == ImportKind.Module) {
+            return this.lookupModule(declaration.target)
+        }
+        if (declaration.kind == ImportKind.File) {
+            return this.lookupFile(scope, declaration.target)
+        }
+        return this.lookupPackage(scope, declaration.target)
+    }
+
+    // The folder below the root when it holds sources, else the std module of that name (a local folder wins).
+    method lookupPackage(ClosureScope scope, string name): ClosureResolution {
+        if (scope.root != "") {
+            var folder = closureJoin(scope.root, name)
+            if (this.sourceFilesIn(folder).length() > 0) {
+                return closureFolderOf(folder, scope)
+            }
+        }
+        if (name.contains("/") == false && this.library.has(name)) {
+            return closureStandardOf(name)
+        }
+        return closureUnresolved("no package '" + name + "': there is no folder " + name + " with .nv files and no standard module of that name")
+    }
+
+    method lookupFile(ClosureScope scope, string relative): ClosureResolution {
+        if (scope.root == "") {
+            return closureUnresolved("import @" + relative + " is not possible in a standard module")
+        }
+        if (closureIsSourceName(relative)) {
+            return closureUnresolved("import @" + relative + ": leave the extension out (import @" + closureStripSourceExtension(relative) + ")")
+        }
+        for (extension in [".nv", ".nvh"]) {
+            var candidate = closureJoin(scope.root, relative + extension)
+            if (this.isFile(candidate)) {
+                return closureFileOf(candidate, scope)
+            }
+        }
+        return closureUnresolved("import @" + relative + ": there is no " + relative + ".nv (or .nvh)")
+    }
+
+    method lookupModule(string importPath): ClosureResolution {
+        var match = this.modules.find(importPath)
+        if (isNone(match)) {
+            return closureUnresolved(this.unknownModuleMessage(importPath))
+        }
+        if (match.entry.isReady() == false) {
+            return closureUnresolved(this.notReadyMessage(importPath, match.entry))
+        }
+        var scope = ClosureScope(match.entry.dir, FileOrigin.Dependency, match.entry.module)
+        if (importPath == match.entry.module) {
+            return this.lookupEntry(match.entry, scope)
+        }
+        return this.lookupInModule(match.entry, match.rest, scope)
+    }
+
+    method lookupEntry(ModuleEntry entry, ClosureScope scope): ClosureResolution {
+        if (this.isFile(entry.entryFile) == false) {
+            return closureUnresolved("module " + entry.module + " has no entry file " + entry.entryFile)
+        }
+        return closureFileOf(entry.entryFile, scope)
+    }
+
+    // `module/` (a trailing slash) is the module root as a package, like novusc: its rest is "" as well.
+    // A folder with sources is a package of the module, else `<rest>.nv|.nvh` is one file of it.
+    method lookupInModule(ModuleEntry entry, string rest, ClosureScope scope): ClosureResolution {
+        var folder = closureJoin(entry.dir, rest)
+        if (this.sourceFilesIn(folder).length() > 0) {
+            return closureFolderOf(folder, scope)
+        }
+        for (extension in [".nv", ".nvh"]) {
+            var candidate = closureJoin(entry.dir, rest + extension)
+            if (this.isFile(candidate)) {
+                return closureFileOf(candidate, scope)
+            }
+        }
+        return closureUnresolved("module " + entry.module + " has no package or file '" + rest + "'")
+    }
+
+    method unknownModuleMessage(string importPath): string {
+        if (closureIsSourceName(importPath)) {
+            var stem = closureStripSourceExtension(importPath)
+            return "import \"" + importPath + "\": file paths are not imported - a folder is a package: import it (import " + manifestDirectoryOf(stem) + ") or one file of it (import @" + stem + ", relative to the project root)"
+        }
+        return "import \"" + importPath + "\": no dependency module of that name in project.nv (packages of this project are imported without quotes: import " + importPath + ")"
+    }
+
+    method notReadyMessage(string importPath, ModuleEntry entry): string {
+        if (entry.status == ModuleStatus.NotFetched) {
+            return "import \"" + importPath + "\": the dependency " + entry.module + " @ " + entry.version + " is not fetched yet (run novusc deps)"
+        }
+        return "import \"" + importPath + "\": the replace target of " + entry.module + " does not exist: " + entry.dir
+    }
+
+    // The .nv and .nvh files of a folder, sorted names, files only; [] when the folder does not exist.
+    method sourceFilesIn(string folder): array<string> {
+        var names = []
+        if (this.source.isDirectory(folder) == false) {
+            return names
+        }
+        for (entry in this.source.entriesOf(folder)) {
+            if (closureIsSourceName(entry) && this.isFile(closureJoin(folder, entry))) {
+                names.append(entry)
+            }
+        }
+        return names
+    }
+
+    method isFile(string filePath): bool {
+        return this.source.exists(filePath) && this.source.isDirectory(filePath) == false
+    }
+}

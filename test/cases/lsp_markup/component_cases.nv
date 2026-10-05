@@ -1,0 +1,148 @@
+package main
+
+import "novus/lsp/base/text"
+import "novus/lsp/syntax/outline"
+import "novus/lsp/syntax/parsing"
+import "novus/lsp/syntax/markup"
+
+method spanText(Span span): string {
+    return "" + span.start + "-" + span.end
+}
+
+method showMember(Decl member) {
+    println("    " + member.kind + " " + member.name + " type=[" + member.typeText + "] name " + spanText(member.nameSpan) + " full " + spanText(member.fullSpan) + " container=" + member.container + " modifiers=" + member.modifiers + " params=" + member.params.length() + " doc=[" + member.doc + "] locals=" + member.locals.length())
+}
+
+method showDeclaration(Decl decl) {
+    println("  " + decl.kind + " " + decl.name + " name " + spanText(decl.nameSpan) + " full " + spanText(decl.fullSpan) + " body " + spanText(decl.bodySpan) + " base=[" + decl.baseName + "] " + spanText(decl.baseSpan) + " members=" + decl.members.length())
+    for (member in decl.members) {
+        showMember(member)
+    }
+}
+
+method showComponent(string title, string filePath, string text, ParseOptions options) {
+    var file = parseComponentText(filePath, text, options)
+    println("== " + title)
+    println("  kind=" + file.fileKind + " hash ok " + (file.textHash == textHashOf(text)) + " lines=" + file.lineCount + " tokens=" + file.tokens.length() + " comments=" + file.comments.length() + " package=[" + file.packageName + "]")
+    for (decl in file.decls) {
+        showDeclaration(decl)
+    }
+    for (declaration in file.imports) {
+        println("  import " + declaration.kind + " [" + declaration.target + "] span " + spanText(declaration.span) + " target " + spanText(declaration.targetSpan))
+    }
+    for (issue in file.issues) {
+        println("  issue " + issue.code + " " + spanText(issue.span) + " warning=" + issue.warning + ": " + issue.message)
+    }
+}
+
+method runShapeCases() {
+    var text = "<?nv\nimport strings\nprop string title = \"Todo\"\nref array<string> items = []\nvar draft = \"\"\n\nmethod add() {\n    items.append(draft)\n}\n?>\n<h1>{title}</h1>\n<Item text=\"a\"/>\n"
+    showComponent("a typical component", "/w/pages/Todo.nvh", text, editorParseOptions())
+    showComponent("the same with the index options keeps no tokens", "/w/pages/Todo.nvh", text, indexParseOptions())
+    showComponent("no header: an empty class", "/w/Plain.nvh", "<p>hi</p>\n<b>x</b>", editorParseOptions())
+    showComponent("empty file", "/w/Empty.nvh", "", editorParseOptions())
+    showComponent("empty header", "/w/E.nvh", "<?nv ?>\n<p/>", editorParseOptions())
+}
+
+method runFieldCases() {
+    var text = "<?nv\nprop string a\nprop count = 3\nref   map<string,   integer>   counts = {}\nvar flag = a == \"x\"\nprop array<string> list = [\"a\", \"b\"]\nref string spaced   =   \"v\"   // trailing\nprop int n = (1 +\n  2)\nprop 9bad\nprop\nref string\n?>"
+    showComponent("prop, ref and var become fields", "/w/F.nvh", text, editorParseOptions())
+}
+
+method runImportCases() {
+    var text = "<?nv\nimport strings\nimport @helpers/format\nimport \"example.com/geo/shapes\"\nimport   math   // comment\nimport app/models;\nimport\nimport \"never closed\n?>"
+    showComponent("the three import forms", "/w/I.nvh", text, editorParseOptions())
+    var reference = parseSourceText("x.nv", "import strings\nimport @helpers/format\nimport \"example.com/geo/shapes\"\nimport app/models\n", editorParseOptions())
+    var component = parseComponentText("/w/I.nvh", "<?nv\nimport strings\nimport @helpers/format\nimport \"example.com/geo/shapes\"\nimport app/models\n?>", editorParseOptions())
+    println("== imports agree with the Wave-1 parser")
+    var i = 0
+    while (i < reference.imports.length()) {
+        var expected = reference.imports[i]
+        var actual = component.imports[i]
+        println("  " + expected.kind + " " + expected.target + ": same kind " + (expected.kind == actual.kind) + " same target " + (expected.target == actual.target) + " same shape " + (expected.span.length() == actual.span.length() && expected.targetSpan.start - expected.span.start == actual.targetSpan.start - actual.span.start))
+        i = i + 1
+    }
+}
+
+method runMemberCases() {
+    var text = "<?nv\nprop string name = \"x\"\n\nconstruct(string a) {\n    this.name = a\n}\n\n// documented\nmethod greet(string who): string {\n    var local = \"hi \" + who\n    return local\n}\n\nmethod later() {\n}\n\nstring extra\ncount(): integer {\n    return 1\n}\nprop string after = \"y\"\n?>\n<p/>"
+    showComponent("members go through the member grammar, in source order", "/w/M.nvh", text, editorParseOptions())
+}
+
+method runDefineCases() {
+    var text = "<?nv\ndefine class Item {\n    string label\n    method show(): string {\n        return label\n    }\n}\ndefine enum Mode {\n    Fast, Slow\n}\nprop Item current = Item()\nmethod pick() {\n}\n?>"
+    showComponent("define blocks are file-level declarations before the class", "/w/D.nvh", text, editorParseOptions())
+    var file = parseComponentText("/w/D.nvh", text, editorParseOptions())
+    println("  declAt inside the define: " + file.declAt(text.indexOf("string label")).name + ", inside pick: " + file.declAt(text.indexOf("pick")).name + ", on the first line: " + file.declAt(2).name)
+    println("  enclosingType in the define: " + file.enclosingType(text.indexOf("label")).name + ", typeNamed Mode " + file.typeNamed("Mode").name + ", typeNamed D " + file.typeNamed("D").baseName)
+}
+
+method runIssueCases() {
+    showComponent("an unclosed header is reported and still read", "/w/U.nvh", "<?nv\nprop string a = \"x\"\nmethod f() {\n    return 1\n", editorParseOptions())
+    showComponent("member errors keep their parser codes", "/w/B.nvh", "<?nv\nmethod broken( {\n}\nmethod ok() {\n}\n?>", editorParseOptions())
+    showComponent("an unterminated string inside a define", "/w/S.nvh", "<?nv\ndefine class A {\n    string s = \"abc\n}\n?>\n<p/>", editorParseOptions())
+}
+
+method runNameCases() {
+    println("== class names")
+    for (path in ["/a/Todo.nvh", "/a/my-page.nvh", "C:\\site\\Hello World.nvh", "9lives.nvh", ".nvh", "", "a.b.c.nvh", "/x/ünï.nvh", "noext", "/a/b/"]) {
+        println("  [" + path + "] -> [" + componentClassName(path) + "]")
+    }
+}
+
+method runSignatureCases() {
+    var base = "<?nv\nprop string a = \"x\"\nmethod run() {\n    return 1\n}\n?>"
+    var bodyEdit = "<?nv\nprop string a = \"x\"\nmethod run() {\n    var longer = 2\n    return longer\n}\n?>\n<p>template changes freely</p>"
+    var newField = "<?nv\nprop string a = \"x\"\nprop int b = 1\nmethod run() {\n    return 1\n}\n?>"
+    var one = parseComponentText("/w/S.nvh", base, editorParseOptions())
+    var two = parseComponentText("/w/S.nvh", bodyEdit, editorParseOptions())
+    var three = parseComponentText("/w/S.nvh", newField, editorParseOptions())
+    println("== declSignature")
+    println("  body and template edits keep it " + (one.declSignature == two.declSignature) + ", a new field changes it " + (one.declSignature != three.declSignature))
+}
+
+method showSignatureChange(string title, string before, string after) {
+    var first = parseComponentText("/w/S.nvh", before, editorParseOptions())
+    var second = parseComponentText("/w/S.nvh", after, editorParseOptions())
+    println("  " + title + ": changes it " + (first.declSignature != second.declSignature))
+}
+
+method runSignatureDetailCases() {
+    println("== declSignature sees every declaration detail")
+    showSignatureChange("a parameter type", "<?nv\nmethod f(integer q) {\n}\n?>", "<?nv\nmethod f(string q) {\n}\n?>")
+    showSignatureChange("a return type", "<?nv\nmethod f(): integer {\n    return 1\n}\n?>", "<?nv\nmethod f(): string {\n    return \"\"\n}\n?>")
+    showSignatureChange("a define member type", "<?nv\ndefine class K {\n    integer a\n}\n?>", "<?nv\ndefine class K {\n    string a\n}\n?>")
+    showSignatureChange("a define base class", "<?nv\ndefine class K based A {\n}\n?>", "<?nv\ndefine class K based B {\n}\n?>")
+    showSignatureChange("an added import", "<?nv\n?>", "<?nv\nimport strings\n?>")
+    showSignatureChange("a changed import target", "<?nv\nimport strings\n?>", "<?nv\nimport arrays\n?>")
+    showSignatureChange("a modifier", "<?nv\nmethod f() {\n}\n?>", "<?nv\nprivate method f() {\n}\n?>")
+    showSignatureChange("a field kind (prop to ref)", "<?nv\nprop string a\n?>", "<?nv\nref string a\n?>")
+    showSignatureChange("only a method body", "<?nv\nmethod f() {\n    return\n}\n?>", "<?nv\nmethod f() {\n    var x = 1\n    return\n}\n?>")
+}
+
+method runHeaderRuleCases() {
+    showComponent("a duplicate field name is reported", "/w/R1.nvh", "<?nv\nprop string a\nref integer a\n?>", editorParseOptions())
+    showComponent("a define after a member is reported", "/w/R2.nvh", "<?nv\nprop x\ndefine class K {\n}\n?>", editorParseOptions())
+    showComponent("a define after only imports is fine", "/w/R3.nvh", "<?nv\nimport strings\ndefine class K {\n}\nprop x\n?>", editorParseOptions())
+}
+
+method runNulCases() {
+    var text = "<?nv\nprop string a = \"x" + chr(0) + "y\"\nprop int b = 1\n?>\n<Tag/>"
+    var file = parseComponentText("/w/N.nvh", text, editorParseOptions())
+    println("== NUL byte")
+    println("  fields " + file.decls[0].members.length() + " hash ok " + (file.textHash == textHashOf(text)) + " lines " + file.lineCount)
+}
+
+method runComponentCases() {
+    runShapeCases()
+    runFieldCases()
+    runImportCases()
+    runMemberCases()
+    runDefineCases()
+    runIssueCases()
+    runNameCases()
+    runSignatureCases()
+    runSignatureDetailCases()
+    runHeaderRuleCases()
+    runNulCases()
+}

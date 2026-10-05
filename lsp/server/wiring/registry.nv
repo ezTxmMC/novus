@@ -1,0 +1,87 @@
+package wiring
+
+import server/jobs
+import server/lifecycle
+import server/rpc
+
+private final WIRING_METHOD_INITIALIZE = "initialize"
+private final WIRING_METHOD_INITIALIZED = "initialized"
+private final WIRING_METHOD_SHUTDOWN = "shutdown"
+private final WIRING_METHOD_EXIT = "exit"
+private final WIRING_METHOD_DID_OPEN = "textDocument/didOpen"
+private final WIRING_METHOD_DID_CHANGE = "textDocument/didChange"
+private final WIRING_METHOD_DID_CLOSE = "textDocument/didClose"
+private final WIRING_METHOD_DID_SAVE = "textDocument/didSave"
+private final WIRING_METHOD_CONFIGURATION = "workspace/didChangeConfiguration"
+private final WIRING_METHOD_WATCHED_FILES = "workspace/didChangeWatchedFiles"
+private final WIRING_METHOD_FOLDERS = "workspace/didChangeWorkspaceFolders"
+private final WIRING_METHOD_EXECUTE_COMMAND = "workspace/executeCommand"
+private final WIRING_METHOD_TEST_CRASH = "novus/test/crash"
+private final WIRING_METHOD_TEST_SLEEP = "novus/test/sleep"
+private final WIRING_COMMAND_IDS = ["novus.fetchDependencies", "novus.rerunChecks"]
+
+// The lifecycle, the synchronisation and configuration handlers, the gate and the listeners.
+method registerLifecycleHandlers(ServerParts parts) {
+    parts.session.commandIds = WIRING_COMMAND_IDS
+    parts.router.setGate(LifecycleGate(parts.session))
+    wiringRegisterLifecycle(parts)
+    wiringRegisterSynchronisation(parts)
+    wiringRegisterWorkspace(parts)
+    wiringRegisterListeners(parts)
+    wiringRegisterTestHandlers(parts)
+}
+
+method wiringRegisterLifecycle(ServerParts parts) {
+    var router = parts.router
+    var initialized = InitializedHandler(parts.session, parts.writer, router)
+    initialized.scheduler = parts.scheduler
+    router.registerHandler(WIRING_METHOD_INITIALIZE, InitializeHandler(parts.session))
+    router.registerHandler(WIRING_METHOD_INITIALIZED, initialized)
+    router.registerHandler(WIRING_METHOD_SHUTDOWN, ShutdownHandler(parts.session))
+    router.registerHandler(WIRING_METHOD_EXIT, ExitHandler(parts.session, parts.loop))
+}
+
+method wiringRegisterSynchronisation(ServerParts parts) {
+    var router = parts.router
+    router.registerHandler(WIRING_METHOD_DID_OPEN, DidOpenHandler(parts.session, parts.scheduler, parts.checks))
+    router.registerHandler(WIRING_METHOD_DID_CHANGE, DidChangeHandler(parts.session, parts.scheduler))
+    router.registerHandler(WIRING_METHOD_DID_CLOSE, DidCloseHandler(parts.session, parts.writer, parts.scheduler))
+    router.registerHandler(WIRING_METHOD_DID_SAVE, DidSaveHandler(parts.session, parts.checks))
+}
+
+method wiringRegisterWorkspace(ServerParts parts) {
+    var router = parts.router
+    var configuration = DidChangeConfigurationHandler(parts.session, parts.writer, router, parts.scheduler)
+    router.registerHandler(WIRING_METHOD_CONFIGURATION, configuration)
+    router.registerHandler(WIRING_METHOD_WATCHED_FILES, DidChangeWatchedFilesHandler(parts.session, parts.scheduler))
+    router.registerHandler(WIRING_METHOD_FOLDERS, DidChangeFoldersHandler(parts.session, parts.scheduler))
+    var commands = ExecuteCommandHandler(parts.session, parts.checks, parts.inbox, parts.writer)
+    router.registerHandler(WIRING_METHOD_EXECUTE_COMMAND, commands)
+}
+
+// tick: the scheduler, then the check coordinator; eof: the scheduler flushes before EofListener stops the loop.
+method wiringRegisterListeners(ServerParts parts) {
+    var router = parts.router
+    router.registerListener(ENVELOPE_TICK, parts.scheduler)
+    router.registerListener(ENVELOPE_TICK, parts.checks)
+    router.registerListener(ENVELOPE_EOF, parts.scheduler)
+    router.registerListener(ENVELOPE_EOF, EofListener(parts.session, parts.loop))
+    router.registerListener(ENVELOPE_CHECK_DONE, parts.checks)
+    router.registerListener(ENVELOPE_WORKER_FAILED, parts.checks)
+    router.registerListener(ENVELOPE_WORKER_FAILED, WiringErrorMirror(parts.session, parts.writer))
+    router.registerListener(ENVELOPE_COMMAND_DONE, CommandDoneListener(parts.session, parts.writer, parts.scheduler))
+}
+
+// Only with NOVUS_LSP_TEST=1: they would let any client crash or stall the server.
+method wiringRegisterTestHandlers(ServerParts parts) {
+    if (parts.testMode == false) {
+        return
+    }
+    parts.router.registerHandler(WIRING_METHOD_TEST_CRASH, CrashTestHandler())
+    parts.router.registerHandler(WIRING_METHOD_TEST_SLEEP, SleepTestHandler())
+}
+
+// buildServerCapabilities sees exactly the handlers that exist, so a half-built server never over-promises.
+method finishRegistration(ServerParts parts) {
+    parts.session.registeredMethods = parts.router.registeredMethods()
+}

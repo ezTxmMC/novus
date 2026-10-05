@@ -231,8 +231,10 @@ method indexClassFields(map<string, string> prog, string cls): integer {
     var fieldsCount = nodeCount(fields)
     var i = 1
     while (i < fieldsCount) {
-        var name = nodeChild(nodeChild(fields, i), 2)
+        var field = nodeChild(fields, i)
+        var name = nodeChild(field, 2)
         prog["fieldslot:" + cls + "." + name] = intToStr(offset + i - 1)
+        prog["fieldtype:" + cls + "." + name] = normType(nodeChild(field, 1))
         i = i + 1
     }
     return 0
@@ -256,6 +258,19 @@ method fieldSlot(map<string, string> prog, string cls, string name): integer {
         return fieldSlot(prog, base, name)
     }
     return -1
+}
+
+// The declared type of the field `name` of `cls` or its bases, "" when there
+// is no such field.
+method fieldType(map<string, string> prog, string cls, string name): string {
+    if (fieldSlot(prog, cls, name) < 0) {
+        return ""
+    }
+    var key = "fieldtype:" + cls + "." + name
+    if (prog.has(key)) {
+        return prog[key]
+    }
+    return fieldType(prog, classBase(typeNode(prog, cls)), name)
 }
 
 // Is `name` a field of class `cls` or one of its bases?

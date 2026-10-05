@@ -1,0 +1,184 @@
+package completion
+
+import strings
+import base/maybe
+import base/text
+import features/candidates
+import projects/workspace
+import syntax/lexing
+
+private final COMPLETION_PATH_SEPARATOR = "/"
+private final COMPLETION_FILE_MARK = "@"
+private final COMPLETION_LINE_FEED = "\n"
+private final COMPLETION_CARRIAGE_RETURN = "\r"
+
+// `import` at the top level: after the keyword, after `@`, after `a/`, and inside the quotes of `import "..."`.
+define class ImportContextRule based ContextRule {
+    CompletionCursors cursors
+
+    construct(CompletionCursors cursors) {
+        this.cursors = cursors
+    }
+
+    method matches(FileContext context, integer offset): CompletionContext {
+        var cursor = this.cursors.cursorFor(context, offset)
+        if (cursor.inInterpolation || cursor.opener() >= 0) {
+            return nothing()
+        }
+        var index = cursor.lexed.indexBefore(offset)
+        if (index >= 0 && completionInsideString(cursor.tokens[index], offset) && completionIsImportString(cursor.tokens, index)) {
+            var token = cursor.tokens[index]
+            var text = context.document.text
+            return completionPathContext(CANDIDATES_KIND_IMPORT_MODULE, "", text, offset, token.start + 1, completionContentEnd(text, token, offset))
+        }
+        return this.pathContext(cursor)
+    }
+
+    method pathContext(CompletionCursor cursor): CompletionContext {
+        if (cursor.isWordBack(1, COMPLETION_IMPORT_WORD)) {
+            return CompletionContext(CANDIDATES_KIND_IMPORT_TARGET, cursor.prefix, cursor.replaceSpan)
+        }
+        if (cursor.isPunctBack(1, COMPLETION_FILE_MARK) && cursor.isAdjacent() && cursor.isWordBack(2, COMPLETION_IMPORT_WORD)) {
+            return CompletionContext(CANDIDATES_KIND_IMPORT_FILE, cursor.prefix, cursor.replaceSpan)
+        }
+        if (cursor.isPunctBack(1, COMPLETION_PATH_SEPARATOR)) {
+            return this.segmentedPath(cursor)
+        }
+        return nothing()
+    }
+
+    // `import a/b/` and `import @a/b/`: the identifiers and slashes back to `import` or `@`.
+    method segmentedPath(CompletionCursor cursor): CompletionContext {
+        var segments = []
+        var at = cursor.indexBack(1)
+        while (at >= 0 && cursor.tokens[at].isPunct(COMPLETION_PATH_SEPARATOR)) {
+            var segmentIndex = cursor.significantAtOrBefore(at - 1)
+            if (segmentIndex < 0 || cursor.tokens[segmentIndex].kind != TokenKind.Ident) {
+                return nothing()
+            }
+            segments.insert(0, cursor.tokens[segmentIndex].text)
+            at = cursor.significantAtOrBefore(segmentIndex - 1)
+        }
+        if (at < 0) {
+            return nothing()
+        }
+        var kind = this.kindOfHead(cursor, at)
+        if (kind == "") {
+            return nothing()
+        }
+        var request = CompletionContext(kind, cursor.prefix, cursor.replaceSpan)
+        request.typeName = segments.join(COMPLETION_PATH_SEPARATOR) + COMPLETION_PATH_SEPARATOR
+        return request
+    }
+
+    method kindOfHead(CompletionCursor cursor, integer headIndex): string {
+        var head = cursor.tokens[headIndex]
+        if (head.isKeyword(COMPLETION_IMPORT_WORD)) {
+            return CANDIDATES_KIND_IMPORT_NESTED
+        }
+        var before = cursor.tokenBefore(headIndex)
+        if (head.isPunct(COMPLETION_FILE_MARK) && isSome(before) && before.isKeyword(COMPLETION_IMPORT_WORD)) {
+            return CANDIDATES_KIND_IMPORT_FILE
+        }
+        return ""
+    }
+}
+
+// The end of what the string holds: before its closing quote, and never past the end of the cursor's line. The lexer
+// lets a string that is open on its line run on to a later quote, which would swallow the code in between.
+method completionContentEnd(string text, Token token, integer offset): integer {
+    var end = token.end
+    if (token.terminated) {
+        end = token.end - 1
+    }
+    var lineEnd = text.indexOf(COMPLETION_LINE_FEED, offset)
+    if (lineEnd < 0) {
+        lineEnd = text.length()
+    }
+    if (lineEnd > offset && text.charAt(lineEnd - 1) == COMPLETION_CARRIAGE_RETURN) {
+        lineEnd = lineEnd - 1
+    }
+    if (lineEnd < end) {
+        return lineEnd
+    }
+    return end
+}
+
+// A typed path inside a string: `typeName` is the part up to the last slash, `prefix` the segment being typed and
+// `replaceSpan` that segment up to the next slash or the end of the string.
+method completionPathContext(string kind, string detail, string text, integer offset, integer contentStart, integer contentEnd): CompletionContext {
+    var typed = text.substring(contentStart, offset)
+    var slash = strings.lastIndexOf(typed, COMPLETION_PATH_SEPARATOR)
+    var segmentEnd = contentEnd
+    var next = text.indexOf(COMPLETION_PATH_SEPARATOR, offset)
+    if (next >= 0 && next < contentEnd) {
+        segmentEnd = next
+    }
+    var request = CompletionContext(kind, typed.substring(slash + 1, typed.length()), Span(contentStart + slash + 1, segmentEnd))
+    request.typeName = typed.substring(0, slash + 1)
+    request.detail = detail
+    return request
+}
+
+private final COMPLETION_KEY_REQUIRE = "require"
+private final COMPLETION_KEY_REPLACE = "replace"
+
+// `project.nv`: the directive keywords at the start of a line, the module of `require` and `replace`, the directory
+// of the second `replace` value.
+define class ManifestContextRule based ContextRule {
+    CompletionCursors cursors
+
+    construct(CompletionCursors cursors) {
+        this.cursors = cursors
+    }
+
+    method matches(FileContext context, integer offset): CompletionContext {
+        if (context.document.fileKind() != FILE_KIND_MANIFEST) {
+            return nothing()
+        }
+        var cursor = this.cursors.cursorFor(context, offset)
+        var index = cursor.lexed.indexBefore(offset)
+        if (index >= 0 && completionInsideString(cursor.tokens[index], offset)) {
+            return this.valueContext(context, cursor, index)
+        }
+        if (cursor.startsLine() == false) {
+            return completionSuppressedContext(offset)
+        }
+        var request = CompletionContext(CANDIDATES_KIND_MANIFEST, cursor.prefix, cursor.replaceSpan)
+        request.detail = CANDIDATES_DETAIL_DIRECTIVE
+        return request
+    }
+
+    // The string that the cursor is in: which value of which directive it is decides what is offered.
+    method valueContext(FileContext context, CompletionCursor cursor, integer index): CompletionContext {
+        var token = cursor.tokens[index]
+        var keyIndex = index
+        var position = 0
+        while (keyIndex > 0 && cursor.tokens[keyIndex - 1].line == token.line) {
+            keyIndex = keyIndex - 1
+            if (cursor.tokens[keyIndex].kind == TokenKind.String) {
+                position = position + 1
+            }
+        }
+        var key = cursor.tokens[keyIndex].text
+        var contentStart = token.start + 1
+        var contentEnd = completionContentEnd(context.document.text, token, cursor.offset)
+        var typed = context.document.text.substring(contentStart, cursor.offset)
+        if (key == COMPLETION_KEY_REQUIRE && position == 0) {
+            return this.moduleContext(CANDIDATES_DETAIL_REQUIRE, typed, Span(contentStart, contentEnd))
+        }
+        if (key == COMPLETION_KEY_REPLACE && position == 0) {
+            return this.moduleContext(CANDIDATES_DETAIL_REPLACE_MODULE, typed, Span(contentStart, contentEnd))
+        }
+        if (key == COMPLETION_KEY_REPLACE && position == 1) {
+            return completionPathContext(CANDIDATES_KIND_MANIFEST, CANDIDATES_DETAIL_REPLACE_DIRECTORY, context.document.text, cursor.offset, contentStart, contentEnd)
+        }
+        return completionSuppressedContext(cursor.offset)
+    }
+
+    method moduleContext(string detail, string typed, Span replaceSpan): CompletionContext {
+        var request = CompletionContext(CANDIDATES_KIND_MANIFEST, typed, replaceSpan)
+        request.detail = detail
+        return request
+    }
+}

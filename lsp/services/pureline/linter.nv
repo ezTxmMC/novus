@@ -1,0 +1,46 @@
+package pureline
+
+import base/model
+import base/platform
+import base/text
+import syntax/outline
+
+// Optional style diagnostics (source "pureline", rule ids of PURELINE_SPECIFICATION_1.2, never reworded).
+private final PURELINE_RULE_IDS = ["PL-CF-002", "PL-FN-001", "PL-STRUCT-001", "PL-STRUCT-002", "PL-NAME-001"]
+private final PURELINE_KIND_SOURCE = "nv"
+
+define interface PurelineRule {
+    check(Document document, SourceFile syntax, TextSource files): array<Diagnostic>
+}
+
+define class PurelineLinter {
+    PurelineSettings settings
+    array<PurelineRule> rules
+
+    construct(PurelineSettings settings) {
+        this.settings = settings
+        this.rules = [PurelineElseRule(settings), PurelineFunctionRule(settings), PurelineStructureRule(settings), PurelineNamingRule(settings)]
+    }
+
+    // The caller decides whether the layer is on (`enabled`, 6.31); only `.nv` sources are linted.
+    method lint(Document document, SourceFile syntax, TextSource files): array<Diagnostic> {
+        var found = []
+        if (document.fileKind() != PURELINE_KIND_SOURCE) {
+            return found
+        }
+        for (rule in this.rules) {
+            for (diagnostic in rule.check(document, syntax, files)) {
+                found.append(diagnostic)
+            }
+        }
+        return found
+    }
+}
+
+method purelineRuleIds(): array<string> {
+    var ids = []
+    for (id in PURELINE_RULE_IDS) {
+        ids.append(id)
+    }
+    return ids
+}

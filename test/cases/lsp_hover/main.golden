@@ -1,0 +1,257 @@
+== symbols
+-- class at a constructor call [Circle]
+```novus
+define class Circle based Shape
+```
+
+A circle of a given radius.
+
+*package `geo` · shape.nv*
+-- method of a typed local [area]
+```novus
+(method) Circle.area(): float
+```
+
+*package `geo` · shape.nv*
+-- module function [describe]
+```novus
+(function) geo.describe(Shape shape): string
+```
+
+*package `geo` · shape.nv*
+-- std function with its documentation [repeat]
+```novus
+(function) strings.repeat(string s, integer times): string
+```
+
+*std module `strings`*
+-- std function documented by the comment above it [words]
+```novus
+(function) strings.words(string s): array<string>
+```
+
+Words separated by any run of whitespace.
+
+*std module `strings`*
+-- enum constant [Red]
+```novus
+(enum member) Color.Red
+```
+
+*main.nv*
+-- local variable with an inferred type [total]
+```novus
+(variable) total: integer
+```
+
+Declared: `var total = helper(1)`
+-- local declaration [circle]
+```novus
+(variable) circle: Circle
+```
+
+Declared: `var circle = Circle(2.0)`
+-- loop variable [word]
+```novus
+(loop variable) word
+```
+
+Declared: `for (word in words) {`
+-- overloaded function [scaled]
+```novus
+(function) geo.scaled(float factor): float
+```
+
+Scales one value.
+
+*package `geo` · shape.nv*
+-- parameter [by]
+```novus
+(parameter) by: float
+```
+
+Declared: `method grow(float by): float {`
+-- field through implicit this [radius]
+```novus
+(field) Circle.radius: float
+```
+
+*package `geo` · shape.nv*
+-- deprecated method [grow]
+```novus
+(method) Circle.grow(float by): float
+```
+
+**Deprecated**
+
+*package `geo` · shape.nv*
+-- constructor declaration keyword [construct]
+```novus
+(constructor) Circle(float radius)
+```
+
+*package `geo` · shape.nv*
+-- parameter type is a class [Shape]
+```novus
+define abstract Shape
+```
+
+A shape with an area.
+
+*package `geo` · shape.nv*
+== words
+-- builtin member of an array [length]
+```novus
+method length(): integer
+```
+
+The number of elements.
+-- free builtin function [readFile]
+```novus
+method readFile(string path): string
+```
+
+Reads a whole file; the empty string when it cannot be opened.
+-- keyword [method]
+```novus
+method
+```
+
+Declares a method: `method name(type parameter): Type { ... }`. The parameter list and the return type are optional; `method main` is the entry point.
+-- keyword var [var]
+```novus
+var
+```
+
+Declares a variable: `var name = value` or `var name: Type = value`. Redeclaring a name in the same block assigns to it.
+-- primitive type [float]
+```novus
+float
+```
+
+A floating point number. Aliases: `double`, `doub`.
+-- annotation [Deprecated]
+```novus
+@Deprecated{text="...", since="..."}
+```
+
+Marks a method as deprecated: the first call prints a runtime warning with `text` and `since` (the version).
+-- std module name [strings]
+```novus
+std module strings
+```
+
+The standard module `strings` has 20 functions and constants. Import it with `import strings`.
+-- package name [geo]
+```novus
+package geo
+```
+
+1 file, 3 functions and constants.
+whitespace: (none)
+== ambiguity
+-- a call defined in two packages [shared]
+**Ambiguous**: defined in more than one package
+- `left.shared(): integer` (package `left` · a.nv)
+- `right.shared(): integer` (package `right` · b.nv)
+Write the call qualified, for example `left.shared(...)`.
+== string interpolation
+-- method inside an interpolation [area]
+```novus
+(method) Circle.area(): float
+```
+
+*package `geo` · shape.nv*
+-- local inside an interpolation [total]
+```novus
+(variable) total: integer
+```
+
+Declared: `var total = 1`
+the text of the string around it: (none)
+== imports
+-- std module [import strings]
+```novus
+import strings
+```
+
+Standard module `strings`.
+-- package folder [import geo]
+```novus
+import geo
+```
+
+Package folder `geo` with the files `extra.nv`, `shape.nv`.
+-- root file [import @helper]
+```novus
+import @helper
+```
+
+File `helper.nv`.
+-- dependency entry [import "ex.com/lib"]
+```novus
+import "ex.com/lib"
+```
+
+File `lib.nv`. From the dependency `ex.com/lib`.
+-- import that leads nowhere [import nowhere]
+```novus
+import nowhere
+```
+
+Not found: no package 'nowhere': there is no folder nowhere with .nv files and no standard module of that name
+== signature help
+explicit constructor: Circle(float radius) {float radius} | active 0 parameter 0
+method of a typed local: grow(float by): float {float by} | active 0 parameter 0
+std function, second argument: repeat(string s, integer times): string {string s|integer times} | active 0 parameter 1
+free builtin: parseInt(string text): integer {string text} | active 0 parameter 0
+builtin member, second argument: substring(integer start, integer end): string {integer start|integer end} | active 0 parameter 1
+overloads, second argument: scaled(float factor): float {float factor}; scaled(float factor, float extra): float {float factor|float extra} | active 1 parameter 1
+overloads, first argument: scaled(float factor): float {float factor}; scaled(float factor, float extra): float {float factor|float extra} | active 0 parameter 0
+implicit constructor from the fields: Point(float x, float y) {float x|float y} | active 0 parameter 0
+nested call picks the inner one: area(): float {} | active 0 parameter 0
+empty argument list: area(): float {} | active 0 parameter 0
+sync statement is no call: (none)
+outside any call: (none)
+call inside an interpolation: 2 signatures, active 1 parameter 1
+== manifest
+hover in a manifest: false
+signature help in a manifest: false
+== assignments in blocks with a return type
+-- assignment in a method returning integer [count]
+```novus
+(variable) count: integer
+```
+
+Declared: `var count = 1`
+-- assignment in a method returning string [text]
+```novus
+(variable) text: string
+```
+
+Declared: `var text = "a"`
+-- assignment inside a try block [total]
+```novus
+(variable) total: integer
+```
+
+Declared: `var total = 1`
+-- assignment in a method returning a class [item]
+```novus
+(variable) item: P
+```
+
+Declared: `var item = P(1)`
+== declaration line in the hover
+-- a line with backticks [count]
+```novus
+(variable) count: string
+```
+
+Declared: `` var count = "`x`" ``
+-- a very long line is cut [long]
+```novus
+(variable) long: string
+```
+
+Declared: `var long = "0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567…`

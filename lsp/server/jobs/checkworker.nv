@@ -1,0 +1,46 @@
+package jobs
+
+import base/maybe
+import log
+import services/checker
+import server/rpc
+
+private final JOBS_WORKER_CHECK = "check"
+
+// Thread body (thread runCheckWorker(request, inbox)): guarded, returns nothing; the result travels through the inbox.
+method runCheckWorker(CheckRequest request, InboxChannel inbox) {
+    var outcome = runGuarded(JobsCheckWork(request, inbox))
+    if (outcome.failed) {
+        log.error("jobs: the check worker failed: " + outcome.message)
+        postWorkerFailure(inbox, JOBS_WORKER_CHECK, request.requestId, outcome)
+    }
+}
+
+define class JobsCheckWork based GuardedWork {
+    CheckRequest request
+    InboxChannel inbox
+
+    construct(CheckRequest request, InboxChannel inbox) {
+        this.request = request
+        this.inbox = inbox
+    }
+
+    method run(): object {
+        var result = NovuscRunner().run(this.request)
+        this.inbox.post(Envelope(ENVELOPE_CHECK_DONE, result))
+        return nothing()
+    }
+}
+
+// The same run as the worker's, for test mode: the result is handed back instead of posted.
+define class JobsInlineCheck based GuardedWork {
+    CheckRequest request
+
+    construct(CheckRequest request) {
+        this.request = request
+    }
+
+    method run(): object {
+        return NovuscRunner().run(this.request)
+    }
+}

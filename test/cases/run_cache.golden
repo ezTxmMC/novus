@@ -1,0 +1,63 @@
+hello alpha
+hello alpha
+compilations after running alpha twice: 1
+entries: 1
+hello beta
+compilations after beta: 2
+hello alpha
+compilations after alpha with another optimization level: 3
+hello alpha
+compilations after repeating it: 3
+entries: 3
+hello alpha
+compilations with the cache off: 4
+entries with the cache off: 3
+novusc: NOVUS_RUN_OPT must be one of 0, 1, 2, 3, s (got '9')
+cache command: programs: 3
+entries after cache clear: 0
+hello first
+entries after the third program: 2
+compilations for second and third, first was a hit: 2
+hello first
+first was used more recently than second and is still cached: 2
+hello second
+second was evicted and compiles again: 3
+a file that is no cache entry stays: true
+limit 0 keeps only the newest program: 1
+novusc: NOVUS_CACHE_LIMIT must be a size like 256M, 512K or a number of bytes, at most 1 PiB (got '10x')
+six runs printed: 6 lines, all hello gamma: true
+entries: 1, staging files left: 0
+later run: hello gamma
+hello delta
+build --cache twice compiled: 1
+hello epsilon
+hello epsilon
+ok: <dir>/zeta.nv
+compilations by check: 0
+old folder kept: true
+old file named tmp-1-1.txt kept: true
+old file with a short key kept: true
+real staging leftovers removed: true
+cache of a missing folder, exit code 0: programs: 0
+clear of a missing folder, exit code 0: removed 0 programs from <cache>
+nothing was created by looking: true
+hello cached
+a cached program in a read only folder is a hit: 0
+hello uncached
+a new program is compiled to a temporary file: 1
+and the folder has only the one entry: 1
+novusc: NOVUS_CACHE_LIMIT must be a size like 256M, 512K or a number of bytes, at most 1 PiB (got 'bogus')
+novusc: NOVUS_CACHE_LIMIT must be a size like 256M, 512K or a number of bytes, at most 1 PiB (got 'bogus')
+compilations with a bad limit: 0
+entries: 1
+novusc: NOVUS_CACHE_LIMIT must be a size like 256M, 512K or a number of bytes, at most 1 PiB (got '99999999999999G')
+novusc: NOVUS_CACHE_LIMIT must be a size like 256M, 512K or a number of bytes, at most 1 PiB (got '9223372036854775808')
+hello early
+hello eta
+no folder named OFF: true
+built <dir>/existing
+overwritten file runs: hello theta
+novusc: cannot write <dir>/folder: it is a directory
+novusc: --cache cannot be combined with --no-runtime
+novusc: --cache cannot be combined with --keep-c
+ok: <dir>/iota.nv

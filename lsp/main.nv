@@ -1,0 +1,7 @@
+package main
+
+import server/wiring
+
+method main(array<string> args): integer {
+    return runCommandLine(args)
+}

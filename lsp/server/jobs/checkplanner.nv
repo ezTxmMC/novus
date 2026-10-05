@@ -1,0 +1,145 @@
+package jobs
+
+import base/maybe
+import base/platform
+import base/text
+import log
+import services/checker
+import server/session
+
+private final JOBS_MODE_OFF = "off"
+private final JOBS_REASON_COMMAND = "command"
+private final JOBS_REASON_IDLE = "idle"
+private final JOBS_NOVUSC_SETTING = "novus.check.novuscPath"
+
+// Whether the mode and the reason allow a run (the first step of 6.31).
+method jobsReasonAllowed(string mode, string reason): bool {
+    if (reason == JOBS_REASON_COMMAND) {
+        return true
+    }
+    if (mode == JOBS_MODE_OFF) {
+        return false
+    }
+    return reason != JOBS_REASON_IDLE || mode == JOBS_IDLE_MODE
+}
+
+// The facts that a run needs; why says what stopped the plan when ok is false.
+define class JobsPlan {
+    bool ok
+    string why
+    Document document
+    object project
+    string entry
+    string novusc
+
+    construct() {
+        this.ok = false
+        this.why = ""
+        this.entry = ""
+        this.novusc = ""
+    }
+}
+
+// Steps 2-8 of requestCheck (6.31), in order; the first step that fails ends the plan.
+define class JobsRequestPlanner {
+    Session session
+    JobsCheckState state
+
+    construct(Session session, JobsCheckState state) {
+        this.session = session
+        this.state = state
+    }
+
+    method prepare(string uri): JobsPlan {
+        var plan = JobsPlan()
+        plan.document = this.session.documentFor(uri)
+        if (isNone(plan.document) || plan.document.filePath == "") {
+            return this.refuse(plan, "the document is not open or has no file path")
+        }
+        var context = this.session.workspace.contextFor(plan.document)
+        if (isNone(context)) {
+            return this.refuse(plan, "the document has no project")
+        }
+        plan.project = context.project
+        return this.prepareProject(plan)
+    }
+
+    method prepareProject(JobsPlan plan): JobsPlan {
+        if (plan.project.hasUnfetchedDependencies()) {
+            return this.refuse(plan, "dependencies of the project are not fetched")
+        }
+        plan.entry = plan.project.checkEntry(plan.document.filePath)
+        if (plan.entry == "") {
+            return this.refuse(plan, "the project has no entry file with a main method")
+        }
+        plan.novusc = locateNovusc(this.session.settings.check.novuscPath, this.session.workspace.folders)
+        if (plan.novusc == "") {
+            this.warnMissingOnce()
+            return this.refuse(plan, "novusc was not found")
+        }
+        plan.ok = true
+        return plan
+    }
+
+    method refuse(JobsPlan plan, string why): JobsPlan {
+        plan.why = why
+        return plan
+    }
+
+    method warnMissingOnce() {
+        if (this.state.warnedMissing) {
+            return
+        }
+        this.state.warnedMissing = true
+        log.warn("jobs: novusc was not found, so no check runs; set " + JOBS_NOVUSC_SETTING + " or put novusc on the PATH")
+    }
+
+    // Steps 7 and 8: the request with the overlays of the dirty buffers (none for a run on the real tree).
+    method build(JobsPlan plan): CheckRequest {
+        var settings = this.session.settings.check
+        var request = CheckRequest(this.state.nextRequestId(), plan.novusc, plan.entry, plan.project.layout.root, settings.timeoutSeconds)
+        var dirty = this.dirtyDocuments(plan.project)
+        if (dirty.length() == 0) {
+            return request
+        }
+        this.fillOverlays(request, plan.project, dirty)
+        return request
+    }
+
+    // The open documents of the user files (the manifest included) whose buffer differs from the disk text.
+    method dirtyDocuments(object project): map<string, Document> {
+        var dirty = {}
+        var paths = [project.layout.manifestPath]
+        for (file in project.userFiles()) {
+            paths.push(file.filePath)
+        }
+        for (filePath in paths) {
+            var document = this.session.documents.findByPath(filePath)
+            if (isSome(document) && this.differsFromDisk(document)) {
+                dirty[filePath] = document
+            }
+        }
+        return dirty
+    }
+
+    method differsFromDisk(Document document): bool {
+        return document.textHash != textHashOf(this.session.workspace.files.disk.textOf(document.filePath))
+    }
+
+    method fillOverlays(CheckRequest request, object project, map<string, Document> dirty) {
+        for (file in project.userFiles()) {
+            request.overlays[file.filePath] = this.textFor(file.filePath, dirty)
+        }
+        for (filePath in dirty.keys()) {
+            request.overlays[filePath] = dirty[filePath].text
+            request.snapshotVersions[filePath] = dirty[filePath].version
+        }
+    }
+
+    method textFor(string filePath, map<string, Document> dirty): string {
+        if (dirty.has(filePath)) {
+            return dirty[filePath].text
+        }
+        return this.session.workspace.files.disk.textOf(filePath)
+    }
+}

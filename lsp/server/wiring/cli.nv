@@ -1,0 +1,57 @@
+package wiring
+
+import base/platform
+import log
+import server/protocol
+
+private final WIRING_LOG_VARIABLE = "NOVUS_LSP_LOG"
+private final WIRING_DEFAULT_LOG_LEVEL = "warn"
+private final WIRING_LOG_LEVELS = {"debug": true, "info": true, "warn": true, "error": true}
+private final WIRING_OPTION_VERSION = "--version"
+private final WIRING_OPTION_HELP = "--help"
+private final WIRING_OPTION_STDIO = "--stdio"
+private final WIRING_OPTION_PROCESS_ID = "--clientProcessId="
+private final WIRING_HELP_LINES = [
+    "usage: novus-lsp [--stdio] [--clientProcessId=<pid>] [--version] [--help]",
+    "",
+    "The Novus language server: LSP 3.17 over stdin and stdout.",
+    "  --stdio                  accepted and ignored (stdio is the only transport)",
+    "  --clientProcessId=<pid>  accepted and ignored",
+    "  --version                print the version and exit",
+    "  --help                   print this text and exit",
+    "",
+    "environment: NOVUS_LSP_LOG=debug|info|warn|error (default warn, written to stderr)"
+]
+
+// The binary: --version and --help print through platform.stdoutWriteText and exit, anything else starts the server.
+method runCommandLine(array<string> arguments): integer {
+    if (arguments.contains(WIRING_OPTION_VERSION)) {
+        stdoutWriteText(serverVersionText() + "\n")
+        return 0
+    }
+    if (arguments.contains(WIRING_OPTION_HELP)) {
+        stdoutWriteText(WIRING_HELP_LINES.join("\n") + "\n")
+        return 0
+    }
+    wiringConfigureLogging()
+    wiringWarnAboutArguments(arguments)
+    return buildApplication().run()
+}
+
+method wiringConfigureLogging() {
+    var level = environmentValue(WIRING_LOG_VARIABLE, WIRING_DEFAULT_LOG_LEVEL).toLower()
+    if (WIRING_LOG_LEVELS.has(level) == false) {
+        level = WIRING_DEFAULT_LOG_LEVEL
+    }
+    log.setLevel(level)
+    log.setTimestamps(true)
+}
+
+// Editors differ in what they append to the command line; an unknown option is not a reason to refuse to start.
+method wiringWarnAboutArguments(array<string> arguments) {
+    for (argument in arguments) {
+        if (argument != WIRING_OPTION_STDIO && argument.startsWith(WIRING_OPTION_PROCESS_ID) == false) {
+            log.warn("ignored command line argument: " + argument)
+        }
+    }
+}

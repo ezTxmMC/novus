@@ -1,8 +1,23 @@
 # Novus Language for VS Code
 
-Full editor support for the [Novus](../README.md) programming language (`.nv` files), plus
+Editor support for the [Novus](../README.md) programming language (`.nv` files): the client of the language
+server `novus-lsp` (written in Novus; see [Installation](#installation)), run/build commands and syntax highlighting, plus
 highlighting for its web components (`.nvh`: HTML with `<?nv ?>` blocks, `{expressions}`, `{#if}`/`{#for}`
 blocks and `@event`/`bind=`/`class:` directives) and Run/Build for them.
+
+## Installation
+
+The extension is a client: the language features come from the `novus-lsp` binary.
+
+1. Build it in the repository (`make lsp` writes `build/novus-lsp`) or take `novus-lsp-<target>` from a release,
+   rename it to `novus-lsp` and put it on the `PATH`.
+2. Build and install the extension: `npm install && npm run package`, then *Extensions: Install from VSIX...*.
+
+The extension finds the server through the `novus.server.path` setting, then `build/novus-lsp` in the workspace,
+then `novus-lsp` on the `PATH`. If it finds none it offers to open the setting or to use the previous TypeScript
+server (`novus.server.implementation`), which completes with its own short snippet list: the full catalogue of
+snippets comes from `novus-lsp`. Other editors (Neovim, Helix, JetBrains, ...) need only the command
+`novus-lsp --stdio`; see the documentation site, page *Editor support*.
 
 ## Features
 
@@ -32,7 +47,8 @@ blocks and `@event`/`bind=`/`class:` directives) and Run/Build for them.
 - **Run & Build** – `Novus: Run Novus File` (editor play button, `Ctrl+Alt+N`) compiles and runs the
   current file (`novusc run`); `Novus: Build Novus File` compiles it to a native binary (`novusc build`).
   Both use `build/novusc` in the workspace, then `novusc` on `PATH`, or `novus.executablePath`.
-- **Snippets** – `main`, `method`, `class`, `enum`, `interface`, `for`, `if`, `field`, `@Deprecated`, …
+- **Snippets** – `main`, `method`, `class`, `enum`, `interface`, `for`, `if`, `field`, `@Deprecated`, … (89 of them, offered
+  by the server through completion; `snippets/novus.json` is generated from the server's catalogue with `make snippets`)
 
 The whole workspace is indexed, so symbols defined in other `.nv` files are available for completion,
 navigation and rename.
@@ -41,13 +57,23 @@ navigation and rename.
 
 | Setting                              | Default | Description                                               |
 | ------------------------------------ | ------- | --------------------------------------------------------- |
+| `novus.server.implementation`        | `lsp`   | `lsp` (`novus-lsp`) or `typescript` (the previous server) |
+| `novus.server.path`                  | `""`    | the `novus-lsp` binary (empty = workspace `build/`, then `PATH`) |
 | `novus.executablePath`               | `""`    | `novusc` used by run/build (empty = auto-detect)          |
-| `novus.diagnostics.enabled`          | `true`  | Report problems                                           |
-| `novus.diagnostics.undefinedSymbols` | `true`  | Warn about names that cannot be resolved                  |
-| `novus.diagnostics.unusedVariables`  | `true`  | Fade out unused local variables                           |
-| `novus.format.namedArgumentSpacing`  | `none`  | `Key{field="v"}` (`none`) or `Key{field = "v"}` (`spaces`) |
-| `novus.format.maxBlankLines`         | `1`     | Consecutive blank lines kept by the formatter             |
+| `novus.check.mode`                   | `onSave`| `onSave`, `onType` or `off`: when `novusc check` runs      |
+| `novus.check.novuscPath`             | `""`    | `novusc` for the check (empty = `novus.executablePath`)    |
+| `novus.check.timeoutSeconds`         | `60`    | abandon a check after this many seconds                    |
+| `novus.diagnostics.own`              | `true`  | the server's own diagnostics                               |
+| `novus.pureline.enabled`             | `false` | Pureline style diagnostics (more keys: `novus.pureline.*`) |
+| `novus.imports.explicit`             | `true`  | completion adds the `import` of a package the file lacks   |
+| `novus.format.tabSize`, `insertSpaces`, `maxBlankLines` | `4`, `true`, `1` | formatter                       |
+| `novus.snippets.indent`              | four spaces | indentation unit of snippet bodies                     |
+| `novus.completion.maxItems`          | `200`   | longest completion answer                                  |
 | `novus.trace.server`                 | `off`   | LSP message tracing                                       |
+
+The settings of the TypeScript server (`novus.diagnostics.enabled`, `novus.diagnostics.undefinedSymbols`,
+`novus.diagnostics.unusedVariables`, `novus.format.namedArgumentSpacing`) still apply when it is selected.
+The full list with every `novus.pureline.*` key is on the documentation site, page *Language server*.
 
 ## Language notes
 

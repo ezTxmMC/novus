@@ -1,0 +1,159 @@
+package navigation
+
+import base/maybe
+import base/text
+import projects/closure
+import projects/workspace
+import semantics/semantic
+import semantics/targets
+import syntax/lexing
+import syntax/outline
+
+// The token streams of a file: its own tokens first, then the tokens of every `${...}` expression of its strings.
+method navigationStreams(array<Token> tokens): array<array<Token>> {
+    var streams = [tokens]
+    for (token in tokens) {
+        if (token.kind != TokenKind.String) {
+            continue
+        }
+        for (island in token.interpolations) {
+            streams.append(targetsIslandTokens(token, island))
+        }
+    }
+    return streams
+}
+
+// A closure file whose syntax is the given token-keeping parse: the resolver reads the locals of `syntax`.
+method navigationFileWithSyntax(ClosureFile file, SourceFile syntax): ClosureFile {
+    if (file.syntax == syntax) {
+        return file
+    }
+    var copy = ClosureFile(file.filePath, file.origin, file.root, file.qualifier, syntax)
+    copy.packageName = file.packageName
+    copy.moduleName = file.moduleName
+    return copy
+}
+
+// The closure file that `syntax` belongs to; nil when the file is not part of the program.
+method navigationFileFor(FileContext context, SourceFile syntax): ClosureFile {
+    if (isNone(context.closureFile) || isNone(syntax)) {
+        return nothing()
+    }
+    var file = context.project.closure.fileAt(syntax.filePath)
+    if (isNone(file)) {
+        return nothing()
+    }
+    return navigationFileWithSyntax(file, syntax)
+}
+
+// The local that a symbol of kind `local` stands for, found in the callable that declares it.
+method navigationLocalOf(FileContext context, Symbol symbol): Local {
+    if (symbol.isLocal() == false || isNone(context.syntax)) {
+        return nothing()
+    }
+    var callable = context.syntax.enclosingCallable(symbol.decl.nameSpan.start)
+    if (isNone(callable)) {
+        return nothing()
+    }
+    for (local in callable.locals) {
+        if (local.nameSpan.start == symbol.decl.nameSpan.start) {
+            return local
+        }
+    }
+    return nothing()
+}
+
+// Identifier-token scan inside one file for one target. A local is scope-exact: a shadowing declaration or a member
+// of the same name is not an occurrence. Declarations are occurrences too; the callers filter them.
+define class OccurrenceScanner {
+    construct() {
+    }
+
+    method occurrences(FileContext context, Symbol target, SourceFile syntax): array<Span> {
+        if (target.isLocal()) {
+            return this.ofLocalSymbol(context, target, syntax)
+        }
+        var file = navigationFileFor(context, syntax)
+        if (isNone(file)) {
+            return []
+        }
+        var family = navigationFamilyOf(context.resolver(), target)
+        return this.scanFamily(context.resolver(), file, syntax, family)
+    }
+
+    method ofLocalSymbol(FileContext context, Symbol target, SourceFile syntax): array<Span> {
+        if (syntax != context.syntax) {
+            return []
+        }
+        var local = navigationLocalOf(context, target)
+        if (isNone(local)) {
+            return []
+        }
+        return this.localOccurrences(context, local)
+    }
+
+    method scanFamily(Resolver resolver, ClosureFile file, SourceFile syntax, NavigationFamily family): array<Span> {
+        var spans = []
+        var navigator = TargetFinder(resolver)
+        for (tokens in navigationStreams(syntax.tokens)) {
+            var i = 0
+            while (i < tokens.length()) {
+                if (tokens[i].kind == TokenKind.Ident && tokens[i].text == family.name && family.accepts(navigator.targetOfToken(file, tokens, i, false), tokens, i)) {
+                    spans.append(tokens[i].span())
+                }
+                i = i + 1
+            }
+        }
+        return spans
+    }
+
+    method localOccurrences(FileContext context, Local local): array<Span> {
+        var spans = []
+        if (isNone(context.closureFile) || isNone(context.syntax)) {
+            return spans
+        }
+        for (tokens in navigationStreams(context.syntax.tokens)) {
+            var i = 0
+            while (i < tokens.length()) {
+                if (this.isOccurrenceOf(context, local, tokens, i)) {
+                    spans.append(tokens[i].span())
+                }
+                i = i + 1
+            }
+        }
+        return spans
+    }
+
+    // The name of a nested declaration that shadows the local is that declaration, whatever is visible before it.
+    method declaresAnother(FileContext context, Local local, Token token): bool {
+        var callable = context.syntax.enclosingCallable(token.start)
+        if (isNone(callable)) {
+            return false
+        }
+        for (other in callable.locals) {
+            if (other.nameSpan.start == token.start && other.nameSpan.start != local.nameSpan.start) {
+                return true
+            }
+        }
+        return false
+    }
+
+    method isOccurrenceOf(FileContext context, Local local, array<Token> tokens, integer index): bool {
+        var token = tokens[index]
+        if (token.kind != TokenKind.Ident || token.text != local.name) {
+            return false
+        }
+        if (token.start == local.nameSpan.start) {
+            return true
+        }
+        if (token.start < local.scope.start || token.start >= local.scope.end || this.declaresAnother(context, local, token)) {
+            return false
+        }
+        if ((index > 0 && tokens[index - 1].isPunct(".")) || targetsTypedLiteralOwner(context.resolver(), tokens, index) != "") {
+            return false
+        }
+        var scope = context.resolver().scopeAt(context.closureFile, token.start)
+        var visible = context.resolver().localNamed(scope, local.name)
+        return isSome(visible) && visible.nameSpan.start == local.nameSpan.start
+    }
+}

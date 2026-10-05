@@ -1,0 +1,61 @@
+package main
+
+import "novus/lsp/base/maybe"
+import "novus/lsp/base/model"
+import "novus/lsp/base/text"
+import @support
+
+method runCallCases() {
+    println("== unknown-name: functions, variables, assignment targets, the words null and new")
+    var world = DgWorld({
+        "/p/project.nv": "project \"p\"\n",
+        "/p/main.nv": "define class Box {\n    integer size\n\n    method grow(integer by): integer {\n        size = size + by\n        return size\n    }\n}\n\nmethod known(integer a, integer b): integer {\n    return a + b\n}\n\nmethod main() {\n    var total = 0\n    for (item in [1, 2]) {\n        total = total + item\n    }\n    println(known(1, 2))\n    println(known(1))\n    println(readFile(\"x\"))\n    println(missingFunction(total))\n    println(missingVariable + 1)\n    missingTarget = 5\n    var nothing = null\n    var made = new Box(1)\n    println(Box(3).grow(1))\n    println(\"inside " + dgInterp() + "undefinedInText}\")\n    sync (total) {\n        total = 1\n    }\n}\n"
+    })
+    dgShow("main.nv", world.ownOf("/p/main.nv"))
+    runAmbiguousCases()
+    runGateCases()
+}
+
+method runAmbiguousCases() {
+    println("== ambiguous-call: a function of several packages, called unqualified")
+    var world = DgWorld({
+        "/p/project.nv": "project \"p\"\n",
+        "/p/main.nv": "import a\nimport b\n\nmethod main() {\n    println(hello())\n    println(a.hello())\n    println(only())\n}\n",
+        "/p/a/a.nv": "package a\n\nmethod hello(): string {\n    return \"a\"\n}\n\nmethod only(): string {\n    return \"o\"\n}\n",
+        "/p/b/b.nv": "package b\n\nmethod hello(): string {\n    return \"b\"\n}\n"
+    })
+    dgShow("main.nv", world.ownOf("/p/main.nv"))
+}
+
+method runGateCases() {
+    println("== when the name rules stay silent")
+    var library = DgWorld({
+        "/p/project.nv": "project \"p\"\n",
+        "/p/lib.nv": "method helper() {\n    println(missingFunction())\n}\n"
+    })
+    dgShow("no method main anywhere: a library file", library.ownOf("/p/lib.nv"))
+    var syntax = DgWorld({
+        "/p/project.nv": "project \"p\"\n",
+        "/p/main.nv": "method main() {\n    for (var i = 0; i < 2; i = i + 1) {\n        println(i)\n    }\n    println(missingFunction())\n}\n"
+    })
+    dgShow("a syntax error in the file: only the syntax rule speaks", syntax.ownOf("/p/main.nv"))
+    var unresolved = DgWorld({
+        "/p/project.nv": "project \"p\"\n",
+        "/p/main.nv": "import nowhere\n\nmethod main() {\n    println(missingFunction())\n}\n"
+    })
+    dgShow("an import that leads nowhere: the program is incomplete", unresolved.ownOf("/p/main.nv"))
+    var opaque = DgWorld({
+        "/p/project.nv": "project \"p\"\n",
+        "/p/main.nv": "define class Page based ExternalBase {\n    method render() {\n        println(inherited())\n    }\n}\n\nmethod main() {\n    println(missingFunction())\n}\n"
+    })
+    dgShow("a class whose base type is not in the program is not judged, the rest of the file is", opaque.ownOf("/p/main.nv"))
+    var off = DgWorld({
+        "/p/project.nv": "project \"p\"\n",
+        "/p/main.nv": "method main() {\n    println(missingFunction())\n}\n"
+    })
+    off.settings.ownDiagnostics = false
+    dgShow("novus.diagnostics.own is false", off.ownOf("/p/main.nv"))
+    var scratch = DgWorld({})
+    var document = Document("untitled:Untitled-1", "novus", 1, "method main() {\n    println(missingFunction())\n}\n")
+    dgShow("a scratch buffer is its own program", dgLines(document, scratch.own.produce(document)))
+}

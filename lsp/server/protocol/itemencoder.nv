@@ -1,0 +1,192 @@
+package protocol
+
+import base/model
+import base/text
+
+// Encoding of the large records: completion items, document symbols, code actions, workspace symbols.
+private final PROTOCOL_INSERT_FORMAT_SNIPPET = 2
+private final PROTOCOL_INSERT_MODE_ADJUST_INDENTATION = 2
+private final PROTOCOL_COMPLETION_TAG_DEPRECATED = 1
+private final PROTOCOL_SYMBOL_TAG_DEPRECATED = 1
+// Every level is two JSON levels (object and array) and json.stringify refuses more than 256.
+private final PROTOCOL_MAX_SYMBOL_DEPTH = 80
+private final PROTOCOL_UNNAMED_SYMBOL = "<unnamed>"
+
+// Clients reject a symbol without a name and drop the whole response, and recovered parses can yield empty names.
+method protocolSymbolName(string name): string {
+    var clipped = protocolClip(name)
+    if (clipped == "") {
+        return PROTOCOL_UNNAMED_SYMBOL
+    }
+    return clipped
+}
+
+define class ItemEncoder {
+    PositionCodec codec
+    ClientInfo client
+
+    construct(PositionCodec codec, ClientInfo client) {
+        this.codec = codec
+        this.client = client
+    }
+
+    // textEdit carries the replace range; insertText would be ignored next to it. An item whose producer never set
+    // replaceSpan gets plain insertText, so the client picks the word range itself instead of inserting at offset 0.
+    method completionItem(LineIndex lines, CompletionItem item): map<string, object> {
+        var newText = item.insertText
+        if (newText == "") {
+            newText = item.label
+        }
+        var encoded = {"label": protocolClip(item.label), "kind": item.kind.code}
+        if (item.hasReplaceSpan()) {
+            encoded["textEdit"] = {"range": encodeRange(this.codec, lines, item.replaceSpan), "newText": newText}
+        }
+        if (item.hasReplaceSpan() == false) {
+            encoded["insertText"] = newText
+        }
+        this.addCompletionOptions(encoded, lines, item)
+        return encoded
+    }
+
+    method addCompletionOptions(map<string, object> encoded, LineIndex lines, CompletionItem item) {
+        this.addCompletionTexts(encoded, item)
+        if (item.isSnippet) {
+            encoded["insertTextFormat"] = PROTOCOL_INSERT_FORMAT_SNIPPET
+        }
+        if (item.isSnippet && this.client.insertTextModeSupport) {
+            encoded["insertTextMode"] = PROTOCOL_INSERT_MODE_ADJUST_INDENTATION
+        }
+        if (item.deprecated) {
+            encoded["tags"] = [PROTOCOL_COMPLETION_TAG_DEPRECATED]
+        }
+        if (item.additionalEdits.length() > 0) {
+            encoded["additionalTextEdits"] = protocolEncodeTextEdits(this.codec, lines, item.additionalEdits)
+        }
+        if (item.command != "") {
+            encoded["command"] = {"title": item.command, "command": item.command}
+        }
+        if (item.resolveKey != "") {
+            encoded["data"] = item.resolveKey
+        }
+    }
+
+    method addCompletionTexts(map<string, object> encoded, CompletionItem item) {
+        if (item.detail != "") {
+            encoded["detail"] = protocolClip(item.detail)
+        }
+        if (item.labelDescription != "" && this.client.labelDetailsSupport) {
+            encoded["labelDetails"] = {"description": protocolClip(item.labelDescription)}
+        }
+        if (item.documentation != "") {
+            encoded["documentation"] = protocolMarkup(this.client, item.documentation)
+        }
+        if (item.filterText != "") {
+            encoded["filterText"] = protocolClip(item.filterText)
+        }
+        if (item.sortText != "") {
+            encoded["sortText"] = protocolClip(item.sortText)
+        }
+    }
+
+    // selectionRange must lie inside range or clients reject the whole response, so range grows to cover it.
+    method symbolRange(OutlineEntry entry): Span {
+        var start = entry.fullSpan.start
+        var end = entry.fullSpan.end
+        if (entry.nameSpan.start < start) {
+            start = entry.nameSpan.start
+        }
+        if (entry.nameSpan.end > end) {
+            end = entry.nameSpan.end
+        }
+        return Span(start, end)
+    }
+
+    method documentSymbol(LineIndex lines, OutlineEntry entry): map<string, object> {
+        return this.symbolAt(lines, entry, 0)
+    }
+
+    method symbolAt(LineIndex lines, OutlineEntry entry, integer depth): map<string, object> {
+        var encoded = {
+            "name": protocolSymbolName(entry.name),
+            "kind": entry.kind.code,
+            "range": encodeRange(this.codec, lines, this.symbolRange(entry)),
+            "selectionRange": encodeRange(this.codec, lines, entry.nameSpan)
+        }
+        if (entry.detail != "") {
+            encoded["detail"] = protocolClip(entry.detail)
+        }
+        if (entry.deprecated) {
+            encoded["tags"] = [PROTOCOL_SYMBOL_TAG_DEPRECATED]
+        }
+        if (entry.children.length() > 0 && depth < PROTOCOL_MAX_SYMBOL_DEPTH) {
+            encoded["children"] = this.childrenAt(lines, entry, depth + 1)
+        }
+        return encoded
+    }
+
+    method childrenAt(LineIndex lines, OutlineEntry entry, integer depth): array<map<string, object>> {
+        var children = []
+        for (child in entry.children) {
+            children.append(this.symbolAt(lines, child, depth))
+        }
+        return children
+    }
+
+    method documentSymbolFlat(string uri, LineIndex lines, OutlineEntry entry): array<map<string, object>> {
+        var flat = []
+        this.flattenInto(flat, uri, lines, entry, "", 0)
+        return flat
+    }
+
+    // Depth first; containerName is the parent's name.
+    method flattenInto(array<map<string, object>> flat, string uri, LineIndex lines, OutlineEntry entry, string container, integer depth) {
+        var range = encodeRange(this.codec, lines, this.symbolRange(entry))
+        var encoded = {"name": protocolSymbolName(entry.name), "kind": entry.kind.code, "location": {"uri": uri, "range": range}}
+        if (container != "") {
+            encoded["containerName"] = protocolSymbolName(container)
+        }
+        if (entry.deprecated) {
+            encoded["tags"] = [PROTOCOL_SYMBOL_TAG_DEPRECATED]
+        }
+        flat.append(encoded)
+        if (depth >= MAX_NESTING_DEPTH) {
+            return
+        }
+        for (child in entry.children) {
+            this.flattenInto(flat, uri, lines, child, protocolSymbolName(entry.name), depth + 1)
+        }
+    }
+
+    // Without a line index for the symbol's file the range collapses to the start of the file.
+    method workspaceSymbol(map<string, LineIndex> linesByPath, WorkspaceSymbolEntry entry): map<string, object> {
+        var place = entry.location
+        var origin = protocolEncodePosition(WirePosition(0, 0))
+        var range = {"start": origin, "end": origin}
+        if (linesByPath.has(place.filePath)) {
+            range = encodeRange(this.codec, linesByPath[place.filePath], place.span)
+        }
+        var encoded = {
+            "name": protocolSymbolName(entry.name),
+            "kind": entry.kind.code,
+            "location": {"uri": filePathToUri(place.filePath), "range": range}
+        }
+        if (entry.containerName != "") {
+            encoded["containerName"] = protocolClip(entry.containerName)
+        }
+        return encoded
+    }
+
+    // Without a map, every edit of an action is taken to belong to the document the request came from.
+    method codeAction(LineIndex lines, CodeActionItem item): map<string, object> {
+        var linesByPath = {}
+        for (fileEdit in item.edits) {
+            linesByPath[fileEdit.filePath] = lines
+        }
+        return this.codeAction(lines, item, linesByPath)
+    }
+
+    // Each FileEdit is encoded with the line index of its own file; lines is the requesting document, used for the diagnostics.
+    method codeAction(LineIndex lines, CodeActionItem item, map<string, LineIndex> linesByPath): map<string, object> {
+        return ProtocolActionEncoder(this.codec, this.client).action(lines, item, linesByPath)
+    }
+}

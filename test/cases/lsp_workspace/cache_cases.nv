@@ -1,0 +1,112 @@
+package main
+
+import "novus/lsp/base/platform"
+import "novus/lsp/projects/closure"
+import "novus/lsp/projects/workspace"
+import "novus/lsp/syntax/outline"
+import "novus/lsp/base/maybe"
+import "novus/lsp/syntax/parsing"
+import @support
+
+method cacheFiles(): map<string, string> {
+    return {
+        "/c/a.nv": "method a() {\n    var x = 1\n}\n",
+        "/c/page.nvh": "<?nv\nprop string title\nmethod greet(): string {\n    return title\n}\n?>\n<h1>x</h1>\n",
+        "/c/project.nv": "project \"c\"\nmain \"a.nv\"\n"
+    }
+}
+
+method runOverlayCases() {
+    println("== FileCache: overlays shadow the disk")
+    var source = WsSource(cacheFiles())
+    var cache = FileCache(source)
+    wsCheck("disk text", cache.textOf("/c/a.nv").length() + " " + cache.exists("/c/a.nv") + " " + cache.hasOverlay("/c/a.nv"), "29 true false")
+    cache.setOverlay("/c/a.nv", "method a() {\n}\n")
+    wsCheck("overlay text wins", cache.textOf("/c/a.nv").length(), "15")
+    wsCheck("the disk is untouched", source.textOf("/c/a.nv").length(), "29")
+    cache.setOverlay("/c/new.nv", "method n() {\n}\n")
+    wsCheck("an overlay-only file exists", cache.exists("/c/new.nv") + " " + source.exists("/c/new.nv") + " " + cache.modifiedMillis("/c/new.nv"), "true false -1")
+    wsCheck("overlays never add directory entries", cache.entriesOf("/c").join(","), "a.nv,page.nvh,project.nv")
+    wsCheck("overlay paths", cache.overlayPaths().join(","), "/c/a.nv,/c/new.nv")
+    cache.clearOverlay("/c/a.nv")
+    wsCheck("cleared: the disk text again", cache.textOf("/c/a.nv").length(), "29")
+    wsCheck("a missing file", cache.textOf("/c/none.nv") + "|" + cache.exists("/c/none.nv") + " " + cache.modifiedMillis("/c/none.nv") + " " + cache.isDirectory("/c"), "|false -1 true")
+    cache.setOverlay("/c/./sub/../b.nv", "x")
+    wsCheck("paths are normalised on the way in", cache.hasOverlay("/c/b.nv") + " " + cache.textOf("/c/b.nv"), "true x")
+}
+
+method runParseOptionCases() {
+    println("== FileCache.syntaxOf: parse options by overlay, cache hits by text hash (V100)")
+    var cache = FileCache(WsSource(cacheFiles()))
+    var closed = cache.syntaxOf("/c/a.nv")
+    wsCheck("a file nobody opened: index options", closed.tokens.length() + " locals=" + closed.decls[0].locals.length(), "0 locals=0")
+    wsCheck("a second call is a cache hit", cache.syntaxOf("/c/a.nv") == closed, "true")
+    cache.setOverlay("/c/a.nv", "method a() {\n    var x = 1\n}\n")
+    var opened = cache.syntaxOf("/c/a.nv")
+    wsCheck("an open document is never served a parse without tokens", (opened == closed) + " " + (opened.tokens.length() > 0) + " locals=" + opened.decls[0].locals.length(), "false true locals=1")
+    wsCheck("the editor parse is now the cached one", cache.syntaxOf("/c/a.nv") == opened, "true")
+    cache.clearOverlay("/c/a.nv")
+    wsCheck("closed again: the parse with tokens still satisfies the path", cache.syntaxOf("/c/a.nv") == opened, "true")
+    cache.setOverlay("/c/a.nv", "method a() {\n    var y = 2\n}\n")
+    var edited = cache.syntaxOf("/c/a.nv")
+    wsCheck("other text: a new parse replaces the stored one", (edited == opened) + " " + (cache.parsed["/c/a.nv"] == edited) + " " + edited.decls[0].locals[0].name, "false true y")
+    cache.forget("/c/a.nv")
+    wsCheck("forget drops the parse, not the overlay", cache.parsed.has("/c/a.nv") + " " + cache.hasOverlay("/c/a.nv"), "false true")
+}
+
+method runKindCases() {
+    println("== FileCache.syntaxOf: the file kind decides the parser")
+    var cache = FileCache(WsSource(cacheFiles()))
+    var component = cache.syntaxOf("/c/page.nvh")
+    wsCheck("a component", component.fileKind + " " + component.decls[0].name + " " + component.decls[0].baseName + " " + component.decls[0].members.length(), "nvh page NvhComponent 2")
+    var manifest = cache.syntaxOf("/c/project.nv")
+    wsCheck("a manifest has no declarations", manifest.fileKind + " " + manifest.decls.length() + " " + manifest.issues.length(), "manifest 0 0")
+    var missing = cache.syntaxOf("/c/none.nv")
+    wsCheck("a missing file parses as the empty text", missing.decls.length() + " " + missing.fileKind, "0 nv")
+    cache.setOverlay("/c/project.nv", "project \"c\"\nmain \"b.nv\"\n")
+    wsCheck("an open manifest gives a different parse object", cache.syntaxOf("/c/project.nv") != manifest, "true")
+}
+
+method runTokenCases() {
+    println("== FileCache.syntaxWithTokens and the TokenCache (LRU)")
+    var source = WsSource(cacheFiles())
+    var cache = FileCache(source)
+    var withTokens = cache.syntaxWithTokens("/c/a.nv")
+    var again = cache.syntaxWithTokens("/c/a.nv")
+    wsCheck("tokens for a file that is not open", (withTokens.tokens.length() > 0) + " " + (again == withTokens), "true true")
+    wsCheck("the plain parse stays without tokens", cache.syntaxOf("/c/a.nv").tokens.length(), "0")
+    source.write("/c/a.nv", "method b() {\n}\n")
+    var changed = cache.syntaxWithTokens("/c/a.nv")
+    wsCheck("changed on disk: a new parse", (changed == withTokens) + " " + changed.decls[0].name, "false b")
+    cache.setOverlay("/c/a.nv", "method o() {\n}\n")
+    var viaTokens = cache.syntaxWithTokens("/c/a.nv")
+    var viaSyntax = cache.syntaxOf("/c/a.nv")
+    wsCheck("an open document: the editor parse", viaTokens == viaSyntax, "true")
+    runLeastRecentlyUsed()
+}
+
+method runLeastRecentlyUsed() {
+    var tokens = TokenCache(3)
+    var one = parseNamed("one")
+    var two = parseNamed("two")
+    var three = parseNamed("three")
+    tokens.store("/1", one)
+    tokens.store("/2", two)
+    tokens.store("/3", three)
+    wsCheck("full", tokens.order.join(","), "/1,/2,/3")
+    var hit = tokens.find("/1", one.textHash)
+    wsCheck("a hit moves the file to the end", (hit == one) + " " + tokens.order.join(","), "true /2,/3,/1")
+    tokens.store("/4", parseNamed("four"))
+    wsCheck("the least recently used is dropped", tokens.order.join(",") + " " + tokens.entries.has("/2"), "/3,/1,/4 false")
+    var miss = tokens.find("/3", 12345)
+    wsCheck("a wrong hash is a miss and changes nothing", isNone(miss) + " " + tokens.order.join(","), "true /3,/1,/4")
+    tokens.store("/1", parseNamed("uno"))
+    wsCheck("storing again replaces and refreshes", tokens.order.join(",") + " " + tokens.entries["/1"].decls[0].name, "/3,/4,/1 uno")
+    tokens.drop("/4")
+    wsCheck("drop", tokens.order.join(",") + " " + tokens.entries.length(), "/3,/1 2")
+    wsCheck("the capacity of the contract", TOKEN_CACHE_CAPACITY, "64")
+}
+
+method parseNamed(string name): SourceFile {
+    return parseSourceText("/" + name + ".nv", "method " + name + "() {\n}\n", indexParseOptions())
+}

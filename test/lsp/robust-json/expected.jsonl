@@ -1,0 +1,14 @@
+{"id":1,"jsonrpc":"2.0","result":{"capabilities":"@CAPABILITIES@","serverInfo":{"name":"novus-lsp","version":"0.1.0"}}}
+{"error":{"code":-32700,"message":"parse error"},"id":null,"jsonrpc":"2.0"}
+{"error":{"code":-32600,"message":"invalid request"},"id":null,"jsonrpc":"2.0"}
+{"error":{"code":-32600,"message":"invalid request"},"id":null,"jsonrpc":"2.0"}
+{"error":{"code":-32600,"message":"invalid request"},"id":null,"jsonrpc":"2.0"}
+{"error":{"code":-32700,"message":"parse error"},"id":null,"jsonrpc":"2.0"}
+{"error":{"code":-32700,"message":"parse error"},"id":null,"jsonrpc":"2.0"}
+{"error":{"code":-32700,"message":"parse error"},"id":null,"jsonrpc":"2.0"}
+{"error":{"code":-32600,"message":"invalid request"},"id":null,"jsonrpc":"2.0"}
+{"error":{"code":-32600,"message":"invalid request"},"id":5,"jsonrpc":"2.0"}
+{"error":{"code":-32600,"message":"invalid request"},"id":6,"jsonrpc":"2.0"}
+{"error":{"code":-32600,"message":"invalid request"},"id":null,"jsonrpc":"2.0"}
+{"error":{"code":-32601,"message":"method not found: nope/still-alive"},"id":7,"jsonrpc":"2.0"}
+{"id":8,"jsonrpc":"2.0","result":null}

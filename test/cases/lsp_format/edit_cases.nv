@@ -1,0 +1,110 @@
+package main
+
+import bytes
+import "novus/lsp/base/model"
+import "novus/lsp/base/text"
+import "novus/lsp/syntax/lexing"
+import "novus/lsp/services/format"
+
+method describeEdits(array<TextEdit> edits): string {
+    var parts = []
+    for (edit in edits) {
+        parts.append(edit.span.start + "-" + edit.span.end + "=>[" + visible(edit.newText) + "]")
+    }
+    return parts.join(" ")
+}
+
+method editsOf(string source): array<TextEdit> {
+    var document = documentOf(source)
+    return Formatter(FormatSettings()).editsFor(document, lexText(source))
+}
+
+method showEdits(string label, string source) {
+    println("edits " + label + ": " + describeEdits(editsOf(source)))
+}
+
+method runMinimalCases() {
+    showEdits("one space missing", "a=1\n")
+    showEdits("extra spaces", "a   =  1\n")
+    showEdits("indentation only", "method f() {\nx = 1\n}\n")
+    showEdits("trailing blanks and indentation per line", "method f() {  \n  x = 1  \n}\n")
+    showEdits("blank lines collapse", "a = 1\n\n\n\nb = 2\n")
+    showEdits("final line break added", "a = 1")
+    showEdits("final blank lines removed", "a = 1\n\n\n")
+    showEdits("crlf", "method f() {\r\nx = 1\r\n}\r\n")
+    showEdits("already formatted", "method f() {\n    x = 1\n}\n")
+    showEdits("empty text", "")
+    showEdits("comment alignment is kept", "x = 1   // a\ny = 2 // b\n")
+}
+
+method expectEditsApply(string label, string source) {
+    var formattedText = formatted(source)
+    var applied = applyEdits(source, editsOf(source))
+    record(label + " edits give the formatted text", bytes.equal(applied, formattedText), "applied [" + visible(applied) + "] wanted [" + visible(formattedText) + "]")
+}
+
+method runApplyCases() {
+    expectEditsApply("small program", "package main\nimport   json\n\n\nmethod f(){\nx=1+2\n  y=3   \n}\n")
+    expectEditsApply("crlf program", "method f(){\r\n\r\n\r\nx=1\r\n}")
+    expectEditsApply("blank line removal and indentation together", "a=1\n\n\n\n   b=2\n")
+    expectEditsApply("tabs", "method f(){\n\tx=1\n\t\ty=2\n}\n")
+    expectEditsApply("only whitespace", "  \n\n  ")
+    expectEditsApply("a control byte", "a" + chr(1) + " =1\n")
+    expectEditsApply("a nul byte", "a=1" + chr(0) + "   b=2\n   c=3\n")
+    expectEditsApply("unicode text", "x = \"é\"+\"日本\"\n  y=1\n")
+}
+
+method runGuardCases() {
+    var manifest = Document("file:///work/project.nv", "novus", 1, "project   \"x\"\n")
+    var page = Document("file:///work/page.nvh", "novus", 1, "<div>a=1</div>\n")
+    var formatter = Formatter(FormatSettings())
+    println("edits for a manifest: " + formatter.editsFor(manifest, lexText(manifest.text)).length())
+    println("edits for a component: " + formatter.editsFor(page, lexText(page.text)).length())
+    println("range edits for a manifest: " + formatter.rangeEditsFor(manifest, lexText(manifest.text), Span(0, 5)).length())
+    var broken = "x = \"never closed\n  y=1\n"
+    println("edits for an unterminated string: " + editsOf(broken).length())
+    println("edits for an unterminated comment: " + editsOf("x=1\n/* open\n").length())
+    println("edits for a formatted file: " + editsOf("a = 1\n").length())
+}
+
+method runMinimalEditsFunctionCases() {
+    var document = documentOf("a  =  1\n")
+    println("minimalEdits: " + describeEdits(minimalEdits(document, "a = 1\n")))
+    println("minimalEdits of equal texts: " + minimalEdits(document, "a  =  1\n").length())
+    println("minimalEdits of a different token: " + minimalEdits(document, "b = 1\n").length())
+    println("minimalEdits of a changed number: " + minimalEdits(document, "a = 2\n").length())
+    println("minimalEdits with an extra token: " + minimalEdits(document, "a = 1 x\n").length())
+    println("minimalEdits with a missing token: " + minimalEdits(document, "a =\n").length())
+    println("minimalEdits of the empty text: " + minimalEdits(documentOf(""), "").length())
+    println("minimalEdits to the empty text: " + describeEdits(minimalEdits(documentOf("  \n"), "")))
+    println("minimalEdits from the empty text: " + describeEdits(minimalEdits(documentOf(""), "\n")))
+}
+
+method rangeEditsOf(string source, integer startOffset, integer endOffset): string {
+    var document = documentOf(source)
+    var edits = Formatter(FormatSettings()).rangeEditsFor(document, lexText(source), Span(startOffset, endOffset))
+    return describeEdits(edits)
+}
+
+method runRangeCases() {
+    var source = "method f() {\nx=1\n  y=2\nz=3\n}\n"
+    println("range all lines: " + rangeEditsOf(source, 0, source.length()))
+    println("range on the second line: " + rangeEditsOf(source, 13, 16))
+    println("range of the second and third line: " + rangeEditsOf(source, 13, 25))
+    println("range ending at the start of a line: " + rangeEditsOf(source, 13, 17))
+    println("range of one offset: " + rangeEditsOf(source, 14, 14))
+    println("range past the end: " + rangeEditsOf(source, 20, 500))
+    println("range before the start: " + rangeEditsOf(source, -5, 3))
+    println("range with the end before the start: " + rangeEditsOf(source, 25, 13))
+    println("range on a formatted line: " + rangeEditsOf("a = 1\nb=2\n", 0, 5))
+    println("range keeps the context of the whole file: " + rangeEditsOf("method f() {\nif (a) {\nx=1\n}\n}\n", 22, 26))
+}
+
+method runEditCases() {
+    println("--- edits")
+    runMinimalCases()
+    runApplyCases()
+    runGuardCases()
+    runMinimalEditsFunctionCases()
+    runRangeCases()
+}

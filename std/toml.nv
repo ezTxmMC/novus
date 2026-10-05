@@ -11,6 +11,12 @@ import json
 // strings. Dates and times are kept as their text (2026-09-18T12:00:00Z).
 // Invalid input is a runtime error naming the line; parseOr() and isValid()
 // check without one.
+//
+// Numbers follow TOML 1.0 strictly: no leading zeros (`port = 08080` is an
+// error, it used to read as 8080), digits on both sides of the decimal point
+// and after the exponent mark (`1.`, `.5` and `1e` are errors). The decimal
+// forms are checked with json.isValid; the 0x, 0o and 0b forms and the
+// underscore separators are handled here.
 
 method parse(string text): map<string, object> {
     var p = TomlParser{text=text, at=0, line=1}

@@ -1,0 +1,67 @@
+package main
+
+import "novus/lsp/server/rpc"
+import json
+
+method classifyText(string jsonText): string {
+    return classifyMessage(json.tryParse(jsonText))
+}
+
+method runMessageCases() {
+    say("--- messages")
+    var cases = [
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"a\"}",
+        "{\"jsonrpc\":\"2.0\",\"id\":\"x\",\"method\":\"a\",\"params\":{}}",
+        "{\"jsonrpc\":\"2.0\",\"method\":\"a\"}",
+        "{\"jsonrpc\":\"2.0\",\"id\":null,\"method\":\"a\"}",
+        "{\"jsonrpc\":\"2.0\",\"id\":1.5,\"method\":\"a\"}",
+        "{\"jsonrpc\":\"2.0\",\"id\":true,\"method\":\"a\"}",
+        "{\"jsonrpc\":\"2.0\",\"id\":[1],\"method\":\"a\"}",
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":7}",
+        "{\"jsonrpc\":\"2.0\",\"id\":\"novus-1\",\"result\":null}",
+        "{\"jsonrpc\":\"2.0\",\"id\":\"novus-1\",\"error\":{\"code\":1,\"message\":\"m\"}}",
+        "{\"jsonrpc\":\"2.0\",\"id\":3}",
+        "{\"jsonrpc\":\"2.0\",\"result\":1}",
+        "{}",
+        "[1,2]",
+        "42",
+        "\"text\"",
+        "true"
+    ]
+    for (item in cases) {
+        sayCase(item, classifyText(item))
+    }
+    sayCase("a missing value (nil)", classifyMessage(nothingHere()))
+    runRequestCases()
+}
+
+method nothingHere(): object {
+    return
+}
+
+method showRequest(string label, string jsonText) {
+    var request = requestFrom(json.tryParse(jsonText))
+    var uri = requestDocumentUri(request)
+    sayCase(label, "id=" + request.id + " method=" + request.methodName + " notification=" + request.isNotification + " params=" + json.stringify(request.params) + " uri=[" + uri + "]")
+}
+
+method runRequestCases() {
+    showRequest("request", "{\"id\":4,\"method\":\"m\",\"params\":{\"a\":1}}")
+    showRequest("notification", "{\"method\":\"m\",\"params\":{\"a\":1}}")
+    showRequest("params of another type are no params", "{\"id\":5,\"method\":\"m\",\"params\":[1,2]}")
+    showRequest("no params", "{\"id\":6,\"method\":\"m\"}")
+    showRequest("document uri", "{\"id\":7,\"method\":\"m\",\"params\":{\"textDocument\":{\"uri\":\"file:///a.nv\"}}}")
+    showRequest("textDocument is not an object", "{\"id\":8,\"method\":\"m\",\"params\":{\"textDocument\":\"x\"}}")
+    showRequest("uri is not a string", "{\"id\":9,\"method\":\"m\",\"params\":{\"textDocument\":{\"uri\":3}}}")
+    showRequest("textDocument without uri", "{\"id\":10,\"method\":\"m\",\"params\":{\"textDocument\":{}}}")
+    sayCase("encodeFrame", encodeFrame("{}"))
+    sayCase("encodeFrame counts bytes", encodeFrame("größe日本😀"))
+    runLengthCases()
+}
+
+method runLengthCases() {
+    var lengths = ["38", "0", "000", "00000000000000000038", "67108864", "67108865", "0000000000000067108865", "99999999999999999999", "-3", "12x", "", "abc"]
+    for (text in lengths) {
+        sayCase("rpcLengthProblem of [" + text + "]", "[" + rpcLengthProblem(text) + "] digits=[" + rpcTrimLeadingZeros(text) + "]")
+    }
+}

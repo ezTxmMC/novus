@@ -1,0 +1,44 @@
+package main
+
+import "novus/lsp/server/rpc"
+
+method showCancel(string label, CancelRegistry registry, array<object> ids) {
+    var states = []
+    for (id in ids) {
+        states.push(registry.isCancelled(id))
+    }
+    sayCase(label, states)
+}
+
+method runCancelCases() {
+    say("--- cancel registry")
+    sayCase("keys", cancelKey(1) + " " + cancelKey("1") + " " + cancelKey(0) + " " + cancelKey(1.5) + " " + cancelKey(true))
+    var registry = CancelRegistry()
+    registry.track(1)
+    registry.track("1")
+    registry.track(2)
+    showCancel("tracked, nothing cancelled", registry, [1, "1", 2, 3])
+    registry.cancel(1)
+    showCancel("integer 1 cancelled, string 1 is another request", registry, [1, "1", 2])
+    registry.cancel(99)
+    registry.track(99)
+    showCancel("an id that was cancelled before it was tracked is not cancelled", registry, [99])
+    registry.cancel("1")
+    registry.forget(1)
+    showCancel("string 1 cancelled, integer 1 forgotten", registry, [1, "1", 2])
+    registry.cancel(1)
+    showCancel("a forgotten id cannot be cancelled again", registry, [1])
+    registry.cancel(1.5)
+    registry.cancel(true)
+    registry.cancel(cancelNothing())
+    showCancel("ids of other types are ignored", registry, [1.5, true, 2])
+    var check = RequestCancelCheck(registry, "1")
+    sayCase("RequestCancelCheck of string 1", check.isCancelled())
+    registry.forget("1")
+    sayCase("RequestCancelCheck after forget", check.isCancelled())
+    sayCase("pending entries", registry.cancelled.keys())
+}
+
+method cancelNothing(): object {
+    return
+}

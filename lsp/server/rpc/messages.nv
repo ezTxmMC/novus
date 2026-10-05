@@ -1,0 +1,162 @@
+package rpc
+
+import base/maybe
+import log
+
+private final ENVELOPE_MESSAGE = "message"
+private final ENVELOPE_EOF = "eof"
+private final ENVELOPE_TICK = "tick"
+private final ENVELOPE_CHECK_DONE = "checkDone"
+private final ENVELOPE_WORKER_FAILED = "workerFailed"
+private final ENVELOPE_COMMAND_DONE = "commandDone"
+private final ENVELOPE_FRAME_ERROR = "frameError"
+private final RPC_KIND_REQUEST = "request"
+private final RPC_KIND_NOTIFICATION = "notification"
+private final RPC_KIND_RESPONSE = "response"
+private final RPC_KIND_INVALID = "invalid"
+private final RPC_MAP_TYPE = "map"
+private final RPC_STRING_TYPE = "string"
+private final RPC_INTEGER_TYPE = "integer"
+
+define class Request {
+    object id
+    string methodName
+    map<string, object> params
+    bool isNotification
+
+    construct(object id, string methodName, map<string, object> params) {
+        this.id = id
+        this.methodName = methodName
+        this.params = params
+        this.isNotification = isNone(id)
+    }
+}
+
+define class Envelope {
+    string kind
+    object payload
+
+    construct(string kind, object payload) {
+        this.kind = kind
+        this.payload = payload
+    }
+}
+
+define class WorkerFailure {
+    string worker
+    integer requestId
+    string message
+
+    construct(string worker, integer requestId, string message) {
+        this.worker = worker
+        this.requestId = requestId
+        this.message = message
+    }
+}
+
+// "request", "notification", "response" or "invalid" (anything that is not a JSON-RPC object,
+// a request id that is neither integer nor string, a method that is not a string).
+method classifyMessage(object message): string {
+    if (typeOf(message) != RPC_MAP_TYPE) {
+        return RPC_KIND_INVALID
+    }
+    if (message.has("method")) {
+        return rpcClassifyCall(message)
+    }
+    if (message.has("id") && (message.has("result") || message.has("error"))) {
+        return RPC_KIND_RESPONSE
+    }
+    return RPC_KIND_INVALID
+}
+
+method rpcClassifyCall(map<string, object> message): string {
+    if (typeOf(message["method"]) != RPC_STRING_TYPE) {
+        return RPC_KIND_INVALID
+    }
+    var id = message.get("id", nothing())
+    if (isNone(id)) {
+        return RPC_KIND_NOTIFICATION
+    }
+    if (rpcIsValidId(id)) {
+        return RPC_KIND_REQUEST
+    }
+    return RPC_KIND_INVALID
+}
+
+method rpcIsValidId(object id): bool {
+    var kind = typeOf(id)
+    return kind == RPC_INTEGER_TYPE || kind == RPC_STRING_TYPE
+}
+
+// The id to put into an error answer for a message that could not be served: its own id when it has a usable one.
+method rpcReplyIdOf(object message): object {
+    if (typeOf(message) != RPC_MAP_TYPE) {
+        return nothing()
+    }
+    var id = message.get("id", nothing())
+    if (rpcIsValidId(id)) {
+        return id
+    }
+    return nothing()
+}
+
+// Only for messages that classifyMessage called a request or a notification. A params value that is
+// not an object (positional arguments, a scalar) is treated as no params.
+method requestFrom(map<string, object> message): Request {
+    var params = message.get("params", {})
+    if (typeOf(params) != RPC_MAP_TYPE) {
+        params = {}
+    }
+    return Request(message.get("id", nothing()), message["method"], params)
+}
+
+// params.textDocument.uri, or "" when absent or of another type.
+method requestDocumentUri(Request request): string {
+    var document = request.params.get("textDocument", nothing())
+    if (typeOf(document) != RPC_MAP_TYPE) {
+        return ""
+    }
+    var uri = document.get("uri", nothing())
+    if (typeOf(uri) != RPC_STRING_TYPE) {
+        return ""
+    }
+    return uri
+}
+
+define interface ResponseHandler {
+    onResponse(object result, bool failed)
+}
+
+// Answers to the requests the server sent itself (ids "novus-<n>"), routed to the handler registered for the id.
+define class ResponseRouter {
+    map<string, ResponseHandler> pending
+
+    construct() {
+        this.pending = {}
+    }
+
+    method expect(string requestId, ResponseHandler handler) {
+        this.pending[requestId] = handler
+    }
+
+    // false when the id is unknown (dropped with a debug log); the handler runs once, then it is forgotten.
+    method route(map<string, object> message): bool {
+        var id = message.get("id", nothing())
+        if (typeOf(id) != RPC_STRING_TYPE || this.pending.has(id) == false) {
+            log.debug("rpc: dropped a response without a pending request")
+            return false
+        }
+        var handler = this.pending[id]
+        this.pending.remove(id)
+        var failed = message.has("error")
+        handler.onResponse(this.payloadOf(message, failed), failed)
+        return true
+    }
+
+    method payloadOf(map<string, object> message, bool failed): object {
+        if (failed) {
+            return message["error"]
+        }
+        return message.get("result", nothing())
+    }
+}

@@ -1,0 +1,131 @@
+package main
+
+import json
+import unicode
+import "novus/lsp/base/text"
+import "novus/lsp/base/model"
+import "novus/lsp/server/protocol"
+
+method parseObject(string source): object {
+    return json.tryParse(source)
+}
+
+method showClient(string label, ClientInfo client) {
+    var flags = [client.snippetSupport, client.labelDetailsSupport, client.configurationPull, client.dynamicWatchers, client.workspaceFolders, client.hierarchicalSymbols, client.markdownDocumentation, client.relatedInformation]
+    println label + ": name=[" + client.name + "] encodings=" + client.positionEncodings.join(",") + " flags=" + flags.join(",")
+}
+
+method testClientInfo() {
+    println "== parseClientInfo"
+    var editor = parseObject("{\"processId\":1,\"clientInfo\":{\"name\":\"Code\",\"version\":\"1\"},\"capabilities\":{\"general\":{\"positionEncodings\":[\"utf-16\"]},\"workspace\":{\"configuration\":true,\"workspaceFolders\":true,\"didChangeWatchedFiles\":{\"dynamicRegistration\":true}},\"textDocument\":{\"completion\":{\"completionItem\":{\"snippetSupport\":true,\"labelDetailsSupport\":true,\"documentationFormat\":[\"markdown\",\"plaintext\"]}},\"documentSymbol\":{\"hierarchicalDocumentSymbolSupport\":true},\"publishDiagnostics\":{\"relatedInformation\":true}}}}")
+    showClient("full client", parseClientInfo(editor))
+    var modern = parseObject("{\"capabilities\":{\"general\":{\"positionEncodings\":[\"utf-32\",\"utf-8\",\"utf-16\"]}}}")
+    showClient("utf-8 client", parseClientInfo(modern))
+    showClient("empty object", parseClientInfo({}))
+    showClient("wrong types", parseClientInfo(parseObject("{\"clientInfo\":5,\"capabilities\":{\"general\":{\"positionEncodings\":\"utf-8\"},\"workspace\":{\"configuration\":\"yes\"},\"textDocument\":[]}}")))
+    showClient("nothing at all", parseClientInfo(parseObject("[1,2]")))
+    var hoverOnly = parseObject("{\"capabilities\":{\"textDocument\":{\"hover\":{\"contentFormat\":[\"plaintext\",\"markdown\"]}}}}")
+    showClient("markdown from hover", parseClientInfo(hoverOnly))
+    var plain = parseObject("{\"capabilities\":{\"textDocument\":{\"completion\":{\"completionItem\":{\"documentationFormat\":[\"plaintext\"]}}}}}")
+    showClient("plaintext only", parseClientInfo(plain))
+}
+
+method testPositionDecoders() {
+    println "== position decoders"
+    var position = decodePositionParams(parseObject("{\"textDocument\":{\"uri\":\"file:///a.nv\"},\"position\":{\"line\":3,\"character\":7}}"))
+    show("positionParams", position.uri + " " + position.position.line + ":" + position.position.character)
+    var broken = decodePositionParams(parseObject("{\"textDocument\":5,\"position\":{\"line\":\"x\"}}"))
+    show("broken positionParams", "[" + broken.uri + "] " + broken.position.line + ":" + broken.position.character)
+    var floating = decodePositionParams(parseObject("{\"position\":{\"line\":2.0,\"character\":4.0}}"))
+    show("whole floats", floating.position.line + ":" + floating.position.character)
+    show("documentUri", decodeDocumentUri(parseObject("{\"textDocument\":{\"uri\":\"file:///b.nv\"}}")))
+    show("documentUri missing", "[" + decodeDocumentUri({}) + "]")
+    showRange("wireRange", decodeWireRange(parseObject("{\"start\":{\"line\":1,\"character\":2},\"end\":{\"line\":3,\"character\":4}}")))
+    showRange("wireRange empty", decodeWireRange({}))
+    showRange("selectedRange", decodeSelectedRange(parseObject("{\"range\":{\"start\":{\"line\":0,\"character\":1},\"end\":{\"line\":0,\"character\":5}}}")))
+    show("renameName", decodeRenameName(parseObject("{\"newName\":\"renamed\"}")))
+    show("renameName missing", "[" + decodeRenameName({}) + "]")
+    show("symbolQuery", decodeSymbolQuery(parseObject("{\"query\":\"Circ\"}")))
+    show("symbolQuery number", "[" + decodeSymbolQuery(parseObject("{\"query\":4}")) + "]")
+}
+
+method showChange(TextChange change) {
+    var range = ""
+    if (change.hasRange) {
+        range = change.range.start.line + ":" + change.range.start.character + "-" + change.range.end.line + ":" + change.range.end.character
+    }
+    println "  change hasRange=" + change.hasRange + " range=[" + range + "] text=[" + change.text + "]"
+}
+
+method testChangeDecoders() {
+    println "== contentChanges and text document item"
+    var mixed = parseObject("[{\"range\":{\"start\":{\"line\":0,\"character\":1},\"end\":{\"line\":0,\"character\":2}},\"rangeLength\":1,\"text\":\"X\"},{\"text\":\"whole\"},7,{\"range\":5,\"text\":\"bad range\"},{}]")
+    var changes = decodeContentChanges(mixed)
+    show("mixed count", changes.length())
+    for (change in changes) {
+        showChange(change)
+    }
+    show("not an array", decodeContentChanges(parseObject("{\"text\":\"x\"}")).length())
+    show("nil", decodeContentChanges(parseObject("null")).length())
+    var document = decodeTextDocumentItem(parseObject("{\"textDocument\":{\"uri\":\"file:///work/a.nv\",\"languageId\":\"novus\",\"version\":4,\"text\":\"var x = 1\\n\"}}"))
+    show("item", document.uri + " " + document.filePath + " " + document.languageId + " v" + document.version + " lines " + document.lines.lineCount() + " kind " + document.fileKind())
+    var scratch = decodeTextDocumentItem(parseObject("{\"textDocument\":{\"uri\":\"untitled:Untitled-1\",\"languageId\":\"novus\",\"version\":1,\"text\":\"\"}}"))
+    show("scratch item", scratch.uri + " [" + scratch.filePath + "] v" + scratch.version)
+    var empty = decodeTextDocumentItem({})
+    show("empty item", "[" + empty.uri + "] [" + empty.languageId + "] v" + empty.version + " [" + empty.text + "]")
+}
+
+method showDiagnostic(Diagnostic diagnostic) {
+    println "  " + diagnostic.span.start + "-" + diagnostic.span.end + " sev=" + diagnostic.severity.code + " source=[" + diagnostic.source + "] code=[" + diagnostic.code + "] message=[" + diagnostic.message + "] unnecessary=" + diagnostic.unnecessary + " deprecated=" + diagnostic.deprecated + " data=[" + diagnostic.data + "]"
+}
+
+method testContextDiagnostics() {
+    println "== decodeContextDiagnostics"
+    var emoji = unicode.fromCodePoint(128512)
+    var lines = LineIndex("a" + emoji + "b\nsecond")
+    var params = parseObject("{\"textDocument\":{\"uri\":\"file:///a.nv\"},\"range\":{},\"context\":{\"diagnostics\":[{\"range\":{\"start\":{\"line\":0,\"character\":3},\"end\":{\"line\":0,\"character\":4}},\"severity\":2,\"code\":\"unused-name\",\"source\":\"novus\",\"message\":\"b is unused\",\"tags\":[1,2],\"data\":\"payload\"},{\"range\":{\"start\":{\"line\":1,\"character\":0},\"end\":{\"line\":1,\"character\":6}},\"code\":42,\"message\":\"numeric code\"},5,{\"message\":\"bare\",\"severity\":9}]}}")
+    var decoded = decodeContextDiagnostics(params, PositionCodec("utf-16"), lines)
+    show("count", decoded.length())
+    for (diagnostic in decoded) {
+        showDiagnostic(diagnostic)
+    }
+    show("no context", decodeContextDiagnostics({}, PositionCodec("utf-16"), lines).length())
+    var utf8 = decodeContextDiagnostics(parseObject("{\"context\":{\"diagnostics\":[{\"range\":{\"start\":{\"line\":0,\"character\":5},\"end\":{\"line\":0,\"character\":6}},\"message\":\"in bytes\"}]}}"), PositionCodec("utf-8"), lines)
+    showDiagnostic(utf8[0])
+}
+
+method testWorkspaceDecoders() {
+    println "== workspace decoders"
+    var folders = parseObject("{\"workspaceFolders\":[{\"uri\":\"file:///work/a\",\"name\":\"a\"},{\"uri\":\"untitled:x\",\"name\":\"x\"},{\"uri\":\"file:///work/b%20c\",\"name\":\"b\"}],\"rootUri\":\"file:///work/root\"}")
+    show("folders win", decodeWorkspaceFolders(folders).join(" | "))
+    show("rootUri", decodeWorkspaceFolders(parseObject("{\"workspaceFolders\":null,\"rootUri\":\"file:///work/root\",\"rootPath\":\"/old\"}")).join(" | "))
+    show("rootPath", decodeWorkspaceFolders(parseObject("{\"rootUri\":null,\"rootPath\":\"/old/root\"}")).join(" | "))
+    show("empty folders fall back", decodeWorkspaceFolders(parseObject("{\"workspaceFolders\":[],\"rootUri\":\"file:///work/root\"}")).join(" | "))
+    show("none", decodeWorkspaceFolders({}).length())
+    var change = decodeFolderChange(parseObject("{\"event\":{\"added\":[{\"uri\":\"file:///work/new\",\"name\":\"n\"}],\"removed\":[{\"uri\":\"file:///work/old\",\"name\":\"o\"},{\"uri\":\"git:/x\",\"name\":\"g\"}]}}"))
+    show("folder change", change.added.join(",") + " / " + change.removed.join(","))
+    show("folder change empty", decodeFolderChange({}).added.length() + " " + decodeFolderChange({}).removed.length())
+    var watched = decodeWatchedEvents(parseObject("{\"changes\":[{\"uri\":\"file:///work/a.nv\",\"type\":1},{\"uri\":\"file:///work/b.nv\",\"type\":2},{\"uri\":\"file:///work/c.nv\",\"type\":3},{\"uri\":\"file:///work/d.nv\",\"type\":4},{\"uri\":\"untitled:e\",\"type\":1},{\"type\":2}]}"))
+    var shown = []
+    for (event in watched) {
+        shown.append(event.filePath + "=" + event.changeType)
+    }
+    show("watched", shown.join(" "))
+    show("watched constants", WATCH_CREATED + " " + WATCH_CHANGED + " " + WATCH_DELETED)
+    show("watched empty", decodeWatchedEvents({}).length())
+}
+
+method testFormattingAndCommands() {
+    println "== formatting options and commands"
+    var options = decodeFormattingOptions(parseObject("{\"options\":{\"tabSize\":2,\"insertSpaces\":false,\"trimTrailingWhitespace\":true}}"))
+    show("options", options.tabSize + " " + options.insertSpaces + " " + options.maxBlankLines)
+    var defaults = decodeFormattingOptions({})
+    show("defaults", defaults.tabSize + " " + defaults.insertSpaces + " " + defaults.maxBlankLines)
+    var invalid = decodeFormattingOptions(parseObject("{\"options\":{\"tabSize\":0,\"insertSpaces\":\"no\"}}"))
+    show("invalid", invalid.tabSize + " " + invalid.insertSpaces)
+    var call = decodeCommand(parseObject("{\"command\":\"novus.fetchDependencies\",\"arguments\":[\"file:///work\",3,true,{\"k\":[1]}]}"))
+    show("command", call.command + " " + call.arguments.join(" | "))
+    var bare = decodeCommand(parseObject("{\"command\":\"novus.rerunChecks\"}"))
+    show("command without arguments", bare.command + " " + bare.arguments.length())
+    show("command empty", "[" + decodeCommand({}).command + "]")
+}

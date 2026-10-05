@@ -1,0 +1,37 @@
+package main
+
+method checkLexicalCodes() {
+    scenario("lex/unterminated-string", "method a() {\n    var s = \"abc\n}\nmethod b() {\n}\n", "method a() / method b()", "unterminated-string@2/e")
+    scenario("lex/unterminated-string-at-the-end", "method a() {\n}\nX = \"abc", "method a() / X", "unterminated-string@3/e")
+    scenario("lex/unterminated-comment", "method a() {\n}\n/* never closed\nmethod b() {\n}\n", "method a()", "unterminated-comment@3/w")
+    scenario("lex/unknown-character", "method a() {\n    var x = 1 # 2\n}\n", "method a()", "unknown-character@2/w")
+    scenario("lex/non-ascii-outside-strings", "method a() {\n    var x = 1\n}\nX = 1 é\n", "method a() / X", "unknown-character@4/w")
+    scenario("lex/valid-source-has-no-lexical-issues", "// é\nmethod a() {\n    var s = \"é # $\"\n    /* # */\n}\n", "method a()", "")
+}
+
+method checkTopLevelResync() {
+    scenario("top/garbage-then-a-declaration", "foo bar baz\nmethod a() {\n}\n", "method a()", "unexpected-token@1/e")
+    scenario("top/stray-closing-brace", "}\nmethod a() {\n}\n", "method a()", "unexpected-token@1/e")
+    scenario("top/garbage-with-a-block", "foo { bar }\nmethod a() {\n}\n", "method a()", "unexpected-token@1/e")
+    scenario("top/assignment-is-a-resync-point", "foo bar\nX = 1\nmethod a() {\n}\n", "X / method a()", "unexpected-token@1/e")
+    scenario("top/annotation-is-a-resync-point", "foo bar\n@Note\nmethod a() {\n}\n", "method a()", "unexpected-token@1/e")
+    scenario("top/define-is-a-resync-point", "foo bar\ndefine class C {\n}\n", "define class C", "unexpected-token@1/e")
+    scenario("top/async-method-is-a-resync-point", "foo bar\nasync method f() {\n}\n", "method f()", "unexpected-token@1/e")
+    scenario("top/statement-at-top-level", "var x = 1\nx.foo()\nmethod a() {\n}\n", "x / method a()", "unexpected-token@2/e")
+    scenario("top/import-with-a-dot", "import a.b\nmethod m() {\n}\n", "method m()", "unexpected-token@1/e")
+    scenario("top/package-with-a-dot", "package a.b\nmethod m() {\n}\n", "method m()", "unexpected-token@1/e")
+    scenario("top/modifier-before-method", "private method f() {\n}\n", "method f()", "expected-token@1/e")
+    scenario("top/unknown-definition-kind", "define record R {\n}\nmethod m() {\n}\n", "method m()", "unexpected-token@1/e")
+    scenario("top/define-abstract-class", "define abstract class A {\n}\n", "define abstract A", "expected-token@1/e")
+    scenario("top/missing-class-name-before-the-next-declaration", "define class\nmethod m() {\n}\n", "method m()", "expected-token@2/e")
+    scenario("top/missing-method-name", "method\n(\nmethod m() {\n}\n", "method m()", "expected-token@2/e")
+    scenario("top/import-without-a-target", "import\nmethod m() {\n}\n", "method m()", "expected-token@2/e")
+    scenario("top/import-path-ends-in-a-slash", "import a/\nmethod m() {\n}\n", "method m()", "expected-token@1/e")
+}
+
+method checkTopLevelValid() {
+    scenario("top/valid-semicolons-and-order", "method a() {\n};\nX = 1;\nimport json\npackage p\n", "method a() / X", "")
+    scenario("top/print-statement-is-only-a-hint", "println \"hi\"\nprint 1\neprintln x\n", "", "useless-top-level-print@1/h useless-top-level-print@2/h useless-top-level-print@3/h")
+    scenario("top/global-forms", "A = 1\nvar B = 2\nprivate final C = 3\nfinal D: integer = 4\nvar E: array<integer> = []\n", "A / B / C / D: integer / E: array<integer>", "")
+    scenario("top/next-assignment-is-not-swallowed", "X =\nY = 3\n", "X / Y", "expected-token@1/e")
+}

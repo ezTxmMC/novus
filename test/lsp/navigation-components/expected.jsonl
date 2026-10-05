@@ -1,0 +1,11 @@
+{"id":1,"jsonrpc":"2.0","result":{"capabilities":"@CAPABILITIES@","serverInfo":{"name":"novus-lsp","version":"0.1.0"}}}
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@ROOTURI@/pages/Home.nvh","version":1}}
+{"id":2,"jsonrpc":"2.0","result":[{"range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"uri":"@ROOTURI@/components/Button.nvh"}]}
+{"id":3,"jsonrpc":"2.0","result":[]}
+{"id":4,"jsonrpc":"2.0","result":[{"range":{"end":{"character":17,"line":1},"start":{"character":12,"line":1}},"uri":"@ROOTURI@/pages/Home.nvh"}]}
+{"id":5,"jsonrpc":"2.0","result":[{"range":{"end":{"character":17,"line":1},"start":{"character":12,"line":1}},"uri":"@ROOTURI@/pages/Home.nvh"},{"range":{"end":{"character":16,"line":4},"start":{"character":11,"line":4}},"uri":"@ROOTURI@/pages/Home.nvh"}]}
+{"id":6,"jsonrpc":"2.0","result":{"contents":"```novus\n(method) Home.heading(): string\n```\n\n*package `pages` · Home.nvh*","range":{"end":{"character":14,"line":3},"start":{"character":7,"line":3}}}}
+{"id":7,"jsonrpc":"2.0","result":[]}
+{"id":8,"jsonrpc":"2.0","result":[{"children":[{"detail":"string","kind":8,"name":"title","range":{"end":{"character":17,"line":1},"start":{"character":0,"line":1}},"selectionRange":{"end":{"character":17,"line":1},"start":{"character":12,"line":1}}},{"detail":"(): string","kind":6,"name":"heading","range":{"end":{"character":1,"line":5},"start":{"character":0,"line":3}},"selectionRange":{"end":{"character":14,"line":3},"start":{"character":7,"line":3}}}],"detail":"based NvhComponent","kind":5,"name":"Home","range":{"end":{"character":0,"line":6},"start":{"character":0,"line":0}},"selectionRange":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}}}]}
+{"id":9,"jsonrpc":"2.0","result":[{"endLine":5,"startLine":0},{"endLine":4,"startLine":3}]}
+{"id":99,"jsonrpc":"2.0","result":null}

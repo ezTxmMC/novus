@@ -1,0 +1,154 @@
+package edits
+
+import base/maybe
+import base/model
+import base/text
+import features/navigation
+import server/protocol
+import server/rpc
+import server/session
+import syntax/lexing
+
+private final EDITS_UNDERSCORE = 95
+private final EDITS_DIGIT_FIRST = 48
+private final EDITS_DIGIT_LAST = 57
+private final EDITS_UPPER_FIRST = 65
+private final EDITS_UPPER_LAST = 90
+private final EDITS_LOWER_FIRST = 97
+private final EDITS_LOWER_LAST = 122
+
+// `textDocument/prepareRename`: the span of the identifier that a rename would change, `null` when there is none under
+// the cursor. A refusal of the policy (a std, built-in or dependency declaration, an ambiguous member name) is answered
+// as an invalid-params error with the reason, which an editor shows to the user (6.23).
+define class PrepareRenameHandler based RequestHandler {
+    Session session
+    Renamer renamer
+    WireEncoder encoder
+
+    construct(Session session, Renamer renamer, WireEncoder encoder) {
+        this.session = session
+        this.renamer = renamer
+        this.encoder = encoder
+    }
+
+    method handle(Request request): object {
+        var target = this.session.targetAt(request.params)
+        if (isNone(target)) {
+            return nothing()
+        }
+        var refusal = this.renamer.refusal(target.context, target.offset)
+        if (refusal != "") {
+            failRequest(rpcInvalidParams(), refusal)
+        }
+        var span = this.renamer.prepare(target.context, target.offset)
+        if (isNone(span)) {
+            return nothing()
+        }
+        return this.encoder.prepareRename(target.context.document.lines, span)
+    }
+}
+
+// `textDocument/rename`: the edits of every file that holds an occurrence, as a workspace edit. The name is checked
+// before the renamer runs (a keyword or a text that is no identifier would break the program); the loop over the closure
+// polls the cancellation of the request, and a cancelled rename answers `-32800` and changes nothing.
+define class RenameHandler based RequestHandler {
+    Session session
+    Renamer renamer
+    WireEncoder encoder
+    CancelRegistry cancellations
+
+    construct(Session session, Renamer renamer, WireEncoder encoder, CancelRegistry cancellations) {
+        this.session = session
+        this.renamer = renamer
+        this.encoder = encoder
+        this.cancellations = cancellations
+    }
+
+    method handle(Request request): object {
+        var target = this.session.targetAt(request.params)
+        if (isNone(target)) {
+            return nothing()
+        }
+        var newName = decodeRenameName(request.params)
+        this.checkName(newName)
+        var refusal = this.renamer.refusal(target.context, target.offset)
+        if (refusal != "") {
+            failRequest(rpcInvalidParams(), refusal)
+        }
+        var problem = this.renamer.problem(target.context, target.offset, newName)
+        if (problem != "") {
+            failRequest(rpcInvalidParams(), problem)
+        }
+        var cancel = RequestCancelCheck(this.cancellations, request.id)
+        var changes = this.renamer.rename(target.context, target.offset, newName, cancel)
+        if (cancel.isCancelled()) {
+            failRequest(rpcRequestCancelled(), "request cancelled")
+        }
+        if (changes.length() == 0) {
+            return nothing()
+        }
+        return editsWorkspaceEdit(this.session, this.encoder, target.context.document, changes)
+    }
+
+    method checkName(string newName) {
+        if (editsIsIdentifier(newName) == false) {
+            failRequest(rpcInvalidParams(), "'" + newName + "' is not a valid name: use letters, digits and '_', not starting with a digit")
+        }
+        if (isKeywordWord(newName)) {
+            failRequest(rpcInvalidParams(), "'" + newName + "' is a keyword and cannot be used as a name")
+        }
+    }
+}
+
+method editsIsIdentifier(string name): bool {
+    if (name == "" || editsIsDigit(name.charAt(0))) {
+        return false
+    }
+    for (character in name) {
+        if (editsIsWordByte(character) == false) {
+            return false
+        }
+    }
+    return true
+}
+
+method editsIsDigit(string character): bool {
+    var code = ord(character)
+    return code >= EDITS_DIGIT_FIRST && code <= EDITS_DIGIT_LAST
+}
+
+method editsIsWordByte(string character): bool {
+    var code = ord(character)
+    if (code == EDITS_UNDERSCORE || editsIsDigit(character)) {
+        return true
+    }
+    return (code >= EDITS_UPPER_FIRST && code <= EDITS_UPPER_LAST) || (code >= EDITS_LOWER_FIRST && code <= EDITS_LOWER_LAST)
+}
+
+// The workspace edit of the file edits: every file is encoded with its own line index (the buffer when it is open, else the
+// text on disk). The edits of the requesting document go under its own uri, which also serves a buffer without a path.
+method editsWorkspaceEdit(Session session, WireEncoder encoder, Document document, array<FileEdit> changes): map<string, object> {
+    var linesByPath = {}
+    var others = []
+    var own = []
+    for (change in changes) {
+        if (change.filePath == document.filePath) {
+            own.append(change)
+        }
+        if (change.filePath != document.filePath) {
+            linesByPath[change.filePath] = session.linesOf(change.filePath)
+            others.append(change)
+        }
+    }
+    var result = encoder.workspaceEdit(linesByPath, others)
+    var ownEdits = []
+    for (change in own) {
+        for (edit in change.edits) {
+            ownEdits.append(encoder.textEdit(document.lines, edit))
+        }
+    }
+    if (ownEdits.length() > 0) {
+        result["changes"][document.uri] = ownEdits
+    }
+    return result
+}

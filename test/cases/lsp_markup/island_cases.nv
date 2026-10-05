@@ -1,0 +1,85 @@
+package main
+
+import "novus/lsp/syntax/markup"
+
+method showIslands(string title, string text) {
+    println("== " + title)
+    for (island in findIslands(text)) {
+        println("  island " + island.kind + " " + island.span.start + "-" + island.span.end + " [" + show(text.substring(island.span.start, island.span.end)) + "]")
+    }
+    for (island in componentTagNames(text)) {
+        println("  island " + island.kind + " " + island.span.start + "-" + island.span.end + " [" + text.substring(island.span.start, island.span.end) + "]")
+    }
+}
+
+// Every byte on its own, so a NUL byte shows up as \0 instead of cutting the text.
+method show(string text): string {
+    var pieces = []
+    var i = 0
+    while (i < text.length()) {
+        pieces.append(showByte(text.charAt(i)))
+        i = i + 1
+    }
+    return pieces.join("")
+}
+
+method showByte(string character): string {
+    if (ord(character) == 0) {
+        return "\\0"
+    }
+    if (character == "\n") {
+        return "\\n"
+    }
+    if (character == "\r") {
+        return "\\r"
+    }
+    if (character == "\t") {
+        return "\\t"
+    }
+    return character
+}
+
+method runHeaderCases() {
+    showIslands("no header", "<h1>x</h1>")
+    showIslands("header first", "<?nv\nprop string a = \"x\"\n?>\n<h1/>")
+    showIslands("whitespace before the header is fine", "\n  \t\r\n<?nv ref int n ?>")
+    showIslands("text before the header: no header", "<!-- c -->\n<?nv ref int n ?>")
+    showIslands("header without a close runs to the end", "<?nv\nmethod f() {\n")
+    showIslands("only the first ?> closes it", "<?nv a ?> b ?> <Tag/>")
+    showIslands("empty header", "<?nv?>")
+    showIslands("not <?nv exactly", "<?php echo ?><Tag/>")
+    showIslands("empty text", "")
+    showIslands("a NUL byte inside the header", "<?nv\nprop string a" + chr(0) + "b\n?><Tag/>")
+    showIslands("a NUL byte in the template", "<?nv ?><p>" + chr(0) + "</p><Tag" + chr(0) + "/>")
+}
+
+method runTagCases() {
+    showIslands("components start with a capital letter", "<div><Item/><item/><Ab-c.d:e x=\"1\">y</Ab-c.d:e></div>")
+    showIslands("an underscore is a letter: <_x> is a tag, never a component", "<_x/><A_b/><_Y/>")
+    showIslands("every start tag counts, closing tags do not", "<A></A><B/><A>t</A>")
+    showIslands("attributes: quotes, braces and bare values", "<Card title=\"a > b\" count={n > 1} flag other=x@y><Inner on=\"{ f(\\\"}\\\") }\"/></Card>")
+    showIslands("single quotes and escaped braces in values", "<Box a='x > y' b=\"\\{ <Not/> }\"><Real/></Box>")
+    showIslands("expressions and comments hide tags", "{ items < 3 } <!-- <Gone/> --> {#if a < B}<Shown/>{/if}")
+    showIslands("escaped braces are text", "\\{ <Shown/> \\}")
+    showIslands("script and style are raw text, matched without case (a capital <Style> is still a component by its name)", "<script> if (a < 1) { <Fake/> } </SCRIPT><After/><Style> <Fake/> </STYLE><Last/>")
+    showIslands("template code islands", "<?= <Fake/> ?><?nv <Fake/> ?><Kept/>")
+    showIslands("doctype and unknown markup", "<!doctype html><Page/><!x <Fake/> ><Y/>")
+    showIslands("inside the header the tags do not count", "<?nv\nmethod f() { return \"<NotATag/>\" }\n?><Tag/>")
+}
+
+method runTornCases() {
+    showIslands("unclosed tag", "<A><B x=\"1\"")
+    showIslands("unclosed quote", "<A b=\"x><C/>")
+    showIslands("unclosed brace", "{ <A/> <B/>")
+    showIslands("unclosed comment and code", "<A/><!-- <B/>")
+    showIslands("unclosed script", "<A/><script> <B/>")
+    showIslands("lonely angle brackets", "a < b << <3 <<A/> <")
+    showIslands("tag at the very end", "x<Z")
+    showIslands("attribute without name", "<A =x ===><B/>")
+}
+
+method runIslandCases() {
+    runHeaderCases()
+    runTagCases()
+    runTornCases()
+}

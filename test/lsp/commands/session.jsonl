@@ -1,0 +1,13 @@
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"rootUri":"@ROOTURI@","capabilities":{},"initializationOptions":{"novus":{"check":{"novuscPath":"@ROOT@/fake-novusc.sh","mode":"off"}}}}}
+{"jsonrpc":"2.0","method":"initialized","params":{}}
+{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"@ROOTURI@/main.nv","languageId":"novus","version":1,"text":"package main\n\nmethod main() {\n    // BROKEN\n}\n"}}}
+{"jsonrpc":"2.0","method":"textDocument/didSave","params":{"textDocument":{"uri":"@ROOTURI@/main.nv"}}}
+{"jsonrpc":"2.0","id":2,"method":"workspace/executeCommand","params":{"command":"novus.rerunChecks","arguments":["@ROOTURI@/main.nv"]}}
+{"jsonrpc":"2.0","id":3,"method":"workspace/executeCommand","params":{"command":"novus.rerunChecks"}}
+{"jsonrpc":"2.0","id":4,"method":"workspace/executeCommand","params":{"command":"novus.fetchDependencies","arguments":["@ROOTURI@/main.nv"]}}
+{"jsonrpc":"2.0","id":5,"method":"workspace/executeCommand","params":{"command":"novus.fetchDependencies","arguments":["@ROOTURI@/bad/main.nv"]}}
+{"jsonrpc":"2.0","id":6,"method":"workspace/executeCommand","params":{"command":"novus.nope"}}
+{"jsonrpc":"2.0","id":7,"method":"workspace/executeCommand","params":{}}
+{"jsonrpc":"2.0","method":"textDocument/didClose","params":{"textDocument":{"uri":"@ROOTURI@/main.nv"}}}
+{"jsonrpc":"2.0","id":99,"method":"shutdown"}
+{"jsonrpc":"2.0","method":"exit"}

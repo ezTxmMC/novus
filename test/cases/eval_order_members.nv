@@ -1,0 +1,19 @@
+package main
+
+import io
+
+// A module member written without parentheses (`io.readLine`) is a call, so
+// it is ordered like one: left to right, whatever C compiler built the
+// program. Each operand below consumes a line of standard input
+// (eval_order_members.stdin), which makes the order visible in the result.
+
+method main {
+    var joined = io.readLine + "," + io.readLine
+    println joined
+    var mixed = io.readLine + "," + io.readLine()
+    println mixed
+    var reverse = io.readLine() + "," + io.readLine
+    println reverse
+    var lines = [io.readLine, io.readLine, io.readLine]
+    println lines
+}

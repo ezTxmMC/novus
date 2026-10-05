@@ -1,0 +1,150 @@
+package outline
+
+import base/text
+
+define enum DeclKind {
+    Class, AbstractClass, Enum, Interface, Annotation, Method, AbstractMethod, Constructor,
+    Field, EnumConstant, Global
+}
+
+define class Decl {
+    DeclKind kind
+    string name
+    Span nameSpan
+    Span fullSpan
+    Span bodySpan
+    string typeText
+    array<Param> params
+    string baseName
+    Span baseSpan
+    string doc
+    array<string> modifiers
+    array<string> accessors
+    array<Decl> members
+    array<AnnotationUse> annotations
+    string nativeName
+    array<Local> locals
+    bool localsScanned
+    string container
+
+    construct(DeclKind kind, string name, Span nameSpan, Span fullSpan) {
+        this.kind = kind
+        this.name = name
+        this.nameSpan = nameSpan
+        this.fullSpan = fullSpan
+        this.bodySpan = Span(-1, -1)
+        this.typeText = ""
+        this.params = []
+        this.baseName = ""
+        this.baseSpan = Span(-1, -1)
+        this.doc = ""
+        this.modifiers = []
+        this.accessors = []
+        this.members = []
+        this.annotations = []
+        this.nativeName = ""
+        this.locals = []
+        this.localsScanned = false
+        this.container = ""
+    }
+
+    method isType(): bool {
+        if (this.kind == DeclKind.Class || this.kind == DeclKind.AbstractClass || this.kind == DeclKind.Enum) {
+            return true
+        }
+        return this.kind == DeclKind.Interface || this.kind == DeclKind.Annotation
+    }
+
+    method isCallable(): bool {
+        if (this.kind == DeclKind.Method || this.kind == DeclKind.AbstractMethod) {
+            return true
+        }
+        return this.kind == DeclKind.Constructor
+    }
+
+    method arity(): integer {
+        return this.params.length()
+    }
+
+    // The detail string of completion and hover, for example `method area(float r): float`.
+    method signatureText(): string {
+        if (this.isCallable()) {
+            return this.callableSignature()
+        }
+        if (this.isType()) {
+            return this.typeSignature()
+        }
+        if (this.kind == DeclKind.Field) {
+            return this.typeText + " " + this.name
+        }
+        if (this.kind == DeclKind.Global && this.typeText != "") {
+            return this.name + ": " + this.typeText
+        }
+        return this.name
+    }
+
+    method callableSignature(): string {
+        var head = "method " + this.name
+        if (this.kind == DeclKind.AbstractMethod) {
+            head = "abstract method " + this.name
+        }
+        if (this.kind == DeclKind.Constructor) {
+            head = "construct"
+        }
+        var text = head + "(" + this.paramsText() + ")"
+        if (this.typeText != "" && this.kind != DeclKind.Constructor) {
+            return text + ": " + this.typeText
+        }
+        return text
+    }
+
+    method paramsText(): string {
+        var parts = []
+        for (param in this.params) {
+            parts.append(param.typeText + " " + param.name)
+        }
+        return parts.join(", ")
+    }
+
+    method typeSignature(): string {
+        var text = "define " + this.typeWord() + " " + this.name
+        if (this.baseName != "") {
+            return text + " based " + this.baseName
+        }
+        return text
+    }
+
+    method typeWord(): string {
+        if (this.kind == DeclKind.Enum) {
+            return "enum"
+        }
+        if (this.kind == DeclKind.Interface) {
+            return "interface"
+        }
+        if (this.kind == DeclKind.Annotation) {
+            return "annotation"
+        }
+        if (this.kind == DeclKind.AbstractClass) {
+            return "abstract"
+        }
+        return "class"
+    }
+
+    method hasModifier(string modifier): bool {
+        for (candidate in this.modifiers) {
+            if (candidate == modifier) {
+                return true
+            }
+        }
+        return false
+    }
+
+    method isDeprecated(): bool {
+        for (annotation in this.annotations) {
+            if (annotation.name == "Deprecated") {
+                return true
+            }
+        }
+        return false
+    }
+}

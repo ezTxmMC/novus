@@ -64,16 +64,26 @@ method quoted(string s): string {
 
 // Clones the dependency when it is not cached yet; returns its directory.
 method fetchDependency(string module, string version): string {
+    return fetchDependency(module, version, false)
+}
+
+// With `offline` a dependency that is not cached is an error: nothing is
+// cloned (a language server checks files without touching the network).
+method fetchDependency(string module, string version, bool offline): string {
     var dir = dependencyDir(module, version)
     if (os.isDir(dir)) {
         return dir
+    }
+    if (offline) {
+        eprintln "novusc: dependency ${module} is not fetched (version ${version}) - run 'novusc deps' to fetch it"
+        exit(1)
     }
     if (exec("git --version > " + nullDevice() + " 2>&1") != 0) {
         eprintln "novusc: git is required to fetch dependencies"
         exit(1)
     }
     os.mkdir(path.dirname(dir))
-    println "fetching " + module + " @ " + version
+    eprintln "fetching " + module + " @ " + version
     os.setEnv("GIT_TERMINAL_PROMPT", "0")
     var git = "git -c advice.detachedHead=false"
     var url = moduleUrl(module)
@@ -117,6 +127,10 @@ method moduleEntry(string dir): string {
 // Dependencies of dependencies are resolved as well; the first version
 // seen wins.
 method resolveModules(Manifest m, map<string, string> modules) {
+    resolveModules(m, modules, false)
+}
+
+method resolveModules(Manifest m, map<string, string> modules, bool offline) {
     for (d in m.requires()) {
         var key = d.module()
         if (modules.has(key)) {
@@ -131,23 +145,27 @@ method resolveModules(Manifest m, map<string, string> modules) {
             }
         }
         if (dir == "") {
-            dir = fetchDependency(d.module(), d.version())
+            dir = fetchDependency(d.module(), d.version(), offline)
         }
         modules[key] = moduleEntry(dir)
         modules[key + "/"] = dir
         var nested = path.join(dir, "project.nv")
         if (fileExists(nested)) {
-            resolveModules(parseManifest(nested), modules)
+            resolveModules(parseManifest(nested), modules, offline)
         }
     }
 }
 
 // Module table for the project a source file belongs to ({} without one).
 method modulesFor(string manifestFile): map<string, string> {
+    return modulesFor(manifestFile, false)
+}
+
+method modulesFor(string manifestFile, bool offline): map<string, string> {
     var modules = {}
     if (manifestFile == "") {
         return modules
     }
-    resolveModules(parseManifest(manifestFile), modules)
+    resolveModules(parseManifest(manifestFile), modules, offline)
     return modules
 }

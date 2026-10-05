@@ -1,0 +1,152 @@
+--- maybe
+nothing is none: true
+a bare return is none: true
+0 is none/some: false true
+false is none/some: false true
+empty string is none/some: false true
+empty array is none: false
+empty map is none: false
+text is some: true
+nothing is some: false
+valueOr(nothing, 5): 5
+valueOr(0, 5): 0
+valueOr(false, true): false
+valueOr('', 'fallback') is empty: true
+valueOr(bare, 'fallback'): fallback
+--- textsource
+memory exists file: true
+memory exists directory: true
+memory exists missing: false
+memory isDirectory /p: true
+memory isDirectory /p/: true
+memory isDirectory a file: false
+memory isDirectory /pp (prefix of a name only): false
+memory isDirectory /p/sub/deep: true
+memory textOf: package b
+memory textOf missing is empty: true
+memory textOf a directory is empty: true
+memory entriesOf /p (ascending, uppercase first): [Z.nv, _u.nv, a.nv, sub]
+memory entriesOf /p/: [Z.nv, _u.nv, a.nv, sub]
+memory entriesOf /p/sub: [b.nv, deep]
+memory entriesOf a file: []
+memory entriesOf missing: []
+memory modifiedMillis file: 0
+memory modifiedMillis missing: -1
+disk temp root exists: true
+disk temp root is below the temp directory: true
+disk two temp roots differ: true
+disk entriesOf root: [A.txt, b.txt, sub]
+disk entriesOf sub: [c.txt, deep]
+disk entriesOf a file: []
+disk entriesOf missing: []
+disk textOf: see
+disk textOf missing is empty: true
+disk textOf a directory is empty: true
+disk exists file / directory / missing: true true false
+disk isDirectory file / directory: false true
+disk modifiedMillis file is a real time: true
+disk modifiedMillis missing: -1
+--- files
+files write into a missing directory fails quietly: false
+files makeDirectories creates the parents: true
+files makeDirectories on an existing directory: true
+files write: true
+files read back: text
+files binary content keeps its length: 3
+files read a missing file is empty: true
+files read a directory is empty: true
+files write onto a directory fails quietly: false
+files listDirectoryEntries: [b]
+files listDirectoryEntries of a file: []
+files listDirectoryEntries of a missing path: []
+files realPath of a link is its target: true
+files realPath of a dangling link is empty: true
+files realPath of a missing path is empty: true
+files removeTree of the tree: true
+files the tree is gone: false
+files a linked directory was not followed: keep
+files removeTree of a missing path: true
+files removeTree leaves nothing: false
+--- walker
+isSkippedDirectoryName(.git): true
+isSkippedDirectoryName(.): true
+isSkippedDirectoryName(.hidden): true
+isSkippedDirectoryName(build): true
+isSkippedDirectoryName(dist): true
+isSkippedDirectoryName(out): true
+isSkippedDirectoryName(node_modules): true
+isSkippedDirectoryName(src): false
+isSkippedDirectoryName(Build): false
+isSkippedDirectoryName(outside): false
+isSkippedDirectoryName(_x): false
+isSkippedDirectoryName(distribution): false
+MAX_SOURCE_FILE_BYTES: 2097152
+walk memory .nv, big files are not filtered: [/w/a.nv, /w/big.nv, /w/sub/b.nv]
+walk memory .nv and .nvh: [/w/a.nv, /w/big.nv, /w/sub/b.nv, /w/sub/deep/e.nvh]
+walk memory depth 1: [/w/a.nv, /w/big.nv, /w/sub/b.nv]
+walk memory missing root: []
+walk disk .nv, depth 12 (skips dot/build/dist/out/node_modules, the link and big.nv): [a.nv, exact.nv, project.nv, sub/deep/d.nv, sub/deep/deeper/dd.nv, sub/s.nv]
+walk disk .nv and .nvh: [a.nv, b.nvh, exact.nv, project.nv, sub/deep/d.nv, sub/deep/deeper/dd.nv, sub/s.nv]
+walk disk depth 0: [a.nv, exact.nv, project.nv]
+walk disk depth 1: [a.nv, exact.nv, project.nv, sub/s.nv]
+walk disk depth 2: [a.nv, exact.nv, project.nv, sub/deep/d.nv, sub/s.nv]
+walk disk no extensions: []
+walk disk root is a file: []
+walk disk missing root: []
+--- process
+run echo: code=0 started=true timedOut=false output=[hello]
+run exit code: code=3 started=true timedOut=false output=[]
+run stderr only comes back when the caller redirects it: code=0 started=true timedOut=false output=[out
+err]
+run stdin is closed: code=0 started=true timedOut=false output=[]
+run a timeout kills a long command: true
+run a timeout is only reported when it applied: code=124 started=true timedOut=false output=[]
+run runCommandIn pwd: 0 true true
+run runCommandIn in a directory with spaces and an apostrophe: 0 true
+run runCommandIn with a timeout prefix after cd: ran
+run shellQuote round trip [plain]: true
+run shellQuote round trip [with space]: true
+run shellQuote round trip [it's]: true
+run shellQuote round trip [a;b|c&d]: true
+run shellQuote round trip [$HOME `date`]: true
+run shellQuote round trip [quote"inside]: true
+run shellQuote round trip []: true
+run shellQuote round trip [star*?[x]]: true
+run shellQuote of the empty string is not empty: true
+run commandExists sh: true
+run commandExists of a missing command: false
+--- clock, environment
+system nowMillis is an integer in milliseconds: integer true true
+system nowMillis does not go back: true
+system PATH is set: true
+system an unset variable gives the fallback: fallback
+system homeDirectory: true
+system temporaryDirectory: true
+system operatingSystem is one of linux, macos, windows: true
+--- stdio
+stdio not at eof: false
+stdio readLine: first line
+stdio readLine again: second line
+stdio readBytes(4): 0123
+stdio readBytes(100) returns what is left: 456789
+stdio at eof: true
+stdio readBytes at eof is empty: true
+written by stdoutWriteText
+written by stdoutWriteFrame
+written by stderrWriteLine
+after stderr
+--- hardening
+hardening a memory walk finds every file of 20000: 20000
+hardening a memory walk of 20000 files is not quadratic: true
+hardening an empty path segment is no entry: []
+hardening a walk skips what cannot be reached: [/m/ok.nv]
+hardening every walk sees the current files: [/m/new/n.nv, /m/ok.nv]
+hardening removeTree of a tree 80 levels deep: true
+hardening the deep tree is gone: false
+hardening removeTree of a path ending in ..: false
+hardening removeTree of a path ending in .: false
+hardening removeTree of the filesystem root: false
+hardening removeTree of the empty path: false
+hardening removeTree of the home directory: false
+hardening nothing was deleted: keep
+hardening removeTree of an ordinary directory: true

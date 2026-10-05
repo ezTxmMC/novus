@@ -1,0 +1,200 @@
+package parsing
+
+import base/maybe
+import base/text
+import syntax/lexing
+import syntax/outline
+
+private final PARSING_ANNOTATION_LOOKAHEAD = 3
+
+// `define class|abstract|enum|interface|annotation`: the header up to the body, which `ParsingTypeBodies` reads.
+define class ParsingDefines {
+    ParsingCursor cursor
+    SourceFile file
+    ParsingDeclFactory factory
+    ParsingSignatures signatures
+    ParsingTypeBodies typeBodies
+
+    construct(ParsingCursor cursor, SourceFile file, ParsingDeclFactory factory, ParsingSignatures signatures, ParsingTypeBodies typeBodies) {
+        this.cursor = cursor
+        this.file = file
+        this.factory = factory
+        this.signatures = signatures
+        this.typeBodies = typeBodies
+    }
+
+    // The cursor stands on `define`; the pending annotations are dropped once the declaration took them, and on every way out.
+    method parse() {
+        this.parseDefinition()
+        this.factory.reset()
+    }
+
+    method parseDefinition() {
+        var firstIndex = this.factory.firstIndexOr(this.cursor.pos)
+        this.cursor.advance()
+        var word = this.cursor.current()
+        if (word.kind != TokenKind.Ident || parsingIsKindWord(word.text) == false) {
+            this.cursor.reportAtToken(word, "unexpected-token", "unknown definition kind " + this.cursor.describe(this.cursor.pos))
+            parsingSkipToTopLevelStart(this.cursor)
+            return
+        }
+        this.cursor.advance()
+        this.parseKind(word.text, firstIndex)
+    }
+
+    method parseKind(string word, integer firstIndex) {
+        if (word == "abstract" && this.cursor.identWordAt(this.cursor.pos, "class") && this.cursor.identAt(this.cursor.pos + 1)) {
+            this.cursor.reportAtToken(this.cursor.tokenAt(this.cursor.pos + 1), "expected-token", "expected '{' but found the class name: write 'define abstract Name', without 'class'")
+            this.cursor.advance()
+        }
+        this.parseNamed(parsingDefineKind(word), firstIndex)
+    }
+
+    method parseNamed(DeclKind kind, integer firstIndex) {
+        var name = this.signatures.readName("name after 'define'")
+        if (isNone(name)) {
+            parsingSkipToTopLevelStart(this.cursor)
+            return
+        }
+        var decl = this.factory.make(kind, name, firstIndex, [], "")
+        this.factory.reset()
+        if (kind == DeclKind.Annotation) {
+            this.skipAnnotationBody(decl)
+        }
+        if (kind != DeclKind.Annotation) {
+            this.readClassHeader(decl)
+            this.typeBodies.parseBody(decl)
+        }
+        this.factory.complete(decl, this.file.decls, firstIndex)
+    }
+
+    // `Name [(params)] [based Base]`: header parameters are parsed and discarded, like the compiler does.
+    method readClassHeader(Decl decl) {
+        if (decl.kind == DeclKind.Class || decl.kind == DeclKind.AbstractClass) {
+            if (this.cursor.punctAt(this.cursor.pos, "(")) {
+                this.signatures.readParams()
+            }
+        }
+        if (this.cursor.identWordAt(this.cursor.pos, "based") == false) {
+            return
+        }
+        this.cursor.advance()
+        var base = this.signatures.readName("base name after 'based'")
+        if (isSome(base)) {
+            decl.baseName = base.text
+            decl.baseSpan = base.span()
+        }
+    }
+
+    // contract-note: parsing/DESIGN-NOTES.md 3. The compiler skips to the first `{` and its match; the skip is bounded
+    // to the next three tokens here.
+    method skipAnnotationBody(Decl decl) {
+        decl.fullSpan.end = this.cursor.lastEnd()
+        var open = this.cursor.pos
+        while (open < this.cursor.pos + PARSING_ANNOTATION_LOOKAHEAD && this.cursor.punctAt(open, "{") == false) {
+            open = open + 1
+        }
+        if (this.cursor.punctAt(open, "{") == false) {
+            this.cursor.report(decl.nameSpan, "expected-token", "expected '{' after the annotation name", true)
+            return
+        }
+        var close = this.cursor.scan.matchingClose(open)
+        if (close < 0) {
+            close = this.cursor.last - 1
+        }
+        decl.bodySpan = Span(this.cursor.tokenAt(open).start, this.cursor.tokenAt(close).end)
+        decl.fullSpan.end = decl.bodySpan.end
+        this.cursor.pos = close + 1
+    }
+}
+
+// Lexes and parses source text into the declaration outline; never fails, whatever the text.
+define class SourceParser {
+    ParseOptions options
+
+    construct(ParseOptions options) {
+        this.options = options
+    }
+
+    // Manifests and `.nvh` files have their own parsers: they give an empty outline here (5.4).
+    method parseText(string filePath, string text): SourceFile {
+        if (fileKindOf(filePath) != FILE_KIND_NV) {
+            return this.newFile(filePath, text)
+        }
+        return this.parseLexed(filePath, text, lexText(text))
+    }
+
+    method parseLexed(string filePath, string text, LexResult lexed): SourceFile {
+        var file = this.newFile(filePath, text)
+        if (file.fileKind != FILE_KIND_NV) {
+            return file
+        }
+        var parts = ParsingParts(file, this.tokensOf(lexed), lexed.comments, this.options)
+        parts.top.run()
+        this.finish(file, parts, lexed)
+        return file
+    }
+
+    // The member grammar over one region (lexed with `lexRange`), whatever the file kind: how markup reads a header island.
+    method parseMembers(string filePath, string text, LexResult lexed, string ownerName): SourceFile {
+        var file = this.newFile(filePath, text)
+        var parts = ParsingParts(file, this.tokensOf(lexed), lexed.comments, this.options)
+        parts.members.parseInto(file.decls, ownerName, false)
+        this.finish(file, parts, lexed)
+        return file
+    }
+
+    method newFile(string filePath, string text): SourceFile {
+        return SourceFile(filePath, fileKindOf(filePath), textHashOf(text))
+    }
+
+    // The parser relies on a trailing EndOfFile token; a hand-made token list may lack it.
+    method tokensOf(LexResult lexed): array<Token> {
+        var count = lexed.tokens.length()
+        if (count > 0 && lexed.tokens[count - 1].isEnd()) {
+            return lexed.tokens
+        }
+        var tokens = []
+        for (token in lexed.tokens) {
+            tokens.append(token)
+        }
+        var endOffset = 0
+        if (count > 0) {
+            endOffset = lexed.tokens[count - 1].end
+        }
+        tokens.append(Token(TokenKind.EndOfFile, "", endOffset, endOffset, 0, 0))
+        return tokens
+    }
+
+    method finish(SourceFile file, ParsingParts parts, LexResult lexed) {
+        file.issues = parsingMergeIssues(lexed.issues, parts.cursor.issues, parts.cursor.problems)
+        file.lineCount = parts.cursor.tokenAt(parts.cursor.last).line + 1
+        file.declSignature = parsingDeclSignature(file)
+        if (this.options.keepTokens) {
+            file.tokens = parts.allTokens
+            file.comments = lexed.comments
+        }
+    }
+}
+
+method parseSourceText(string filePath, string text, ParseOptions options): SourceFile {
+    return SourceParser(options).parseText(filePath, text)
+}
+
+// contract-note: parsing/DESIGN-NOTES.md 1. Enum constants cannot be used in a global initialiser (they do not exist
+// yet when it runs), so this is a method.
+method parsingDefineKind(string word): DeclKind {
+    if (word == "abstract") {
+        return DeclKind.AbstractClass
+    }
+    if (word == "enum") {
+        return DeclKind.Enum
+    }
+    if (word == "interface") {
+        return DeclKind.Interface
+    }
+    if (word == "annotation") {
+        return DeclKind.Annotation
+    }
+    return DeclKind.Class
+}

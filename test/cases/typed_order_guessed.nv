@@ -1,0 +1,48 @@
+package main
+
+// A parameter declared Vec is only a guess: an object of another class is
+// asked the ordinary way, which runs that class's method, and that has to
+// happen left to right as well.
+define class Vec {
+    private float x: get, set
+    private integer n: get, set
+    construct(float x) { this.x = x
+        this.n = 1 }
+}
+
+define class Lie {
+    method x(): float {
+        println("Lie.x")
+        return 2.0
+    }
+    method n(): integer {
+        println("Lie.n")
+        return 3
+    }
+}
+define class Lie2 {
+    method x(): float {
+        println("Lie2.x")
+        return 5.0
+    }
+    method n(): integer {
+        println("Lie2.n")
+        return 7
+    }
+}
+
+method f(Vec p, Vec q): float {
+    return p.x() - q.x()
+}
+method g(Vec p, Vec q): integer {
+    return p.n() - q.n()
+}
+method h(Vec p, Vec q): float {
+    return p.x() * 2.0 - q.x() * 3.0
+}
+method main {
+    println(f(Lie(), Lie2()))
+    println(g(Lie(), Lie2()))
+    println(h(Lie(), Lie2()))
+    println(f(Vec(1.0), Vec(2.0)))
+}

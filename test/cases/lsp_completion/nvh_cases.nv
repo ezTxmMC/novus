@@ -1,0 +1,19 @@
+package main
+
+import @support
+
+private final CX_CARD = "/p/components/Card.nvh"
+
+method runNvhCases() {
+    println("#### nvh")
+    var world = CxWorld(cxProject())
+    cxShow("outside the header", world, CX_CARD, "<div><|></div>\n", 4)
+    cxShow("outside, after the header", world, CX_CARD, "<?nv\nref integer count = 0\n?>\n<div>comp<|></div>\n", 4)
+    cxShow("header member start", world, CX_CARD, "<?nv\n<|>\n?>\n<div></div>\n", 12)
+    cxShow("header member start with a prefix", world, CX_CARD, "<?nv\nre<|>\n?>\n<div></div>\n", 12)
+    cxShow("header statement", world, CX_CARD, "<?nv\nref integer count = 0\nmethod bump() {\n    cou<|>\n}\n?>\n<div></div>\n", 6)
+    cxShow("header member access", world, CX_CARD, "<?nv\nref string label = \"\"\nmethod bump() {\n    label.tr<|>\n}\n?>\n<div></div>\n", 6)
+    cxShow("header type", world, CX_CARD, "<?nv\nmethod bump(str<|>) {\n}\n?>\n<div></div>\n", 6)
+    cxShow("header import", world, CX_CARD, "<?nv\nimport str<|>\n?>\n<div></div>\n", 6)
+    cxShow("header comment", world, CX_CARD, "<?nv\n// note <|>\n?>\n<div></div>\n", 6)
+}

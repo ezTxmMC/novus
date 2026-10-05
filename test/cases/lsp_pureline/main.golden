@@ -1,0 +1,190 @@
+--- PL-CF-002
+else after return: 1 finding(s)
+  4:7 Warning pureline PL-CF-002 [else] Avoid else after return, break or continue: keep the happy path linear with a guard clause.
+else if after return: 2 finding(s)
+  4:7 Warning pureline PL-CF-002 [else] Avoid else after return, break or continue: keep the happy path linear with a guard clause.
+  6:7 Warning pureline PL-CF-002 [else] Avoid else after return, break or continue: keep the happy path linear with a guard clause.
+else after break: 1 finding(s)
+  5:11 Warning pureline PL-CF-002 [else] Avoid else after return, break or continue: keep the happy path linear with a guard clause.
+else after continue: 1 finding(s)
+  5:11 Warning pureline PL-CF-002 [else] Avoid else after return, break or continue: keep the happy path linear with a guard clause.
+else after a one line block: 1 finding(s)
+  2:25 Warning pureline PL-CF-002 [else] Avoid else after return, break or continue: keep the happy path linear with a guard clause.
+return after a semicolon: 1 finding(s)
+  2:30 Warning pureline PL-CF-002 [else] Avoid else after return, break or continue: keep the happy path linear with a guard clause.
+return with a multi line value: 1 finding(s)
+  7:7 Warning pureline PL-CF-002 [else] Avoid else after return, break or continue: keep the happy path linear with a guard clause.
+return whose value goes on after an operator: 1 finding(s)
+  5:7 Warning pureline PL-CF-002 [else] Avoid else after return, break or continue: keep the happy path linear with a guard clause.
+return whose value goes on with a leading operator: 1 finding(s)
+  5:7 Warning pureline PL-CF-002 [else] Avoid else after return, break or continue: keep the happy path linear with a guard clause.
+return whose call continues after a dot: 1 finding(s)
+  5:7 Warning pureline PL-CF-002 [else] Avoid else after return, break or continue: keep the happy path linear with a guard clause.
+a declaration with a generic type before the return: 1 finding(s)
+  5:7 Warning pureline PL-CF-002 [else] Avoid else after return, break or continue: keep the happy path linear with a guard clause.
+else on its own line: 1 finding(s)
+  5:5 Warning pureline PL-CF-002 [else] Avoid else after return, break or continue: keep the happy path linear with a guard clause.
+guard clause: 0 finding(s)
+plain else is not reported by default: 0 finding(s)
+a nested if is no jump: 0 finding(s)
+return in the middle of the block: 0 finding(s)
+a return inside a nested block that closes the outer block: 0 finding(s)
+no else at all: 0 finding(s)
+the word else in a string and a comment: 0 finding(s)
+plain else with the flag: 1 finding(s)
+  4:7 Hint pureline PL-CF-002 [else] Avoid else: prefer a guard clause or an early return.
+else after return with the flag stays a warning: 1 finding(s)
+  4:7 Warning pureline PL-CF-002 [else] Avoid else after return, break or continue: keep the happy path linear with a guard clause.
+else if with the flag: 1 finding(s)
+  4:7 Hint pureline PL-CF-002 [else] Avoid else: prefer a guard clause or an early return.
+an else without a block before it: 0 finding(s)
+an else after a closing brace that never opened: 0 finding(s)
+a block that never closes: 1 finding(s)
+  4:7 Warning pureline PL-CF-002 [else] Avoid else after return, break or continue: keep the happy path linear with a guard clause.
+unknown bytes between the tokens: 1 finding(s)
+  4:7 Warning pureline PL-CF-002 [else] Avoid else after return, break or continue: keep the happy path linear with a guard clause.
+index parse without tokens: 0 finding(s)
+empty file: 0 finding(s)
+--- PL-FN-001
+a method of exactly thirty lines: 0 finding(s)
+a method of thirty one lines is a hint: 1 finding(s)
+  1:8 Hint pureline PL-FN-001 [thirtyOne] thirtyOne has 31 lines: review whether it does one thing.
+a method of exactly fifty lines is a hint: 1 finding(s)
+  1:8 Hint pureline PL-FN-001 [fifty] fifty has 50 lines: review whether it does one thing.
+a method of fifty one lines is a warning: 1 finding(s)
+  1:8 Warning pureline PL-FN-001 [fiftyOne] fiftyOne has 51 lines: usually split it.
+a one line method: 0 finding(s)
+a method without braces: 0 finding(s)
+methods and constructors of a class: 2 finding(s)
+  2:12 Hint pureline PL-FN-001 [long] long has 37 lines: review whether it does one thing.
+  39:5 Warning pureline PL-FN-001 [construct] construct has 57 lines: usually split it.
+an abstract method has no body: 0 finding(s)
+an interface method: 0 finding(s)
+lower limits: 2 finding(s)
+  1:8 Hint pureline PL-FN-001 [four] four has 4 lines: review whether it does one thing.
+  5:8 Warning pureline PL-FN-001 [six] six has 6 lines: usually split it.
+higher limits: 0 finding(s)
+a body that never closes is skipped: 0 finding(s)
+a method of a class that never closes is still measured: 1 finding(s)
+  2:12 Warning pureline PL-FN-001 [long] long has 62 lines: usually split it.
+--- PL-STRUCT
+a class of exactly two hundred lines: 0 finding(s)
+a class of two hundred and one lines: 2 finding(s)
+  1:14 Warning pureline PL-STRUCT-001 [Over] Over has 201 lines (more than 200): it probably does more than one thing.
+  1:1 Warning pureline PL-STRUCT-001 [define class Over {] The file has 201 lines (more than 200): split it by responsibility.
+an enum above the limit: 2 finding(s)
+  1:13 Warning pureline PL-STRUCT-001 [Big] Big has 203 lines (more than 200): it probably does more than one thing.
+  1:1 Warning pureline PL-STRUCT-001 [define enum Big {] The file has 203 lines (more than 200): split it by responsibility.
+an interface is not measured: 1 finding(s)
+  1:1 Warning pureline PL-STRUCT-001 [define interface Wide {] The file has 207 lines (more than 200): split it by responsibility.
+a class that never closes is skipped: 1 finding(s)
+  1:1 Warning pureline PL-STRUCT-001 [define class Open {] The file has 211 lines (more than 200): split it by responsibility.
+a lower limit: 2 finding(s)
+  1:14 Warning pureline PL-STRUCT-001 [Small] Small has 11 lines (more than 10): it probably does more than one thing.
+  1:1 Warning pureline PL-STRUCT-001 [define class Small {] The file has 11 lines (more than 10): split it by responsibility.
+a file of exactly two hundred lines: 0 finding(s)
+a file of two hundred and one lines: 1 finding(s)
+  1:1 Warning pureline PL-STRUCT-001 [// header] The file has 201 lines (more than 200): split it by responsibility.
+a file without a final line break: 1 finding(s)
+  1:1 Warning pureline PL-STRUCT-001 [// header] The file has 201 lines (more than 200): split it by responsibility.
+blank lines count: 1 finding(s)
+  1:1 Warning pureline PL-STRUCT-001 [] The file has 201 lines (more than 200): split it by responsibility.
+a lower file limit: 1 finding(s)
+  1:1 Warning pureline PL-STRUCT-001 [a = 1] The file has 4 lines (more than 3): split it by responsibility.
+a lower limit hits class and file: 4 finding(s)
+  1:14 Warning pureline PL-STRUCT-001 [A] A has 4 lines (more than 3): it probably does more than one thing.
+  1:1 Warning pureline PL-STRUCT-001 [define class A {] The file has 4 lines (more than 3): split it by responsibility.
+  2:13 Warning pureline PL-NAME-001 [x] 'x' is a one-letter name: use a name that says what it holds.
+  3:13 Warning pureline PL-NAME-001 [y] 'y' is a one-letter name: use a name that says what it holds.
+a folder of ten files: 0 finding(s)
+a folder of eleven files: 1 finding(s)
+  1:9 Warning pureline PL-STRUCT-002 [pkg] The folder holds 11 source files (more than 10): split it by responsibility.
+the document counts even when it is not on disk: 1 finding(s)
+  1:9 Warning pureline PL-STRUCT-002 [pkg] The folder holds 11 source files (more than 10): split it by responsibility.
+project.nv and other files do not count: 0 finding(s)
+an nvh file counts: 1 finding(s)
+  1:9 Warning pureline PL-STRUCT-002 [pkg] The folder holds 11 source files (more than 10): split it by responsibility.
+files of another folder do not count: 0 finding(s)
+files of a sub folder do not count: 0 finding(s)
+a test folder is exempt: 0 finding(s)
+a tests folder is exempt: 0 finding(s)
+a folder that only looks like a test folder: 1 finding(s)
+  1:9 Warning pureline PL-STRUCT-002 [pkg] The folder holds 21 source files (more than 10): split it by responsibility.
+a project below a folder named test is not exempt: 1 finding(s)
+  1:9 Warning pureline PL-STRUCT-002 [pkg] The folder holds 11 source files (more than 10): split it by responsibility.
+the same with a manifest above the folder: 1 finding(s)
+  1:9 Warning pureline PL-STRUCT-002 [pkg] The folder holds 11 source files (more than 10): split it by responsibility.
+a test folder inside the project is exempt: 0 finding(s)
+generated files do not count: 0 finding(s)
+a marker after the fifth line does not count: 1 finding(s)
+  1:9 Warning pureline PL-STRUCT-002 [pkg] The folder holds 12 source files (more than 10): split it by responsibility.
+a lower folder limit: 1 finding(s)
+  1:9 Warning pureline PL-STRUCT-002 [pkg] The folder holds 4 source files (more than 3): split it by responsibility.
+reported at the package line: 1 finding(s)
+  3:9 Warning pureline PL-STRUCT-002 [pkg] The folder holds 13 source files (more than 10): split it by responsibility.
+reported at the first line without a package: 1 finding(s)
+  1:1 Warning pureline PL-STRUCT-002 [x = 1] The folder holds 13 source files (more than 10): split it by responsibility.
+an untitled document has no folder: 0 finding(s)
+a project manifest is not linted: 0 finding(s)
+a component is not linted: 0 finding(s)
+--- PL-NAME-001
+one letter parameter: 1 finding(s)
+  1:18 Warning pureline PL-NAME-001 [a] 'a' is a one-letter name: use a name that says what it holds.
+one letter locals: 2 finding(s)
+  2:9 Warning pureline PL-NAME-001 [x] 'x' is a one-letter name: use a name that says what it holds.
+  3:12 Warning pureline PL-NAME-001 [s] 's' is a one-letter name: use a name that says what it holds.
+placeholder names: 4 finding(s)
+  2:9 Warning pureline PL-NAME-001 [tmp] 'tmp' is a placeholder name: use a name that says what it holds.
+  3:9 Warning pureline PL-NAME-001 [obj] 'obj' is a placeholder name: use a name that says what it holds.
+  4:9 Warning pureline PL-NAME-001 [thing] 'thing' is a placeholder name: use a name that says what it holds.
+  5:9 Warning pureline PL-NAME-001 [data2] 'data2' is a placeholder name: use a name that says what it holds.
+a field with a one letter name: 1 finding(s)
+  2:13 Warning pureline PL-NAME-001 [n] 'n' is a one-letter name: use a name that says what it holds.
+a parameter of a constructor: 1 finding(s)
+  2:23 Warning pureline PL-NAME-001 [v] 'v' is a one-letter name: use a name that says what it holds.
+a loop variable that is no counter: 1 finding(s)
+  2:10 Warning pureline PL-NAME-001 [x] 'x' is a one-letter name: use a name that says what it holds.
+a name used twice is reported at each declaration: 2 finding(s)
+  3:13 Warning pureline PL-NAME-001 [x] 'x' is a one-letter name: use a name that says what it holds.
+  5:9 Warning pureline PL-NAME-001 [x] 'x' is a one-letter name: use a name that says what it holds.
+an underscore is one letter: 1 finding(s)
+  2:9 Warning pureline PL-NAME-001 [_] '_' is a one-letter name: use a name that says what it holds.
+meaningful names: 0 finding(s)
+a loop counter with a literal start: 0 finding(s)
+a for variable named i: 0 finding(s)
+the other counter letters: 0 finding(s)
+a longer name that starts like a placeholder: 0 finding(s)
+a typed counter: 0 finding(s)
+without allowed names a counter needs a literal start: 1 finding(s)
+  2:9 Warning pureline PL-NAME-001 [i] 'i' is a one-letter name: use a name that says what it holds.
+without allowed names a parameter i is reported: 1 finding(s)
+  1:18 Warning pureline PL-NAME-001 [i] 'i' is a one-letter name: use a name that says what it holds.
+allowed names: 2 finding(s)
+  1:40 Warning pureline PL-NAME-001 [z] 'z' is a one-letter name: use a name that says what it holds.
+  3:9 Warning pureline PL-NAME-001 [i] 'i' is a one-letter name: use a name that says what it holds.
+a body that never closes: 2 finding(s)
+  1:18 Warning pureline PL-NAME-001 [a] 'a' is a one-letter name: use a name that says what it holds.
+  2:9 Warning pureline PL-NAME-001 [b] 'b' is a one-letter name: use a name that says what it holds.
+an unfinished declaration: 0 finding(s)
+no declarations: 0 finding(s)
+index parse without locals: 1 finding(s), the parameter is checked: true
+--- linter
+rule ids: PL-CF-002 PL-FN-001 PL-STRUCT-001 PL-STRUCT-002 PL-NAME-001
+rule ids are a copy: 5
+rules of a linter: 4
+every rule on one file, rule by rule: 4 finding(s)
+  6:7 Warning pureline PL-CF-002 [else] Avoid else after return, break or continue: keep the happy path linear with a guard clause.
+  10:8 Warning pureline PL-FN-001 [long] long has 52 lines: usually split it.
+  3:18 Warning pureline PL-NAME-001 [a] 'a' is a one-letter name: use a name that says what it holds.
+  7:13 Warning pureline PL-NAME-001 [tmp] 'tmp' is a placeholder name: use a name that says what it holds.
+settings are read at use time: 1 finding(s)
+  4:7 Hint pureline PL-CF-002 [else] Avoid else: prefer a guard clause or an early return.
+an nv file is linted: true
+a manifest is not linted: 0
+a component is not linted: 0
+shared settings, before the change: 1
+shared settings, after the change: 0
+the linter holds its settings object: true
+--- corpus
+every sampled file was linted without a runtime error and without a span outside the text: true
+the sample is not empty: true

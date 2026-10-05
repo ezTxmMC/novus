@@ -1,0 +1,29 @@
+package main
+
+import @support
+import @context_cases
+import @body_cases
+import @engine_cases
+import @nvh_cases
+import @string_cases
+
+method main() {
+    runSuppressedCases()
+    runManifestCases()
+    runImportCases()
+    runAnnotationCases()
+    runDeclarationCases()
+    runMemberCases()
+    runDeclarationStartCases()
+    runStatementCases()
+    runOddInputCases()
+    runCapCases()
+    runTriggerCases()
+    runResolveCases()
+    runBadKeyCases()
+    runPlainTextCases()
+    runNvhCases()
+    runStringSpanCases()
+    runBasedWithoutBodyCases()
+    runScratchCases()
+}

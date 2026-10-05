@@ -1,0 +1,377 @@
+package driver
+
+import crypto
+import os
+import path
+import strings
+
+// The cache of compiled programs: `novusc run` (and `build --cache`) keeps the
+// executable of everything it compiled, keyed by a hash of what determines it -
+// the generated C, the C compiler and its version, the flags and the novusc
+// version. The same program again costs the time to generate its C and one
+// hash instead of a C compiler run.
+//
+// A directory entry is <key> (the executable) and <key>.use (an empty file
+// whose modification time is the last use - the executable's own time cannot
+// be touched from Novus). Executables are written under a staging name and
+// renamed into place, so a reader never sees half a file and two compilers of
+// the same program race harmlessly. Only files named like an entry or like a
+// staging file (tmp-<pid>-<key>[.c|.exe]) are ever deleted, never a folder:
+// $NOVUS_CACHE may point at any folder. A cache folder that cannot be written
+// is not an error, the program is then compiled to a temporary file.
+
+final CACHE_OFF = "off"
+final KEY_LENGTH = 32
+final C_SUFFIX = ".c"
+final STAGING_PREFIX = "tmp-"
+final USE_SUFFIX = ".use"
+final EXE_SUFFIX = ".exe"
+final STALE_STAGING_MILLIS = 3600000
+final USED_DIGITS = 16
+final DEFAULT_LIMIT_BYTES = 268435456
+final KILOBYTE = 1024
+final MEGABYTE = 1048576
+final GIGABYTE = 1073741824
+final MAX_LIMIT_BYTES = 1125899906842624
+
+// Runs `run()` with runtime errors caught (the runtime's own trap, the one
+// std/toml.nv uses): writing a file that cannot be opened is such an error.
+method tryRun(object task): object native "nv_try_run"
+method tryFailed(): bool native "nv_try_failed"
+
+define class WriteTask {
+    private final string file: get
+    private final string content: get
+
+    method run(): object {
+        os.writeFile(file, content)
+        return true
+    }
+}
+
+// Writes the file; false when it cannot be written.
+method tryWriteFile(string file, string content): bool {
+    tryRun(WriteTask(file, content))
+    return tryFailed() == false
+}
+
+define class CacheEntry {
+    private final string name: get
+    private final integer size: get
+    private final integer used: get
+}
+
+// The cache folder; "" when the cache is switched off (NOVUS_CACHE=off) or
+// the system has no place for it.
+method cacheDirectory(): string {
+    var configured = env("NOVUS_CACHE")
+    if (configured.toLower() == CACHE_OFF) {
+        return ""
+    }
+    if (configured != "") {
+        return configured
+    }
+    return defaultCacheDirectory()
+}
+
+method defaultCacheDirectory(): string {
+    var home = os.home()
+    if (platform() == "windows") {
+        return windowsCacheDirectory(home)
+    }
+    if (platform() == "macos" && home != "") {
+        return path.join(home, "Library", "Caches", "novus")
+    }
+    var xdg = env("XDG_CACHE_HOME")
+    if (xdg != "" && path.isAbsolute(xdg)) {
+        return path.join(xdg, "novus")
+    }
+    if (home == "") {
+        return ""
+    }
+    return path.join(home, ".cache", "novus")
+}
+
+method windowsCacheDirectory(string home): string {
+    var local = env("LOCALAPPDATA")
+    if (local != "") {
+        return path.join(local, "novus", "cache")
+    }
+    if (home == "") {
+        return ""
+    }
+    return path.join(home, "AppData", "Local", "novus", "cache")
+}
+
+// $NOVUS_CACHE_LIMIT: bytes, or a number with K, M or G ("256M", the default).
+method cacheLimitBytes(): integer {
+    var text = env("NOVUS_CACHE_LIMIT")
+    if (text == "") {
+        return DEFAULT_LIMIT_BYTES
+    }
+    var digits = text.substring(0, text.length() - 1)
+    var multiplier = unitMultiplier(text.charAt(text.length() - 1).toUpper())
+    if (multiplier == 1) {
+        digits = text
+    }
+    if (multiplier == 0 || isCount(digits) == false || parseInt(digits) > MAX_LIMIT_BYTES / multiplier) {
+        eprintln "novusc: NOVUS_CACHE_LIMIT must be a size like 256M, 512K or a number of bytes, at most 1 PiB (got '${text}')"
+        exit(1)
+    }
+    return parseInt(digits) * multiplier
+}
+
+// 0 for a character that is neither a unit nor a digit.
+method unitMultiplier(string unit): integer {
+    if (unit == "K") {
+        return KILOBYTE
+    }
+    if (unit == "M") {
+        return MEGABYTE
+    }
+    if (unit == "G") {
+        return GIGABYTE
+    }
+    if (strings.isDigit(unit)) {
+        return 1
+    }
+    return 0
+}
+
+method isCount(string text): bool {
+    return text != "" && text.startsWith("-") == false && strings.isNumeric(text)
+}
+
+method executableSuffix(map<string, string> options): string {
+    if (isWindows(options)) {
+        return EXE_SUFFIX
+    }
+    return ""
+}
+
+// First lines of `cc --version`: a new compiler release must not reuse what
+// the old one produced.
+method compilerIdentity(string compiler): string {
+    var result = os.run(compiler + " --version 2>&1")
+    return "" + result["output"]
+}
+
+method cacheKey(string code, map<string, string> options): string {
+    var compiler = cCompiler(options)
+    var identity = [VERSION, platform(), compiler, compilerIdentity(compiler), cFlags(options), cLibraries(options)]
+    var digest = crypto.sha256(identity.join("\n") + "\n\n" + code)
+    return crypto.hex(digest).substring(0, KEY_LENGTH)
+}
+
+method stagingName(string key, map<string, string> options): string {
+    return STAGING_PREFIX + os.pid() + "-" + key + executableSuffix(options)
+}
+
+method isStagingFile(string file): bool {
+    return path.basename(file).startsWith(STAGING_PREFIX)
+}
+
+// The cached executable of the program whose C is `code`, compiled on a miss.
+// "" when there is no usable cache (off, not creatable, not writable). A
+// staged executable (the cache refused the rename) is returned as it is; the
+// caller deletes it after use (isStagingFile).
+method cachedExecutable(string code, map<string, string> options): string {
+    var directory = cacheDirectory()
+    if (directory == "") {
+        return ""
+    }
+    // checked before any compile, so a bad value never costs a C compiler run
+    var limit = cacheLimitBytes()
+    os.mkdir(directory)
+    if (os.isDir(directory) == false) {
+        return ""
+    }
+    var key = cacheKey(code, options)
+    var executable = path.join(directory, key + executableSuffix(options))
+    if (os.isFile(executable)) {
+        markUsed(executable)
+        return executable
+    }
+    return compileIntoCache(code, directory, key, limit, options)
+}
+
+method compileIntoCache(string code, string directory, string key, integer limit, map<string, string> options): string {
+    var staging = path.join(directory, stagingName(key, options))
+    if (tryWriteFile(staging, "") == false) {
+        return ""
+    }
+    compileProgram(code, staging, options)
+    var executable = path.join(directory, key + executableSuffix(options))
+    if (os.rename(staging, executable)) {
+        markUsed(executable)
+        evictOldEntries(directory, key, limit)
+        return executable
+    }
+    if (os.isFile(executable)) {
+        // another novusc stored the same program first (and, on Windows,
+        // renaming onto an existing file fails)
+        os.remove(staging)
+        markUsed(executable)
+        return executable
+    }
+    return staging
+}
+
+// Best effort: a cache folder that is read only still serves its programs.
+method markUsed(string executable) {
+    tryWriteFile(executable + USE_SUFFIX, "")
+}
+
+method lastUse(string executable): integer {
+    var stamp = os.modifiedMillis(executable + USE_SUFFIX)
+    if (stamp >= 0) {
+        return stamp
+    }
+    return os.modifiedMillis(executable)
+}
+
+// The name without the first of `suffixes` it ends with.
+method withoutSuffix(string name, array<string> suffixes): string {
+    for (suffix in suffixes) {
+        if (name.endsWith(suffix)) {
+            return name.substring(0, name.length() - suffix.length())
+        }
+    }
+    return name
+}
+
+method isKey(string text): bool {
+    return text.length() == KEY_LENGTH && isHexKey(text)
+}
+
+// Whether a directory entry is a cache executable: a lower case hex key,
+// with ".exe" on Windows.
+method isEntryName(string name): bool {
+    return isKey(withoutSuffix(name, [EXE_SUFFIX]))
+}
+
+method isHexKey(string text): bool {
+    var i = 0
+    while (i < text.length()) {
+        var c = text.charAt(i)
+        if ((c >= "0" && c <= "9") || (c >= "a" && c <= "f")) {
+            i = i + 1
+            continue
+        }
+        return false
+    }
+    return true
+}
+
+// A leftover of a compile that was killed: "tmp-<pid>-<key>" with ".exe" or
+// the generated ".c". Anything else that starts with "tmp-" is not ours.
+method isStagingName(string name): bool {
+    if (name.startsWith(STAGING_PREFIX) == false) {
+        return false
+    }
+    var parts = name.split("-")
+    if (parts.length() != 3 || strings.isNumeric(parts[1]) == false) {
+        return false
+    }
+    return isKey(withoutSuffix(parts[2], [EXE_SUFFIX, C_SUFFIX]))
+}
+
+// The entries of the cache, least recently used first (a map iterates in key
+// order, and the key starts with the zero padded time of the last use).
+method cacheEntries(string directory): map<string, CacheEntry> {
+    var entries = {}
+    if (os.isDir(directory) == false) {
+        return entries
+    }
+    for (name in os.listDir(directory)) {
+        var file = path.join(directory, name)
+        if (isStagingName(name) && os.isFile(file)) {
+            removeStaleStaging(file)
+            continue
+        }
+        if (isEntryName(name) && os.isFile(file)) {
+            var used = lastUse(file)
+            entries[strings.padLeftWith("" + used, USED_DIGITS, "0") + "-" + name] = CacheEntry(name, os.fileSize(file), used)
+        }
+    }
+    return entries
+}
+
+method removeStaleStaging(string file) {
+    var age = os.time() * 1000 - os.modifiedMillis(file)
+    if (age > STALE_STAGING_MILLIS) {
+        os.remove(file)
+    }
+}
+
+method removeEntry(string directory, string name) {
+    var file = path.join(directory, name)
+    os.remove(file)
+    os.remove(file + USE_SUFFIX)
+}
+
+// Deletes the least recently used executables until the cache fits its
+// limit; the one just stored (`keepKey`) always stays.
+method evictOldEntries(string directory, string keepKey, integer limit) {
+    var entries = cacheEntries(directory)
+    var total = 0
+    for (id in entries) {
+        total = total + entries[id].size()
+    }
+    for (id in entries) {
+        if (total <= limit) {
+            return
+        }
+        var entry = entries[id]
+        if (entry.name().startsWith(keepKey) == false) {
+            removeEntry(directory, entry.name())
+            total = total - entry.size()
+        }
+    }
+}
+
+// novusc cache [dir | clear]
+method cacheCommand(array<string> arguments): integer {
+    var directory = cacheDirectory()
+    var action = ""
+    if (arguments.length() >= 2) {
+        action = arguments[1]
+    }
+    if (action != "" && action != "dir" && action != "clear") {
+        eprintln "usage: novusc cache [dir | clear]"
+        return 1
+    }
+    if (directory == "") {
+        println "cache: off"
+        return 0
+    }
+    if (action == "dir") {
+        println directory
+        return 0
+    }
+    if (action == "clear") {
+        return clearCache(directory)
+    }
+    return describeCache(directory)
+}
+
+method clearCache(string directory): integer {
+    var entries = cacheEntries(directory)
+    for (id in entries) {
+        removeEntry(directory, entries[id].name())
+    }
+    println "removed ${entries.length()} programs from ${directory}"
+    return 0
+}
+
+method describeCache(string directory): integer {
+    var entries = cacheEntries(directory)
+    var total = 0
+    for (id in entries) {
+        total = total + entries[id].size()
+    }
+    println "cache: ${directory}"
+    println "programs: ${entries.length()}"
+    println "size: ${total} bytes (limit ${cacheLimitBytes()})"
+    return 0
+}

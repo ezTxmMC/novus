@@ -1,0 +1,178 @@
+package parsing
+
+import bytes
+import syntax/lexing
+import syntax/outline
+
+private final PARSING_LINE_COMMENT_LENGTH = 2
+private final PARSING_LAST_BLANK_BYTE = 32
+
+// Attaches doc comments: the block of comments directly above a declaration, else a trailing comment on its header line.
+define class ParsingDocs {
+    array<Token> comments
+    array<Token> tokens
+    bool enabled
+
+    construct(array<Token> comments, array<Token> tokens, bool enabled) {
+        this.comments = comments
+        this.tokens = tokens
+        this.enabled = enabled
+    }
+
+    // `firstToken` is the first token of the declaration (annotation or modifier included).
+    method attach(Decl decl, integer firstToken, integer lastToken) {
+        if (this.enabled == false || this.comments.length() == 0) {
+            return
+        }
+        var headerEnd = this.headerEndToken(decl, lastToken)
+        var leading = this.leadingDoc(this.tokens[firstToken])
+        if (leading != "") {
+            decl.doc = leading
+            return
+        }
+        decl.doc = this.trailingDoc(headerEnd)
+    }
+
+    // The `{` of a body, else the declaration's last token.
+    method headerEndToken(Decl decl, integer lastToken): Token {
+        if (decl.bodySpan.start < 0) {
+            return this.tokens[lastToken]
+        }
+        return this.tokens[this.firstTokenAtOrAfter(decl.bodySpan.start)]
+    }
+
+    method firstTokenAtOrAfter(integer offset): integer {
+        var low = 0
+        var high = this.tokens.length() - 1
+        while (low < high) {
+            var middle = (low + high) / 2
+            if (this.tokens[middle].start >= offset) {
+                high = middle
+                continue
+            }
+            low = middle + 1
+        }
+        return low
+    }
+
+    // The consecutive own-line comments whose last line is the line above the token (no blank line between).
+    method leadingDoc(Token first): string {
+        var lines = []
+        var expectedLine = first.line - 1
+        var index = this.lastCommentBefore(first.start)
+        while (index >= 0 && this.comments[index].firstOnLine) {
+            var comment = this.comments[index]
+            if (parsingEndLine(comment) != expectedLine) {
+                break
+            }
+            lines.insert(0, parsingCommentText(comment))
+            expectedLine = comment.line - 1
+            index = index - 1
+        }
+        return parsingJoinDoc(lines)
+    }
+
+    // A comment after the header on the same line, as the std natives document themselves.
+    method trailingDoc(Token headerEnd): string {
+        var index = this.lastCommentBefore(headerEnd.end) + 1
+        if (index >= this.comments.length()) {
+            return ""
+        }
+        var comment = this.comments[index]
+        if (comment.line != headerEnd.line || comment.firstOnLine) {
+            return ""
+        }
+        return parsingJoinDoc([parsingCommentText(comment)])
+    }
+
+    // Index of the last comment that starts before the offset, -1 when none.
+    method lastCommentBefore(integer offset): integer {
+        var low = 0
+        var high = this.comments.length()
+        while (low < high) {
+            var middle = (low + high) / 2
+            if (this.comments[middle].start >= offset) {
+                high = middle
+                continue
+            }
+            low = middle + 1
+        }
+        return low - 1
+    }
+}
+
+method parsingEndLine(Token comment): integer {
+    var line = comment.line
+    var at = bytes.indexOf(comment.text, "\n", 0)
+    while (at >= 0) {
+        line = line + 1
+        at = bytes.indexOf(comment.text, "\n", at + 1)
+    }
+    return line
+}
+
+// The comment text without its markers: `//` or `///` and one space, or the `/** ... */` frame and the `*` gutter.
+method parsingCommentText(Token comment): string {
+    if (comment.text.startsWith("/*")) {
+        return parsingBlockText(comment.text)
+    }
+    var body = comment.text.substring(PARSING_LINE_COMMENT_LENGTH, comment.text.length())
+    if (body.startsWith("/")) {
+        body = body.substring(1, body.length())
+    }
+    return parsingTrimEnd(parsingStripOneSpace(body))
+}
+
+method parsingBlockText(string text): string {
+    var inner = text.substring(2, text.length())
+    if (inner.endsWith("*/")) {
+        inner = inner.substring(0, inner.length() - 2)
+    }
+    var lines = []
+    for (raw in inner.split("\n")) {
+        lines.append(parsingBlockLine(raw))
+    }
+    return parsingJoinDoc(lines)
+}
+
+method parsingBlockLine(string raw): string {
+    var line = raw.trim()
+    if (line.startsWith("*")) {
+        return parsingTrimEnd(parsingStripOneSpace(line.substring(1, line.length())))
+    }
+    return line
+}
+
+// Indentation inside a doc comment is kept (code samples), only the end of the line is cleaned.
+method parsingTrimEnd(string text): string {
+    var end = text.length()
+    while (end > 0 && ord(text.charAt(end - 1)) <= PARSING_LAST_BLANK_BYTE) {
+        end = end - 1
+    }
+    return text.substring(0, end)
+}
+
+method parsingStripOneSpace(string text): string {
+    if (text.startsWith(" ")) {
+        return text.substring(1, text.length())
+    }
+    return text
+}
+
+// Joins the lines with line feeds and drops blank lines at both ends.
+method parsingJoinDoc(array<string> lines): string {
+    var first = 0
+    var last = lines.length() - 1
+    while (first <= last && lines[first] == "") {
+        first = first + 1
+    }
+    while (last >= first && lines[last] == "") {
+        last = last - 1
+    }
+    var kept = []
+    while (first <= last) {
+        kept.append(lines[first])
+        first = first + 1
+    }
+    return kept.join("\n")
+}

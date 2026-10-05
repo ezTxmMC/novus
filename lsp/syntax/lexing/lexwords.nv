@@ -1,0 +1,161 @@
+package lexing
+
+import base/text
+
+method lexingScanWord(LexingCursor cursor) {
+    var start = cursor.pos
+    var end = start + 1
+    while (end < cursor.limit && lexingIsWordPart(cursor.byteAt(end))) {
+        end = end + 1
+    }
+    var kind = TokenKind.Ident
+    if (isKeywordWord(cursor.text.substring(start, end))) {
+        kind = TokenKind.Keyword
+    }
+    cursor.addToken(kind, start, end)
+}
+
+method lexingScanNumber(LexingCursor cursor) {
+    var start = cursor.pos
+    var hexEnd = lexingHexLiteralEnd(cursor.text, start, cursor.limit)
+    if (hexEnd > 0) {
+        cursor.addToken(TokenKind.Integer, start, hexEnd).value = lexingHexDecimalText(cursor.text, start + LEXING_HEX_PREFIX_LENGTH, hexEnd)
+        return
+    }
+    var intEnd = lexingDigitsEnd(cursor.text, start, cursor.limit)
+    if (lexingHasFraction(cursor, intEnd)) {
+        cursor.addToken(TokenKind.Float, start, lexingDigitsEnd(cursor.text, intEnd + 1, cursor.limit))
+        return
+    }
+    cursor.addToken(TokenKind.Integer, start, intEnd)
+}
+
+// A float needs a digit after the dot: `5.` is an integer followed by a dot.
+method lexingHasFraction(LexingCursor cursor, integer intEnd): bool {
+    if (intEnd + 1 >= cursor.limit) {
+        return false
+    }
+    return cursor.byteAt(intEnd) == LEXING_DOT_BYTE && lexingIsDigit(cursor.byteAt(intEnd + 1))
+}
+
+// True when a punctuation token was added at the cursor.
+method lexingScanPunct(LexingCursor cursor): bool {
+    var start = cursor.pos
+    var single = cursor.text.charAt(start)
+    if (LEXING_PUNCT_CHARS.indexOf(single) < 0) {
+        return false
+    }
+    if (start + 1 < cursor.limit && LEXING_DOUBLE_OP_STARTS.indexOf(single) >= 0) {
+        var pair = cursor.text.substring(start, start + 2)
+        if (LEXING_DOUBLE_OPS.has(pair)) {
+            cursor.addToken(TokenKind.Punct, start, start + 2).value = lexingCanonicalOperator(pair)
+            return true
+        }
+    }
+    cursor.addToken(TokenKind.Punct, start, start + 1)
+    return true
+}
+
+// A byte the compiler skips silently; a run of non-ASCII bytes is one token so no character is ever split.
+method lexingScanUnknown(LexingCursor cursor) {
+    var start = cursor.pos
+    var code = cursor.byteAt(start)
+    var end = start + 1
+    while (code >= LEXING_NON_ASCII_START && end < cursor.limit && cursor.byteAt(end) >= LEXING_NON_ASCII_START) {
+        end = end + 1
+    }
+    cursor.addToken(TokenKind.Unknown, start, end)
+    cursor.addIssue(LexIssue(Span(start, end), "unknown-character", lexingUnknownMessage(cursor, start), true))
+}
+
+method lexingUnknownMessage(LexingCursor cursor, integer start): string {
+    if (cursor.byteAt(start) >= LEXING_NON_ASCII_START) {
+        return "non-ASCII text outside strings and comments is ignored by the compiler"
+    }
+    return "unknown character '" + cursor.text.charAt(start) + "' is ignored by the compiler"
+}
+
+// End offset of the decimal digits that start at `from`.
+method lexingDigitsEnd(string text, integer from, integer limit): integer {
+    var end = from
+    while (end < limit && lexingIsDigit(ord(text.charAt(end)))) {
+        end = end + 1
+    }
+    return end
+}
+
+// End offset of `0x` + hex digits at `start`, 0 when there is no hex literal (the compiler needs one digit).
+method lexingHexLiteralEnd(string text, integer start, integer limit): integer {
+    var firstDigit = start + LEXING_HEX_PREFIX_LENGTH
+    if (ord(text.charAt(start)) != LEXING_DIGIT_ZERO || firstDigit >= limit) {
+        return 0
+    }
+    var marker = text.charAt(start + 1)
+    if ((marker != "x" && marker != "X") || lexingIsHexDigit(ord(text.charAt(firstDigit))) == false) {
+        return 0
+    }
+    var end = firstDigit + 1
+    while (end < limit && lexingIsHexDigit(ord(text.charAt(end)))) {
+        end = end + 1
+    }
+    return end
+}
+
+// Decimal text of the hex digits, wrapping at 64 bits like the compiler's lexer.
+method lexingHexDecimalText(string text, integer from, integer to): string {
+    var value = 0
+    var at = from
+    while (at < to) {
+        value = value * LEXING_HEX_RADIX + lexingHexValue(ord(text.charAt(at)))
+        at = at + 1
+    }
+    return "" + value
+}
+
+// True when a comment starts at the cursor and was consumed.
+method lexingScanComment(LexingCursor cursor): bool {
+    var next = cursor.pos + 1
+    if (next >= cursor.limit) {
+        return false
+    }
+    var code = cursor.byteAt(next)
+    if (code == LEXING_SLASH_BYTE) {
+        lexingScanLineComment(cursor)
+        return true
+    }
+    if (code == LEXING_STAR_BYTE) {
+        lexingScanBlockComment(cursor)
+        return true
+    }
+    return false
+}
+
+// A line comment ends before the line feed (and before a carriage return in front of it).
+method lexingScanLineComment(LexingCursor cursor) {
+    var lineFeed = cursor.search.find(LEXING_LINE_FEED, cursor.pos)
+    var end = cursor.limit
+    if (lineFeed >= 0 && lineFeed < cursor.limit) {
+        end = lineFeed
+    }
+    if (end - 1 > cursor.pos && cursor.byteAt(end - 1) == LEXING_CARRIAGE_RETURN_BYTE) {
+        end = end - 1
+    }
+    cursor.addComment(cursor.pos, end)
+}
+
+// An unterminated block comment runs to the end like the compiler's, with a warning at its opener.
+method lexingScanBlockComment(LexingCursor cursor) {
+    var start = cursor.pos
+    var close = cursor.search.find("*/", start + 2)
+    var terminated = close >= 0 && close + 2 <= cursor.limit
+    var end = cursor.limit
+    if (terminated) {
+        end = close + 2
+    }
+    if (terminated == false) {
+        cursor.addIssue(LexIssue(Span(start, start + 2), "unterminated-comment", "unterminated block comment", true))
+    }
+    cursor.addComment(start, end)
+    cursor.countLines(start, end)
+    cursor.lastItemLine = cursor.line
+}

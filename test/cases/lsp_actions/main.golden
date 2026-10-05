@@ -1,0 +1,219 @@
+== Import 'x' for module-not-imported: where the line goes (8.8)
+after the package line
+  action 'Import 'strings'' kind=quickfix preferred=true diagnostics=1
+    edits /p/main.nv: 1
+    edit 14-14 -> import strings<LF><LF>
+    result:
+      | package main
+      | 
+      | import strings
+      | 
+      | method main() {
+      |     println(strings.repeat("a", 2))
+      | }
+      | 
+into the std group, sorted
+  action 'Import 'strings'' kind=quickfix preferred=true diagnostics=1
+    edits /p/main.nv: 1
+    edit 23-23 -> <LF>import strings
+    result:
+      | import json
+      | import math
+      | import strings
+      | 
+      | import geo
+      | 
+      | method main() {
+      |     println(strings.repeat("a", 2))
+      |     println(geo.area())
+      | }
+      | 
+a file with CRLF
+  action 'Import 'strings'' kind=quickfix preferred=true diagnostics=1
+    edits /p/main.nv: 1
+    edit 27-27 -> <CR><LF>import strings
+    result:
+      | package main<CR>
+      | <CR>
+      | import json<CR>
+      | import strings<CR>
+      | <CR>
+      | method main() {<CR>
+      |     println(strings.repeat("a", 2))<CR>
+      | }<CR>
+      | 
+== Import 'x' for unknown-name: the packages that declare the name
+helper is declared by two packages, Widget by one, nowhere by none
+  action 'Import 'a'' kind=quickfix preferred=false diagnostics=1
+    edits /p/main.nv: 1
+    edit 14-14 -> import a<LF><LF>
+    result:
+      | package main
+      | 
+      | import a
+      | 
+      | method main() {
+      |     println(helper(1))
+      |     println(Widget().size)
+      |     println(nowhere(2))
+      | }
+      | 
+  action 'Import 'b'' kind=quickfix preferred=false diagnostics=2
+    edits /p/main.nv: 1
+    edit 14-14 -> import b<LF><LF>
+    result:
+      | package main
+      | 
+      | import b
+      | 
+      | method main() {
+      |     println(helper(1))
+      |     println(Widget().size)
+      |     println(nowhere(2))
+      | }
+      | 
+a folder that main.nv does not import
+  action 'Import 'util'' kind=quickfix preferred=true diagnostics=1
+    edits /p/main.nv: 1
+    edit 14-14 -> import util<LF><LF>
+    result:
+      | package main
+      | 
+      | import util
+      | 
+      | method main() {
+      |     println(tool())
+      | }
+      | 
+== a diagnostic is a hint from the client: the span, the code and the name are checked
+a span over other text
+  (none)
+data that is not the text
+  (none)
+a span outside the document
+  (none)
+a word that is no std module
+  (none)
+an unknown-name span over 'strings.repeat' is no one word
+  (none)
+the real diagnostic outside the requested range
+  (none)
+the real diagnostic inside it
+  action 'Import 'strings'' kind=quickfix preferred=true diagnostics=1
+    edits /p/main.nv: 1
+    edit 14-14 -> import strings<LF><LF>
+    result:
+      | package main
+      | 
+      | import strings
+      | 
+      | method main() {
+      |     println(strings.repeat("a", 2))
+      | }
+      | 
+a stale diagnostic for a module that is imported now
+  (none)
+a scratch buffer has no path to address an edit
+  (none)
+== Organize imports: std first, a blank line, then the project, sorted, no repeats
+a mixed block
+  action 'Organize imports' kind=source.organizeImports preferred=false diagnostics=0
+    edits /p/main.nv: 1
+    edit 14-140 -> import arrays<LF>import json<LF>import strings<LF><LF>import alpha<LF>import "github.com/x/dep"<LF>import zeta<LF>import @zeta/second
+    result:
+      | package main
+      | 
+      | import arrays
+      | import json
+      | import strings
+      | 
+      | import alpha
+      | import "github.com/x/dep"
+      | import zeta
+      | import @zeta/second
+      | 
+      | method main() {
+      |     println(strings.repeat(json.stringify(1), 2))
+      | }
+      | 
+CRLF is kept
+  action 'Organize imports' kind=source.organizeImports preferred=false diagnostics=0
+    edits /p/main.nv: 1
+    edit 0-29 -> import arrays<CR><LF>import strings
+    result:
+      | import arrays<CR>
+      | import strings<CR>
+      | <CR>
+      | method main() {<CR>
+      |     println(strings.repeat("a", 2))<CR>
+      |     println(arrays.sort([2, 1]))<CR>
+      | }<CR>
+      | 
+== Organize imports: offered only when it changes something
+already organized
+  (none)
+no imports
+  (none)
+a comment between the imports is not rewritten
+  (none)
+a repeated line goes
+  action 'Organize imports' kind=source.organizeImports preferred=false diagnostics=0
+    edits /p/main.nv: 1
+    edit 0-29 -> import strings
+    result:
+      | import strings
+      | 
+      | method main() {
+      |     println(strings.repeat("a", 2))
+      | }
+      | 
+== project.nv: Fetch dependencies and the small manifest fixes
+project.nv
+  action 'Remove the repeated require' kind=quickfix preferred=false diagnostics=1
+    edits /p/project.nv: 1
+    edit 45-78 -> 
+    result:
+      | project "p"
+      | require "github.com/x/gone" "v1"
+      | require "github.com/x/other" "v1"
+      | replace "github.com/z/free" "../free"
+      | 
+  action 'Add require 'github.com/z/free'' kind=quickfix preferred=false diagnostics=1
+    edits /p/project.nv: 1
+    edit 112-112 -> require "github.com/z/free"<LF>
+    result:
+      | project "p"
+      | require "github.com/x/gone" "v1"
+      | require "github.com/x/gone" "v2"
+      | require "github.com/x/other" "v1"
+      | require "github.com/z/free"
+      | replace "github.com/z/free" "../free"
+      | 
+  action 'Fetch dependencies' kind=quickfix preferred=true diagnostics=1
+    command novus.fetchDependencies file:///p/project.nv
+== a source file gets no manifest action and a manifest gets no import action
+main.nv
+  (none)
+a duplicate-require diagnostic over other text
+  (none)
+== replace-without-require: the module comes from the directive, the line ending from the file
+the genuine diagnostic, a CRLF manifest
+  action 'Add require 'a/b'' kind=quickfix preferred=false diagnostics=1
+    edits /p/project.nv: 1
+    edit 13-13 -> require "a/b"<CR><LF>
+    result:
+      | project "p"<CR>
+      | require "a/b"<CR>
+      | replace "a/b" "../x"<CR>
+      | 
+a forged data field is ignored
+  action 'Add require 'a/b'' kind=quickfix preferred=false diagnostics=1
+    edits /p/project.nv: 1
+    edit 13-13 -> require "a/b"<CR><LF>
+    result:
+      | project "p"<CR>
+      | require "a/b"<CR>
+      | replace "a/b" "../x"<CR>
+      | 
+a span that does not start at a replace directive
+  (none)

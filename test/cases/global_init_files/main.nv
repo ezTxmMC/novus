@@ -1,0 +1,13 @@
+package main
+
+import @parts/users
+import @parts/definitions
+
+// users.nv builds a list from globals that definitions.nv declares after it:
+// the files are flattened in this import order, so the user comes first.
+
+method main {
+    println NAMES
+    println BOTH
+    println totalCount()
+}

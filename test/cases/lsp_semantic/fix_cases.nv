@@ -1,0 +1,82 @@
+package main
+
+import "novus/lsp/semantics/semantic"
+import @support
+import @type_cases
+
+// `%main%` stands for the words `method main` at the start of a line: the corpus test would take this file for a program
+// of its own (see SEM_MAIN_MARK in fixtures.nv).
+method fixSource(): string {
+    return "import strings
+
+define class A {
+    method m(integer a): string {
+        return \"A.m\"
+    }
+}
+
+define class B based A {
+    method m(integer a, integer b): string {
+        return \"B.m2\"
+    }
+
+    method t(): string {
+        var n = \"abc\".length() + 1
+        var m = \"abc\".length() * 2
+        var k = \"abc\".indexOf(\"b\") - 1
+        var j = \"abc\".length() - 1 + 5
+        var s = \"abc\" + n
+        var plain = \"abc\"
+        return m(1)
+    }
+}
+
+%main%() {
+}
+"
+}
+
+method fixWorld(): SemWorld {
+    return SemWorld({ "/proj/main.nv": fixSource().replace("%main%", "method main") }, "/proj/main.nv")
+}
+
+// Review round: a literal that only starts an expression is not a string, a qualifier typo never aborts, the enclosing
+// class takes the first class of the chain that has the name, and malformed type texts are not known.
+method runFixRegressions() {
+    println("== review fixes")
+    var world = fixWorld()
+    runFixQualifier(world)
+    runFixLiteralTyping(world)
+    runFixEnclosingArity(world)
+    runFixTypeTexts()
+}
+
+method runFixQualifier(SemWorld world) {
+    semCheck("isStandardQualifier of a typo", "" + world.index.isStandardQualifier("nope") + " " + world.index.isStandardQualifier("") + " " + world.index.isStandardQualifier("strings"), "false false true")
+}
+
+method runFixLiteralTyping(SemWorld world) {
+    var scope = world.scopeAt("/proj/main.nv", "return m(1)")
+    var shown = []
+    for (name in ["n", "m", "k", "j", "s", "plain"]) {
+        shown.append(name + "=" + world.resolver.typeOfLocal(scope, world.resolver.localNamed(scope, name)).display())
+    }
+    semCheck("a string literal as a receiver", shown.join(" "), "n=unknown m=unknown k=unknown j=unknown s=string plain=string")
+}
+
+method runFixEnclosingArity(SemWorld world) {
+    var scope = world.scopeAt("/proj/main.nv", "return m(1)")
+    semCheck("arity 1 finds the derived overload only", semShow(world.resolver.lookupCall(scope, "m", 1)), "resolved [B.m/2]")
+    semCheck("arity 2 matches too", semShow(world.resolver.lookupCall(scope, "m", 2)), "resolved [B.m/2]")
+}
+
+method runFixTypeTexts() {
+    for (typeText in [">", "5", "array<string>x", "_x", "array<>"]) {
+        println("  <" + typeText + "> " + describeType(typeFromText(typeText)))
+    }
+    var literals = []
+    for (text in ["42", "1.5", "0xFF", "1e5", "1.2.3", "-5", ".5", "5.", "\"s\"", "true"]) {
+        literals.append(text + "=" + describeType(semanticTypeOfLiteral(text)))
+    }
+    println("  " + literals.join(" "))
+}

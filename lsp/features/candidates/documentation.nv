@@ -1,0 +1,187 @@
+package candidates
+
+import base/maybe
+import base/model
+import projects/workspace
+import projects/closure
+import semantics/semantic
+import syntax/outline
+
+private final CANDIDATES_FENCE_OPEN = "```novus\n"
+private final CANDIDATES_FENCE_CLOSE = "\n```"
+private final CANDIDATES_PARAGRAPH = "\n\n"
+
+// Markdown for an item: a fenced block with the signature, then the comment above the declaration.
+method symbolDocumentation(Symbol symbol): string {
+    if (isNone(symbol) || isNone(symbol.decl)) {
+        return ""
+    }
+    var block = CANDIDATES_FENCE_OPEN + symbolDetail(symbol) + CANDIDATES_FENCE_CLOSE
+    if (symbol.decl.doc == "") {
+        return block
+    }
+    return block + CANDIDATES_PARAGRAPH + symbol.decl.doc
+}
+
+// The signature line: `method area(float r): float`, `string name`, `define class Circle based Shape`.
+method symbolDetail(Symbol symbol): string {
+    if (isNone(symbol) || isNone(symbol.decl)) {
+        return ""
+    }
+    return symbol.decl.signatureText()
+}
+
+private final CANDIDATES_MODE_CALL = "call"
+private final CANDIDATES_MODE_NAME = "name"
+private final CANDIDATES_PARAMETER_HINTS = "editor.action.triggerParameterHints"
+private final CANDIDATES_KEY_SEPARATOR = "|"
+private final CANDIDATES_FINAL_MODIFIER = "final"
+
+method candidatesItem(string label, CompletionKind kind, string detail, string bucket): CompletionItem {
+    var item = CompletionItem(label, kind, detail)
+    item.sortText = bucket
+    return item
+}
+
+method candidatesBucketOf(FileOrigin origin): string {
+    if (origin == FileOrigin.Project) {
+        return CANDIDATES_BUCKET_PROJECT
+    }
+    if (origin == FileOrigin.Dependency) {
+        return CANDIDATES_BUCKET_DEPENDENCY
+    }
+    return CANDIDATES_BUCKET_STANDARD
+}
+
+method candidatesKindOf(Decl decl, bool isMember): CompletionKind {
+    if (decl.kind == DeclKind.Interface) {
+        return CompletionKind.Interface
+    }
+    if (decl.kind == DeclKind.Enum) {
+        return CompletionKind.Enum
+    }
+    if (decl.kind == DeclKind.Annotation) {
+        return CompletionKind.Struct
+    }
+    if (decl.isType()) {
+        return CompletionKind.Class
+    }
+    return candidatesMemberKindOf(decl, isMember)
+}
+
+method candidatesMemberKindOf(Decl decl, bool isMember): CompletionKind {
+    if (decl.kind == DeclKind.Field) {
+        return CompletionKind.Field
+    }
+    if (decl.kind == DeclKind.EnumConstant) {
+        return CompletionKind.EnumMember
+    }
+    if (decl.kind == DeclKind.Constructor) {
+        return CompletionKind.Constructor
+    }
+    if (decl.isCallable() && isMember) {
+        return CompletionKind.Method
+    }
+    if (decl.isCallable()) {
+        return CompletionKind.Function
+    }
+    if (decl.hasModifier(CANDIDATES_FINAL_MODIFIER)) {
+        return CompletionKind.Constant
+    }
+    return CompletionKind.Variable
+}
+
+// The package, class or module that an item belongs to, as the small description next to the label.
+method candidatesOwnerLabel(Symbol symbol): string {
+    if (symbol.container != "") {
+        return symbol.container
+    }
+    if (symbol.qualifier != "") {
+        return symbol.qualifier
+    }
+    if (isSome(symbol.file) && symbol.file.origin == FileOrigin.Dependency) {
+        return symbol.file.moduleName
+    }
+    return ""
+}
+
+// `<requesting uri>|<kind>|<file path or std:module>|<name start>` (8.1 step 4).
+method candidatesResolveKey(string uri, CompletionItem item, Symbol symbol): string {
+    var parts = [uri, "" + item.kind, symbol.file.filePath, "" + symbol.decl.nameSpan.start]
+    return parts.join(CANDIDATES_KEY_SEPARATOR)
+}
+
+// A callable inserts `name($1)` and asks for parameter hints when it has parameters, `name()` otherwise.
+method candidatesApplyCall(CompletionItem item, integer arity, string name) {
+    if (arity == 0) {
+        item.insertText = name + "()"
+        return
+    }
+    item.insertText = name + "($1)"
+    item.isSnippet = true
+    item.command = CANDIDATES_PARAMETER_HINTS
+}
+
+// The positional constructor of a class: its `construct` or, without one, its fields in order.
+method candidatesConstructorArity(Decl typeDecl): integer {
+    var fields = 0
+    for (member in typeDecl.members) {
+        if (member.kind == DeclKind.Constructor) {
+            return member.arity()
+        }
+        if (member.kind == DeclKind.Field) {
+            fields = fields + 1
+        }
+    }
+    return fields
+}
+
+method candidatesFillInsert(CompletionItem item, Decl decl, string mode) {
+    if (mode != CANDIDATES_MODE_CALL) {
+        return
+    }
+    if (decl.isCallable()) {
+        candidatesApplyCall(item, decl.arity(), decl.name)
+        return
+    }
+    if (decl.kind == DeclKind.Class || decl.kind == DeclKind.AbstractClass) {
+        candidatesApplyCall(item, candidatesConstructorArity(decl), decl.name)
+    }
+}
+
+// An item for a symbol of the program, a dependency or the std library. Items of the open project carry their
+// documentation, the others a `resolveKey` that `completionItem/resolve` turns into it.
+method candidatesSymbolItem(Symbol symbol, string uri, string bucket, string mode): CompletionItem {
+    var decl = symbol.decl
+    var item = candidatesItem(decl.name, candidatesKindOf(decl, symbol.isMember()), symbolDetail(symbol), bucket)
+    item.labelDescription = candidatesOwnerLabel(symbol)
+    item.deprecated = decl.isDeprecated()
+    candidatesFillInsert(item, decl, mode)
+    if (symbol.origin() == FileOrigin.Project) {
+        item.documentation = symbolDocumentation(symbol)
+        return item
+    }
+    item.resolveKey = candidatesResolveKey(uri, item, symbol)
+    return item
+}
+
+// The second item of a class in an expression: the object literal `Name{ field=value }`; it needs the same import.
+method candidatesLiteralItem(CompletionItem constructorItem, Decl classDecl): CompletionItem {
+    var item = candidatesItem(classDecl.name + "{}", CompletionKind.Struct, "object literal", constructorItem.sortText)
+    item.filterText = classDecl.name
+    item.insertText = classDecl.name + "{$1}"
+    item.isSnippet = true
+    item.labelDescription = constructorItem.labelDescription
+    item.documentation = constructorItem.documentation
+    item.resolveKey = constructorItem.resolveKey
+    item.deprecated = constructorItem.deprecated
+    item.additionalEdits = constructorItem.additionalEdits
+    return item
+}
+
+method candidatesModeFor(string kind): string {
+    if (kind == CANDIDATES_KIND_STATEMENT || kind == CANDIDATES_KIND_EXPRESSION || kind == CANDIDATES_KIND_MEMBER) {
+        return CANDIDATES_MODE_CALL
+    }
+    return CANDIDATES_MODE_NAME
+}

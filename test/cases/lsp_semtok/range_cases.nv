@@ -1,0 +1,61 @@
+package main
+
+import "novus/lsp/base/model"
+import "novus/lsp/base/text"
+import "novus/lsp/features/semtok"
+import "novus/lsp/projects/workspace"
+import "novus/lsp/syntax/lexing"
+import @support
+
+// A range answers the tokens that touch it, and answers the same classification as the whole document.
+method runRangeCases() {
+    println("== ranges")
+    var source = stLines(["method f(integer n): integer {", "    var big = n + 1 // note", "    return big", "}"])
+    var world = StWorld(stProject(source))
+    var context = world.open("/p/main.nv", source)
+    var second = Span(source.indexOf("    var big", 0), source.indexOf("    return", 0))
+    stRange(world, context, "the second line", second)
+    stRange(world, context, "inside a token (starts in `integer`)", Span(source.indexOf("eger", 0), source.indexOf("eger", 0) + 2))
+    stRange(world, context, "empty range", Span(10, 10))
+    stRange(world, context, "reversed range", Span(20, 5))
+    stRange(world, context, "after the end", Span(source.length() + 5, source.length() + 9))
+    stRange(world, context, "before the start", Span(-9, -3))
+    stRange(world, context, "wider than the text", Span(-5, source.length() + 50))
+    var whole = world.engine.spansFor(context, Span(0, source.length()))
+    stCheck("the whole range is the document", "" + whole.length(), "" + world.engine.spansFor(context, Span(-1, source.length() + 1)).length())
+}
+
+method stRange(StWorld world, FileContext context, string label, Span range) {
+    var spans = world.engine.spansFor(context, range)
+    println("-- " + label + " [" + range.start + "," + range.end + ")")
+    println(stRender(context.document.text, spans))
+}
+
+// The two halves of the engine on their own: the lexical pass keeps what it classified, the resolved pass adds names.
+method runPassCases() {
+    println("== the two passes")
+    var source = "method f(integer n): integer {\n    return n\n}\n"
+    var world = StWorld(stProject(source))
+    var context = world.open("/p/main.nv", source)
+    var whole = Span(0, source.length())
+    var lexicalOnly = [SemanticSpan(Span(0, 6), 12, 0)]
+    var refined = ResolvedTokens().refine(context, whole, lexicalOnly)
+    println("refine keeps the lexical span and adds identifiers")
+    println(stRender(source, refined))
+    println("refine of nothing is the identifiers only")
+    println(stRender(source, ResolvedTokens().refine(context, whole, [])))
+    println("the lexical pass alone, token by token")
+    println(stRender(source, stLexicalSpans(source)))
+}
+
+method stLexicalSpans(string source): array<SemanticSpan> {
+    var spans = []
+    var lexical = LexicalTokens()
+    for (token in lexText(source).tokens) {
+        var span = lexical.classify(token)
+        if (semtokIsNone(span) == false) {
+            spans.append(span)
+        }
+    }
+    return spans
+}

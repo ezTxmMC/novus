@@ -1,0 +1,13 @@
+// 😀 日本語 é
+define class Greeter {
+    string name
+
+    method greet(): string {
+        return "héllo 😀 ${this.name}"
+    }
+}
+
+method main() {
+    var wide = "😀 日本語 é" var after = wide.length()
+    println(after)
+}

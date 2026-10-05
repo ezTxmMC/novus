@@ -1,0 +1,158 @@
+package semantic
+
+import base/maybe
+import projects/closure
+import syntax/outline
+
+private final SEMANTIC_LOCAL_MODIFIER = "local"
+private final SEMANTIC_LOCAL_KEY_PREFIX = "local:"
+private final SEMANTIC_QUALIFIER_DOT = "."
+private final SEMANTIC_ARITY_MARK = "/"
+private final SEMANTIC_VARIADIC_MODIFIER = "variadic"
+
+// One declaration together with the file it lives in. `qualifier` is the qualifier of that file (`""` at the root),
+// `container` the name of the owning type for a member and `""` for a top-level declaration. `key` is stable across
+// re-parses and unique in the program: `Circle` for a type, `geo.area/1` for a function (the qualifier only when it
+// has one, then `/arity`), `LIMIT` for a global, `Circle.radius` and `Circle.area/0` for members, and
+// `local:<name>@<offset>` for a local variable (its `decl` is then synthetic, see `semanticLocalSymbol`).
+define class Symbol {
+    Decl decl
+    ClosureFile file
+    string qualifier
+    string container
+    string key
+
+    construct(Decl decl, ClosureFile file, string qualifier, string container) {
+        this.decl = decl
+        this.file = file
+        this.qualifier = qualifier
+        this.container = container
+        this.key = semanticKeyOf(decl, qualifier, container)
+    }
+
+    method name(): string {
+        if (isNone(this.decl)) {
+            return ""
+        }
+        return this.decl.name
+    }
+
+    // nil for a symbol that has no file.
+    method origin(): FileOrigin {
+        if (isNone(this.file)) {
+            return nothing()
+        }
+        return this.file.origin
+    }
+
+    method isMember(): bool {
+        return this.container != ""
+    }
+
+    method isLocal(): bool {
+        return isSome(this.decl) && this.decl.hasModifier(SEMANTIC_LOCAL_MODIFIER)
+    }
+
+    // A one-line label for messages: `geo.area(float r): float`, `Circle.radius: float`, `Circle`, `LIMIT: integer`.
+    method describe(): string {
+        if (isNone(this.decl)) {
+            return ""
+        }
+        var label = this.qualifiedName()
+        if (this.decl.isCallable()) {
+            label = label + "(" + this.decl.paramsText() + ")"
+        }
+        if (this.decl.isType() || this.decl.typeText == "") {
+            return label
+        }
+        return label + ": " + this.decl.typeText
+    }
+
+    // The name behind its owner: the container for a member, the qualifier for a function or global.
+    method qualifiedName(): string {
+        if (this.container != "") {
+            return this.container + SEMANTIC_QUALIFIER_DOT + this.decl.name
+        }
+        if (this.decl.isType() || this.qualifier == "") {
+            return this.decl.name
+        }
+        return this.qualifier + SEMANTIC_QUALIFIER_DOT + this.decl.name
+    }
+}
+
+method semanticKeyOf(Decl decl, string qualifier, string container): string {
+    if (isNone(decl)) {
+        return ""
+    }
+    if (decl.hasModifier(SEMANTIC_LOCAL_MODIFIER)) {
+        return SEMANTIC_LOCAL_KEY_PREFIX + decl.name + "@" + decl.nameSpan.start
+    }
+    var owner = container
+    if (owner == "" && decl.isType() == false) {
+        owner = qualifier
+    }
+    var base = decl.name
+    if (owner != "") {
+        base = owner + SEMANTIC_QUALIFIER_DOT + decl.name
+    }
+    if (decl.isCallable()) {
+        return base + SEMANTIC_ARITY_MARK + decl.arity()
+    }
+    return base
+}
+
+// A local variable, parameter or loop variable as a symbol: a synthetic global declaration whose spans are the name
+// and the scope of the local, with the modifiers `local` and the origin (`var`, `typed`, `loop`, `parameter`).
+method semanticLocalSymbol(ClosureFile file, Local local): Symbol {
+    var decl = Decl(DeclKind.Global, local.name, local.nameSpan, local.scope)
+    decl.typeText = local.typeText
+    decl.modifiers = [SEMANTIC_LOCAL_MODIFIER, local.origin]
+    return Symbol(decl, file, "", "")
+}
+
+method semanticArityMatches(Decl decl, integer arity): bool {
+    return decl.arity() == arity || decl.hasModifier(SEMANTIC_VARIADIC_MODIFIER)
+}
+
+method semanticInQualifier(array<Symbol> symbols, string qualifier): array<Symbol> {
+    var found = []
+    for (symbol in symbols) {
+        if (symbol.qualifier == qualifier) {
+            found.append(symbol)
+        }
+    }
+    return found
+}
+
+// The symbols of program packages (a non-empty qualifier, not std): what an unqualified name may reach when it is
+// unique among them.
+method semanticInProgramPackages(array<Symbol> symbols): array<Symbol> {
+    var found = []
+    for (symbol in symbols) {
+        if (symbol.qualifier != "" && symbol.origin() != FileOrigin.Standard) {
+            found.append(symbol)
+        }
+    }
+    return found
+}
+
+// The symbols of the owner that comes first: a derived class hides the methods of its bases by name.
+method semanticOfFirstOwner(array<Symbol> symbols): array<Symbol> {
+    var found = []
+    for (symbol in symbols) {
+        if (symbol.container == symbols[0].container) {
+            found.append(symbol)
+        }
+    }
+    return found
+}
+
+method semanticWithArity(array<Symbol> symbols, integer arity): array<Symbol> {
+    var found = []
+    for (symbol in symbols) {
+        if (semanticArityMatches(symbol.decl, arity)) {
+            found.append(symbol)
+        }
+    }
+    return found
+}

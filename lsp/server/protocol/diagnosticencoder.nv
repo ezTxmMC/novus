@@ -1,0 +1,133 @@
+package protocol
+
+import base/model
+import base/text
+
+// Encoding of diagnostics (with related information), publishDiagnostics params and window/logMessage.
+private final PROTOCOL_FIRST_KNOWN_VERSION = 0
+private final PROTOCOL_MESSAGE_TYPE_MIN = 1
+private final PROTOCOL_MESSAGE_TYPE_MAX = 4
+
+define class DiagnosticEncoder {
+    PositionCodec codec
+    ClientInfo client
+
+    construct(PositionCodec codec, ClientInfo client) {
+        this.codec = codec
+        this.client = client
+    }
+
+    method tagsOf(Diagnostic diagnostic): array<integer> {
+        var tags = []
+        if (diagnostic.unnecessary) {
+            tags.append(PROTOCOL_TAG_UNNECESSARY)
+        }
+        if (diagnostic.deprecated) {
+            tags.append(PROTOCOL_TAG_DEPRECATED)
+        }
+        return tags
+    }
+
+    method diagnostic(LineIndex lines, Diagnostic diagnostic): map<string, object> {
+        var encoded = {
+            "range": encodeRange(this.codec, lines, diagnostic.span),
+            "severity": diagnostic.severity.code,
+            "message": protocolClip(diagnostic.message)
+        }
+        this.addOptionalFields(encoded, diagnostic)
+        return encoded
+    }
+
+    method addOptionalFields(map<string, object> encoded, Diagnostic diagnostic) {
+        if (diagnostic.source != "") {
+            encoded["source"] = diagnostic.source
+        }
+        if (diagnostic.code != "") {
+            encoded["code"] = diagnostic.code
+        }
+        if (diagnostic.data != "") {
+            encoded["data"] = diagnostic.data
+        }
+        var tags = this.tagsOf(diagnostic)
+        if (tags.length() > 0) {
+            encoded["tags"] = tags
+        }
+    }
+
+    // Related information is sent only to clients that asked for it, and only for files whose line index is known.
+    method diagnostic(LineIndex lines, Diagnostic diagnostic, map<string, LineIndex> linesByPath): map<string, object> {
+        var encoded = this.diagnostic(lines, diagnostic)
+        if (this.client.relatedInformation == false) {
+            return encoded
+        }
+        var related = this.relatedOf(diagnostic, linesByPath)
+        if (related.length() > 0) {
+            encoded["relatedInformation"] = related
+        }
+        return encoded
+    }
+
+    method relatedOf(Diagnostic diagnostic, map<string, LineIndex> linesByPath): array<map<string, object>> {
+        var related = []
+        for (info in diagnostic.related) {
+            if (linesByPath.has(info.filePath)) {
+                var range = encodeRange(this.codec, linesByPath[info.filePath], info.span)
+                var location = {"uri": filePathToUri(info.filePath), "range": range}
+                related.append({"location": location, "message": protocolClip(info.message)})
+            }
+        }
+        return related
+    }
+
+    method publishParams(string uri, integer version, array<map<string, object>> diagnostics): map<string, object> {
+        var params = {"uri": uri, "diagnostics": diagnostics}
+        if (version >= PROTOCOL_FIRST_KNOWN_VERSION) {
+            params["version"] = version
+        }
+        return params
+    }
+
+    method logMessage(integer level, string message): map<string, object> {
+        return {"type": textClamp(level, PROTOCOL_MESSAGE_TYPE_MIN, PROTOCOL_MESSAGE_TYPE_MAX), "message": protocolClip(message)}
+    }
+}
+
+// Code actions; the edits of an action are encoded with the line index of the file each FileEdit names.
+define class ProtocolActionEncoder {
+    PositionCodec codec
+    ClientInfo client
+
+    construct(PositionCodec codec, ClientInfo client) {
+        this.codec = codec
+        this.client = client
+    }
+
+    method action(LineIndex lines, CodeActionItem item, map<string, LineIndex> linesByPath): map<string, object> {
+        var encoded = {"title": protocolClip(item.title)}
+        if (item.kind != "") {
+            encoded["kind"] = item.kind
+        }
+        if (item.diagnostics.length() > 0) {
+            encoded["diagnostics"] = this.diagnosticsOf(lines, item)
+        }
+        if (item.edits.length() > 0) {
+            encoded["edit"] = protocolEncodeWorkspaceEdit(this.codec, linesByPath, item.edits)
+        }
+        if (item.preferred) {
+            encoded["isPreferred"] = true
+        }
+        if (item.command != "") {
+            encoded["command"] = {"title": protocolClip(item.title), "command": item.command, "arguments": item.commandArguments}
+        }
+        return encoded
+    }
+
+    method diagnosticsOf(LineIndex lines, CodeActionItem item): array<map<string, object>> {
+        var encoder = DiagnosticEncoder(this.codec, this.client)
+        var diagnostics = []
+        for (diagnostic in item.diagnostics) {
+            diagnostics.append(encoder.diagnostic(lines, diagnostic))
+        }
+        return diagnostics
+    }
+}

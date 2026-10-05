@@ -1,0 +1,128 @@
+package main
+
+import path
+import "novus/lsp/base/maybe"
+import "novus/lsp/base/model"
+import "novus/lsp/base/platform"
+import "novus/lsp/base/text"
+import "novus/lsp/projects/closure"
+import "novus/lsp/projects/stdlib"
+import "novus/lsp/projects/workspace"
+import "novus/lsp/services/diagnostics"
+
+// The codes of the own semantic rules (DESIGN 5.9 and the additive `bind-not-ref`): the corpus compares these with the compiler.
+// A hint such as `import-not-used-here` is style and is never compared; the syntax codes have their own steps (a) and (b).
+private final SYNTAX_TOOL_SEMANTIC_CODES = { "unresolved-import": true, "package-folder-mismatch": true, "module-not-imported": true,
+    "duplicate-definition": true, "unknown-name": true, "unknown-member": true, "missing-interface-method": true,
+    "ambiguous-call": true, "qualifier-collision": true, "bind-not-ref": true }
+
+// One own semantic finding in the terms of the corpus: the repository-relative file, 1-based line and byte column.
+define class SyntaxToolFinding {
+    string file
+    integer line
+    integer column
+    Severity severity
+    string code
+    string message
+
+    construct(string file, integer line, integer column, Severity severity, string code, string message) {
+        this.file = file
+        this.line = line
+        this.column = column
+        this.severity = severity
+        this.code = code
+        this.message = message
+    }
+
+    method isError(): bool {
+        return this.severity == Severity.Error
+    }
+
+    method describe(): string {
+        return this.file + ":" + this.line + ":" + this.column + ": " + this.code + ": " + this.message
+    }
+}
+
+// The own semantic layer over the files of a program (DESIGN 9.5-4 (b), Wave 4): one workspace on the disk, so that a project is
+// built once and every file of its closure is judged in the context of that program, the way the editor would.
+define class SyntaxToolSemantic {
+    string root
+    Workspace workspace
+    OwnDiagnostics own
+
+    construct(string root) {
+        this.root = root
+        this.workspace = Workspace(FileCache(DiskTextSource()), standardLibrary())
+        this.own = OwnDiagnostics(this.workspace, Settings())
+    }
+
+    // The semantic findings of every user file of the program that starts at `relative`, entry first. A file of the same project
+    // is judged through the workspace like an open document. A file of another project (a package folder of a program without a
+    // `project.nv`: for the editor it is a program of its own, 5.6 item 1) is judged in the context of the entry's program, the
+    // way the compiler read it: its closure file gets the token-keeping parse that an open document has, and the rules run on
+    // a context built by hand.
+    method programFindings(string relative): array<SyntaxToolFinding> {
+        var entry = path.normalize(path.join(this.root, relative))
+        var context = this.workspace.contextFor(this.documentOf(entry))
+        var found = this.findingsOf(entry)
+        for (file in context.project.userFiles()) {
+            if (file.filePath == entry) {
+                continue
+            }
+            for (finding in this.findingsOfClosureFile(context, file)) {
+                found.append(finding)
+            }
+        }
+        return found
+    }
+
+    method filesOf(string relative): array<string> {
+        var entry = path.normalize(path.join(this.root, relative))
+        var files = [entry]
+        for (file in this.workspace.contextFor(this.documentOf(entry)).project.userFiles()) {
+            if (files.contains(file.filePath) == false) {
+                files.append(file.filePath)
+            }
+        }
+        return files
+    }
+
+    method findingsOfClosureFile(FileContext entry, ClosureFile file): array<SyntaxToolFinding> {
+        var owner = this.workspace.projectFor(file.filePath)
+        if (isSome(owner) && owner.key() == entry.project.key()) {
+            return this.findingsOf(file.filePath)
+        }
+        file.syntax = this.workspace.files.syntaxWithTokens(file.filePath)
+        var document = this.documentOf(file.filePath)
+        var context = FileContext(document, file.syntax, entry.project, file).withLookup(this.workspace.files, this.workspace.library)
+        var found = []
+        for (rule in this.own.rules) {
+            for (diagnostic in rule.check(context)) {
+                this.keep(document, path.relative(this.root, file.filePath), diagnostic, found)
+            }
+        }
+        return found
+    }
+
+    method documentOf(string filePath): Document {
+        return Document(filePathToUri(filePath), "novus", 1, this.workspace.files.textOf(filePath))
+    }
+
+    method findingsOf(string filePath): array<SyntaxToolFinding> {
+        var document = this.documentOf(filePath)
+        var found = []
+        for (diagnostic in this.own.produce(document)) {
+            this.keep(document, path.relative(this.root, filePath), diagnostic, found)
+        }
+        return found
+    }
+
+    method keep(Document document, string relative, Diagnostic diagnostic, array<SyntaxToolFinding> found) {
+        if (SYNTAX_TOOL_SEMANTIC_CODES.has(diagnostic.code) == false) {
+            return
+        }
+        var line = document.lines.lineOf(diagnostic.span.start) + 1
+        var column = document.lines.byteColumn(diagnostic.span.start) + 1
+        found.append(SyntaxToolFinding(relative, line, column, diagnostic.severity, diagnostic.code, diagnostic.message))
+    }
+}

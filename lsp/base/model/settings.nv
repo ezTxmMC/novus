@@ -1,0 +1,83 @@
+package model
+
+import arrays
+
+// Effective user settings (novus.* keys), defaults in one place (5.11).
+private final MODEL_DEFAULT_REVIEW_LINES = 30
+private final MODEL_DEFAULT_FUNCTION_MAX_LINES = 50
+private final MODEL_DEFAULT_FILE_MAX_LINES = 200
+private final MODEL_DEFAULT_FOLDER_MAX_FILES = 10
+private final MODEL_DEFAULT_SHORT_NAMES = ["i", "j", "k"]
+private final MODEL_DEFAULT_CHECK_MODE = "onSave"
+private final MODEL_DEFAULT_CHECK_TIMEOUT_SECONDS = 60
+private final MODEL_DEFAULT_CHECK_IDLE_MILLIS = 1500
+private final MODEL_DEFAULT_TAB_SIZE = 4
+private final MODEL_DEFAULT_MAX_BLANK_LINES = 1
+private final MODEL_DEFAULT_SNIPPET_INDENT = "    "
+private final MODEL_DEFAULT_COMPLETION_MAX_ITEMS = 200
+
+define class PurelineSettings {
+    bool enabled
+    integer functionReviewLines
+    integer functionMaxLines
+    integer maxLinesPerFile
+    integer maxFilesPerFolder
+    bool flagPlainElse
+    array<string> allowedShortNames
+
+    construct() {
+        this.enabled = false
+        this.functionReviewLines = MODEL_DEFAULT_REVIEW_LINES
+        this.functionMaxLines = MODEL_DEFAULT_FUNCTION_MAX_LINES
+        this.maxLinesPerFile = MODEL_DEFAULT_FILE_MAX_LINES
+        this.maxFilesPerFolder = MODEL_DEFAULT_FOLDER_MAX_FILES
+        this.flagPlainElse = false
+        this.allowedShortNames = arrays.copy(MODEL_DEFAULT_SHORT_NAMES)
+    }
+}
+
+define class CheckSettings {
+    string mode
+    string novuscPath
+    integer timeoutSeconds
+    integer idleMillis
+
+    construct() {
+        this.mode = MODEL_DEFAULT_CHECK_MODE
+        this.novuscPath = ""
+        this.timeoutSeconds = MODEL_DEFAULT_CHECK_TIMEOUT_SECONDS
+        this.idleMillis = MODEL_DEFAULT_CHECK_IDLE_MILLIS
+    }
+}
+
+define class FormatSettings {
+    integer tabSize
+    bool insertSpaces
+    integer maxBlankLines
+
+    construct() {
+        this.tabSize = MODEL_DEFAULT_TAB_SIZE
+        this.insertSpaces = true
+        this.maxBlankLines = MODEL_DEFAULT_MAX_BLANK_LINES
+    }
+}
+
+define class Settings {
+    PurelineSettings pureline
+    CheckSettings check
+    FormatSettings format
+    bool explicitImports
+    string snippetIndent
+    bool ownDiagnostics
+    integer completionMaxItems
+
+    construct() {
+        this.pureline = PurelineSettings()
+        this.check = CheckSettings()
+        this.format = FormatSettings()
+        this.explicitImports = true
+        this.snippetIndent = MODEL_DEFAULT_SNIPPET_INDENT
+        this.ownDiagnostics = true
+        this.completionMaxItems = MODEL_DEFAULT_COMPLETION_MAX_ITEMS
+    }
+}

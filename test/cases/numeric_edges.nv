@@ -1,0 +1,149 @@
+package main
+
+import math
+
+// Edges of the numeric rules: the same answer whether the compiler unboxes
+// the operands or not.
+
+method boxedDiv(object a, object b): object {
+    return a / b
+}
+
+method boxedMod(object a, object b): object {
+    return a % b
+}
+
+method boxedLess(object a, object b): bool {
+    return a < b
+}
+
+method boxedLessEq(object a, object b): bool {
+    return a <= b
+}
+
+method boxedEq(object a, object b): bool {
+    return a == b
+}
+
+method boxedAdd(object a, object b): object {
+    return a + b
+}
+
+method boxedSub(object a, object b): object {
+    return a - b
+}
+
+method boxedMul(object a, object b): object {
+    return a * b
+}
+
+method boxedNeg(object a): object {
+    return -a
+}
+
+method typedSub(integer a, float b): float {
+    return 0.0 - a
+}
+
+method typedAdd(integer a, integer b): integer {
+    return a + b
+}
+
+method typedMul(integer a, integer b): integer {
+    return a * b
+}
+
+method typedNeg(integer a): integer {
+    return -a
+}
+
+method typedDiv(integer a, integer b): integer {
+    return a / b
+}
+
+method typedMod(integer a, integer b): integer {
+    return a % b
+}
+
+method typedFloatMod(float a, float b): float {
+    return a % b
+}
+
+method typedLess(float a, float b): bool {
+    return a < b
+}
+
+method typedLessEq(float a, float b): bool {
+    return a <= b
+}
+
+method typedGreaterEq(float a, float b): bool {
+    return a >= b
+}
+
+method floorOf(float x): integer {
+    return math.floor(x)
+}
+
+method main {
+    // an integer expression assigned to a float is computed as integers
+    float x = 7 / 2
+    println x
+    var seven = 7
+    float y = seven / 2 + seven % 4
+    println y
+    float z = 0.5
+    z = seven / 2
+    println z
+    float w = seven * 3
+    println w
+
+    // 0.0 - 0 is +0.0 (a C compiler must not turn it into -(double)0, as gcc 16 does)
+    var nothing = 0
+    println (0.0 - nothing) + " " + (0.0 - (5 - 5)) + " " + boxedSub(0.0, nothing) + " " + typedSub(0, 0.0) + " " + (0.0 - 0.0 * -1)
+
+    // remainder of a float by zero is zero, like the quotient
+    var zero = 0.0
+    println boxedMod(5.5, zero) + " " + boxedMod(5.5, 0.0) + " " + typedFloatMod(5.5, 0.0) + " " + (5.5 % zero) + " " + (7 % 0) + " " + (7.5 % 2)
+    println boxedDiv(5.5, zero) + " " + boxedDiv(5, 0) + " " + typedDiv(5, 0) + " " + typedMod(5, 0)
+
+    // NaN is neither smaller, larger nor equal
+    var big = 1.0
+    var i = 0
+    while (i < 1100) {
+        big = big * 2.0
+        i = i + 1
+    }
+    var nan = (big * 2) - (big * 2)
+    println (nan < 1.0) + " " + (nan > 1.0) + " " + (nan <= 1.0) + " " + (nan >= 1.0) + " " + (nan == nan) + " " + (nan != nan)
+    println boxedLess(nan, 1.0) + " " + boxedLessEq(nan, 1.0) + " " + boxedLessEq(1.0, nan) + " " + boxedEq(nan, nan)
+    println typedLess(nan, 1.0) + " " + typedLessEq(nan, 1.0) + " " + typedGreaterEq(nan, 1.0) + " " + typedLessEq(1.0, 1.0) + " " + typedGreaterEq(2.0, 1.0)
+
+    // a float that is no integer becomes the lowest one
+    println floorOf(2.7) + " " + floorOf(-2.7) + " " + floorOf(big) + " " + floorOf(nan) + " " + math.ceil(big) + " " + math.round(nan)
+    var inf = big
+    integer truncated = inf
+    println truncated
+    integer shortened = 3.99
+    println shortened
+
+    // integers wrap around at 64 bits
+    var max = 9223372036854775807
+    var min = 0 - max - 1
+    println max + " " + min + " " + (max + 1) + " " + (min - 1) + " " + (max * 2) + " " + (-min)
+    println boxedAdd(max, 1) + " " + boxedMul(max, 2) + " " + boxedNeg(min)
+    println typedAdd(max, 1) + " " + typedMul(max, 2) + " " + typedNeg(min)
+    println typedAdd(4611686018427387904, 4611686018427387904) + " " + typedMul(4294967296, 4294967296)
+    println typedDiv(min, -1) + " " + typedMod(min, -1) + " " + boxedDiv(min, -1) + " " + boxedMod(min, -1) + " " + (min / -1) + " " + (min % -1)
+
+    // integers beyond what a tagged word holds compare exactly
+    var a = 4611686018427387905
+    var b = 4611686018427387906
+    println boxedLess(a, b) + " " + boxedEq(a, b) + " " + (a < b) + " " + (a == b) + " " + boxedLessEq(b, a)
+    println boxedLess(min, min + 1) + " " + boxedLessEq(min + 1, min) + " " + boxedEq(min, min + 1)
+    println boxedLess(a, 4611686018427387906.0) + " " + boxedEq(9007199254740993, 9007199254740992.0)
+
+    // shifts
+    var one = 1
+    println (one << 62) + " " + (one << 63) + " " + (one << 64) + " " + (one << -1) + " " + (one << -64) + " " + (min >> 63) + " " + (min >> 64) + " " + (min >> -64) + " " + (max >> -1)
+}

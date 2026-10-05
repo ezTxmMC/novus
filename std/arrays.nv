@@ -18,15 +18,9 @@ method reverse(array<object> items): array<object> {
     return out
 }
 
-method unique(array<object> items): array<object> {
-    var out = []
-    for (x in items) {
-        if (out.contains(x) == false) {
-            out.append(x)
-        }
-    }
-    return out
-}
+// Each value once, in the order of its first occurrence. Linear for arrays
+// of strings or of numbers; any other mix compares pairwise like contains().
+method unique(array<object> items): array<object> native "nv_arr_unique"
 
 // [from, to) as integers
 method range(integer from, integer to): array<integer> {

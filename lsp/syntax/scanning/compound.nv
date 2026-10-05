@@ -1,0 +1,105 @@
+package scanning
+
+import base/text
+import syntax/lexing
+
+private final SCANNING_COMPOUND_OPERATORS = "+-*/%&|^"
+
+// A problem the scanners found in a body; `parsing` turns it into a SyntaxIssue.
+define class ScanningProblem {
+    Span span
+    string code
+    string message
+    bool warning
+
+    construct(Span span, string code, string message, bool warning) {
+        this.span = span
+        this.code = code
+        this.message = message
+        this.warning = warning
+    }
+}
+
+// `+=`, `-=`, `++`, `--` and friends: the lexer cuts them into two tokens, the compiler then rejects the second one.
+method scanningCompoundProblems(array<Token> tokens, integer from, integer to, array<ScanningProblem> problems) {
+    var index = from
+    while (index + 1 < to) {
+        var first = tokens[index]
+        var second = tokens[index + 1]
+        if (scanningIsCompound(first, second) || scanningIsStep(tokens, index, to)) {
+            problems.append(scanningCompoundProblem(first, second))
+        }
+        index = index + 1
+    }
+}
+
+method scanningIsCompound(Token first, Token second): bool {
+    if (first.kind != TokenKind.Punct || second.isPunct("=") == false || first.end != second.start) {
+        return false
+    }
+    return first.text.length() == 1 && SCANNING_COMPOUND_OPERATORS.indexOf(first.text) >= 0
+}
+
+// `++`, and `--` when no operand follows on the same line (`a - -b` is a valid subtraction of a negation).
+method scanningIsStep(array<Token> tokens, integer index, integer to): bool {
+    var first = tokens[index]
+    var second = tokens[index + 1]
+    if (first.end != second.start || first.text != second.text) {
+        return false
+    }
+    if (first.isPunct("+")) {
+        return true
+    }
+    return first.isPunct("-") && scanningStartsOperand(tokens, index + 2, to, second.line) == false
+}
+
+method scanningStartsOperand(array<Token> tokens, integer index, integer to, integer line): bool {
+    if (index >= to || tokens[index].line != line) {
+        return false
+    }
+    var token = tokens[index]
+    if (token.kind == TokenKind.Ident || token.kind == TokenKind.Integer || token.kind == TokenKind.Float || token.kind == TokenKind.String) {
+        return true
+    }
+    if (token.kind == TokenKind.Keyword) {
+        return token.text == "true" || token.text == "false"
+    }
+    return token.isPunct("(") || token.isPunct("[") || token.isPunct("{") || token.isPunct("-") || token.isPunct("!")
+}
+
+method scanningCompoundProblem(Token first, Token second): ScanningProblem {
+    var operatorText = first.text + second.text
+    var message = "'" + operatorText + "' does not exist: write 'x = x + 1'"
+    return ScanningProblem(Span(first.start, second.end), "compound-assignment", message, false)
+}
+
+// Index of the loop variable token of `for ( ... )`, -1 after reporting a header the compiler rejects.
+method scanningReadForHeader(ScanningWalker walker, integer first, integer close): integer {
+    if (walker.cursor.isKeyword(first, "var") || scanningHasSemicolon(walker, first, close)) {
+        walker.report(walker.cursor.spanAt(first), "c-style-for", "C-style 'for (var i = ...; ...)' does not exist: use 'for (item in items)' or a 'while' loop")
+        return -1
+    }
+    if (walker.cursor.isKind(first, TokenKind.Keyword)) {
+        walker.report(walker.cursor.spanAt(first), "keyword-as-name", "expected loop variable name but found keyword " + walker.cursor.describeAt(first))
+        return -1
+    }
+    if (walker.cursor.isIdent(first) == false) {
+        walker.report(walker.cursor.spanAt(first), "expected-token", "expected loop variable name but found " + walker.cursor.describeAt(first))
+        return -1
+    }
+    if (walker.cursor.isKeyword(first + 1, "in") == false) {
+        walker.report(walker.cursor.spanAt(first + 1), "expected-token", "expected 'in' in for loop but found " + walker.cursor.describeAt(first + 1))
+    }
+    return first
+}
+
+method scanningHasSemicolon(ScanningWalker walker, integer first, integer close): bool {
+    var index = first
+    while (index < close) {
+        if (walker.cursor.isPunct(index, ";")) {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}

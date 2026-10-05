@@ -1,0 +1,107 @@
+--- which reason may start a check, per mode
+off: command
+onSave: open save command
+onType: open save idle command
+--- coordinator state
+ids count up: 1 2
+running true, other project false, full false
+two workers fill it: true
+finish maps the id to its project: '/a/project.nv', running false, full false
+finish twice: ''
+finish of an unknown id: ''
+the later pending request wins: file:///a/y.nv/open
+taken once: none
+--- requests that wait for a free slot
+a pending request of a running project is not waiting for a slot: /c/project.nv /d/project.nv
+projects that wait for a slot, ascending: /c/project.nv /d/project.nv
+--- the union of two uri lists
+a b c
+--- the idle timer (mode onType)
+first sight records only: []
+an edit starts the quiet time: []
+1499 ms later: []
+1500 ms later: [file:///proj/main.nv]
+only once: []
+another edit at 11000 restarts it: []
+1400 ms later: []
+1500 ms later: [file:///proj/main.nv]
+other modes never ask: [] / []
+--- planner: what stops a request
+closed document: ok=false why='the document is not open or has no file path' entry= novusc=
+scratch buffer: ok=false why='the document is not open or has no file path' entry= novusc=
+project without main: ok=false why='the project has no entry file with a main method' entry= novusc=
+--- planner: a run on the real tree
+ok=true why='' entry=/proj/main.nv novusc=./main.nv
+  request 1 entry=/proj/main.nv root=/proj timeout=60
+  overlays []
+  versions []
+a second request has the next id:
+  request 2 entry=/proj/main.nv root=/proj timeout=60
+  overlays []
+  versions []
+--- planner: dirty buffers go into overlays
+main.nv edited: ok=true why='' entry=/proj/main.nv novusc=./main.nv
+  request 1 entry=/proj/main.nv root=/proj timeout=60
+  overlays [/proj/main.nv buffer]
+  versions [/proj/main.nv=7]
+util.nv edited, main.nv requested:
+  request 1 entry=/proj/main.nv root=/proj timeout=60
+  overlays [/proj/main.nv disk, /proj/util.nv buffer]
+  versions [/proj/util.nv=3]
+project.nv edited: ok=true why='' entry=/proj/main.nv novusc=./main.nv
+  request 1 entry=/proj/main.nv root=/proj timeout=60
+  overlays [/proj/main.nv disk, /proj/project.nv buffer]
+  versions [/proj/project.nv=2]
+--- producers: SyntaxIssueProducer
+issues of the editor parse: 3
+  novus useless-top-level-print severity=4 14-21
+  novus c-style-for severity=1 55-58
+  novus unknown-character severity=2 120-121
+switched off: 0
+a manifest has none in Wave 3: 0
+--- producers: LintCoordinator
+off by default: 0
+enabled: 1
+  pureline PL-NAME-001 severity=2 115-116
+the linter reads the shared settings at use time: 0
+a uri that is not open: 0
+--- revision watch
+first look, nothing changed: []
+main.nv declares a method: [file:///proj/util.nv]
+a document that waits for its own publication is left out: []
+after util.nv was published again: []
+a body edit: []
+a file changed on disk (project invalid): [file:///proj/main.nv, file:///proj/util.nv]
+reported once: []
+after both were published: []
+forget drops the record: []
+--- applier: stale results, verdicts and the findings of the previous run
+a result of an older buffer is dropped:
+  novusc holders []
+a skipped result changes nothing:
+  novusc holders []
+a current result with a finding in an open and a closed file:
+Content-Length: 296
+
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[{"code":"compile-error","message":"unknown member 'edited'","range":{"end":{"character":19,"line":3},"start":{"character":13,"line":3}},"severity":1,"source":"novusc"}],"uri":"file:///proj/main.nv","version":2}}Content-Length: 283
+
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[{"code":"compile-error","message":"unknown member 'helper'","range":{"end":{"character":13,"line":2},"start":{"character":7,"line":2}},"severity":1,"source":"novusc"}],"uri":"file:///proj/util.nv"}}
+  novusc holders [file:///proj/main.nv=1, file:///proj/util.nv=1]
+the files of the run are remembered: file:///proj/main.nv, file:///proj/util.nv
+a clean run clears both files:
+Content-Length: 129
+
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"file:///proj/main.nv","version":2}}Content-Length: 117
+
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"file:///proj/util.nv"}}
+  novusc holders [file:///proj/main.nv=0]
+nothing is remembered: 0
+--- applier: a buffer that was closed and reopened with the same version
+the reopened buffer has the version of the checked one but another text, so the result is dropped:
+  novusc holders []
+the snapshot is forgotten with the result: 0
+the same version and the same text is current:
+Content-Length: 295
+
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[{"code":"compile-error","message":"unknown member 'edited'","range":{"end":{"character":10,"line":3},"start":{"character":4,"line":3}},"severity":1,"source":"novusc"}],"uri":"file:///proj/main.nv","version":1}}  novusc holders [file:///proj/main.nv=1]
+a failed run leaves nothing behind: 0

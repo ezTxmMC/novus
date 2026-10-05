@@ -1,0 +1,68 @@
+package main
+
+import "novus/lsp/base/text"
+import "novus/lsp/syntax/lexing"
+
+method checkKeywords() {
+    var words = keywordWords()
+    expectInt("keywords/count", 19, words.length())
+    var all = true
+    for (word in words) {
+        all = all && isKeywordWord(word)
+    }
+    expectTrue("keywords/all-recognised", all)
+    expectEqual("keywords/list", "package import method var println print eprintln private final return if else while for in true false break continue", words.join(" "))
+    words.append("extra")
+    expectInt("keywords/copy-is-detached", 19, keywordWords().length())
+    var contextual = ["define", "class", "enum", "interface", "annotation", "abstract", "construct", "based", "this", "null", "async", "await", "thread", "virtual", "sync", "native", "variadic", "get", "set"]
+    var none = true
+    for (word in contextual) {
+        none = none && isKeywordWord(word) == false
+    }
+    expectTrue("keywords/contextual-words-are-identifiers", none)
+}
+
+method checkWordsAndLiterals() {
+    expectEqual("words/keyword-and-ident", "K:var I:x P:= N:1", lex("var x = 1"))
+    expectEqual("words/contextual-are-idents", "I:define I:class K:print K:true I:null I:this", lex("define class print true null this"))
+    expectEqual("words/underscore-digits", "I:_a1 I:B2_", lex("_a1 B2_"))
+    expectEqual("numbers/hex", "N:0xFF=255 N:0Xff=255 N:0x1f=31", lex("0xFF 0Xff 0x1f"))
+    expectEqual("numbers/hex-wraps-like-the-compiler", "N:0xFFFFFFFFFFFFFFFF=-1", lex("0xFFFFFFFFFFFFFFFF"))
+    expectEqual("numbers/bare-0x-is-int-and-ident", "N:0 I:x", lex("0x"))
+    expectEqual("numbers/floats", "F:12.5 F:0.25 F:1.5 P:. N:5", lex("12.5 0.25 1.5.5"))
+    expectEqual("numbers/dot-needs-digit", "N:5 P:. P:. N:5", lex("5. .5"))
+    expectEqual("numbers/no-exponent-no-suffix", "N:1 I:e3 N:10 I:px N:1 I:_000 N:0 I:b101", lex("1e3 10px 1_000 0b101"))
+    expectEqual("numbers/leading-zeros-kept", "N:007", lex("007"))
+}
+
+method checkOperators() {
+    expectEqual("operators/two-char", "P:== P:!= P:<= P:>= P:&& P:|| P:<< P:>>", lex("== != <= >= && || << >>"))
+    expectEqual("operators/arrows-are-comparisons", "P:=>=>= P:=<=<=", lex("=> =<"))
+    expectEqual("operators/single", "P:{ P:} P:( P:) P:[ P:] P:: P:; P:, P:. P:+ P:- P:* P:/ P:% P:= P:< P:> P:! P:@ P:& P:| P:^", lex("{ } ( ) [ ] : ; , . + - * / % = < > ! @ & | ^"))
+    expectEqual("operators/shifts-win-over-generics", "I:a P:<< I:b I:c P:>> I:d", lex("a<<b c>>d"))
+    expectEqual("operators/generic-close-fuses-with-equals", "I:array P:< I:integer P:>= P:[ P:]", lex("array<integer>= []"))
+    expectEqual("operators/equals-minus", "I:x P:= P:- N:1", lex("x=-1"))
+    expectEqual("operators/arrow-swallows-next", "I:x P:=<=<= N:3", lex("x=<3"))
+}
+
+method checkUnknownBytes() {
+    expectEqual("unknown/ascii", "I:a U:# I:b U:$ U:? U:' U:~ U:\\ U:`", lex("a#b $?'~\\`"))
+    expectEqual("unknown/non-ascii-run-is-one-token", "K:var U:ä P:= N:3", lex("var ä = 3"))
+    expectEqual("unknown/two-runs", "U:éñ I:x U:€", lex("éñ x €"))
+    var lexed = lexText("a#é")
+    expectEqual("unknown/issues", "unknown-character@1-2/warning unknown-character@2-4/warning", renderIssues(lexed))
+    expectEqual("unknown/control-bytes-are-whitespace", "I:a I:b", lex("a" + chr(1) + chr(7) + chr(12) + chr(0) + "b"))
+}
+
+method checkTokenMethods() {
+    var lexed = lexText("var x => y")
+    var keyword = lexed.tokens[0]
+    var ident = lexed.tokens[1]
+    var arrow = lexed.tokens[2]
+    expectTrue("token/isKeyword", keyword.isKeyword("var") && keyword.isKeyword("if") == false)
+    expectTrue("token/isIdent", ident.isIdent("x") && ident.isIdent("y") == false && keyword.isIdent("var") == false)
+    expectTrue("token/isWord-both-kinds", keyword.isWord("var") && ident.isWord("x") && arrow.isWord("=>") == false)
+    expectTrue("token/isPunct-uses-canonical-value", arrow.isPunct(">=") && arrow.isPunct("=>") == false && ident.isPunct("x") == false)
+    expectEqual("token/span", "[6,8)", "[" + arrow.span().start + "," + arrow.span().end + ")")
+    expectTrue("token/isEnd", lexed.tokens[lexed.tokens.length() - 1].isEnd() && keyword.isEnd() == false)
+}

@@ -1,0 +1,16 @@
+import geo
+import strings
+import @helper
+
+// First line of a note
+// second line of the note
+method main() {
+    var circle = Circle(2.0)
+    if (circle.area() > 1.0) {
+        println("big")
+    } else {
+        println("small")
+    }
+    println(helper(1))
+    println(strings.repeat("a", 2))
+}

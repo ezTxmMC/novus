@@ -1,0 +1,106 @@
+package main
+
+import json
+import math
+
+// Floats are kept in the word of the value when their exponent allows it
+// (magnitudes 2^-126 .. 2^127) and in a heap cell otherwise. Whatever the
+// form, a float must behave the same: this walks the boundaries with
+// generic operators (object parameters keep the compiler from unboxing).
+
+method mul(object a, object b): object {
+    return a * b
+}
+
+method add(object a, object b): object {
+    return a + b
+}
+
+method sub(object a, object b): object {
+    return a - b
+}
+
+method div(object a, object b): object {
+    return a / b
+}
+
+method less(object a, object b): bool {
+    return a < b
+}
+
+method lessEq(object a, object b): bool {
+    return a <= b
+}
+
+method same(object a, object b): bool {
+    return a == b
+}
+
+// 2^n by repeated doubling (exact)
+method pow2(integer n): object {
+    var x = 1.0
+    var i = 0
+    var holder = [x]
+    while (i < n) {
+        holder[0] = mul(holder[0], 2.0)
+        i = i + 1
+    }
+    while (i > n) {
+        holder[0] = div(holder[0], 2.0)
+        i = i - 1
+    }
+    return holder[0]
+}
+
+method report(string label, object x) {
+    var back = mul(mul(x, 2.0), 0.5)
+    println label + ": roundtrip=" + same(x, back) + " twice>=" + lessEq(x, mul(x, 2.0)) + " json=" + json.stringify(x)
+}
+
+method main {
+    // every exponent around the immediate range: -127 and 128 are heap cells,
+    // -126 and 127 are not
+    for (n in [-1074, -1022, -200, -128, -127, -126, -125, -1, 0, 1, 125, 126, 127, 128, 129, 1000, 1023]) {
+        report("2^" + n, pow2(n))
+    }
+
+    // zeroes: +0.0 is the bare tag, -0.0 a heap cell; they are equal and print apart
+    var zero = 0.0
+    var negZero = mul(zero, -1.0)
+    println "zero " + zero + " " + negZero + " " + same(zero, negZero) + " " + less(negZero, zero) + " " + lessEq(negZero, zero)
+    println "sums " + add(zero, negZero) + " " + add(negZero, negZero) + " " + sub(negZero, zero) + " " + sub(zero, negZero)
+    println "div " + div(1.0, zero) + " " + div(zero, negZero) + " " + div(negZero, 5.0)
+
+    // infinities and NaN are heap cells
+    var big = pow2(1023)
+    var inf = mul(big, 4.0)
+    var nan = sub(inf, inf)
+    println "inf " + inf + " " + sub(zero, inf) + " " + same(inf, inf) + " " + less(big, inf)
+    println "nan " + same(nan, nan) + " " + less(nan, 1.0) + " " + less(1.0, nan) + " " + lessEq(nan, 1.0) + " " + lessEq(1.0, nan)
+    println "nan2 " + (nan <= nan) + " " + (nan >= nan) + " " + (nan == nan) + " " + (nan != nan) + " " + (nan < nan)
+
+    // the same value from two directions is one value
+    var a = pow2(-126)
+    var b = div(pow2(-125), 2.0)
+    println "boundary " + same(a, b) + " " + less(a, b) + " " + same(mul(a, a), 0.0) + " " + less(mul(a, a), a)
+
+    // mixing with integers and strings
+    println "mixed " + mul(2, pow2(-126)) + " " + add(1, 0.5) + " " + sub(7, 0.25) + " " + div(1, 4.0) + " " + less(3, 3.5) + " " + same(3, 3.0)
+    println "concat " + 1.5 + " and " + add("x", 2.5) + " " + add(2.5, "x")
+
+    // sums of tenths: the digits are those of the double, not of a rounded form
+    var sum = [0.0]
+    var i = 0
+    while (i < 10) {
+        sum[0] = add(sum[0], 0.1)
+        i = i + 1
+    }
+    println "tenths " + sum[0] + " " + same(sum[0], 1.0) + " " + less(sum[0], 1.0)
+
+    // a map, an array and an object keep floats
+    var m = { "a": pow2(-126), "b": pow2(-127), "c": pow2(127), "d": pow2(128) }
+    for (k in m) {
+        println k + " " + same(mul(m[k], 0.5), div(m[k], 2.0)) + " " + json.stringify(m[k])
+    }
+    println json.stringify([0.5, 1.25, pow2(-126), pow2(127), negZero, zero])
+}

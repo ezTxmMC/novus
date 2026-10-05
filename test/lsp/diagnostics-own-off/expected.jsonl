@@ -1,0 +1,10 @@
+{"id":1,"jsonrpc":"2.0","result":{"capabilities":"@CAPABILITIES@","serverInfo":{"name":"novus-lsp","version":"0.1.0"}}}
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[{"code":"values-must-be-quoted","message":"values in project.nv must be quoted strings (near 'value')","range":{"end":{"character":11,"line":1},"start":{"character":6,"line":1}},"severity":1,"source":"novus"}],"uri":"@ROOTURI@/project.nv","version":1}}
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[{"code":"unknown-name","data":"nothingHere","message":"unknown function 'nothingHere': no function or class of that name is in the program","range":{"end":{"character":23,"line":1},"start":{"character":12,"line":1}},"severity":2,"source":"novus"}],"uri":"@ROOTURI@/a.nv","version":1}}
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[{"code":"values-must-be-quoted","message":"values in project.nv must be quoted strings (near 'value')","range":{"end":{"character":11,"line":1},"start":{"character":6,"line":1}},"severity":1,"source":"novus"}],"uri":"@ROOTURI@/project.nv","version":1}}
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@ROOTURI@/a.nv","version":1}}
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@ROOTURI@/project.nv","version":1}}
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@ROOTURI@/project.nv","version":2}}
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@ROOTURI@/a.nv","version":1}}
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@ROOTURI@/a.nv","version":2}}
+{"id":900,"jsonrpc":"2.0","result":null}

@@ -1,0 +1,19 @@
+package main
+
+import io
+import thread
+
+// Returning from main while another OS thread is blocked reading stdin
+// (exit_open_stdin_main.stdin.open): the exit code survives and the output is
+// flushed.
+
+method readerLoop(): string {
+    return io.readBytes(10)
+}
+
+method main {
+    var reader = thread readerLoop()
+    thread.sleep(100)
+    print "returning 3"
+    return 3
+}

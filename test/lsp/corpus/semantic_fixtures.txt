@@ -1,0 +1,7 @@
+# Intentional error fixtures that are syntactically valid: `build/novusc check` rejects them for semantic reasons (V62).
+# One repository-relative path per line. Since Wave 4 the corpus compares each of them with the own semantic findings: one must
+# stand in the file and at the line that `novusc check` names (compare.semantic-compared, compare.semantic-missed); they are not
+# in known_bad.txt.
+test/cases/errors_compile.nv
+test/cases/packages_errors/main.nv
+test/cases/nvh_errors/main.nv

@@ -1,0 +1,161 @@
+package protocol
+
+import base/maybe
+import base/model
+import base/text
+
+// WireEncoder (the facade) and the shared range encoding, the only place offsets become LSP positions.
+private final PROTOCOL_MAX_STRING_BYTES = 262144
+
+// Free text on its way out is bounded and cut on a character boundary, so JSON never carries half a character.
+method protocolClip(object value): string {
+    if (isNone(value)) {
+        return ""
+    }
+    return truncateUtf8(value, PROTOCOL_MAX_STRING_BYTES)
+}
+
+method protocolEncodePosition(WirePosition position): map<string, object> {
+    return {"line": position.line, "character": position.character}
+}
+
+method encodeRange(PositionCodec codec, LineIndex lines, Span span): map<string, object> {
+    var wire = codec.rangeOf(lines, span)
+    return {"start": protocolEncodePosition(wire.start), "end": protocolEncodePosition(wire.end)}
+}
+
+// Edit texts are never clipped: a cut edit would be applied as damage, so only the frame cap of the writer bounds them.
+method protocolEncodeTextEdit(PositionCodec codec, LineIndex lines, TextEdit edit): map<string, object> {
+    return {"range": encodeRange(codec, lines, edit.span), "newText": edit.newText}
+}
+
+method protocolEncodeTextEdits(PositionCodec codec, LineIndex lines, array<TextEdit> edits): array<map<string, object>> {
+    var encoded = []
+    for (edit in edits) {
+        encoded.append(protocolEncodeTextEdit(codec, lines, edit))
+    }
+    return encoded
+}
+
+// Edits of several FileEdit entries for one file are merged; a file without a line index cannot be encoded and is dropped.
+method protocolEncodeWorkspaceEdit(PositionCodec codec, map<string, LineIndex> linesByPath, array<FileEdit> edits): map<string, object> {
+    var changes = {}
+    for (fileEdit in edits) {
+        if (linesByPath.has(fileEdit.filePath) == false) {
+            continue
+        }
+        var uri = filePathToUri(fileEdit.filePath)
+        if (changes.has(uri) == false) {
+            changes[uri] = []
+        }
+        var encoded = protocolEncodeTextEdits(codec, linesByPath[fileEdit.filePath], fileEdit.edits)
+        for (entry in encoded) {
+            changes[uri].append(entry)
+        }
+    }
+    return {"changes": changes}
+}
+
+// Facade over the encoders; all of them share the session's codec and client, which are read at every call.
+define class WireEncoder {
+    PositionCodec codec
+    ClientInfo client
+    ItemEncoder items
+    ViewEncoder views
+    DiagnosticEncoder diagnostics
+    SemanticTokenEncoder tokens
+
+    construct(PositionCodec codec, ClientInfo client) {
+        this.codec = codec
+        this.client = client
+        this.items = ItemEncoder(codec, client)
+        this.views = ViewEncoder(codec, client)
+        this.diagnostics = DiagnosticEncoder(codec, client)
+        this.tokens = SemanticTokenEncoder(codec)
+    }
+
+    method range(LineIndex lines, Span span): map<string, object> {
+        return encodeRange(this.codec, lines, span)
+    }
+
+    method location(string uri, LineIndex lines, Span span): map<string, object> {
+        return {"uri": uri, "range": encodeRange(this.codec, lines, span)}
+    }
+
+    method textEdit(LineIndex lines, TextEdit edit): map<string, object> {
+        return protocolEncodeTextEdit(this.codec, lines, edit)
+    }
+
+    method workspaceEdit(map<string, LineIndex> linesByPath, array<FileEdit> edits): map<string, object> {
+        return protocolEncodeWorkspaceEdit(this.codec, linesByPath, edits)
+    }
+
+    method prepareRename(LineIndex lines, Span span): map<string, object> {
+        var placeholder = lines.text.substring(span.start, span.end)
+        return {"range": encodeRange(this.codec, lines, span), "placeholder": protocolClip(placeholder)}
+    }
+
+    method diagnostic(LineIndex lines, Diagnostic diagnostic): map<string, object> {
+        return this.diagnostics.diagnostic(lines, diagnostic)
+    }
+
+    method diagnostic(LineIndex lines, Diagnostic diagnostic, map<string, LineIndex> linesByPath): map<string, object> {
+        return this.diagnostics.diagnostic(lines, diagnostic, linesByPath)
+    }
+
+    method publishParams(string uri, integer version, array<map<string, object>> diagnostics): map<string, object> {
+        return this.diagnostics.publishParams(uri, version, diagnostics)
+    }
+
+    method logMessage(integer level, string message): map<string, object> {
+        return this.diagnostics.logMessage(level, message)
+    }
+
+    method completionItem(LineIndex lines, CompletionItem item): map<string, object> {
+        return this.items.completionItem(lines, item)
+    }
+
+    method documentSymbol(LineIndex lines, OutlineEntry entry): map<string, object> {
+        return this.items.documentSymbol(lines, entry)
+    }
+
+    method documentSymbolFlat(string uri, LineIndex lines, OutlineEntry entry): array<map<string, object>> {
+        return this.items.documentSymbolFlat(uri, lines, entry)
+    }
+
+    method workspaceSymbol(map<string, LineIndex> linesByPath, WorkspaceSymbolEntry entry): map<string, object> {
+        return this.items.workspaceSymbol(linesByPath, entry)
+    }
+
+    method codeAction(LineIndex lines, CodeActionItem item): map<string, object> {
+        return this.items.codeAction(lines, item)
+    }
+
+    method codeAction(LineIndex lines, CodeActionItem item, map<string, LineIndex> linesByPath): map<string, object> {
+        return this.items.codeAction(lines, item, linesByPath)
+    }
+
+    method hover(LineIndex lines, HoverInfo info): map<string, object> {
+        return this.views.hover(lines, info)
+    }
+
+    method signatureHelp(SignatureHelp help): map<string, object> {
+        return this.views.signatureHelp(help)
+    }
+
+    method foldingRange(FoldingEntry entry): map<string, object> {
+        return this.views.foldingRange(entry)
+    }
+
+    method highlight(LineIndex lines, HighlightEntry entry): map<string, object> {
+        return this.views.highlight(lines, entry)
+    }
+
+    method documentLink(LineIndex lines, DocumentLink link): map<string, object> {
+        return this.views.documentLink(lines, link)
+    }
+
+    method semanticTokens(LineIndex lines, array<SemanticSpan> spans): map<string, object> {
+        return this.tokens.encode(lines, spans)
+    }
+}

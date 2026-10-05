@@ -1,0 +1,41 @@
+package main
+
+import "novus/lsp/base/maybe"
+import "novus/lsp/base/model"
+import "novus/lsp/base/platform"
+import "novus/lsp/base/text"
+import "novus/lsp/projects/stdlib"
+import "novus/lsp/projects/workspace"
+
+// A project in memory and the context of one of its files, opened as an editor would.
+define class StructWorld {
+    map<string, string> files
+    FileCache cache
+    Workspace space
+
+    construct(map<string, string> files) {
+        this.files = files
+        this.cache = FileCache(MemoryTextSource(files))
+        this.space = Workspace(this.cache, standardLibrary())
+    }
+
+    method context(string filePath): FileContext {
+        return this.space.contextFor(Document(filePathToUri(filePath), "novus", 1, this.files[filePath]))
+    }
+}
+
+method structLines(array<string> lines): string {
+    return lines.join("\n") + "\n"
+}
+
+method structCheck(string label, string actual) {
+    println(label + ": " + actual)
+}
+
+method structNumbered(string content) {
+    var number = 1
+    for (line in content.split("\n")) {
+        println("  " + number + " | " + line)
+        number = number + 1
+    }
+}

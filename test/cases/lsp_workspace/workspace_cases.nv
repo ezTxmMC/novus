@@ -1,0 +1,130 @@
+package main
+
+import "novus/lsp/base/platform"
+import "novus/lsp/base/text"
+import "novus/lsp/projects/closure"
+import "novus/lsp/projects/stdlib"
+import "novus/lsp/projects/workspace"
+import "novus/lsp/syntax/outline"
+import "novus/lsp/base/maybe"
+import @support
+
+method runContextCases() {
+    println("== Workspace.contextFor")
+    var world = WsWorld(wsSimpleProject())
+    var context = world.open("/p/main.nv", 1)
+    wsCheck("the bundle", context.project.key() + " revision=" + context.project.revision + " closureFile=" + context.closureFile.filePath + " kind=" + context.syntax.fileKind, "/p/project.nv revision=1 closureFile=/p/main.nv kind=nv")
+    wsCheck("the open document is parsed for the editor", (context.syntax.tokens.length() > 0) + " " + (context.closureFile.syntax == context.syntax) + " " + (context.index() == context.project.index) + " " + (context.resolver() == context.project.resolver), "true true true true")
+    wsCheck("the project knows its files", wsNames(context.project.closure.files), "/p/main.nv, /p/geo/extra.nv, /p/geo/shape.nv")
+    var other = world.open("/p/geo/shape.nv", 1)
+    wsCheck("another file of the program: the same model", (other.project == context.project) + " " + world.space.projects.length(), "true 1")
+    var again = world.open("/p/main.nv", 1)
+    wsCheck("asking again changes nothing", (again.project == context.project) + " " + again.project.revision + " " + (again.syntax == context.syntax), "true 1 true")
+    var viaPath = world.space.contextForPath("/p/geo/extra.nv")
+    wsCheck("a file that is not open", viaPath.closureFile.filePath + " tokens=" + viaPath.syntax.tokens.length() + " same project=" + (viaPath.project == context.project), "/p/geo/extra.nv tokens=0 same project=true")
+    wsCheck("a path without a file", world.space.contextForPath("/p/none.nv") == nothing() && world.space.contextForPath("") == nothing(), "true")
+}
+
+method runBodyEditCases() {
+    println("== a body edit invalidates nothing; a signature edit rebuilds the index")
+    var world = WsWorld(wsSimpleProject())
+    var context = world.open("/p/main.nv", 1)
+    var before = context.project.revision
+    var mainSymbol = context.index().functionsNamed("main")[0]
+    var shifted = "// a comment that moves everything\n" + world.cache.textOf("/p/main.nv").replace("println(\"hi\")", "println(\"hi\")\n    println(\"again\")")
+    world.change("/p/main.nv", 2, shifted)
+    wsCheck("nothing invalidated", wsSummary(context.project) + " before=" + before, "key=/p/project.nv valid=true revision=1 before=1")
+    var after = world.open("/p/main.nv", 2)
+    var newDecl = after.syntax.topLevelNamed("main")[0]
+    wsCheck("the symbols point at the newest parse", (mainSymbol.decl == newDecl) + " nameSpan=" + mainSymbol.decl.nameSpan.start + " " + (after.closureFile.syntax == after.syntax) + " " + (after.index() == context.index()), "true nameSpan=" + newDecl.nameSpan.start + " true true")
+    var oldIndex = context.index()
+    world.change("/p/main.nv", 3, shifted.replace("method main()", "method main(integer a)"))
+    var signature = world.open("/p/main.nv", 3)
+    wsCheck("a signature change rebuilds the index, not the closure", wsSummary(signature.project) + " arity=" + signature.index().functionsNamed("main")[0].decl.arity() + " files=" + signature.project.closure.files.length(), "key=/p/project.nv valid=true revision=2 arity=1 files=3")
+    wsCheck("the index object is new", signature.index() == oldIndex, "false")
+    world.change("/p/main.nv", 4, shifted.replace("method main()", "method main(integer a)").replace("println(\"hi\")", "println(\"hello\")"))
+    wsCheck("a body edit after it again changes nothing", wsSummary(signature.project), "key=/p/project.nv valid=true revision=2")
+}
+
+method runImportEditCases() {
+    println("== an import edit, a package line edit, a new file")
+    var world = WsWorld(wsSimpleProject())
+    var context = world.open("/p/main.nv", 1)
+    world.change("/p/main.nv", 2, "method main() {\n}\n")
+    wsCheck("dropping the import invalidates", wsSummary(context.project), "key=/p/project.nv valid=false revision=1")
+    var rebuilt = world.open("/p/main.nv", 2)
+    wsCheck("the next request rebuilds lazily", wsSummary(rebuilt.project) + " files: " + wsNames(rebuilt.project.closure.files), "key=/p/project.nv valid=true revision=2 files: /p/main.nv")
+    world.change("/p/main.nv", 3, "import geo\n\nmethod main() {\n}\n")
+    var restored = world.open("/p/main.nv", 3)
+    wsCheck("adding it back", wsSummary(restored.project) + " files=" + restored.project.closure.files.length(), "key=/p/project.nv valid=true revision=3 files=3")
+    world.change("/p/geo/shape.nv", 2, "package other\n\ndefine class Shape {\n}\n")
+    wsCheck("a package line edit invalidates", restored.project.valid, "false")
+    var mismatch = world.open("/p/geo/shape.nv", 2)
+    wsCheck("and the closure reports the mismatch", mismatch.project.closure.issues[0].code + " " + mismatch.project.valid, "package-folder-mismatch true")
+    world.change("/p/geo/shape.nv", 3, "package geo\n\ndefine class Shape {\n}\n")
+    wsCheck("fixed again", world.open("/p/geo/shape.nv", 3).project.closure.issues.length(), "0")
+}
+
+method runOrphanCases() {
+    println("== files that no import reaches, and the scan")
+    var world = WsWorld(wsSimpleProject())
+    var context = world.open("/p/main.nv", 1)
+    var model = context.project
+    var scan = model.scanFor(world.cache, 100)
+    world.change("/p/lone.nv", 1, world.cache.textOf("/p/lone.nv"))
+    wsCheck("an unreached file that the scan knows invalidates nothing", wsSummary(model) + " scan kept=" + (model.scan == scan), "key=/p/project.nv valid=true revision=1 scan kept=true")
+    var lone = world.open("/p/lone.nv", 1)
+    wsCheck("opening it adds it to the program as an orphan", lone.closureFile.filePath + " " + lone.closureFile.origin + " " + (lone.project == model) + " files=" + lone.project.closure.files.length(), "/p/lone.nv Project true files=4")
+    wsCheck("it is a user file, right after main (entries come first)", wsNames(lone.project.userFiles()), "/p/main.nv, /p/lone.nv, /p/geo/extra.nv, /p/geo/shape.nv")
+    var revision = lone.project.revision
+    world.change("/p/lone.nv", 2, "method helper(): integer {\n    return 3\n}\n")
+    wsCheck("a body edit of the orphan changes nothing", wsSummary(lone.project) + " was " + revision, "key=/p/project.nv valid=true revision=" + revision + " was " + revision)
+    world.change("/p/brandnew.nv", 1, "method brandNew() {\n}\n")
+    wsCheck("a file that neither the closure nor the scan knows invalidates the model and its scan", model.valid + " " + isNone(model.scan), "false true")
+    var added = world.open("/p/brandnew.nv", 1)
+    wsCheck("and joins the program", added.closureFile.filePath + " " + wsNames(added.project.userFiles()), "/p/brandnew.nv /p/main.nv, /p/brandnew.nv, /p/lone.nv, /p/geo/extra.nv, /p/geo/shape.nv")
+    world.space.onDocumentClosed("/p/brandnew.nv")
+    wsCheck("closing the buffer of a file that was never saved: the model is stale", added.project.valid, "false")
+}
+
+method runClosedBufferCases() {
+    println("== closing a buffer discards its unsaved edits")
+    var world = WsWorld(wsSimpleProject())
+    var context = world.open("/p/geo/extra.nv", 1)
+    var edited = "package geo\n\nmethod extra(): integer {\n    return 1\n}\n\nmethod added() {\n}\n"
+    world.change("/p/geo/extra.nv", 2, edited)
+    wsCheck("the unsaved function is in the index", world.open("/p/geo/extra.nv", 2).index().functionsNamed("added").length(), "1")
+    world.space.onDocumentClosed("/p/geo/extra.nv")
+    wsCheck("closed: the disk text is the truth again", context.project.valid + " " + world.cache.hasOverlay("/p/geo/extra.nv"), "false false")
+    var reread = world.space.contextForPath("/p/geo/extra.nv")
+    wsCheck("rebuilt from disk", reread.index().functionsNamed("added").length() + " " + reread.index().functionsNamed("extra").length(), "0 1")
+    world.change("/p/geo/extra.nv", 3, world.source.textOf("/p/geo/extra.nv"))
+    var revision = world.model("/p/main.nv").revision
+    world.space.onDocumentClosed("/p/geo/extra.nv")
+    wsCheck("closed without changes: nothing to do", wsSummary(world.model("/p/main.nv")) + " " + revision, "key=/p/project.nv valid=true revision=" + revision + " " + revision)
+}
+
+method runOrphanPackageCases() {
+    println("== an open file of a package folder that nothing imports brings its folder along")
+    var files = {
+        "/p/project.nv": "project \"p\"\nmain \"main.nv\"\n",
+        "/p/main.nv": "method main() {\n}\n",
+        "/p/lib/a.nv": "package lib\n\nmethod fromA() {\n    fromB()\n}\n",
+        "/p/lib/b.nv": "package lib\n\nmethod fromB() {\n}\n",
+        "/p/top.nv": "method top() {\n}\n",
+        "/p/siblingOfTop.nv": "method sibling() {\n}\n"
+    }
+    var world = WsWorld(files)
+    var context = world.open("/p/lib/a.nv", 1)
+    wsCheck("the whole folder is in the program, as the package lib", wsNames(context.project.closure.files), "/p/main.nv, /p/lib/a.nv, /p/lib/b.nv")
+    var qualifiers = []
+    for (file in context.project.closure.files) {
+        qualifiers.append("[" + file.qualifier + "]")
+    }
+    wsCheck("with the qualifier of the folder", qualifiers.join(" "), "[] [lib] [lib]")
+    var scope = context.resolver().scopeAt(context.closureFile, files["/p/lib/a.nv"].indexOf("fromB()"))
+    var found = context.resolver().lookupCall(scope, "fromB", 0)
+    wsCheck("so the names of the siblings resolve", found.status + " " + found.candidates[0].key, "resolved lib.fromB/0")
+    var top = world.open("/p/top.nv", 1)
+    wsCheck("a file at the root is alone", wsNames(top.project.closure.files), "/p/main.nv, /p/lib/a.nv, /p/lib/b.nv, /p/top.nv")
+}

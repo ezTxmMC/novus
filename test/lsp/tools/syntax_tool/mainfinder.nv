@@ -1,0 +1,29 @@
+package main
+
+import bytes
+
+private final SYNTAX_TOOL_MAIN_MARKER = "method main"
+
+// `method main` at the start of a line, not the prefix of a longer name such as `mainLoop`.
+method syntaxToolDeclaresMain(string source): bool {
+    var found = bytes.indexOf(source, SYNTAX_TOOL_MAIN_MARKER, 0)
+    while (found >= 0) {
+        if (syntaxToolIsMainDeclaration(source, found)) {
+            return true
+        }
+        found = bytes.indexOf(source, SYNTAX_TOOL_MAIN_MARKER, found + 1)
+    }
+    return false
+}
+
+method syntaxToolIsMainDeclaration(string source, integer found): bool {
+    if (found > 0 && source.charAt(found - 1) != "\n") {
+        return false
+    }
+    var after = found + SYNTAX_TOOL_MAIN_MARKER.length()
+    if (after >= source.length()) {
+        return true
+    }
+    var next = source.charAt(after)
+    return next == " " || next == "(" || next == "{" || next == "\n" || next == "\r" || next == "\t"
+}

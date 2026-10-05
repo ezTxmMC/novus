@@ -1,0 +1,10 @@
+// Distance between two numbers.
+method distance(float first, float second): float {
+    return first - second
+}
+
+// A point of the plane.
+define class Point {
+    float x
+    float y
+}

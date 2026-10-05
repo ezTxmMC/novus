@@ -1,0 +1,83 @@
+package main
+
+import "novus/lsp/base/platform"
+import "novus/lsp/base/text"
+import "novus/lsp/server/jobs"
+import "novus/lsp/server/session"
+
+private final PLANNER_BUFFER = "package main\n\nmethod main() {\n    println(\"edited\")\n}\n"
+
+method describePlan(JobsPlan plan): string {
+    return "ok=" + plan.ok + " why='" + plan.why + "' entry=" + plan.entry + " novusc=" + plan.novusc
+}
+
+// Every overlay says whether it holds the buffer or the text of the disk.
+method describeRequest(Session state, CheckRequest request) {
+    println("  request " + request.requestId + " entry=" + request.entryFile + " root=" + request.projectRoot + " timeout=" + request.timeoutSeconds)
+    var overlays = []
+    for (filePath in request.overlays.keys()) {
+        var origin = "buffer"
+        if (request.overlays[filePath] == state.workspace.files.disk.textOf(filePath)) {
+            origin = "disk"
+        }
+        overlays.push(filePath + " " + origin)
+    }
+    println("  overlays [" + overlays.join(", ") + "]")
+    var versions = []
+    for (filePath in request.snapshotVersions.keys()) {
+        versions.push(filePath + "=" + request.snapshotVersions[filePath])
+    }
+    println("  versions [" + versions.join(", ") + "]")
+}
+
+method planOf(Session state, string uri): JobsPlan {
+    var planner = JobsRequestPlanner(state, JobsCheckState())
+    return planner.prepare(uri)
+}
+
+method runPlannerCases() {
+    println("--- planner: what stops a request")
+    var closed = fixtureSession()
+    println("closed document: " + describePlan(planOf(closed, "file:///proj/main.nv")))
+    var scratch = fixtureSession()
+    var scratchUri = "untitled:Untitled-1"
+    scratch.documents.open(Document(scratchUri, "novus", 1, fixtureDiskText("/proj/main.nv")))
+    println("scratch buffer: " + describePlan(planOf(scratch, scratchUri)))
+    var library = fixtureSession()
+    var libraryUri = fixtureOpen(library, "/lib/lib.nv", 1, fixtureDiskText("/lib/lib.nv"))
+    println("project without main: " + describePlan(planOf(library, libraryUri)))
+    println("--- planner: a run on the real tree")
+    runCleanPlannerCase()
+    println("--- planner: dirty buffers go into overlays")
+    runDirtyPlannerCases()
+}
+
+method runCleanPlannerCase() {
+    var state = fixtureSession()
+    var uri = fixtureOpen(state, "/proj/main.nv", 4, fixtureDiskText("/proj/main.nv"))
+    var planner = JobsRequestPlanner(state, JobsCheckState())
+    var plan = planner.prepare(uri)
+    println(describePlan(plan))
+    describeRequest(state, planner.build(plan))
+    println("a second request has the next id:")
+    describeRequest(state, planner.build(plan))
+}
+
+method runDirtyPlannerCases() {
+    var state = fixtureSession()
+    var uri = fixtureOpen(state, "/proj/main.nv", 7, PLANNER_BUFFER)
+    var planner = JobsRequestPlanner(state, JobsCheckState())
+    println("main.nv edited: " + describePlan(planner.prepare(uri)))
+    describeRequest(state, planner.build(planner.prepare(uri)))
+    var other = fixtureSession()
+    var mainUri = fixtureOpen(other, "/proj/main.nv", 1, fixtureDiskText("/proj/main.nv"))
+    fixtureOpen(other, "/proj/util.nv", 3, PLANNER_BUFFER)
+    var otherPlanner = JobsRequestPlanner(other, JobsCheckState())
+    println("util.nv edited, main.nv requested:")
+    describeRequest(other, otherPlanner.build(otherPlanner.prepare(mainUri)))
+    var manifest = fixtureSession()
+    var manifestUri = fixtureOpen(manifest, "/proj/project.nv", 2, "project \"p\"\nversion \"0.2.0\"\nmain \"main.nv\"\n")
+    var manifestPlanner = JobsRequestPlanner(manifest, JobsCheckState())
+    println("project.nv edited: " + describePlan(manifestPlanner.prepare(manifestUri)))
+    describeRequest(manifest, manifestPlanner.build(manifestPlanner.prepare(manifestUri)))
+}

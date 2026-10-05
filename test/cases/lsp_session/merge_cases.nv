@@ -1,0 +1,48 @@
+package main
+
+import "novus/lsp/base/model"
+import "novus/lsp/server/session"
+
+method pathOf(map<string, object> changes): string {
+    return "'" + mergeSettings(Settings(), changes).check.novuscPath + "'"
+}
+
+method runMergeCases() {
+    println("--- merge writes into the existing object")
+    var current = Settings()
+    var pureline = current.pureline
+    var check = current.check
+    var format = current.format
+    var returned = mergeSettings(current, {"pureline": {"enabled": true}, "check": {"mode": "off"}, "format": {"tabSize": 8}})
+    println("returns current itself: " + (returned == current))
+    println("nested objects are kept: " + (pureline == current.pureline) + " " + (check == current.check) + " " + (format == current.format))
+    println("seen through the old references: " + pureline.enabled + " " + check.mode + " " + format.tabSize)
+    mergeSettings(current, {"pureline": {"flagPlainElse": true}})
+    println("a later merge keeps earlier keys: " + current.pureline.enabled + " " + current.pureline.flagPlainElse + " " + current.check.mode)
+    println("--- wrong types and out of range values are ignored")
+    var odd = Settings()
+    mergeSettings(odd, {"pureline": {"enabled": "yes", "functionMaxLines": "many", "functionReviewLines": 0, "maxLinesPerFile": -5, "allowedShortNames": "i"}})
+    mergeSettings(odd, {"check": {"mode": "never", "timeoutSeconds": true}, "format": {"tabSize": 0, "insertSpaces": 1, "maxBlankLines": -1}})
+    mergeSettings(odd, {"diagnostics": {"own": "no"}, "snippets": {"indent": 4}, "completion": {"maxItems": 0}})
+    showSettings("after the odd values", odd)
+    var floats = Settings()
+    mergeSettings(floats, {"completion": {"maxItems": 12.9}, "format": {"tabSize": 3.2}})
+    println("a float is cut: " + floats.completionMaxItems + " " + floats.format.tabSize)
+    mergeSettings(floats, {"pureline": {"allowedShortNames": ["a", 5, "b"]}})
+    println("only text names are kept: " + floats.pureline.allowedShortNames.join(","))
+    mergeSettings(floats, {"pureline": {"allowedShortNames": []}})
+    println("an empty list clears the names: " + floats.pureline.allowedShortNames.length())
+    println("--- the novusc path has two spellings (V103)")
+    println("novuscPath alone: " + pathOf({"check": {"novuscPath": "/a/novusc"}}))
+    println("executablePath alone: " + pathOf({"executablePath": "/b/novusc"}))
+    println("both: the first wins: " + pathOf({"check": {"novuscPath": "/a/novusc"}, "executablePath": "/b/novusc"}))
+    println("empty novuscPath falls back: " + pathOf({"check": {"novuscPath": ""}, "executablePath": "/b/novusc"}))
+    println("both empty clear it: " + pathOf({"check": {"novuscPath": ""}, "executablePath": ""}))
+    println("dotted spellings: " + pathOf({"novus.check.novuscPath": "/c/novusc"}))
+    var kept = Settings()
+    kept.check.novuscPath = "/kept"
+    mergeSettings(kept, {"pureline": {"enabled": true}})
+    println("a merge without either key keeps it: " + kept.check.novuscPath)
+    mergeSettings(kept, {"executablePath": 5})
+    println("a wrong type does not clear it: " + kept.check.novuscPath)
+}

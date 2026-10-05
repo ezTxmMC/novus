@@ -1,0 +1,74 @@
+package main
+
+import time
+import "novus/lsp/base/maybe"
+import "novus/lsp/base/model"
+import "novus/lsp/base/text"
+import @support
+
+private final SCALE_METHODS = 4000
+private final SCALE_SECONDS_LIMIT = 8.0
+
+method runScaleCases() {
+    runScopeEndCases()
+    runManyMethodsCase()
+    runManyMembersCase()
+}
+
+// The locals of a callable are read with a cursor: a scope that ends hides its names again, a hidden name shows again.
+method runScopeEndCases() {
+    println("== a local is unknown after the block that declared it, an outer one shows again")
+    var world = DgWorld({
+        "/p/project.nv": "project \"p\"\n",
+        "/p/main.nv": "method main(integer limit) {\n    var outer = 1\n    if (limit > 0) {\n        var inner = 2\n        var outer = 3\n        println(inner + outer)\n    }\n    println(inner)\n    println(outer)\n    for (item in [1, 2]) {\n        println(item)\n    }\n    println(item)\n    println(limit)\n}\n"
+    })
+    dgShow("main.nv", world.ownOf("/p/main.nv"))
+}
+
+// Run time must grow linearly with the number of callables (a profile of the old code: 6.7 s for 4000 methods).
+method runManyMethodsCase() {
+    println("== a file of many methods is judged in one pass")
+    var lines = ["method base(integer a): integer {", "    return a", "}"]
+    var index = 0
+    while (index < SCALE_METHODS) {
+        lines.append("method f" + index + "(integer a): integer { var x = a + " + index + "; return x + base(x) }")
+        index = index + 1
+    }
+    lines.append("method main() {")
+    lines.append("    println(f0(1) + unknownTail)")
+    lines.append("}")
+    var world = DgWorld({
+        "/p/project.nv": "project \"p\"\n",
+        "/p/main.nv": lines.join("\n") + "\n"
+    })
+    var started = time.clock()
+    var found = world.ownOf("/p/main.nv")
+    var seconds = time.clock() - started
+    dgShow("main.nv", found)
+    dgCheck("run time below the limit", "" + (seconds < SCALE_SECONDS_LIMIT), "true")
+}
+
+// A class of thousands of members: a field, `this.m0()` and an unknown member are looked up once per use, not searched per use.
+method runManyMembersCase() {
+    println("== a class of many members is judged in one pass")
+    var lines = ["define class Big {", "    integer size"]
+    var index = 0
+    while (index < SCALE_METHODS) {
+        lines.append("    method m" + index + "(integer a): integer { var y = a + size; return y + this.m0(y) }")
+        index = index + 1
+    }
+    lines.append("    method broken(): integer { return this.absent(1) }")
+    lines.append("}")
+    lines.append("method main() {")
+    lines.append("    println(Big().size)")
+    lines.append("}")
+    var world = DgWorld({
+        "/p/project.nv": "project \"p\"\n",
+        "/p/main.nv": lines.join("\n") + "\n"
+    })
+    var started = time.clock()
+    var found = world.ownOf("/p/main.nv")
+    var seconds = time.clock() - started
+    dgShow("main.nv", found)
+    dgCheck("run time below the limit", "" + (seconds < SCALE_SECONDS_LIMIT), "true")
+}

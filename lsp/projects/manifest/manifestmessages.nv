@@ -1,0 +1,56 @@
+package manifest
+
+private final MANIFEST_NOT_A_SETTING_PREFIX = "expected a setting such as"
+private final MANIFEST_UNKNOWN_PREFIX = "unknown setting '"
+private final MANIFEST_UNQUOTED_PREFIX = "values in project.nv must be quoted strings"
+private final MANIFEST_UNTERMINATED_PREFIX = "unterminated string"
+private final MANIFEST_ONE_VALUE_SUFFIX = "' takes exactly one value"
+private final MANIFEST_REQUIRE_ARITY = "require needs a module path and an optional version"
+private final MANIFEST_REPLACE_ARITY = "replace needs a module path and a local directory"
+
+// The wording of novusc for what it rejects in project.nv (compiler/project/manifest.nv), kept in one place together
+// with the stable code of each kind: the diagnostics layer names a problem by its code, never by its text.
+method manifestNotASettingMessage(string found): string {
+    return MANIFEST_NOT_A_SETTING_PREFIX + " project, version, main, require or replace but found '" + found + "'"
+}
+
+method manifestUnknownMessage(string key): string {
+    return MANIFEST_UNKNOWN_PREFIX + key + "' (known: " + manifestKeys().join(", ") + ")"
+}
+
+method manifestUnquotedMessage(string near): string {
+    return MANIFEST_UNQUOTED_PREFIX + " (near '" + near + "')"
+}
+
+method manifestUnterminatedMessage(): string {
+    return MANIFEST_UNTERMINATED_PREFIX + ": the closing quote is missing"
+}
+
+method manifestOneValueMessage(string key): string {
+    return "'" + key + MANIFEST_ONE_VALUE_SUFFIX
+}
+
+method manifestRequireArityMessage(): string {
+    return MANIFEST_REQUIRE_ARITY
+}
+
+method manifestReplaceArityMessage(): string {
+    return MANIFEST_REPLACE_ARITY
+}
+
+// `expected-setting`, `unknown-setting`, `values-must-be-quoted`, `unterminated-string` or `bad-arity`.
+method manifestCodeOfMessage(string message): string {
+    if (message.startsWith(MANIFEST_NOT_A_SETTING_PREFIX)) {
+        return "expected-setting"
+    }
+    if (message.startsWith(MANIFEST_UNKNOWN_PREFIX)) {
+        return "unknown-setting"
+    }
+    if (message.startsWith(MANIFEST_UNQUOTED_PREFIX)) {
+        return "values-must-be-quoted"
+    }
+    if (message.startsWith(MANIFEST_UNTERMINATED_PREFIX)) {
+        return "unterminated-string"
+    }
+    return "bad-arity"
+}

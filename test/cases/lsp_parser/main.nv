@@ -1,0 +1,35 @@
+package main
+
+import @check
+import @docs
+import @modes
+import @queries
+import @real
+import @report
+import @render
+import @sample
+
+method main(): integer {
+    checkSampleOutline()
+    checkSampleImports()
+    checkSampleSpans()
+    checkDocs()
+    checkDocEdgeCases()
+    checkLookups()
+    checkOffsetQueries()
+    checkImportLines()
+    checkDeclMethods()
+    checkAnnotationScope()
+    checkShowcase()
+    checkShowcaseDetails()
+    checkStandardModules()
+    checkSelectedStandardModules()
+    checkOptions()
+    checkFileFacts()
+    checkDeclSignature()
+    checkOtherFileKinds()
+    checkParseMembers()
+    checkHandMadeTokens()
+    checkReport()
+    return finishChecks()
+}

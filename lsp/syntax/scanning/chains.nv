@@ -1,0 +1,175 @@
+package scanning
+
+import base/text
+import syntax/lexing
+
+private final SCANNING_STEP_NAME = "name"
+private final SCANNING_STEP_CALL = "call"
+private final SCANNING_STEP_INDEX = "index"
+private final SCANNING_STEP_LITERAL = "literal"
+private final SCANNING_STEP_GROUP = "group"
+private final SCANNING_NOT_A_STEP = -2
+
+// One link of a receiver chain such as `a.b(c).d[0]`: kind is name, call, index, literal or group.
+define class ChainStep {
+    string text
+    string kind
+    integer argCount
+    Span span
+
+    construct(string text, string kind, integer argCount, Span span) {
+        this.text = text
+        this.kind = kind
+        this.argCount = argCount
+        this.span = span
+    }
+}
+
+// The steps of the chain that ends at token `lastIndex`, first step first; empty when no chain ends there.
+method chainEndingAt(array<Token> tokens, integer lastIndex): array<ChainStep> {
+    var reader = ScanningChainReader(tokens)
+    reader.read(lastIndex)
+    return reader.inSourceOrder()
+}
+
+// Index of the first token of the chain that ends at `lastIndex`, -1 when no chain ends there.
+method chainStartIndex(array<Token> tokens, integer lastIndex): integer {
+    var reader = ScanningChainReader(tokens)
+    reader.read(lastIndex)
+    return reader.startIndex
+}
+
+// Reads a chain backwards from its last token. Every step moves the index down, and the step count is capped.
+define class ScanningChainReader {
+    ScanningCursor cursor
+    array<ChainStep> reversed
+    integer startIndex
+
+    construct(array<Token> tokens) {
+        this.cursor = ScanningCursor(tokens, tokens.length())
+        this.reversed = []
+        this.startIndex = -1
+    }
+
+    method read(integer lastIndex) {
+        var index = lastIndex
+        while (this.cursor.has(index) && this.reversed.length() < MAX_NESTING_DEPTH) {
+            var before = this.readStep(index)
+            if (before == SCANNING_NOT_A_STEP) {
+                return
+            }
+            index = this.nextEnd(before)
+        }
+    }
+
+    // After a step starting at `before + 1`: the end of its receiver, or -1 when the chain starts there.
+    method nextEnd(integer before): integer {
+        var last = this.reversed[this.reversed.length() - 1]
+        if (last.kind == SCANNING_STEP_INDEX) {
+            return before
+        }
+        if (this.cursor.isPunct(before, ".")) {
+            return before - 1
+        }
+        return -1
+    }
+
+    method inSourceOrder(): array<ChainStep> {
+        var ordered = []
+        var index = this.reversed.length() - 1
+        while (index >= 0) {
+            ordered.append(this.reversed[index])
+            index = index - 1
+        }
+        return ordered
+    }
+
+    // Records the step that ends at `index` and returns the index before its first token, or SCANNING_NOT_A_STEP.
+    method readStep(integer index): integer {
+        var token = this.cursor.tokens[index]
+        if (token.kind == TokenKind.Ident) {
+            return this.push(token.text, SCANNING_STEP_NAME, 0, index, index)
+        }
+        if (token.kind == TokenKind.String || token.kind == TokenKind.Integer || token.kind == TokenKind.Float) {
+            return this.push(token.text, SCANNING_STEP_LITERAL, 0, index, index)
+        }
+        if (token.isKeyword("true") || token.isKeyword("false")) {
+            return this.push(token.text, SCANNING_STEP_LITERAL, 0, index, index)
+        }
+        if (token.isPunct(")") || token.isPunct("]") || token.isPunct("}")) {
+            return this.readGroup(index)
+        }
+        return SCANNING_NOT_A_STEP
+    }
+
+    method readGroup(integer close): integer {
+        var open = this.cursor.matchingOpen(close)
+        if (open < 0) {
+            return SCANNING_NOT_A_STEP
+        }
+        var before = open - 1
+        var count = scanningArgumentCount(this.cursor.tokens, open, close)
+        if (this.cursor.isPunct(close, ")")) {
+            return this.readParenthesis(open, close, count)
+        }
+        if (this.cursor.isPunct(close, "]") && this.endsOperand(before)) {
+            return this.push("[]", SCANNING_STEP_INDEX, 1, open, close)
+        }
+        if (this.cursor.isPunct(close, "}") && this.cursor.isIdent(before)) {
+            return this.push(this.cursor.tokens[before].text, SCANNING_STEP_LITERAL, count, before, close)
+        }
+        return this.push(this.cursor.tokens[open].text + this.cursor.tokens[close].text, SCANNING_STEP_LITERAL, 0, open, close)
+    }
+
+    // `name(...)` is a call, a bare `(...)` is a group.
+    method readParenthesis(integer open, integer close, integer count): integer {
+        if (this.cursor.isIdent(open - 1)) {
+            return this.push(this.cursor.tokens[open - 1].text, SCANNING_STEP_CALL, count, open - 1, close)
+        }
+        return this.push("()", SCANNING_STEP_GROUP, 1, open, close)
+    }
+
+    method endsOperand(integer index): bool {
+        if (this.cursor.has(index) == false) {
+            return false
+        }
+        var token = this.cursor.tokens[index]
+        if (token.kind == TokenKind.Ident || token.kind == TokenKind.String || token.kind == TokenKind.Integer || token.kind == TokenKind.Float) {
+            return true
+        }
+        return token.isPunct(")") || token.isPunct("]") || token.isPunct("}")
+    }
+
+    method push(string text, string kind, integer argCount, integer firstToken, integer lastToken): integer {
+        var span = Span(this.cursor.tokens[firstToken].start, this.cursor.tokens[lastToken].end)
+        this.reversed.append(ChainStep(text, kind, argCount, span))
+        this.startIndex = firstToken
+        return firstToken - 1
+    }
+}
+
+// Number of arguments between the brackets at `open` and `close`: top-level commas plus one, none for `()`.
+method scanningArgumentCount(array<Token> tokens, integer open, integer close): integer {
+    if (close <= open + 1) {
+        return 0
+    }
+    var commas = 0
+    var depth = 0
+    var index = open + 1
+    while (index < close) {
+        if (tokens[index].kind == TokenKind.Punct && scanningIsOpener(tokens[index].value)) {
+            depth = depth + 1
+        }
+        if (tokens[index].kind == TokenKind.Punct && scanningIsCloser(tokens[index].value)) {
+            depth = depth - 1
+        }
+        if (depth == 0 && tokens[index].isPunct(",")) {
+            commas = commas + 1
+        }
+        index = index + 1
+    }
+    if (tokens[close - 1].isPunct(",")) {
+        return commas
+    }
+    return commas + 1
+}

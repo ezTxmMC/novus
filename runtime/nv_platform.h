@@ -27,6 +27,7 @@
 #endif
 
 #include <ctype.h>
+#include <limits.h>
 #include <math.h>
 #include <setjmp.h>
 #include <signal.h>

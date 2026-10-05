@@ -1,0 +1,27 @@
+frame 1: announced 5, got 5
+  bytes 104,101,108,108,111
+  text hello
+frame 2: announced 11, got 11
+  bytes 104,195,169,108,108,111,32,240,159,152,128
+  text héllo 😀
+frame 3: announced 3, got 3
+  bytes 97,0,98
+  text (binary)
+frame 4: announced 0, got 0
+  bytes 
+  text 
+frame 5: announced 70000, got 70000
+  text 012345678901234567890123
+  tail 0123456789
+frame 6: announced 14, got 14
+  bytes 111,110,101,10,116,119,111,13,10,116,104,114,101,101
+  text one|two~|three
+frame 7: announced 10, got 4
+  bytes 97,98,99,100
+  text abcd
+frames 7
+eof true
+after eof 0
+zero 0
+negative 0
+line after eof []

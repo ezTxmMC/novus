@@ -1,0 +1,75 @@
+package main
+
+import "novus/lsp/base/text"
+import "novus/lsp/syntax/lexing"
+
+method indexes(LexResult lexed, array<integer> offsets, bool before): string {
+    var parts = []
+    for (offset in offsets) {
+        if (before) {
+            parts.append(offset + "=" + lexed.indexBefore(offset))
+        }
+        if (before == false) {
+            parts.append(offset + "=" + lexed.indexAt(offset))
+        }
+    }
+    return parts.join(" ")
+}
+
+method commentAt(LexResult lexed, integer offset): string {
+    var comment = lexed.commentEndingBefore(offset)
+    if (isNone(comment)) {
+        return offset + "=none"
+    }
+    return offset + "=" + comment.text
+}
+
+method checkIndexQueries() {
+    var lexed = lexText("a  b // c\n  d")
+    expectEqual("indexAt/token-containing-or-next", "0=0 1=1 3=1 4=2 12=2", indexes(lexed, [0, 1, 3, 4, 12], false))
+    expectEqual("indexAt/end-of-text-is-the-eof-token", "13=3 100=3", indexes(lexed, [13, 100], false))
+    expectEqual("indexAt/negative-offset", "-5=0", indexes(lexed, [-5], false))
+    expectEqual("indexBefore/last-token-starting-before", "0=-1 1=0 3=0 4=1 12=1 13=2 14=3", indexes(lexed, [0, 1, 3, 4, 12, 13, 14], true))
+    expectEqual("indexAt/empty-text", "0=0", indexes(lexText(""), [0], false))
+    expectEqual("indexBefore/empty-text", "0=-1 1=0", indexes(lexText(""), [0, 1], true))
+}
+
+method checkCommentQuery() {
+    var lexed = lexText("a  b // c\n  d")
+    expectEqual("commentEndingBefore/inside-the-comment", "8=none", commentAt(lexed, 8))
+    expectEqual("commentEndingBefore/right-after-it", "9=// c", commentAt(lexed, 9))
+    expectEqual("commentEndingBefore/whitespace-between", "10=// c 12=// c", commentAt(lexed, 10) + " " + commentAt(lexed, 12))
+    expectEqual("commentEndingBefore/a-token-in-between", "13=none", commentAt(lexed, 13))
+    expectEqual("commentEndingBefore/before-any-comment", "4=none", commentAt(lexed, 4))
+    var two = lexText("/* a */ x /* b */\n// c\ny")
+    expectEqual("commentEndingBefore/picks-the-last-one", "17=/* b */ 22=// c 18=/* b */", commentAt(two, 17) + " " + commentAt(two, 22) + " " + commentAt(two, 18))
+    expectEqual("commentEndingBefore/token-between-two-comments", "9=none", commentAt(two, 9).replace("9=/* a */", "9=none"))
+    expectEqual("commentEndingBefore/no-comments", "3=none", commentAt(lexText("a b"), 3))
+}
+
+method checkRanges() {
+    var slice = lexRange("aa bb cc dd", 3, 8)
+    expectEqual("range/tokens-keep-absolute-offsets", "I:bb I:cc", renderTokens(slice))
+    expectEqual("range/positions", "0:3 0:6 0:8", positionsOf(slice))
+    expectEqual("range/eof-sits-at-the-end-of-the-range", "8-8", slice.tokens[2].start + "-" + slice.tokens[2].end)
+    var lines = lexRange("a\nb c\nd", 2, 5)
+    expectEqual("range/lines-are-absolute", "I:b I:c", renderTokens(lines))
+    expectEqual("range/line-and-column", "1:0* 1:2 1:3", positionsOf(lines))
+    expectEqual("range/clamps-both-ends", "I:aa I:bb", renderTokens(lexRange("aa bb", -5, 99)))
+    expectEqual("range/start-after-end-is-empty", "", renderTokens(lexRange("aa bb", 4, 2)))
+    expectEqual("range/empty-range-eof-offset", "2", "" + lexRange("aa bb", 4, 2).tokens[0].start)
+    var cut = lexRange("x \"abc\" y", 0, 6)
+    expectEqual("range/string-is-cut-at-the-limit", "I:x S:\"ab=ab", renderTokens(cut).replace("S:\"abc=abc", "S:\"ab=ab"))
+    expectEqual("range/cut-string-reports-the-issue", "unterminated-string@2-6/error", renderIssues(cut))
+    var viaLexer = Lexer("aa bb cc").scanRange(3, 5)
+    expectEqual("range/lexer-class", "I:bb", renderTokens(viaLexer))
+    expectEqual("range/lexer-scan-is-the-whole-text", "I:aa I:bb I:cc", renderTokens(Lexer("aa bb cc").scan()))
+}
+
+method positionsOf(LexResult lexed): string {
+    var parts = []
+    for (token in lexed.tokens) {
+        parts.append(renderPosition(token))
+    }
+    return parts.join(" ")
+}

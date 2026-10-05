@@ -1,0 +1,8 @@
+100 raised: failed true, 100 bytes, all of it from the message true
+511 raised: failed true, 511 bytes, all of it from the message true
+512 raised: failed true, 512 bytes, all of it from the message true
+3000 raised: failed true, 3000 bytes, all of it from the message true
+4095 raised: failed true, 4095 bytes, all of it from the message true
+4096 raised: failed true, 4095 bytes, all of it from the message true
+100000 raised: failed true, 4095 bytes, all of it from the message true
+kept across tryParse: failed true, 4095 bytes, intact true

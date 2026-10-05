@@ -1,0 +1,168 @@
+package semantic
+
+import base/maybe
+import projects/closure
+import projects/stdlib
+import syntax/outline
+
+// Program-wide flat tables of one project: every declaration of the loaded closure plus the functions and globals of
+// the std modules that no file imports (they are only reachable qualified). Rebuilt whenever a declaration signature
+// changes. The tables are filled by `IndexBuilder`. `byFile` holds the symbols of one file (members after their
+// owner, in source order), `typeList` every type declaration (duplicates included, closure order) and `ownMembers`
+// the members of the first declaration of a type (amendment 6, V110). Arrays handed out by the query methods belong
+// to the index: callers read them and never change them.
+define class ProgramIndex {
+    ProgramClosure closure
+    map<string, Symbol> types
+    map<string, array<Symbol>> functions
+    map<string, array<Symbol>> globals
+    map<string, array<Symbol>> packages
+    map<string, array<Symbol>> membersByName
+    map<string, array<Symbol>> byFile
+    array<Symbol> typeList
+    map<string, array<Symbol>> ownMembers
+
+    construct(ProgramClosure closure, StdLibrary library) {
+        this.closure = closure
+        this.types = {}
+        this.functions = {}
+        this.globals = {}
+        this.packages = {}
+        this.membersByName = {}
+        this.byFile = {}
+        this.typeList = []
+        this.ownMembers = {}
+        var builder = IndexBuilder()
+        builder.fill(this, closure, library)
+    }
+
+    // The first declaration of a type name in closure order; nil when no loaded file declares it.
+    method typeNamed(string name): Symbol {
+        if (this.types.has(name)) {
+            return this.types[name]
+        }
+        return nothing()
+    }
+
+    // Every function of that name, over all qualifiers and all loaded files (overloads and equal names of several packages).
+    method functionsNamed(string name): array<Symbol> {
+        return this.functions.get(name, [])
+    }
+
+    method globalsNamed(string name): array<Symbol> {
+        return this.globals.get(name, [])
+    }
+
+    // The members of the first declaration of the type, constructors and enum constants included, in source order.
+    method membersOfType(string typeName): array<Symbol> {
+        return this.ownMembers.get(typeName, [])
+    }
+
+    // The functions and globals of a qualifier, merged over every folder that shares it; `""` is the root level.
+    method membersOfQualifier(string qualifier): array<Symbol> {
+        return this.packages.get(qualifier, [])
+    }
+
+    // Every field or method of that name over all types of the closure, of any origin.
+    method declarersOfMember(string memberName): array<Symbol> {
+        return this.membersByName.get(memberName, [])
+    }
+
+    // Every type declaration of the loaded closure, a duplicated name included, in closure order.
+    method allTypes(): array<Symbol> {
+        return semanticCopyOf(this.typeList)
+    }
+
+    method allFunctions(): array<Symbol> {
+        return semanticFlatten(this.functions)
+    }
+
+    method allGlobals(): array<Symbol> {
+        return semanticFlatten(this.globals)
+    }
+
+    // The non-empty qualifiers, sorted: package qualifiers and the names of the std modules.
+    method qualifiers(): array<string> {
+        var found = []
+        for (qualifier in this.packages.keys()) {
+            if (qualifier != "") {
+                found.append(qualifier)
+            }
+        }
+        return found
+    }
+
+    // The std modules that can be written as a qualifier (a local folder of the same name hides one).
+    method stdModuleNames(): array<string> {
+        var found = []
+        for (qualifier in this.qualifiers()) {
+            if (this.isStandardQualifier(qualifier)) {
+                found.append(qualifier)
+            }
+        }
+        return found
+    }
+
+    method isStandardQualifier(string qualifier): bool {
+        var symbols = this.packages.get(qualifier, [])
+        return symbols.length() > 0 && symbols[0].origin() == FileOrigin.Standard
+    }
+
+    // Top-level declarations of the file, each followed by its members, in source order; `[]` for an unknown file.
+    method symbolsInFile(string filePath): array<Symbol> {
+        return this.byFile.get(filePath, [])
+    }
+
+    method hasQualifier(string qualifier): bool {
+        if (qualifier == "") {
+            return false
+        }
+        return this.packages.has(qualifier)
+    }
+
+    // Additive: every declaration of a type name (the duplicates a second file adds are the compiler's
+    // `duplicate definition`).
+    method typeDeclarationsNamed(string name): array<Symbol> {
+        var found = []
+        for (symbol in this.typeList) {
+            if (symbol.name() == name) {
+                found.append(symbol)
+            }
+        }
+        return found
+    }
+
+    // Additive: the declarations that repeat a type name (every one after the first), in closure order.
+    method duplicateTypeDeclarations(): array<Symbol> {
+        var seen = {}
+        var repeated = []
+        for (symbol in this.typeList) {
+            if (seen.has(symbol.name())) {
+                repeated.append(symbol)
+            }
+            seen[symbol.name()] = true
+        }
+        return repeated
+    }
+
+    // Additive: points the symbols of a file at the declarations of a newer parse of the same text layout (the same
+    // declarations in the same order, so `declSignature` did not change) and stores the parse in the closure file.
+    // False, with nothing changed, when the shape differs: the caller then rebuilds the index.
+    method refreshFile(ClosureFile file, SourceFile syntax): bool {
+        if (isNone(file) || isNone(syntax)) {
+            return false
+        }
+        var symbols = this.symbolsInFile(file.filePath)
+        var declarations = semanticFlattenDeclarations(syntax)
+        if (declarations.length() != symbols.length() || semanticSameShape(symbols, declarations) == false) {
+            return false
+        }
+        var i = 0
+        while (i < symbols.length()) {
+            symbols[i].decl = declarations[i]
+            i = i + 1
+        }
+        file.syntax = syntax
+        return true
+    }
+}

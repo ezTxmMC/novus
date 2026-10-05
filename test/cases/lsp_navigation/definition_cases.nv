@@ -1,0 +1,38 @@
+package main
+
+import "novus/lsp/features/navigation"
+import "novus/lsp/base/model"
+import @support
+import @fixtures
+
+method navDefinition(string label, NavWorld world) {
+    var found = DefinitionFinder().find(world.context(), world.cursorOffset)
+    navCheck(label, world.describeAll(found))
+}
+
+method runDefinitionCases() {
+    println("== definition")
+    navDefinition("constructor call goes to the class", NavWorld(navMain("Circle(2.0)", 1)))
+    navDefinition("method of a typed local", NavWorld(navMain("area()", 1)))
+    navDefinition("module function", NavWorld(navMain("describe(circle)", 2)))
+    navDefinition("std function", NavWorld(navMain("repeat(", 1)))
+    navDefinition("enum constant", NavWorld(navMain("Red\n", 1)))
+    navDefinition("root helper function", NavWorld(navMain("helper(1)", 1)))
+    navDefinition("local variable use", NavWorld(navMain("total + ", 1)))
+    navDefinition("local declaration", NavWorld(navMain("circle = ", 1)))
+    navDefinition("end of the identifier", NavWorld(navMain("circle.area", 6)))
+    navDefinition("field through implicit this", NavWorld(navShape("radius * radius", 1)))
+    navDefinition("field through this", NavWorld(navShape("radius = radius", 1)))
+    navDefinition("parameter", NavWorld(navShape("by\n", 0)))
+    navDefinition("base class method through an abstract type", NavWorld(navShape("label()", 1)))
+    navDefinition("based clause", NavWorld(navShape("Shape {\n    float", 1)))
+    navDefinition("parameter type", NavWorld(navShape("Shape shape", 1)))
+    navDefinition("overloaded function with a wrong arity", NavWorld(navMarkedCall()))
+    navDefinition("whitespace", NavWorld(navMain("    var circle", 1)))
+    navDefinition("keyword", NavWorld(navMain("method main", 2)))
+}
+
+method navMarkedCall(): map<string, string> {
+    var text = "import geo\n\nmethod main() {\n    println(scaled(1.0, 2.0, 3.0))\n}\n"
+    return navProject(navMarked(text, "scaled(1.0", 1), NAV_CALLS_SHAPE_TEXT)
+}

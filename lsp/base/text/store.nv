@@ -1,0 +1,48 @@
+package text
+
+import base/maybe
+
+// All open documents, keyed by uri (a scratch buffer without a file path is found by its uri only).
+define class DocumentStore {
+    map<string, Document> documents
+
+    construct() {
+        this.documents = {}
+    }
+
+    method open(Document document) {
+        this.documents[document.uri] = document
+    }
+
+    method close(string uri) {
+        this.documents.remove(uri)
+    }
+
+    method find(string uri): Document {
+        if (this.documents.has(uri) == false) {
+            return nothing()
+        }
+        return this.documents[uri]
+    }
+
+    method findByPath(string filePath): Document {
+        if (filePath == "") {
+            return nothing()
+        }
+        for (uri in this.documents.keys()) {
+            var candidate = this.documents[uri]
+            if (candidate.filePath == filePath) {
+                return candidate
+            }
+        }
+        return nothing()
+    }
+
+    method has(string uri): bool {
+        return this.documents.has(uri)
+    }
+
+    method uris(): array<string> {
+        return this.documents.keys()
+    }
+}

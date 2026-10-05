@@ -1,0 +1,158 @@
+package completion
+
+import base/maybe
+import base/text
+import features/candidates
+import projects/workspace
+import syntax/lexing
+import syntax/markup
+
+private final COMPLETION_ISLAND_HEADER = "header"
+
+define interface ContextRule {
+    matches(FileContext context, integer offset): CompletionContext
+}
+
+// A context that offers nothing: a comment, a string, a position that no rule recognises.
+method completionSuppressedContext(integer offset): CompletionContext {
+    var request = CompletionContext("", "", Span(offset, offset))
+    request.suppressed = true
+    return request
+}
+
+// One cursor per detection: the rules of the chain read the same one, so the walk back to the enclosing bracket (the
+// whole file above a top-level cursor) is made once per request and not once per rule.
+define class CompletionCursors {
+    CompletionCursor cursor
+    integer offset
+
+    construct() {
+        this.cursor = nothing()
+        this.offset = COMPLETION_NO_INDEX
+    }
+
+    method forget() {
+        this.cursor = nothing()
+    }
+
+    method cursorFor(FileContext context, integer offset): CompletionCursor {
+        if (isNone(this.cursor) || this.offset != offset) {
+            this.cursor = completionCursorFor(context, offset)
+            this.offset = offset
+        }
+        return this.cursor
+    }
+}
+
+// Asks the rules in the order of the table in DESIGN 8.2; the file kind picks the chain (a manifest and a component
+// are not Novus source, `MarkupContextRule` runs the source rules itself inside the header island).
+define class ContextDetector {
+    array<ContextRule> sourceRules
+    array<ContextRule> manifestRules
+    array<ContextRule> nvhRules
+    CompletionCursors cursors
+
+    construct() {
+        this.cursors = CompletionCursors()
+        var cursors = this.cursors
+        var suppressed = SuppressedContextRule(cursors)
+        this.sourceRules = [suppressed, ImportContextRule(cursors), AnnotationContextRule(cursors), TypeContextRule(cursors), MemberContextRule(cursors), DeclarationContextRule(cursors), BodyContextRule(cursors)]
+        this.manifestRules = [suppressed, ManifestContextRule(cursors)]
+        this.nvhRules = [suppressed, MarkupContextRule(cursors)]
+    }
+
+    method detect(FileContext context, integer offset): CompletionContext {
+        this.cursors.forget()
+        for (rule in this.rulesFor(context.document.fileKind())) {
+            var answer = rule.matches(context, offset)
+            if (isSome(answer)) {
+                return answer
+            }
+        }
+        return completionSuppressedContext(offset)
+    }
+
+    method rulesFor(string fileKind): array<ContextRule> {
+        if (fileKind == FILE_KIND_MANIFEST) {
+            return this.manifestRules
+        }
+        if (fileKind == FILE_KIND_NVH) {
+            return this.nvhRules
+        }
+        return this.sourceRules
+    }
+}
+
+// Inside a comment or inside a string outside every interpolation; the string of `import "..."` and every string
+// of a manifest are the places that complete.
+define class SuppressedContextRule based ContextRule {
+    CompletionCursors cursors
+
+    construct(CompletionCursors cursors) {
+        this.cursors = cursors
+    }
+
+    method matches(FileContext context, integer offset): CompletionContext {
+        var lexed = completionLexResult(context)
+        if (completionInsideComment(lexed.comments, offset)) {
+            return completionSuppressedContext(offset)
+        }
+        var index = lexed.indexBefore(offset)
+        if (index < 0 || completionInsideString(lexed.tokens[index], offset) == false) {
+            return nothing()
+        }
+        if (context.document.fileKind() == FILE_KIND_MANIFEST || completionIsImportString(lexed.tokens, index)) {
+            return nothing()
+        }
+        if (this.cursors.cursorFor(context, offset).inInterpolation) {
+            return nothing()
+        }
+        return completionSuppressedContext(offset)
+    }
+}
+
+// A component: inside the header island the rules of Novus source apply, everywhere else only the `.nvh` snippets.
+define class MarkupContextRule based ContextRule {
+    array<ContextRule> inner
+    CompletionCursors cursors
+
+    construct(CompletionCursors cursors) {
+        this.cursors = cursors
+        this.inner = [ImportContextRule(cursors), AnnotationContextRule(cursors), TypeContextRule(cursors), MemberContextRule(cursors), BodyContextRule(cursors)]
+    }
+
+    method matches(FileContext context, integer offset): CompletionContext {
+        if (context.document.fileKind() != FILE_KIND_NVH) {
+            return nothing()
+        }
+        for (island in findIslands(context.document.text)) {
+            if (island.kind == COMPLETION_ISLAND_HEADER && island.span.start <= offset && offset <= island.span.end) {
+                return this.inHeader(context, offset)
+            }
+        }
+        return this.outside(context.document.text, offset)
+    }
+
+    method inHeader(FileContext context, integer offset): CompletionContext {
+        for (rule in this.inner) {
+            var answer = rule.matches(context, offset)
+            if (isSome(answer)) {
+                return answer
+            }
+        }
+        var cursor = this.cursors.cursorFor(context, offset)
+        if (cursor.opener() < 0 && cursor.startsLine()) {
+            return CompletionContext(CANDIDATES_KIND_NVH_HEADER, cursor.prefix, cursor.replaceSpan)
+        }
+        return completionSuppressedContext(offset)
+    }
+
+    // The identifier characters around the cursor are the prefix to replace.
+    method outside(string text, integer offset): CompletionContext {
+        var start = offset
+        while (start > 0 && completionIsWordByte(text.charAt(start - 1))) {
+            start = start - 1
+        }
+        return CompletionContext(CANDIDATES_KIND_NVH_OUTSIDE, text.substring(start, offset), Span(start, offset))
+    }
+}

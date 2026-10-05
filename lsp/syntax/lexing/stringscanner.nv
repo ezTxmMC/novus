@@ -1,0 +1,148 @@
+package lexing
+
+import base/maybe
+import base/text
+
+// Scans string literals the way the compiler does (an escape is a backslash plus any character, raw newlines are
+// legal) and recovers from a missing closing quote by ending the token at the end of its first line.
+define class StringScanner {
+    string text
+    LexingSearch search
+    integer unclosedFrom
+
+    construct(string text) {
+        this.text = text
+        this.search = LexingSearch(text)
+        this.unclosedFrom = text.length() + 1
+    }
+
+    // `start` is the offset of the opening quote; `limit` bounds the search. The caller sets line and column.
+    method scanString(integer start, integer limit, array<LexIssue> issues): Token {
+        var bound = this.boundOf(limit)
+        if (start < 0 || start >= bound || ord(this.text.charAt(start)) != LEXING_QUOTE_BYTE) {
+            return nothing()
+        }
+        var closing = this.findClosingQuote(start + 1, bound)
+        if (closing < 0) {
+            return this.unterminatedString(start, bound, issues)
+        }
+        return this.buildToken(start, closing + 1, closing, true)
+    }
+
+    method boundOf(integer limit): integer {
+        if (limit > this.text.length()) {
+            return this.text.length()
+        }
+        return limit
+    }
+
+    // Offset of the closing quote, -1 when none: an even number of backslashes in front of a quote leaves it unescaped.
+    // A search that ran out of quotes is remembered, or a file full of escaped quotes would walk all of them for
+    // every quote it opens a string at.
+    method findClosingQuote(integer from, integer bound): integer {
+        if (from >= this.unclosedFrom) {
+            return -1
+        }
+        var at = this.search.find(LEXING_QUOTE, from)
+        while (at >= 0 && at < bound) {
+            if (this.isUnescaped(at, from)) {
+                return at
+            }
+            at = this.search.find(LEXING_QUOTE, at + 1)
+        }
+        if (at < 0) {
+            this.unclosedFrom = from
+        }
+        return -1
+    }
+
+    method isUnescaped(integer quoteAt, integer contentStart): bool {
+        var slashes = 0
+        var back = quoteAt - 1
+        while (back >= contentStart && ord(this.text.charAt(back)) == LEXING_BACKSLASH_BYTE) {
+            slashes = slashes + 1
+            back = back - 1
+        }
+        return slashes % 2 == 0
+    }
+
+    method unterminatedString(integer start, integer bound, array<LexIssue> issues): Token {
+        var lineEnd = this.firstLineEnd(start, bound)
+        issues.append(LexIssue(Span(start, lineEnd), "unterminated-string", "unterminated string literal: closing quote is missing", false))
+        return this.buildToken(start, lineEnd, lineEnd, false)
+    }
+
+    method firstLineEnd(integer start, integer bound): integer {
+        var lineFeed = this.search.find(LEXING_LINE_FEED, start)
+        if (lineFeed < 0 || lineFeed > bound) {
+            lineFeed = bound
+        }
+        if (lineFeed - 1 > start && ord(this.text.charAt(lineFeed - 1)) == LEXING_CARRIAGE_RETURN_BYTE) {
+            return lineFeed - 1
+        }
+        return lineFeed
+    }
+
+    method buildToken(integer start, integer end, integer contentEnd, bool terminated): Token {
+        var token = Token(TokenKind.String, this.text.substring(start, end), start, end, 0, 0)
+        token.terminated = terminated
+        token.value = this.decode(start + 1, contentEnd)
+        token.interpolations = LexingInterpolations(this.text).spansIn(start + 1, contentEnd)
+        return token
+    }
+
+    // Decoded content: \n \t \r \0 are control characters, every other escaped character stands for itself.
+    method decode(integer from, integer to): string {
+        var at = this.search.find(LEXING_BACKSLASH, from)
+        if (at < 0 || at >= to) {
+            return this.text.substring(from, to)
+        }
+        var pieces = []
+        var cursor = from
+        while (at >= 0 && at < to) {
+            pieces.append(this.text.substring(cursor, at))
+            cursor = this.appendEscape(pieces, at, to)
+            at = this.search.find(LEXING_BACKSLASH, cursor)
+        }
+        pieces.append(this.text.substring(cursor, to))
+        return pieces.join("")
+    }
+
+    // Appends the decoded escape that starts at `at` and returns the offset after it; a lone final backslash stays.
+    method appendEscape(array<string> pieces, integer at, integer to): integer {
+        if (at + 1 >= to) {
+            pieces.append(LEXING_BACKSLASH)
+            return at + 1
+        }
+        pieces.append(this.escapeText(ord(this.text.charAt(at + 1)), at + 1))
+        return at + 2
+    }
+
+    method escapeText(integer code, integer at): string {
+        if (code == LEXING_ESCAPE_LINE_FEED) {
+            return chr(LEXING_NEWLINE_BYTE)
+        }
+        if (code == LEXING_ESCAPE_TAB) {
+            return chr(LEXING_TAB_BYTE)
+        }
+        if (code == LEXING_ESCAPE_RETURN) {
+            return chr(LEXING_CARRIAGE_RETURN_BYTE)
+        }
+        if (code == LEXING_ESCAPE_NUL) {
+            return LEXING_NUL
+        }
+        return this.text.charAt(at)
+    }
+
+    // Spans of the expression inside every `${...}` of the token, in raw offsets.
+    method interpolationSpans(Token token): array<Span> {
+        if (token.kind != TokenKind.String || token.start >= this.text.length()) {
+            return []
+        }
+        var contentEnd = token.end
+        if (token.terminated) {
+            contentEnd = token.end - 1
+        }
+        return LexingInterpolations(this.text).spansIn(token.start + 1, contentEnd)
+    }
+}

@@ -1,0 +1,5 @@
+package text
+
+// Recursion cap of every recursive walker (LSP-R12) and the largest accepted protocol frame.
+private final MAX_NESTING_DEPTH = 200
+private final MAX_FRAME_BYTES = 67108864

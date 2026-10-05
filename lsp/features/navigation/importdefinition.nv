@@ -1,0 +1,80 @@
+package navigation
+
+import base/maybe
+import base/model
+import base/text
+import projects/closure
+import projects/workspace
+import syntax/markup
+import syntax/outline
+
+private final NAVIGATION_NVH_KIND = "nvh"
+
+// Definitions of import statements. A std module answers its logical key with `Span(0, 0)`, a package folder the
+// first file of the folder (closure order), a file or a dependency entry that file (V128, V112).
+define class ImportDefinitions {
+    construct() {
+    }
+
+    method find(FileContext context, integer offset): array<Location> {
+        if (isNone(context.closureFile)) {
+            return []
+        }
+        for (declaration in context.syntax.imports) {
+            if (declaration.span.touches(offset)) {
+                return this.locationsOf(context, declaration)
+            }
+        }
+        return []
+    }
+
+    method locationsOf(FileContext context, ImportDecl declaration): array<Location> {
+        var resolution = context.lookupImport(declaration)
+        if (resolution.found == false) {
+            return []
+        }
+        if (resolution.isStandard()) {
+            return [Location(stdFileKey(resolution.target), Span(0, 0))]
+        }
+        if (resolution.isFile()) {
+            return [Location(resolution.target, Span(0, 0))]
+        }
+        return this.firstFileOf(context.project.closure, resolution.target)
+    }
+
+    method firstFileOf(ProgramClosure closure, string folder): array<Location> {
+        var prefix = folder + "/"
+        for (file in closure.files) {
+            if (file.filePath.startsWith(prefix) && file.filePath.substring(prefix.length(), file.filePath.length()).contains("/") == false) {
+                return [Location(file.filePath, Span(0, 0))]
+            }
+        }
+        return []
+    }
+}
+
+// Definition on the name of a `<Tag>` of an `.nvh` template: the component class of `Tag.nvh`.
+define class TagDefinitions {
+    construct() {
+    }
+
+    method find(FileContext context, integer offset): array<Location> {
+        if (isNone(context.closureFile) || context.document.fileKind() != NAVIGATION_NVH_KIND) {
+            return []
+        }
+        for (island in componentTagNames(context.document.text)) {
+            if (island.span.touches(offset)) {
+                return this.componentOf(context, context.document.text.substring(island.span.start, island.span.end))
+            }
+        }
+        return []
+    }
+
+    method componentOf(FileContext context, string tagName): array<Location> {
+        var type = context.resolver().lookupType(tagName)
+        if (isNone(type) || type.file.filePath.endsWith(".nvh") == false) {
+            return []
+        }
+        return [Location(type.file.filePath, type.decl.nameSpan)]
+    }
+}

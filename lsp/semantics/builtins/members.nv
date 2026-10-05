@@ -1,0 +1,186 @@
+package builtins
+
+// What the runtime itself provides without an import: methods on strings, arrays and maps
+// (the dispatch of runtime/nv_invoke.h, checked against it by the golden case lsp_builtins), the
+// 15 free builtins of compiler/codegen/builtins.nv and the annotations the toolchain knows.
+// A row is "name|parameters|return type|minimum arguments|maximum arguments|documentation";
+// a maximum of -1 means any number of arguments (append and push take several values).
+
+private final BUILTINS_ROW_SEPARATOR = "|"
+private final BUILTINS_PARAMETER_SEPARATOR = ", "
+private final BUILTINS_RECEIVER_ANY = "any"
+private final BUILTINS_RECEIVER_STRING = "string"
+private final BUILTINS_RECEIVER_ARRAY = "array"
+private final BUILTINS_RECEIVER_MAP = "map"
+private final BUILTINS_STRING_ALIAS = "str"
+private final BUILTINS_TABLE_FREE = "free"
+private final BUILTINS_TABLE_ANNOTATION = "annotation"
+private final BUILTINS_GENERIC_OPEN = "<"
+private final BUILTINS_PARAMETER_PARTS = " "
+
+// The layout of a row.
+private final BUILTINS_CELL_NAME = 0
+private final BUILTINS_CELL_PARAMETERS = 1
+private final BUILTINS_CELL_RETURN_TYPE = 2
+private final BUILTINS_CELL_MIN_ARITY = 3
+private final BUILTINS_CELL_MAX_ARITY = 4
+private final BUILTINS_CELL_DOCUMENTATION = 5
+private final BUILTINS_CELL_COUNT = 6
+private final BUILTINS_PARAMETER_NAME_PART = 1
+
+define class BuiltinMember {
+    string name
+    string receiver
+    string signature
+    string documentation
+    array<string> parameterNames
+    string returnType
+    integer minArity
+    integer maxArity
+
+    construct(string name, string receiver, string signature, string documentation) {
+        this.name = name
+        this.receiver = receiver
+        this.signature = signature
+        this.documentation = documentation
+        this.parameterNames = []
+        this.returnType = ""
+        this.minArity = 0
+        this.maxArity = 0
+    }
+}
+
+// The members of string, array, map or any (the length of every collection); an alias or a
+// generic type is reduced to its head (`array<integer>` is `array`), anything else has none.
+method builtinMembersOf(string receiverType): array<BuiltinMember> {
+    var receiver = builtinsReceiverHead(receiverType)
+    if (receiver == BUILTINS_RECEIVER_STRING) {
+        return builtinsMembersFromRows(receiver, BUILTINS_STRING_ROWS)
+    }
+    if (receiver == BUILTINS_RECEIVER_ARRAY) {
+        return builtinsMembersFromRows(receiver, BUILTINS_ARRAY_ROWS)
+    }
+    if (receiver == BUILTINS_RECEIVER_MAP) {
+        return builtinsMembersFromRows(receiver, BUILTINS_MAP_ROWS)
+    }
+    if (receiver == BUILTINS_RECEIVER_ANY) {
+        return builtinsMembersFromRows(receiver, BUILTINS_ANY_ROWS)
+    }
+    return []
+}
+
+// The 15 free functions, in the order of DESIGN 6.14; their receiver is empty.
+method freeBuiltins(): array<BuiltinMember> {
+    return builtinsMembersFromRows("", BUILTINS_FREE_ROWS)
+}
+
+// Annotations written `@Name{key="value"}`; the parameters are the keys.
+method builtinAnnotations(): array<BuiltinMember> {
+    var annotations = builtinsMembersFromRows("", BUILTINS_ANNOTATION_ROWS)
+    for (entry in annotations) {
+        entry.signature = builtinsAnnotationSignature(entry)
+    }
+    return annotations
+}
+
+// The receiver names that builtinMembersOf answers for, so callers can list them all.
+method builtinsReceiverTypes(): array<string> {
+    return [BUILTINS_RECEIVER_STRING, BUILTINS_RECEIVER_ARRAY, BUILTINS_RECEIVER_MAP, BUILTINS_RECEIVER_ANY]
+}
+
+method builtinsReceiverHead(string receiverType): string {
+    var head = receiverType.trim()
+    var generic = head.indexOf(BUILTINS_GENERIC_OPEN)
+    if (generic > 0) {
+        head = head.substring(0, generic)
+    }
+    if (head == BUILTINS_STRING_ALIAS) {
+        return BUILTINS_RECEIVER_STRING
+    }
+    return head
+}
+
+method builtinsMembersFromRows(string receiver, array<string> rows): array<BuiltinMember> {
+    var members = []
+    for (row in rows) {
+        members.append(builtinsMemberFromRow(receiver, row))
+    }
+    return members
+}
+
+// The documentation is the rest of the row, so a "|" inside it stays part of the text.
+method builtinsMemberFromRow(string receiver, string row): BuiltinMember {
+    var cells = row.split(BUILTINS_ROW_SEPARATOR)
+    var name = cells[BUILTINS_CELL_NAME]
+    var parameters = cells[BUILTINS_CELL_PARAMETERS]
+    var returnType = cells[BUILTINS_CELL_RETURN_TYPE]
+    var documentation = builtinsDocumentationOf(cells)
+    var member = BuiltinMember(name, receiver, builtinsSignature(name, parameters, returnType), documentation)
+    member.parameterNames = builtinsParameterNames(parameters)
+    member.returnType = returnType
+    member.minArity = parseInt(cells[BUILTINS_CELL_MIN_ARITY])
+    member.maxArity = parseInt(cells[BUILTINS_CELL_MAX_ARITY])
+    return member
+}
+
+method builtinsDocumentationOf(array<string> cells): string {
+    var rest = []
+    var i = BUILTINS_CELL_DOCUMENTATION
+    while (i < cells.length()) {
+        rest.append(cells[i])
+        i = i + 1
+    }
+    return rest.join(BUILTINS_ROW_SEPARATOR)
+}
+
+// The rows that lack a cell, as "<receiver>.<row start>"; the golden case asserts that none does,
+// because an incomplete row would be an index error at the first completion request.
+method builtinsMalformedRows(): array<string> {
+    var malformed = []
+    var tables = {
+        BUILTINS_RECEIVER_STRING: BUILTINS_STRING_ROWS,
+        BUILTINS_RECEIVER_ARRAY: BUILTINS_ARRAY_ROWS,
+        BUILTINS_RECEIVER_MAP: BUILTINS_MAP_ROWS,
+        BUILTINS_RECEIVER_ANY: BUILTINS_ANY_ROWS,
+        BUILTINS_TABLE_FREE: BUILTINS_FREE_ROWS,
+        BUILTINS_TABLE_ANNOTATION: BUILTINS_ANNOTATION_ROWS
+    }
+    for (table in tables) {
+        for (row in tables[table]) {
+            if (row.split(BUILTINS_ROW_SEPARATOR).length() < BUILTINS_CELL_COUNT) {
+                malformed.append(table + "." + row)
+            }
+        }
+    }
+    return malformed
+}
+
+method builtinsSignature(string name, string parameters, string returnType): string {
+    var signature = "method " + name + "(" + parameters + ")"
+    if (returnType == "void") {
+        return signature
+    }
+    return signature + ": " + returnType
+}
+
+method builtinsParameterNames(string parameters): array<string> {
+    var names = []
+    if (parameters == "") {
+        return names
+    }
+    for (parameter in parameters.split(BUILTINS_PARAMETER_SEPARATOR)) {
+        names.append(parameter.split(BUILTINS_PARAMETER_PARTS)[BUILTINS_PARAMETER_NAME_PART])
+    }
+    return names
+}
+
+method builtinsAnnotationSignature(BuiltinMember annotation): string {
+    if (annotation.parameterNames.length() == 0) {
+        return "@" + annotation.name
+    }
+    var pairs = []
+    for (parameterName in annotation.parameterNames) {
+        pairs.append(parameterName + "=\"...\"")
+    }
+    return "@" + annotation.name + "{" + pairs.join(BUILTINS_PARAMETER_SEPARATOR) + "}"
+}

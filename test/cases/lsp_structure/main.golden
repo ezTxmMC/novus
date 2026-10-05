@@ -1,0 +1,107 @@
+== document symbols
+5 Shape {} name@4 range 4-10
+  6 area {(): float} name@5 range 5-5
+  6 label {(): string} name@7 range 7-9
+5 Circle {based Shape} name@12 range 12-24
+  8 radius {float} name@13 range 13-13
+  7 name {string} name@14 range 14-14
+  9 construct {(float radius)} name@16 range 16-18
+  6 area {(): float} name@21 range 20-23 deprecated
+10 Color {} name@26 range 26-29
+  22 Red {} name@27 range 27-27
+  22 Green {} name@28 range 28-28
+11 Named {} name@31 range 31-33
+  6 nameOf {(): string} name@32 range 32-32
+14 LIMIT {} name@35 range 35-35
+12 describe {(Shape shape): string} name@37 range 37-39
+-- component
+5 page {based NvhComponent} name@1 range 1-5
+  8 title {string} name@2 range 2-2
+  6 greet {(): string} name@3 range 3-5
+manifest: 0 symbols
+scratch buffer: 2 symbols
+-- unterminated class
+5 Half {} name@1 range 1-2
+  6 open {()} name@2 range 2-2
+== workspace symbols
+exact name: Circle/5/geo@/p/geo/shape.nv circleArea/6/Spare@/p/unused/spare.nv looseCircle/12/@/p/loose.nv
+prefix and substring rank before subsequence: Circle/5/geo@/p/geo/shape.nv circleArea/6/Spare@/p/unused/spare.nv looseCircle/12/@/p/loose.nv
+case-insensitive: area/6/Shape@/p/geo/shape.nv area/6/Circle@/p/geo/shape.nv circleArea/6/Spare@/p/unused/spare.nv
+subsequence: describe/12/geo@/p/geo/shape.nv
+a file that no import reaches: Spare/5/unused@/p/unused/spare.nv
+a root file that no import reaches: looseCircle/12/@/p/loose.nv
+no std symbols: (none)
+limit: area/6/Shape@/p/geo/shape.nv area/6/Circle@/p/geo/shape.nv circleArea/6/Spare@/p/unused/spare.nv
+no match: (none)
+empty query lists everything once: 20
+cancelled search answers what it has: (none)
+workspace without opened files and folders: (none)
+workspace folder with a manifest: main/12/@/e/main.nv
+== folding
+-- declarations, bodies, comments and imports
+  1 | import geo
+  2 | import strings
+  3 | import @helper
+  4 | 
+  5 | // First line of a note
+  6 | // second line of the note
+  7 | // third line of the note
+  8 | method main() {
+  9 |     var circle = Circle(2.0)
+  10 |     if (circle.area() > 1.0) {
+  11 |         println("big")
+  12 |     } else {
+  13 |         println("small")
+  14 |     }
+  15 |     /* a block
+  16 |        comment */
+  17 |     println(helper(1))
+  18 | }
+  19 | 
+folds: 1-3 imports, 5-7 comment, 8-17 , 10-11 , 12-13 , 15-16 comment
+-- class with a global list and regions
+  1 | // region helpers
+  2 | private final NAMES = [
+  3 |     "a",
+  4 |     "b"
+  5 | ]
+  6 | // endregion
+  7 | 
+  8 | define class Box {
+  9 |     float width
+  10 | 
+  11 |     method area(): float {
+  12 |         return width
+  13 |     }
+  14 | }
+  15 | 
+folds: 1-6 region, 2-5 , 8-13 , 11-12 
+-- single lines and empty blocks fold nothing
+  1 | method one() { return 1 }
+  2 | method two() {
+  3 | }
+  4 | // lonely comment
+  5 | var x = 1
+  6 | 
+folds: 
+-- unterminated block
+  1 | method broken() {
+  2 |     println(1)
+  3 |     println(2)
+  4 | 
+folds: 
+== document links
+link geo: /p/geo/shape.nv
+link strings: std:strings
+link helper: /p/helper.nv
+link ex.com/lib: /p/lib/lib.nv
+manifest: 0 links
+== deeply nested folding
+ranges: 250
+range 0: 1-500
+range 1: 2-499
+range 49: 50-451
+range 50: 51-450
+range 199: 200-301
+range 200: 201-300
+range 248: 249-252

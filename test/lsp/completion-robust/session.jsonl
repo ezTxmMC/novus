@@ -1,0 +1,15 @@
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"rootUri":"@ROOTURI@","capabilities":{"textDocument":{"completion":{"completionItem":{"snippetSupport":true,"labelDetailsSupport":true,"documentationFormat":["markdown","plaintext"],"insertTextModeSupport":{"valueSet":[1,2]}}}}},"initializationOptions":{"novus":{"diagnostics":{"own":false},"completion":{"maxItems":3}}}}}
+{"jsonrpc":"2.0","method":"initialized","params":{}}
+{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"@ROOTURI@/main.nv","languageId":"novus","version":1,"text":"package main\n\nimport geo\n\nmethod main() {\n    var count = 3\n    // pri\n    var text = \"pri\"\n    println(count)\n    \n}\n"}}}
+{"jsonrpc":"2.0","id":2,"method":"textDocument/completion","params":{"textDocument":{"uri":"@ROOTURI@/main.nv"},"position":{"line":6,"character":10},"context":{"triggerKind":1}}}
+{"jsonrpc":"2.0","id":3,"method":"textDocument/completion","params":{"textDocument":{"uri":"@ROOTURI@/main.nv"},"position":{"line":7,"character":19},"context":{"triggerKind":1}}}
+{"jsonrpc":"2.0","id":4,"method":"textDocument/completion","params":{"textDocument":{"uri":"@ROOTURI@/main.nv"},"position":{"line":9,"character":4},"context":{"triggerKind":1}}}
+{"jsonrpc":"2.0","id":5,"method":"textDocument/completion","params":{"textDocument":{"uri":"@ROOTURI@/elsewhere.nv"},"position":{"line":1,"character":1}}}
+{"jsonrpc":"2.0","id":6,"method":"textDocument/completion","params":{"textDocument":{"uri":"@ROOTURI@/main.nv"},"position":{"line":99,"character":7}}}
+{"jsonrpc":"2.0","id":7,"method":"textDocument/completion","params":{"textDocument":{"uri":"@ROOTURI@/main.nv"}}}
+{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"@ROOTURI@/main.nv","version":2},"contentChanges":[{"range":{"start":{"line":9,"character":4},"end":{"line":9,"character":4}},"text":"var total = cou"}]}}
+{"jsonrpc":"2.0","id":8,"method":"textDocument/completion","params":{"textDocument":{"uri":"@ROOTURI@/main.nv"},"position":{"line":9,"character":19}}}
+{"jsonrpc":"2.0","method":"textDocument/didClose","params":{"textDocument":{"uri":"@ROOTURI@/main.nv"}}}
+{"jsonrpc":"2.0","id":9,"method":"textDocument/completion","params":{"textDocument":{"uri":"@ROOTURI@/main.nv"},"position":{"line":9,"character":19}}}
+{"jsonrpc":"2.0","id":99,"method":"shutdown"}
+{"jsonrpc":"2.0","method":"exit"}

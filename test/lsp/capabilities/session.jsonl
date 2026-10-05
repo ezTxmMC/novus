@@ -1,0 +1,4 @@
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"rootUri":"@ROOTURI@","capabilities":{"general":{"positionEncodings":["utf-16"]},"textDocument":{"completion":{"completionItem":{"snippetSupport":true,"labelDetailsSupport":true,"documentationFormat":["markdown","plaintext"]}},"documentSymbol":{"hierarchicalDocumentSymbolSupport":true},"hover":{"contentFormat":["markdown","plaintext"]}},"workspace":{"workspaceFolders":true,"configuration":true}}}}
+{"jsonrpc":"2.0","method":"initialized","params":{}}
+{"jsonrpc":"2.0","id":2,"method":"shutdown"}
+{"jsonrpc":"2.0","method":"exit"}

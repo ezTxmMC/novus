@@ -1,0 +1,148 @@
+package format
+
+import syntax/lexing
+
+// What each `{` is, found from the tokens before it: a block (`method main {`), a map literal (`{ "a": 1 }`) or the braces of an
+// object literal or annotation (`Point{x=0}`), which the repository writes without any space. A `}` has the kind of its `{`.
+private final FORMAT_BRACE_BLOCK = 1
+private final FORMAT_BRACE_MAP = 2
+private final FORMAT_BRACE_TIGHT = 3
+private final FORMAT_NOT_EXPRESSION_START = { ")": true, "]": true, "}": true, ";": true, "{": true }
+private final FORMAT_EXPRESSION_WORDS = { "return": true, "in": true, "println": true, "print": true, "eprintln": true }
+private final FORMAT_BRACKET_OPENERS = { "{": true, "(": true, "[": true }
+private final FORMAT_BRACKET_PARTNER = { "}": "{", ")": "(", "]": "[" }
+private final FORMAT_NO_MATCH = -1
+private final FORMAT_MATCH_LIMIT = 256
+
+define class FormatBraces {
+    array<Token> tokens
+    array<integer> kinds
+    array<integer> openers
+    array<bool> insideTight
+    array<integer> generics
+
+    // `generics` is the role table of FormatRoles: a `>` that closes a generic ends a type, so a `{` after it opens a block.
+    construct(array<Token> tokens, array<integer> generics) {
+        this.tokens = tokens
+        this.generics = generics
+        this.kinds = []
+        this.openers = []
+        this.insideTight = []
+        this.classify()
+    }
+
+    method isTight(integer index): bool {
+        return this.kinds[index] == FORMAT_BRACE_TIGHT
+    }
+
+    method isBlock(integer index): bool {
+        return this.kinds[index] == FORMAT_BRACE_BLOCK
+    }
+
+    method classify() {
+        var open = []
+        var index = 0
+        while (index < this.tokens.length()) {
+            this.insideTight.append(this.topIsTight(open))
+            this.kinds.append(0)
+            this.openers.append(FORMAT_NO_MATCH)
+            this.visit(index, open)
+            index = index + 1
+        }
+    }
+
+    method topIsTight(array<integer> open): bool {
+        return open.length() > 0 && this.kinds[open[open.length() - 1]] == FORMAT_BRACE_TIGHT
+    }
+
+    method visit(integer index, array<integer> open) {
+        var token = this.tokens[index]
+        if (token.kind != TokenKind.Punct) {
+            return
+        }
+        if (FORMAT_BRACKET_OPENERS.has(token.text)) {
+            this.kinds[index] = this.kindOfOpener(index)
+            open.append(index)
+            return
+        }
+        if (FORMAT_BRACKET_PARTNER.has(token.text)) {
+            this.closeBracket(index, open)
+        }
+    }
+
+    // `)` and `]` never reach past a `{` that is still open; no closer looks further down than the limit, so a file of
+    // unmatched brackets costs time in proportion to its size.
+    method closeBracket(integer index, array<integer> open) {
+        var wanted = FORMAT_BRACKET_PARTNER[this.tokens[index].text]
+        var position = open.length() - 1
+        var floor = position - FORMAT_MATCH_LIMIT
+        while (position >= 0 && position > floor) {
+            if (this.tokens[open[position]].text == wanted) {
+                this.openers[index] = open[position]
+                this.kinds[index] = this.kinds[open[position]]
+                this.dropFrom(open, position)
+                return
+            }
+            if (this.tokens[open[position]].text == "{" && wanted != "{") {
+                return
+            }
+            position = position - 1
+        }
+    }
+
+    method dropFrom(array<integer> open, integer position) {
+        while (open.length() > position) {
+            open.pop()
+        }
+    }
+
+    method kindOfOpener(integer index): integer {
+        if (this.tokens[index].text != "{" || index == 0) {
+            return 0
+        }
+        var previous = this.tokens[index - 1]
+        if (previous.kind == TokenKind.Ident) {
+            return this.kindAfterWord(index)
+        }
+        if (this.startsExpression(index - 1)) {
+            return FORMAT_BRACE_MAP
+        }
+        return FORMAT_BRACE_BLOCK
+    }
+
+    // `Name{` is an object literal in an expression and the header of a block elsewhere (`method main {`, `define class Foo {`).
+    method kindAfterWord(integer index): integer {
+        if (index >= 2 && this.startsExpression(index - 2)) {
+            return FORMAT_BRACE_TIGHT
+        }
+        return FORMAT_BRACE_BLOCK
+    }
+
+    // True when the token at `index` can be followed by the first token of an expression.
+    method startsExpression(integer index): bool {
+        var token = this.tokens[index]
+        if (token.kind == TokenKind.Keyword) {
+            return FORMAT_EXPRESSION_WORDS.has(token.text)
+        }
+        if (token.kind != TokenKind.Punct || FORMAT_NOT_EXPRESSION_START.has(token.text) || this.closesGeneric(index)) {
+            return false
+        }
+        return token.text != ":" || this.endsReturnColon(index) == false
+    }
+
+    method closesGeneric(integer index): bool {
+        return index < this.generics.length() && this.generics[index] == FORMAT_ROLE_CLOSE
+    }
+
+    // The colon after a parameter list (`): float {`) or after `method name` starts a return type, not a map value.
+    method endsReturnColon(integer colon): bool {
+        if (colon == 0) {
+            return false
+        }
+        var before = this.tokens[colon - 1]
+        if (before.kind == TokenKind.Punct && before.text == ")") {
+            return true
+        }
+        return before.kind == TokenKind.Ident && colon >= 2 && this.tokens[colon - 2].isKeyword("method")
+    }
+}

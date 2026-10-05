@@ -1,0 +1,56 @@
+package format
+
+import syntax/lexing
+
+// Tokens and comments of one file in text order. `code` holds the tokens without comments and without the end marker;
+// `codeIndex[k]` is the position of item k in `code`, -1 for a comment.
+define class FormatItems {
+    array<Token> items
+    array<integer> codeIndex
+    array<Token> code
+
+    construct(LexResult lexed) {
+        this.items = []
+        this.codeIndex = []
+        this.code = []
+        this.merge(lexed.tokens, lexed.comments)
+    }
+
+    method merge(array<Token> tokens, array<Token> comments) {
+        var next = 0
+        var nextComment = 0
+        while (next < tokens.length() || nextComment < comments.length()) {
+            if (this.commentComesFirst(tokens, comments, next, nextComment)) {
+                this.add(comments[nextComment], false)
+                nextComment = nextComment + 1
+                continue
+            }
+            this.addToken(tokens[next])
+            next = next + 1
+        }
+    }
+
+    method commentComesFirst(array<Token> tokens, array<Token> comments, integer next, integer nextComment): bool {
+        if (nextComment >= comments.length()) {
+            return false
+        }
+        return next >= tokens.length() || comments[nextComment].start < tokens[next].start
+    }
+
+    method addToken(Token token) {
+        if (token.kind == TokenKind.EndOfFile) {
+            return
+        }
+        this.add(token, true)
+    }
+
+    method add(Token item, bool isCode) {
+        this.items.append(item)
+        if (isCode == false) {
+            this.codeIndex.append(-1)
+            return
+        }
+        this.codeIndex.append(this.code.length())
+        this.code.append(item)
+    }
+}

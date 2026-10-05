@@ -1,0 +1,61 @@
+package lifecycle
+
+import base/maybe
+import server/jobs
+import server/protocol
+import server/rpc
+import server/session
+
+define class DidChangeWatchedFilesHandler based RequestHandler {
+    Session session
+    DiagnosticScheduler scheduler
+
+    construct(Session session, DiagnosticScheduler scheduler) {
+        this.session = session
+        this.scheduler = scheduler
+    }
+
+    // The kind of the event is not used: every change rebuilds what depends on the file (6.13).
+    method handle(Request request): object {
+        var paths = []
+        for (event in decodeWatchedEvents(request.params)) {
+            paths.push(event.filePath)
+        }
+        this.session.workspace.onFilesChangedOnDisk(paths)
+        this.scheduler.markAllDirty()
+        return nothing()
+    }
+}
+
+define class DidChangeFoldersHandler based RequestHandler {
+    Session session
+    DiagnosticScheduler scheduler
+
+    construct(Session session, DiagnosticScheduler scheduler) {
+        this.session = session
+        this.scheduler = scheduler
+    }
+
+    method handle(Request request): object {
+        var change = decodeFolderChange(request.params)
+        this.session.workspace.setFolders(lifecycleChangedFolders(this.session.workspace.folders, change))
+        this.scheduler.markAllDirty()
+        return nothing()
+    }
+}
+
+// The current folders without the removed ones, then the added ones that are not there yet; order is kept.
+method lifecycleChangedFolders(array<string> current, FolderChange change): array<string> {
+    var folders = []
+    for (folder in current) {
+        if (change.removed.contains(folder) == false) {
+            folders.push(folder)
+        }
+    }
+    for (folder in change.added) {
+        if (folders.contains(folder) == false) {
+            folders.push(folder)
+        }
+    }
+    return folders
+}

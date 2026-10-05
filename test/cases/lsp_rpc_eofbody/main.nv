@@ -1,0 +1,14 @@
+package main
+
+import "novus/lsp/server/rpc"
+
+// The input ends inside a body: the partial body is dropped. Only EOF is reported, never an invalid frame.
+method main() {
+    var reader = FrameReader()
+    var first = reader.readFrame()
+    println("1: " + first.status + " [" + first.body + "]")
+    var second = reader.readFrame()
+    println("2: " + second.status + " [" + second.body + "] " + second.detail)
+    var third = reader.readFrame()
+    println("3: " + third.status + " " + third.detail)
+}

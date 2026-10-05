@@ -1,0 +1,130 @@
+package main
+
+import json
+import unicode
+import "novus/lsp/base/text"
+import "novus/lsp/base/model"
+import "novus/lsp/server/protocol"
+
+method testCompletionItems() {
+    println "== completion items"
+    var lines = LineIndex("var x = ci\nsecond")
+    var plain = newEncoder("utf-16", ClientInfo())
+    var rich = newEncoder("utf-16", newClient(true, true, false, false))
+    var minimal = CompletionItem("circle", CompletionKind.Variable, "")
+    minimal.replaceSpan = Span(8, 10)
+    showJson("minimal", plain.completionItem(lines, minimal))
+    var callable = CompletionItem("area", CompletionKind.Method, "method area(): float")
+    callable.labelDescription = "geo"
+    callable.documentation = "Computes the **area**."
+    callable.insertText = "area($1)"
+    callable.isSnippet = true
+    callable.filterText = "area"
+    callable.sortText = "1_area"
+    callable.replaceSpan = Span(8, 10)
+    callable.command = "editor.action.triggerParameterHints"
+    callable.deprecated = true
+    callable.resolveKey = "file:///work/a.nv|7|file:///work/geo/shapes.nv|120"
+    callable.additionalEdits = [TextEdit(Span(0, 0), "import geo\n")]
+    showJson("full, plain client", plain.completionItem(lines, callable))
+    showJson("full, rich client", rich.completionItem(lines, callable))
+    var emoji = unicode.fromCodePoint(128512)
+    var wide = LineIndex(emoji + "ab")
+    var inEmoji = CompletionItem("ab", CompletionKind.Field, "")
+    inEmoji.replaceSpan = Span(4, 6)
+    showJson("replace after emoji, utf-16", plain.completionItem(wide, inEmoji))
+    showJson("replace after emoji, utf-8", newEncoder("utf-8", ClientInfo()).completionItem(wide, inEmoji))
+}
+
+method sampleOutline(): OutlineEntry {
+    var circle = OutlineEntry("Circle", "define class Circle", OutlineKind.Class, Span(0, 40), Span(13, 19))
+    var area = OutlineEntry("area", "method area(): float", OutlineKind.Method, Span(22, 38), Span(29, 33))
+    area.deprecated = true
+    var radius = OutlineEntry("radius", "float", OutlineKind.Field, Span(5, 9), Span(6, 8))
+    circle.children = [area, radius]
+    return circle
+}
+
+method testSymbols() {
+    println "== symbols"
+    var lines = LineIndex("package geo\ndefine class Circle {\n    method area(): float {}\n}\n")
+    var encoder = newEncoder("utf-16", ClientInfo())
+    var circle = sampleOutline()
+    showJson("documentSymbol", encoder.documentSymbol(lines, circle))
+    showJson("documentSymbolFlat", encoder.documentSymbolFlat("file:///work/geo.nv", lines, circle))
+    var leaf = OutlineEntry("main", "", OutlineKind.Function, Span(0, 4), Span(0, 4))
+    showJson("leaf without detail", encoder.documentSymbol(lines, leaf))
+    showJson("leaf flat", encoder.documentSymbolFlat("file:///work/geo.nv", lines, leaf))
+    var place = Location("/work/geo.nv", Span(12, 24))
+    var entry = WorkspaceSymbolEntry("Circle", OutlineKind.Class, "geo", place)
+    showJson("workspaceSymbol", encoder.workspaceSymbol({"/work/geo.nv": lines}, entry))
+    showJson("workspaceSymbol without index", encoder.workspaceSymbol({}, entry))
+    var bare = WorkspaceSymbolEntry("main", OutlineKind.Function, "", place)
+    showJson("workspaceSymbol without container", encoder.workspaceSymbol({"/work/geo.nv": lines}, bare))
+}
+
+method testDeepOutline() {
+    println "== document symbols stop below the JSON nesting limit"
+    var lines = LineIndex("x")
+    var root = OutlineEntry("n0", "", OutlineKind.Class, Span(0, 1), Span(0, 1))
+    var current = root
+    var i = 1
+    while (i < 260) {
+        var child = OutlineEntry("n" + i, "", OutlineKind.Class, Span(0, 1), Span(0, 1))
+        current.children = [child]
+        current = child
+        i = i + 1
+    }
+    var encoder = newEncoder("utf-16", ClientInfo())
+    var depth = 0
+    var node = encoder.documentSymbol(lines, root)
+    while (node.has("children")) {
+        node = node["children"][0]
+        depth = depth + 1
+    }
+    show("hierarchical depth", depth)
+    show("deepest tree still serialises", json.stringify(encoder.documentSymbol(lines, root)).length() > 0)
+    show("flat entries", encoder.documentSymbolFlat("file:///x.nv", lines, root).length())
+}
+
+method testViews() {
+    println "== hover, signature help, folding, highlight, link"
+    var lines = LineIndex("println area(2.0)\nnext")
+    var plain = newEncoder("utf-16", ClientInfo())
+    var rich = newEncoder("utf-16", newClient(true, false, false, false))
+    var info = HoverInfo("```novus\nmethod area(): float\n```", Span(8, 12))
+    showJson("hover plain client", plain.hover(lines, info))
+    showJson("hover markdown client", rich.hover(lines, info))
+    showJson("hover without range", plain.hover(lines, HoverInfo("text", Span(0, 0))))
+    var signature = SignatureInfo("area(float radius, int scale)", ["float radius", "int scale"], "Computes the area.")
+    var help = SignatureHelp([signature, SignatureInfo("area()", [], "")], 0, 1)
+    showJson("signatureHelp plain client", plain.signatureHelp(help))
+    showJson("signatureHelp markdown client", rich.signatureHelp(help))
+    showJson("signatureHelp empty", plain.signatureHelp(SignatureHelp([], 0, 0)))
+    showJson("foldingRange region", plain.foldingRange(FoldingEntry(2, 9, "region")))
+    showJson("foldingRange imports", plain.foldingRange(FoldingEntry(0, 3, "imports")))
+    showJson("foldingRange without kind", plain.foldingRange(FoldingEntry(4, 8, "")))
+    showJson("highlight", plain.highlight(lines, HighlightEntry(Span(8, 12), 2)))
+    showJson("documentLink", plain.documentLink(lines, DocumentLink(Span(0, 7), "/work/geo/shapes.nv")))
+    showJson("documentLink without target", plain.documentLink(lines, DocumentLink(Span(0, 7), "")))
+}
+
+method testCodeActions() {
+    println "== code actions"
+    var lines = LineIndex("var x = 1\nuse(y)\n")
+    var encoder = newEncoder("utf-16", ClientInfo())
+    var fix = CodeActionItem("Import 'geo'", "quickfix")
+    fix.edits = [FileEdit("/work/a.nv", [TextEdit(Span(0, 0), "import geo\n")])]
+    var reported = Diagnostic(Span(10, 13), Severity.Error, "novus", "unknown-name", "unknown name 'use'")
+    fix.diagnostics = [reported]
+    fix.preferred = true
+    showJson("quickfix", encoder.codeAction(lines, fix))
+    var command = CodeActionItem("Fetch dependencies", "")
+    command.command = "novus.fetchDependencies"
+    command.commandArguments = ["/work"]
+    showJson("command only", encoder.codeAction(lines, command))
+    var organize = CodeActionItem("Organize imports", "source.organizeImports")
+    organize.edits = [FileEdit("/work/a.nv", [TextEdit(Span(0, 9), "var x = 2"), TextEdit(Span(10, 10), "// c\n")])]
+    showJson("organize", encoder.codeAction(lines, organize))
+    showJson("title only", encoder.codeAction(lines, CodeActionItem("Nothing", "")))
+}

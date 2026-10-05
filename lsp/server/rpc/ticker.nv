@@ -1,0 +1,52 @@
+package rpc
+
+import base/platform
+import log
+import os
+
+private final RPC_TICKER_NAME = "ticker"
+private final RPC_MIN_TICK_MILLIS = 1
+
+// Starts the ticker on an OS thread. It drives debouncing, because a channel has no timed receive.
+method startTickerThread(InboxChannel inbox, integer intervalMillis) {
+    thread rpcTickLoop(inbox, intervalMillis)
+}
+
+method rpcTickLoop(InboxChannel inbox, integer intervalMillis) {
+    var outcome = runGuarded(RpcTickerWork(inbox, intervalMillis))
+    if (outcome.failed) {
+        log.error("rpc: the ticker failed: " + outcome.message)
+        postWorkerFailure(inbox, RPC_TICKER_NAME, 0, outcome)
+    }
+}
+
+define class RpcTickerWork based GuardedWork {
+    InboxChannel inbox
+    integer intervalMillis
+
+    construct(InboxChannel inbox, integer intervalMillis) {
+        this.inbox = inbox
+        this.intervalMillis = intervalMillis
+    }
+
+    // A tick is posted only when nothing is pending, so a busy main thread never makes the
+    // ticker fill the inbox or block the reader: at most one tick is ever queued.
+    method run(): object {
+        var pause = RPC_MIN_TICK_MILLIS
+        if (this.intervalMillis > pause) {
+            pause = this.intervalMillis
+        }
+        while (true) {
+            os.sleep(pause)
+            this.tick()
+        }
+        return nothing()
+    }
+
+    method tick() {
+        if (this.inbox.hasPending()) {
+            return
+        }
+        this.inbox.post(Envelope(ENVELOPE_TICK, nowMillis()))
+    }
+}

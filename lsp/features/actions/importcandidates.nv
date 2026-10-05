@@ -1,0 +1,91 @@
+package actions
+
+import base/maybe
+import projects/closure
+import projects/workspace
+import syntax/outline
+
+private final ACTIONS_MAX_FILES = 400
+
+// The imports that would bring a name into the program: every package folder, file and dependency target of the project that
+// declares a function, global or type of that name and that the file does not import yet. The std modules are not searched,
+// because their functions are always written with the module name (`module-not-imported` covers that case).
+define class ActionsImportCandidates {
+    construct() {
+    }
+
+    method targetsDeclaring(FileContext context, string name): array<ImportTarget> {
+        var found = []
+        var loader = PackageLoader(context.project.layout, context.source, CacheSourceProvider(context.source), context.library)
+        var budget = ACTIONS_MAX_FILES
+        for (target in importableTargets(context.project.layout, context.project.modules, context.source, context.library)) {
+            if (target.origin == FileOrigin.Standard || this.isImported(context, target)) {
+                continue
+            }
+            for (filePath in this.filesOf(loader, target)) {
+                budget = budget - 1
+                if (budget >= 0 && this.declares(context, filePath, name) && found.contains(target) == false) {
+                    found.append(target)
+                }
+            }
+        }
+        return this.withoutCoveredFiles(found)
+    }
+
+    // `import @a/b` is offered only when the folder `a` itself does not declare the name: the folder is the better import.
+    method withoutCoveredFiles(array<ImportTarget> found): array<ImportTarget> {
+        var folders = {}
+        for (target in found) {
+            if (target.kind == ImportKind.Package) {
+                folders[target.text] = true
+            }
+        }
+        var kept = []
+        for (target in found) {
+            if (target.kind != ImportKind.File || folders.has(this.folderOf(target.text)) == false) {
+                kept.append(target)
+            }
+        }
+        return kept
+    }
+
+    method folderOf(string target): string {
+        var cut = target.length() - 1
+        while (cut >= 0 && target.charAt(cut) != "/") {
+            cut = cut - 1
+        }
+        if (cut < 0) {
+            return ""
+        }
+        return target.substring(0, cut)
+    }
+
+    method isImported(FileContext context, ImportTarget target): bool {
+        for (declaration in context.syntax.imports) {
+            if (declaration.kind == target.kind && declaration.target == target.text) {
+                return true
+            }
+        }
+        return false
+    }
+
+    method filesOf(PackageLoader loader, ImportTarget target): array<string> {
+        if (target.filePath.endsWith(".nv") || target.filePath.endsWith(".nvh")) {
+            return [target.filePath]
+        }
+        return loader.sourceFilesOf(target.filePath)
+    }
+
+    method declares(FileContext context, string filePath, string name): bool {
+        var syntax = CacheSourceProvider(context.source).syntaxOf(filePath)
+        if (isNone(syntax)) {
+            return false
+        }
+        for (decl in syntax.topLevelNamed(name)) {
+            if (decl.kind == DeclKind.Method || decl.kind == DeclKind.Global) {
+                return true
+            }
+        }
+        return isSome(syntax.typeNamed(name))
+    }
+}

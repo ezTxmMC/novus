@@ -1,0 +1,106 @@
+package main
+
+import hash
+import "novus/lsp/base/text"
+import "novus/lsp/syntax/lexing"
+import "novus/lsp/syntax/outline"
+import "novus/lsp/syntax/parsing"
+
+private final MODE_SOURCE = "// doc\nmethod m(integer a) {\n    var x = a\n}\n"
+
+method checkOptions() {
+    var editor = parseSourceText("m.nv", MODE_SOURCE, editorParseOptions())
+    expectTrue("options/editor-keeps-tokens-comments-locals", editor.tokens.length() == 13 && editor.comments.length() == 1 && editor.decls[0].locals.length() == 2)
+    expectEqual("options/editor-docs", "doc", editor.decls[0].doc)
+    var index = parseSourceText("m.nv", MODE_SOURCE, indexParseOptions())
+    expectTrue("options/index-keeps-no-tokens-no-locals", index.tokens.length() == 0 && index.comments.length() == 0 && index.decls[0].locals.length() == 0)
+    expectEqual("options/index-keeps-docs", "doc", index.decls[0].doc)
+    var custom = ParseOptions(false, true, false)
+    expectTrue("options/constructor-fields", custom.keepTokens == false && custom.scanLocals && custom.collectDocs == false)
+    var locals = parseSourceText("m.nv", MODE_SOURCE, custom)
+    expectTrue("options/locals-without-tokens", locals.tokens.length() == 0 && locals.decls[0].locals.length() == 2 && locals.decls[0].doc == "")
+    expectTrue("options/editor-and-index-flags", editorParseOptions().keepTokens && editorParseOptions().scanLocals && editorParseOptions().collectDocs && indexParseOptions().keepTokens == false && indexParseOptions().scanLocals == false && indexParseOptions().collectDocs)
+}
+
+method checkFileFacts() {
+    var file = parseSourceText("dir/m.nv", MODE_SOURCE, editorParseOptions())
+    expectEqual("file/path-kind-hash", "dir/m.nv|nv|" + hash.fnv1a(MODE_SOURCE), file.filePath + "|" + file.fileKind + "|" + file.textHash)
+    expectTrue("file/hash-is-textHashOf", file.textHash == textHashOf(MODE_SOURCE) && file.textHash == hash.fnv1a(MODE_SOURCE))
+    var nulFirst = "method m() {\n}\n" + chr(0) + "// a\n"
+    var nulSecond = "method m() {\n}\n" + chr(0) + "// b\n"
+    var hashFirst = parseSourceText("n.nv", nulFirst, editorParseOptions()).textHash
+    var hashSecond = parseSourceText("n.nv", nulSecond, editorParseOptions()).textHash
+    expectTrue("file/hash-sees-text-after-a-nul-byte", hashFirst == textHashOf(nulFirst) && hashFirst != hashSecond)
+    expectEqual("file/parser-class-gives-the-same", "" + file.declSignature, "" + SourceParser(editorParseOptions()).parseText("dir/m.nv", MODE_SOURCE).declSignature)
+    expectEqual("file/lexed-entry-point", "" + file.declSignature, "" + SourceParser(editorParseOptions()).parseLexed("dir/m.nv", MODE_SOURCE, lexText(MODE_SOURCE)).declSignature)
+    expectInt("file/empty-text-has-no-declarations", 0, parseSourceText("e.nv", "", editorParseOptions()).decls.length())
+    expectInt("file/empty-text-line-count", 1, parseSourceText("e.nv", "", editorParseOptions()).lineCount)
+}
+
+method signatureOf(string source): integer {
+    return parseSourceText("s.nv", source, editorParseOptions()).declSignature
+}
+
+method checkDeclSignature() {
+    var base = "package p\nimport a\n\nmethod m(integer a): integer {\n    var x = a\n    return x\n}\n\ndefine class C {\n    integer f\n}\n"
+    var same = signatureOf(base)
+    expectTrue("signature/stable-under-body-edits", signatureOf(base.replace("var x = a", "var y = a + 1")) == same)
+    expectTrue("signature/stable-under-comments-and-blank-lines", signatureOf("// new header\n\n" + base.replace("method m", "// note\nmethod m").replace("integer f", "integer f // field")) == same)
+    expectTrue("signature/stable-under-whitespace", signatureOf(base.replace("    var x", "            var x")) == same)
+    expectTrue("signature/changes-with-a-parameter-type", signatureOf(base.replace("integer a)", "string a)")) != same)
+    expectTrue("signature/changes-with-a-parameter-name", signatureOf(base.replace("(integer a)", "(integer b)").replace("var x = a", "var x = b")) != same)
+    expectTrue("signature/changes-with-a-return-type", signatureOf(base.replace("): integer", "): string")) != same)
+    expectTrue("signature/changes-with-a-method-name", signatureOf(base.replace("method m(", "method n(")) != same)
+    expectTrue("signature/changes-with-a-new-method", signatureOf(base + "method extra() {\n}\n") != same)
+    expectTrue("signature/changes-with-a-field-type", signatureOf(base.replace("integer f", "string f")) != same)
+    expectTrue("signature/changes-with-a-modifier", signatureOf(base.replace("    integer f", "    private integer f")) != same)
+    expectTrue("signature/changes-with-an-import", signatureOf(base.replace("import a", "import b")) != same)
+    var shifted = parseSourceText("m.nv", base.replace("var x = a", "var x = a\n    var blank = 1\n"), editorParseOptions())
+    var original = parseSourceText("m.nv", base, editorParseOptions())
+    expectTrue("signature/ignores-positions-so-it-never-gates-the-stored-file", shifted.declSignature == original.declSignature && shifted.decls[1].nameSpan.start != original.decls[1].nameSpan.start)
+    expectTrue("signature/changes-with-the-package", signatureOf(base.replace("package p", "package q")) != same)
+    expectTrue("signature/same-text-same-value", signatureOf(base) == same)
+}
+
+method checkOtherFileKinds() {
+    var manifest = parseSourceText("project.nv", "project \"x\"\nversion \"1\"\n\"unterminated\n", editorParseOptions())
+    expectEqual("kinds/manifest-is-empty", "manifest|0|0|0|0", manifest.fileKind + "|" + manifest.decls.length() + "|" + manifest.imports.length() + "|" + manifest.issues.length() + "|" + manifest.tokens.length())
+    var component = parseSourceText("pages/Home.nvh", "<?nv\n  var x = \n?>\n<p>{x}</p>\n", editorParseOptions())
+    expectEqual("kinds/component-is-empty", "nvh|0|0|0", component.fileKind + "|" + component.decls.length() + "|" + component.imports.length() + "|" + component.issues.length())
+    expectEqual("kinds/text-hash-is-still-set", "" + hash.fnv1a("x"), "" + parseSourceText("project.nv", "x", editorParseOptions()).textHash)
+    expectEqual("kinds/manifest-via-the-lexed-entry-point", "0", "" + SourceParser(editorParseOptions()).parseLexed("a/project.nv", "x y z", lexText("x y z")).decls.length())
+    expectInt("kinds/manifest-report-is-empty", 0, syntaxReportLines("project.nv", "method (").length())
+    expectInt("kinds/component-report-is-empty", 0, syntaxReportLines("a.nvh", "method (").length())
+    expectInt("kinds/plain-nv-with-project-in-the-name", 1, parseSourceText("my_project.nv", "method m() {\n}\n", editorParseOptions()).decls.length())
+}
+
+method checkParseMembers() {
+    var text = "<?nv\n  integer x\n  method m(string s) {\n    var t = s\n  }\n  # \n?>\n<p></p>"
+    var start = 4
+    var end = text.indexOf("?>", 0)
+    var lexed = lexRange(text, start, end)
+    var file = SourceParser(editorParseOptions()).parseMembers("c.nvh", text, lexed, "Comp")
+    expectEqual("members/declarations-and-owner", "Field:x Method:m", kindsAndNames(file.decls))
+    expectEqual("members/container", "Comp Comp", file.decls[0].container + " " + file.decls[1].container)
+    var nameAt = text.indexOf("m(string", 0)
+    expectEqual("members/absolute-spans", nameAt + "," + (nameAt + 1), file.decls[1].nameSpan.start + "," + file.decls[1].nameSpan.end)
+    var local = file.decls[1].locals[1]
+    expectEqual("members/locals-use-absolute-offsets", "t|t", local.name + "|" + text.substring(local.nameSpan.start, local.nameSpan.end))
+    expectEqual("members/lexer-issues-of-the-region", "unknown-character@" + text.indexOf("#", 0) + "-" + (text.indexOf("#", 0) + 1) + "/warning", renderIssues(file))
+    expectEqual("members/no-imports-and-file-kind-is-ignored", "0|nvh", file.imports.length() + "|" + file.fileKind)
+    expectEqual("members/stray-closing-brace-is-skipped", "Field:y", kindsAndNames(SourceParser(editorParseOptions()).parseMembers("c.nvh", "} integer y", lexText("} integer y"), "C").decls))
+}
+
+method checkHandMadeTokens() {
+    var lexed = lexText("method m() {\n}\n")
+    var withoutEof = LexResult([], lexed.comments, lexed.issues)
+    for (token in lexed.tokens) {
+        if (token.isEnd() == false) {
+            withoutEof.tokens.append(token)
+        }
+    }
+    var file = SourceParser(editorParseOptions()).parseLexed("h.nv", "method m() {\n}\n", withoutEof)
+    expectEqual("hand-made/token-list-without-eof", "Method:m", kindsAndNames(file.decls))
+    var empty = SourceParser(editorParseOptions()).parseLexed("h.nv", "", LexResult([], [], []))
+    expectEqual("hand-made/no-tokens-at-all", "0|0", empty.decls.length() + "|" + empty.issues.length())
+}

@@ -1,0 +1,91 @@
+package checker
+
+import base/platform
+import log
+
+// The shadow copy of the project for dirty buffers: written, run on, removed afterwards (never through os.removeAll, NG31).
+private final CHECKER_SHADOW_PREFIX = "novus-lsp-"
+private final CHECKER_MANIFEST_NAME = "project.nv"
+private final CHECKER_SHADOW_SLASH = "/"
+
+define class ShadowTree {
+    string directory
+    string entryFile
+    bool cleaned
+    integer skippedOverlays
+
+    construct(string directory, string entryFile) {
+        this.directory = directory
+        this.entryFile = entryFile
+        this.cleaned = false
+        this.skippedOverlays = 0
+    }
+
+    // Safe to call twice; a refused removal is only logged.
+    method cleanup() {
+        if (this.directory == "" || this.cleaned) {
+            return
+        }
+        this.cleaned = true
+        if (removeTree(this.directory) == false) {
+            log.warn("checker: could not remove the shadow tree " + this.directory)
+        }
+    }
+}
+
+// An empty `directory` in the result means "no shadow tree": the entry lies outside the project root, a file could not be written or
+// no temp directory could be made.
+method buildShadowTree(CheckRequest request, TextSource source): ShadowTree {
+    var failed = ShadowTree("", "")
+    var entryBelowRoot = checkerRelativeBelow(request.projectRoot, request.entryFile)
+    if (entryBelowRoot == "") {
+        return failed
+    }
+    var directory = createTempDirectory(CHECKER_SHADOW_PREFIX + request.requestId + "-")
+    if (directory == "") {
+        return failed
+    }
+    var tree = ShadowTree(directory, checkerNormalize(directory) + CHECKER_SHADOW_SLASH + entryBelowRoot)
+    if (checkerWriteShadowFiles(tree, request, source)) {
+        return tree
+    }
+    tree.cleanup()
+    return failed
+}
+
+method checkerWriteShadowFiles(ShadowTree tree, CheckRequest request, TextSource source): bool {
+    for (overlayPath in request.overlays) {
+        var below = checkerRelativeBelow(request.projectRoot, overlayPath)
+        if (below == "") {
+            tree.skippedOverlays = tree.skippedOverlays + 1
+            continue
+        }
+        if (checkerWriteShadowFile(tree.directory, below, request.overlays.get(overlayPath, "")) == false) {
+            return false
+        }
+    }
+    return checkerWriteShadowManifest(tree, request, source)
+}
+
+method checkerWriteShadowFile(string directory, string below, string content): bool {
+    var target = checkerNormalize(directory) + CHECKER_SHADOW_SLASH + below
+    var parent = checkerParentOf(target)
+    if (makeDirectories(parent) == false) {
+        return false
+    }
+    return writeTextFile(target, content)
+}
+
+// The root manifest is read from the real tree (or from the overlays when a buffer holds it) and moved with its replace targets.
+method checkerWriteShadowManifest(ShadowTree tree, CheckRequest request, TextSource source): bool {
+    var manifestPath = checkerNormalize(request.projectRoot) + CHECKER_SHADOW_SLASH + CHECKER_MANIFEST_NAME
+    if (request.overlays.has(manifestPath) == false && source.exists(manifestPath) == false) {
+        return true
+    }
+    var manifestText = request.overlays.get(manifestPath, "")
+    if (request.overlays.has(manifestPath) == false) {
+        manifestText = source.textOf(manifestPath)
+    }
+    var moved = checkerShadowManifest(manifestText, request.projectRoot, tree.directory)
+    return checkerWriteShadowFile(tree.directory, CHECKER_MANIFEST_NAME, moved)
+}

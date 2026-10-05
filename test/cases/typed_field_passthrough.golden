@@ -1,0 +1,26 @@
+side
+show text 1
+side
+show 1 2.500000
+value 4
+unset
+value text
+true
+false
+none
+some
+side
+equal
+side
+differs
+side
+differs
+unset
+value 5
+unset
+value text
+text
+7
+heavy
+takesInt 3
+takesFloat 2.500000

@@ -1,0 +1,7 @@
+library repository: true
+offline, not fetched: exit code 1
+novusc: dependency file://<repository> is not fetched (version latest) - run 'novusc deps' to fetch it
+nothing was cloned: true
+stdout while fetching: ok: main.nv
+offline, fetched: exit code 0
+stderr while fetching: fetching file://<repository> @ latest

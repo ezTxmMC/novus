@@ -1,0 +1,122 @@
+package main
+
+import "novus/lsp/syntax/outline"
+import "novus/lsp/syntax/scanning"
+import @support
+import @typing_world
+
+method describeType(TypeRef type): string {
+    return "[" + type.name + "|" + type.element + "|" + type.known + "] " + type.display()
+}
+
+method runTypeTexts() {
+    println("== typeFromText and TypeRef")
+    var texts = ["array<string>", "map<string, integer>", "map<string,array<integer>>", "str", "", "object", "any", "Circle", "array", "array<", "map<integer>", "  array < string > ", "void"]
+    for (typeText in texts) {
+        println("  <" + typeText + "> " + describeType(typeFromText(typeText)))
+    }
+    var array = typeFromText("array<string>")
+    var map = typeFromText("map<string, integer>")
+    semCheck("isArray isMap isString", array.isArray() + " " + array.isMap() + " " + map.isMap() + " " + typeFromText("str").isString() + " " + unknownType().isString(), "true false true true false")
+    semCheck("the unknown type", describeType(unknownType()), "[||false] unknown")
+}
+
+method showLocalTypes(SemWorld world) {
+    var scope = world.scopeAt("/proj/main.nv", "for (t in c.tags)")
+    for (local in scope.locals) {
+        println("  " + local.name + " (" + local.origin + "): " + world.resolver.typeOfLocal(scope, local).display())
+    }
+}
+
+method runLocalTypes() {
+    println("== typeOfLocal: declared types, initializers and loop variables")
+    var world = typingWorld()
+    showLocalTypes(world)
+    runLoopTypes(world)
+}
+
+method runLoopTypes(SemWorld world) {
+    for (variable in ["t", "k", "col", "ch"]) {
+        var scope = world.scopeAt("/proj/main.nv", "println(" + variable + ")")
+        var local = world.resolver.localNamed(scope, variable)
+        println("  loop " + variable + " (" + local.origin + "): " + world.resolver.typeOfLocal(scope, local).display())
+    }
+}
+
+// The chain of tokens that ends an expression of the program text, as the chain reader sees it.
+method chainOf(SemWorld world, string expression): array<ChainStep> {
+    var tokens = world.closure.fileAt("/proj/main.nv").syntax.tokens
+    var end = world.files["/proj/main.nv"].indexOf(expression) + expression.length()
+    var i = 0
+    while (i < tokens.length() && tokens[i].start < end) {
+        i = i + 1
+    }
+    return chainEndingAt(tokens, i - 1)
+}
+
+method runChainTypes() {
+    println("== typeOfChain: members, calls, indexes, modules, enums")
+    var world = typingWorld()
+    var scope = world.scopeAt("/proj/main.nv", "println(t)")
+    var expressions = ["c.clone().clone().area()", "c.tags[0].length()", "c.counts.keys()", "Color.Red.shade()", "Color.values()[0]",
+        "strings.repeat(\"a\", 2).toUpper()", "make(1).label", "label.length()", "parts.pop()", "counts.values()", "c.describe()",
+        "c.rename(\"x\").describe()", "Color.Purple", "this.x", "c.nope", "nothing(1).y", "strings.nope(1)"]
+    for (expression in expressions) {
+        println("  " + expression + " -> " + describeType(world.resolver.typeOfChain(scope, chainOf(world, expression))))
+    }
+    semCheck("an empty chain", describeType(world.resolver.typeOfChain(scope, [])), "[||false] unknown")
+}
+
+method runMemberLookup() {
+    println("== members of a type: own first, bases not overridden")
+    var world = typingWorld()
+    var circle = typeFromText("Circle")
+    semCheck("Circle members", semKeys(world.resolver.membersOf(circle)), "Circle.radius, Circle.tags, Circle.counts, Circle.area/0, Circle.describe/0, Circle.clone/0, Circle.rename/1, Shape.label")
+    semCheck("Color has no instance constants", semKeys(world.resolver.membersOf(typeFromText("Color"))), "Color.shade/0")
+    semCheck("constants of an enum", semKeys(world.resolver.constantsOf("Color")), "Color.Red, Color.Green")
+    semCheck("builtin and unknown receivers have none here", world.resolver.membersOf(typeFromText("string")).length() + world.resolver.membersOf(unknownType()).length(), "0")
+    semCheck("lookupMember overridden method", semShow(world.resolver.lookupMember(circle, "describe", 0)), "resolved [Circle.describe/0]")
+    semCheck("lookupMember inherited field", semShow(world.resolver.lookupMember(circle, "label", -1)), "resolved [Shape.label]")
+    semCheck("lookupMember unknown", semShow(world.resolver.lookupMember(circle, "nope", -1)), "unknown []")
+}
+
+method chainedLocalsSource(integer count): string {
+    var lines = ["method f() {", "    var a0 = \"text\"", "    var self = self"]
+    var i = 1
+    while (i <= count) {
+        lines.append("    var a" + i + " = a" + (i - 1))
+        i = i + 1
+    }
+    lines.append("    println(a" + count + ")")
+    lines.append("}")
+    return lines.join("\n") + "\n"
+}
+
+method typeOfLastChained(integer count): string {
+    var world = SemWorld({"/proj/project.nv": semManifest(), "/proj/main.nv": chainedLocalsSource(count)}, "/proj/main.nv")
+    var scope = world.scopeAt("/proj/main.nv", "println(a" + count + ")")
+    return world.resolver.typeOfLocal(scope, world.resolver.localNamed(scope, "a" + count)).display()
+}
+
+method runInferenceLimits() {
+    println("== inference never loops")
+    semCheck("a local typed from a local, 10 steps", typeOfLastChained(10), "string")
+    semCheck("a chain of 100 locals ends in unknown", typeOfLastChained(100), "unknown")
+    var world = SemWorld({"/proj/project.nv": semManifest(), "/proj/main.nv": chainedLocalsSource(2)}, "/proj/main.nv")
+    var scope = world.scopeAt("/proj/main.nv", "println(a2)")
+    semCheck("a local that names itself", world.resolver.typeOfLocal(scope, world.resolver.localNamed(scope, "self")).display(), "unknown")
+}
+
+method runClassScopeTypes() {
+    println("== names and types inside a derived class")
+    var world = typingWorld()
+    semCheckCall(world, "an inherited method from the nearest base", "/proj/main.nv", "return describe() + label", "describe", 0, "resolved [Circle.describe/0]")
+    semCheckCall(world, "an own method", "/proj/main.nv", "return describe() + label", "perimeter", 0, "resolved [Square.perimeter/0]")
+    semCheckName(world, "an inherited field of the grand base", "/proj/main.nv", "return describe() + label", "label", "resolved [Shape.label]")
+    semCheckName(world, "an own field", "/proj/main.nv", "return side", "side", "resolved [Square.side]")
+    var scope = world.scopeAt("/proj/main.nv", "return describe() + label")
+    semCheck("this.field through the bases", describeType(world.resolver.typeOfChain(scope, chainOf(world, "this.radius"))), "[float||true] float")
+    semCheck("a bare inherited field", describeType(world.resolver.typeOfChain(scope, chainOf(world, "return label"))), "[string||true] string")
+    semCheck("this is the class of the scope, not of the text the tokens came from", describeType(world.resolver.typeOfChain(scope, chainOf(world, "return this"))), "[Square||true] Square")
+    semCheck("members of Square: own, then Circle's, then Shape's, no override twice", semKeys(world.resolver.membersOf(typeFromText("Square"))), "Square.side, Square.perimeter/0, Square.summary/0, Circle.radius, Circle.tags, Circle.counts, Circle.area/0, Circle.describe/0, Circle.clone/0, Circle.rename/1, Shape.label")
+}

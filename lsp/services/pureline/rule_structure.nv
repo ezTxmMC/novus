@@ -1,0 +1,71 @@
+package pureline
+
+import base/model
+import base/platform
+import base/text
+import syntax/outline
+
+// PL-STRUCT-001: a class or enum, and a file, above maxLinesPerFile lines. PL-STRUCT-002: a folder with more production source
+// files than maxFilesPerFolder (the count lives in PurelineFolder). A class whose body is never closed is skipped (V82).
+private final PURELINE_CODE_SIZE = "PL-STRUCT-001"
+private final PURELINE_CODE_FOLDER = "PL-STRUCT-002"
+
+define class PurelineStructureRule based PurelineRule {
+    PurelineSettings settings
+
+    construct(PurelineSettings settings) {
+        this.settings = settings
+    }
+
+    method check(Document document, SourceFile syntax, TextSource files): array<Diagnostic> {
+        var found = []
+        this.checkTypes(document, syntax, found)
+        this.checkFile(document, found)
+        this.checkFolder(document, syntax, files, found)
+        return found
+    }
+
+    method checkTypes(Document document, SourceFile syntax, array<Diagnostic> found) {
+        for (decl in syntax.decls) {
+            if (this.isSizedType(decl) && syntax.isUnterminated(decl) == false) {
+                this.checkType(document, decl, found)
+            }
+        }
+    }
+
+    method isSizedType(Decl decl): bool {
+        return decl.kind == DeclKind.Class || decl.kind == DeclKind.AbstractClass || decl.kind == DeclKind.Enum
+    }
+
+    method checkType(Document document, Decl decl, array<Diagnostic> found) {
+        var lines = purelineLinesOf(document.lines, decl.fullSpan)
+        if (lines > this.settings.maxLinesPerFile) {
+            var message = decl.name + " has " + lines + " lines (more than " + this.settings.maxLinesPerFile + "): it probably does more than one thing."
+            found.append(purelineDiagnostic(decl.nameSpan, Severity.Warning, PURELINE_CODE_SIZE, message))
+        }
+    }
+
+    method checkFile(Document document, array<Diagnostic> found) {
+        var lines = purelineFileLines(document)
+        if (lines > this.settings.maxLinesPerFile) {
+            var message = "The file has " + lines + " lines (more than " + this.settings.maxLinesPerFile + "): split it by responsibility."
+            found.append(purelineDiagnostic(purelineFirstLine(document), Severity.Warning, PURELINE_CODE_SIZE, message))
+        }
+    }
+
+    method checkFolder(Document document, SourceFile syntax, TextSource files, array<Diagnostic> found) {
+        var count = PurelineFolder(this.settings.maxFilesPerFolder).productionFiles(document, files)
+        if (count <= this.settings.maxFilesPerFolder) {
+            return
+        }
+        var message = "The folder holds " + count + " source files (more than " + this.settings.maxFilesPerFolder + "): split it by responsibility."
+        found.append(purelineDiagnostic(this.packageLine(document, syntax), Severity.Warning, PURELINE_CODE_FOLDER, message))
+    }
+
+    method packageLine(Document document, SourceFile syntax): Span {
+        if (syntax.packageSpan.start < 0) {
+            return purelineFirstLine(document)
+        }
+        return syntax.packageSpan
+    }
+}

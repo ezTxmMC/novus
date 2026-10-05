@@ -1,0 +1,66 @@
+package main
+
+import @declcheck
+import @hashcheck
+import @positioncheck
+import @subject
+import "novus/lsp/base/text"
+import "novus/lsp/syntax/lexing"
+
+// One invariant of the syntax layer (DESIGN 9.5-5). A check returns one line per violation and nothing when it holds;
+// the Wave-5 checks (completion, hover, symbols, folding, semantic tokens, format) are further classes in this list.
+define interface FuzzToolCheck {
+    check(FuzzToolSubject subject): array<string>
+}
+
+method fuzzToolChecks(): array<FuzzToolCheck> {
+    return [FuzzToolTokenCheck(), FuzzToolDeclCheck(), FuzzToolIssueCheck(), FuzzToolPositionCheck(), FuzzToolHashCheck()]
+}
+
+method fuzzToolInside(Span span, integer length): bool {
+    return span.start >= 0 && span.start <= span.end && span.end <= length
+}
+
+// Tokens ascend and stay inside the text, and the stream ends with the end-of-file token at the end of the text.
+define class FuzzToolTokenCheck based FuzzToolCheck {
+    construct() {
+    }
+
+    method check(FuzzToolSubject subject): array<string> {
+        var length = subject.source.length()
+        var tokens = subject.lexed.tokens
+        var found = []
+        var previousEnd = 0
+        for (token in tokens) {
+            if (fuzzToolInside(token.span(), length) == false || token.start < previousEnd) {
+                found.append("token " + token.start + ".." + token.end + " is outside the text or before the end " + previousEnd + " of the previous token")
+                return found
+            }
+            previousEnd = token.end
+        }
+        if (tokens.length() == 0 || tokens[tokens.length() - 1].isEnd() == false) {
+            found.append("the token stream does not end with the end-of-file token")
+            return found
+        }
+        if (tokens[tokens.length() - 1].start != length) {
+            found.append("the end-of-file token starts at " + tokens[tokens.length() - 1].start + ", not at the end " + length + " of the text")
+        }
+        return found
+    }
+}
+
+// Every issue span of every file kind lies inside the text.
+define class FuzzToolIssueCheck based FuzzToolCheck {
+    construct() {
+    }
+
+    method check(FuzzToolSubject subject): array<string> {
+        var found = []
+        for (span in subject.issueSpans) {
+            if (fuzzToolInside(span, subject.source.length()) == false) {
+                found.append("issue span " + span.start + ".." + span.end + " is outside the text of " + subject.source.length() + " bytes")
+            }
+        }
+        return found
+    }
+}

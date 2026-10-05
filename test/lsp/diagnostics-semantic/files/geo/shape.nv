@@ -1,0 +1,5 @@
+package geo
+
+method area(): integer {
+    return 1
+}

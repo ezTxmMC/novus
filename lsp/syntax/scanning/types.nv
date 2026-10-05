@@ -1,0 +1,94 @@
+package scanning
+
+import base/text
+import syntax/lexing
+
+// Reads type names: an identifier, optionally followed by generic brackets that are balanced like the compiler does it.
+define class ScanningTypes {
+    ScanningCursor cursor
+    array<ScanningProblem> problems
+    bool fusedAssign
+
+    construct(ScanningCursor cursor, array<ScanningProblem> problems) {
+        this.cursor = cursor
+        this.problems = problems
+        this.fusedAssign = false
+    }
+
+    // Index after the type that starts at `from`; `from` itself when no type starts there.
+    // `fusedAssign` is set when a `>=` closed the generic: the `=` of an initialiser was swallowed by the lexer.
+    method endOf(integer from): integer {
+        this.fusedAssign = false
+        if (this.cursor.isIdent(from) == false) {
+            return from
+        }
+        if (this.cursor.isPunct(from + 1, "<") == false) {
+            return from + 1
+        }
+        return this.genericEnd(from + 1)
+    }
+
+    // The type text of [from, to): a `>=` that closed the generic contributes only its `>`.
+    method textOf(integer from, integer to): string {
+        var text = this.cursor.textBetween(from, to)
+        if (this.fusedAssign && text.endsWith("=")) {
+            return text.substring(0, text.length() - 1)
+        }
+        return text
+    }
+
+    method genericEnd(integer open): integer {
+        var depth = 0
+        var index = open
+        while (this.cursor.has(index)) {
+            if (depth > 0 && this.cannotBelongToType(index)) {
+                this.reportUnbalanced(open)
+                return index
+            }
+            depth = depth + this.depthChange(index)
+            index = index + 1
+            if (depth <= 0) {
+                return index
+            }
+        }
+        return index
+    }
+
+    // `<` opens, `>` closes, `>>` closes two, and `>=` is a `>` that swallowed the `=` of the initialiser.
+    method depthChange(integer index): integer {
+        var token = this.cursor.tokens[index]
+        if (token.isPunct("<")) {
+            return 1
+        }
+        if (token.isPunct(">")) {
+            return -1
+        }
+        if (token.isPunct(">>")) {
+            return -2
+        }
+        if (token.isPunct(">=")) {
+            this.fusedAssign = true
+            this.reportFused(index)
+            return -1
+        }
+        return 0
+    }
+
+    method reportFused(integer index) {
+        var message = "'>=' is lexed as one token: write a space, 'array<integer> = []'"
+        this.problems.append(ScanningProblem(this.cursor.spanAt(index), "generic-shift-token", message, true))
+    }
+
+    method reportUnbalanced(integer open) {
+        this.problems.append(ScanningProblem(this.cursor.spanAt(open), "unterminated-list", "unterminated generic type: the closing '>' is missing", false))
+    }
+
+    // A token that ends an unbalanced generic: a closing bracket, an assignment, a block or a new line.
+    method cannotBelongToType(integer index): bool {
+        var token = this.cursor.tokens[index]
+        if (token.firstOnLine) {
+            return true
+        }
+        return token.isPunct(")") || token.isPunct("=") || token.isPunct("{") || token.isPunct("}") || token.isPunct(";")
+    }
+}

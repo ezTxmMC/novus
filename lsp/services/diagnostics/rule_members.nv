@@ -1,0 +1,188 @@
+package diagnostics
+
+import base/maybe
+import base/model
+import projects/closure
+import projects/workspace
+import semantics/semantic
+import syntax/lexing
+import syntax/outline
+
+private final DIAGNOSTICS_UNKNOWN_MEMBER = "unknown-member"
+private final DIAGNOSTICS_THIS_RECEIVER = "this"
+private final DIAGNOSTICS_MEMBER_OFFSET = 2
+private final DIAGNOSTICS_OPEN_PAREN_OFFSET = 3
+
+// `receiver.member` where the receiver has a declared user type that, with all its bases, has no member of that name and
+// no subtype declares one either (a variable typed with a base class may hold a subtype). Receivers without a declared
+// type, enums, std types and classes with a base outside the program are never judged (5.9, V126).
+define class MemberDiagnosticRule based DiagnosticRule {
+    construct() {
+    }
+
+    method check(FileContext context): array<Diagnostic> {
+        var found = []
+        if (diagnosticsJudgesNames(context) == false) {
+            return found
+        }
+        var scanner = DiagnosticsUseScanner(context.syntax.tokens)
+        var judge = DiagnosticsMemberJudge(context)
+        for (use in scanner.usesOfFile(context.syntax)) {
+            if (use.isQualifier() && use.index + DIAGNOSTICS_MEMBER_OFFSET < scanner.tokens.length()) {
+                this.judgeUse(judge, use, scanner, found)
+            }
+        }
+        return found
+    }
+
+    method judgeUse(DiagnosticsMemberJudge judge, DiagnosticsUse use, DiagnosticsUseScanner scanner, array<Diagnostic> found) {
+        var member = scanner.tokens[use.index + DIAGNOSTICS_MEMBER_OFFSET]
+        if (member.kind != TokenKind.Ident) {
+            return
+        }
+        var arity = DIAGNOSTICS_NO_ARITY
+        var open = use.index + DIAGNOSTICS_OPEN_PAREN_OFFSET
+        if (open < scanner.tokens.length() && scanner.tokens[open].isPunct("(")) {
+            arity = scanner.argumentCount(open)
+        }
+        var finding = judge.judge(use, member, arity)
+        if (isSome(finding)) {
+            found.append(finding)
+        }
+    }
+}
+
+define class DiagnosticsMemberJudge {
+    FileContext context
+    DiagnosticsScopes scopes
+    DiagnosticsLookups lookups
+
+    construct(FileContext context) {
+        this.context = context
+        this.scopes = DiagnosticsScopes(context)
+        this.lookups = DiagnosticsLookups(context)
+    }
+
+    method judge(DiagnosticsUse use, Token member, integer arity): Diagnostic {
+        var receiver = use.token
+        var scope = this.scopes.scopeFor(use)
+        var type = this.receiverType(scope, receiver.text)
+        if (type.known == false || this.isJudgeable(type) == false) {
+            return nothing()
+        }
+        if (this.lookups.member(type, member.text).status != DIAGNOSTICS_STATUS_UNKNOWN) {
+            return nothing()
+        }
+        if (this.isDeclaredBySubtype(type.name, member.text)) {
+            return nothing()
+        }
+        var message = "'" + type.name + "' has no member '" + member.text + "'"
+        var warning = diagnosticsFinding(member.span(), Severity.Warning, DIAGNOSTICS_UNKNOWN_MEMBER, message)
+        warning.data = member.text
+        return warning
+    }
+
+    // `this`, or a local or parameter with a declared type; everything else is untyped for this rule.
+    method receiverType(Scope scope, string name): TypeRef {
+        if (name == DIAGNOSTICS_THIS_RECEIVER) {
+            return this.context.resolver().thisType(scope)
+        }
+        var local = this.context.resolver().localNamed(scope, name)
+        if (isNone(local) || local.typeText == "") {
+            return unknownType()
+        }
+        return typeFromText(local.typeText)
+    }
+
+    method isJudgeable(TypeRef type): bool {
+        var symbol = this.context.index().typeNamed(type.name)
+        if (isNone(symbol) || symbol.origin() == FileOrigin.Standard) {
+            return false
+        }
+        var kind = symbol.decl.kind
+        if (kind != DeclKind.Class && kind != DeclKind.AbstractClass && kind != DeclKind.Interface) {
+            return false
+        }
+        return this.staysInProgram(symbol.decl)
+    }
+
+    method staysInProgram(Decl owner): bool {
+        var current = owner
+        var steps = 0
+        while (current.baseName != "" && steps < DIAGNOSTICS_CHAIN_LIMIT) {
+            var base = this.context.index().typeNamed(current.baseName)
+            if (isNone(base)) {
+                return false
+            }
+            current = base.decl
+            steps = steps + 1
+        }
+        return true
+    }
+
+    method isDeclaredBySubtype(string typeName, string memberName): bool {
+        for (declarer in this.context.index().declarersOfMember(memberName)) {
+            if (this.descendsFrom(declarer.container, typeName)) {
+                return true
+            }
+        }
+        return false
+    }
+
+    method descendsFrom(string ownerName, string ancestor): bool {
+        var current = this.context.index().typeNamed(ownerName)
+        var steps = 0
+        while (isSome(current) && steps < DIAGNOSTICS_CHAIN_LIMIT) {
+            if (current.decl.baseName == ancestor) {
+                return true
+            }
+            current = this.context.index().typeNamed(current.decl.baseName)
+            steps = steps + 1
+        }
+        return false
+    }
+}
+
+// `module.name` where `module` is a std module that no loaded file imports and nothing else is called that.
+define class DiagnosticsModuleUses {
+    FileContext context
+    DiagnosticsScopes scopes
+
+    construct(FileContext context) {
+        this.context = context
+        this.scopes = DiagnosticsScopes(context)
+    }
+
+    method missingImports(): array<Diagnostic> {
+        var found = []
+        var reported = {}
+        var scanner = DiagnosticsUseScanner(this.context.syntax.tokens)
+        for (use in scanner.usesOfFile(this.context.syntax)) {
+            if (use.isQualifier() && reported.has(use.token.text) == false && this.isMissingModule(use)) {
+                reported[use.token.text] = true
+                found.append(this.finding(use.token))
+            }
+        }
+        return found
+    }
+
+    method isMissingModule(DiagnosticsUse use): bool {
+        var name = use.token.text
+        var index = this.context.index()
+        if (index.isStandardQualifier(name) == false || this.context.project.closure.loadedStdModules.contains(name)) {
+            return false
+        }
+        if (isSome(index.typeNamed(name))) {
+            return false
+        }
+        var scope = this.scopes.scopeFor(use)
+        return this.context.resolver().lookupName(scope, name).status == "unknown"
+    }
+
+    method finding(Token token): Diagnostic {
+        var message = "module '" + token.text + "' is not imported - add 'import " + token.text + "'"
+        var error = diagnosticsFinding(token.span(), Severity.Error, DIAGNOSTICS_MODULE_NOT_IMPORTED, message)
+        error.data = token.text
+        return error
+    }
+}

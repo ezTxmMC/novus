@@ -1,0 +1,15 @@
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"rootUri":"@ROOTURI@","capabilities":{"workspace":{"configuration":true,"didChangeWatchedFiles":{"dynamicRegistration":true}}},"initializationOptions":{"novus":{"pureline":{"enabled":true},"check":{"mode":"off"}}}}}
+{"jsonrpc":"2.0","method":"initialized","params":{}}
+{"jsonrpc":"2.0","id":"novus-1","result":[{"pureline":{"flagPlainElse":true},"completion":{"maxItems":50}}]}
+{"jsonrpc":"2.0","id":"novus-2","result":null}
+{"jsonrpc":"2.0","id":"novus-unknown","result":null}
+{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"@ROOTURI@/main.nv","languageId":"novus","version":1,"text":"package main\n\nmethod main() {\n    var n = 1#\n    println(n)\n}\n"}}}
+{"jsonrpc":"2.0","method":"workspace/didChangeConfiguration","params":{"settings":{"novus":{"pureline":{"enabled":false}}}}}
+{"jsonrpc":"2.0","method":"workspace/didChangeConfiguration","params":{"settings":{"novus":{"pureline":{"enabled":true,"allowedShortNames":["i","j","k","n"]}}}}}
+{"jsonrpc":"2.0","method":"workspace/didChangeConfiguration","params":{"settings":{}}}
+{"jsonrpc":"2.0","id":"novus-3","result":[{"diagnostics":{"own":false}}]}
+{"jsonrpc":"2.0","method":"workspace/didChangeConfiguration","params":{"settings":{"novus":{"diagnostics.own":true,"pureline.allowedShortNames":["i"]}}}}
+{"jsonrpc":"2.0","method":"workspace/didChangeConfiguration","params":{"settings":{"novus":{"pureline":{"enabled":"yes"},"check":{"mode":"never"}}}}}
+{"jsonrpc":"2.0","method":"textDocument/didClose","params":{"textDocument":{"uri":"@ROOTURI@/main.nv"}}}
+{"jsonrpc":"2.0","id":99,"method":"shutdown"}
+{"jsonrpc":"2.0","method":"exit"}

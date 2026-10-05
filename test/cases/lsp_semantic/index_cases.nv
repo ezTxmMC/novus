@@ -1,0 +1,96 @@
+package main
+
+import "novus/lsp/base/maybe"
+import "novus/lsp/projects/closure"
+import "novus/lsp/semantics/semantic"
+import "novus/lsp/syntax/outline"
+import "novus/lsp/syntax/parsing"
+import @support
+import @typing_world
+
+method userSymbols(array<Symbol> symbols): array<Symbol> {
+    var found = []
+    for (symbol in symbols) {
+        if (symbol.origin() == FileOrigin.Project) {
+            found.append(symbol)
+        }
+    }
+    return found
+}
+
+method runIndexTables() {
+    println("== ProgramIndex tables")
+    var world = typingWorld()
+    var index = world.index
+    semCheck("types", semKeys(index.allTypes()), "Shape, Circle, Square, Color")
+    semCheck("typeNamed", index.typeNamed("Circle").describe() + " / " + index.typeNamed("Nope"), "Circle / ")
+    semCheck("functions of the root", semKeys(index.functionsNamed("make")) + " | " + semKeys(index.functionsNamed("main")), "make/1 | main/0")
+    semCheck("globals", semKeys(index.globalsNamed("LIMIT")) + " | " + index.globalsNamed("Nope").length(), "LIMIT | 0")
+    semCheck("members of a type keep source order, constructor included", semKeys(index.membersOfType("Circle")), "Circle.radius, Circle.tags, Circle.counts, Circle.construct/1, Circle.area/0, Circle.describe/0, Circle.clone/0, Circle.rename/1")
+    semCheck("enum members", semKeys(index.membersOfType("Color")), "Color.Red, Color.Green, Color.shade/0")
+    semCheck("declarers of a member name", semKeys(index.declarersOfMember("describe")) + " | " + semKeys(index.declarersOfMember("label")) + " | " + index.declarersOfMember("construct").length() + index.declarersOfMember("Red").length(), "Shape.describe/0, Circle.describe/0 | Shape.label | 00")
+    semCheck("all functions (the loaded std module included, sorted by name) and globals", semKeys(userSymbols(index.allFunctions())) + " | " + semKeys(index.allGlobals()) + " | " + (index.allFunctions().length() > 10), "main/0, make/1 | LIMIT | true")
+    semCheck("root level members of the qualifier, in source order", semKeys(index.membersOfQualifier("")), "LIMIT, make/1, main/0")
+    semCheck("unknown qualifier and reserved keys", index.membersOfQualifier("nope").length() + index.membersOfQualifier("@types").length() + index.declarersOfMember("@types").length(), "0")
+}
+
+method runIndexStandard() {
+    println("== ProgramIndex and the std library")
+    var world = typingWorld()
+    var index = world.index
+    var names = index.stdModuleNames()
+    var moduleNames = standardLibrary().moduleNames()
+    semCheck("every std module is a qualifier, nothing else is", (names.join(",") == moduleNames.join(",")) + " " + (index.qualifiers().join(",") == moduleNames.join(",")), "true true")
+    semCheck("qualifiers are sorted and without the root", (index.qualifiers()[0] == moduleNames[0]) + " " + index.hasQualifier("") + " " + index.hasQualifier(moduleNames[0]) + " " + index.hasQualifier("@types"), "true false true false")
+    semCheck("the loaded module has its file", index.symbolsInFile("std:strings").length() > 0, "true")
+    semCheck("an unloaded module has members too", semKeys(index.membersOfQualifier("math")).startsWith("math.") + " " + (index.symbolsInFile("std:math").length() > 0), "true true")
+    semCheck("origin of std symbols", index.membersOfQualifier("math")[0].origin() + " " + index.membersOfQualifier("math")[0].file.moduleName, "Standard math")
+    semCheck("functions of loaded std modules are in the function table", semKeys(index.functionsNamed("repeat")), "strings.repeat/2")
+    semCheck("the functions of an unloaded module are not", index.functionsNamed("sqrt").length(), "0")
+}
+
+method stdTypesFiles(string importLine): map<string, string> {
+    return {"/proj/project.nv": semManifest(), "/proj/main.nv": importLine + "\nmethod main() {\n}\n"}
+}
+
+method runStdTypes() {
+    println("== std classes are types only when a file imports their module")
+    var without = SemWorld(stdTypesFiles(""), "/proj/main.nv")
+    var with = SemWorld(stdTypesFiles("import toml"), "/proj/main.nv")
+    semCheck("not imported", semKeys(without.index.allTypes()) + "|" + without.resolver.lookupType("TomlParser"), "|")
+    semCheck("imported", with.resolver.lookupType("TomlParser").file.moduleName + " " + with.resolver.lookupType("TomlParser").origin(), "toml Standard")
+}
+
+method runSymbolDescriptions() {
+    println("== Symbol keys and descriptions")
+    var world = typingWorld()
+    var lines = []
+    for (symbol in world.index.symbolsInFile("/proj/main.nv")) {
+        lines.append(symbol.key + " | " + symbol.describe() + " | member=" + symbol.isMember() + " local=" + symbol.isLocal())
+    }
+    for (line in lines) {
+        println("  " + line)
+    }
+    var scope = world.scopeAt("/proj/main.nv", "println(t)")
+    var local = world.resolver.lookupName(scope, "c").candidates[0]
+    semCheck("a local symbol", local.key.startsWith("local:c@") + " " + local.describe() + " " + local.isLocal() + " " + local.isMember(), "true c true false")
+    semCheck("a symbol without a file", Symbol(world.index.typeNamed("Shape").decl, nothing(), "", "").origin() + "|", "|")
+}
+
+// The decl objects a new parse produces replace the old ones inside the symbols; the shape decides.
+method runRefreshCases() {
+    println("== ProgramIndex.refreshFile")
+    var world = typingWorld()
+    var file = world.closure.fileAt("/proj/main.nv")
+    var area = world.index.membersOfType("Circle")[4]
+    var before = area.decl.nameSpan.start
+    var shifted = "// a new first line\n" + typingSource()
+    var syntax = parseSourceText("/proj/main.nv", shifted, editorParseOptions())
+    var refreshed = world.index.refreshFile(file, syntax)
+    semCheck("same shape: refreshed", refreshed + " moved=" + (area.decl.nameSpan.start - before) + " same file object " + (file.syntax == syntax), "true moved=20 same file object true")
+    var renamed = parseSourceText("/proj/main.nv", typingSource().replace("method make(", "method build("), editorParseOptions())
+    var refusedName = world.index.refreshFile(file, renamed)
+    semCheck("another name: refused, nothing changed", refusedName + " " + (file.syntax == syntax), "false true")
+    var shorter = parseSourceText("/proj/main.nv", "method main() {\n}\n", editorParseOptions())
+    semCheck("another count: refused", world.index.refreshFile(file, shorter), "false")
+}

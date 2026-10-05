@@ -1,0 +1,159 @@
+package main
+
+method runOperatorCases() {
+    expectLine("assignment", "x=1", "x = 1")
+    expectLine("arithmetic", "x=a+b*c-d/e%f", "x = a + b * c - d / e % f")
+    expectLine("comparison", "x=a<b", "x = a < b")
+    expectLine("comparison or equal", "if(a<=b&&c>=d){", "if (a <= b && c >= d) {")
+    expectLine("equality", "x=a==b||c!=d", "x = a == b || c != d")
+    expectLine("bitwise operators are kept", "x=a&b|c^d", "x = a & b | c ^ d")
+    expectLine("shift operators are kept", "x=a<<2>>1", "x = a << 2 >> 1")
+    expectLine("bitwise with parentheses", "x=(a&0xFF)|(b<<8)", "x = (a & 0xFF) | (b << 8)")
+    expectLine("old comparison spellings", "x=a=>b", "x = a => b")
+    expectLine("many spaces collapse", "x   =    a  +   b", "x = a + b")
+    expectLine("tabs between tokens", "x\t=\ta\t+\tb", "x = a + b")
+}
+
+method runUnaryCases() {
+    expectLine("negative literal", "x=-1", "x = -1")
+    expectLine("minus after minus", "x=a- -b", "x = a - -b")
+    expectLine("binary minus without spaces", "x=a-1", "x = a - 1")
+    expectLine("minus after a call", "x=f(a)-1", "x = f(a) - 1")
+    expectLine("minus after an index", "x=a[0]-1", "x = a[0] - 1")
+    expectLine("signs in an argument list", "foo(-1,+2)", "foo(-1, +2)")
+    expectLine("signs in an array", "x=[-1,-2]", "x = [-1, -2]")
+    expectLine("negative index", "x=a[-1]", "x = a[-1]")
+    expectLine("not", "x=!y", "x = !y")
+    expectLine("not in conditions", "if(!a&&!b){", "if (!a && !b) {")
+    expectLine("not equal is no not", "x=a!=b", "x = a != b")
+    expectLine("return a negative value", "return -x", "return -x")
+    expectLine("await a negative value", "x=await -1", "x = await -1")
+    expectLine("double negation", "x=!!y", "x = !!y")
+    expectLine("unary after an operator", "x=a*-b", "x = a * -b")
+}
+
+method runBracketCases() {
+    expectLine("call", "foo (x)", "foo(x)")
+    expectLine("call with spaces inside", "foo( a , b )", "foo(a, b)")
+    expectLine("if", "if(x){", "if (x) {")
+    expectLine("while", "while(a){", "while (a) {")
+    expectLine("for", "for(i in xs){", "for (i in xs) {")
+    expectLine("sync", "sync(lock){", "sync (lock) {")
+    expectLine("return with parentheses", "return(x)", "return (x)")
+    expectLine("index", "x=a [0]", "x = a[0]")
+    expectLine("index after a call", "x=f(a)[0]", "x = f(a)[0]")
+    expectLine("index after a string", "x=\"abc\"[0]", "x = \"abc\"[0]")
+    expectLine("return an array", "return[1,2]", "return [1, 2]")
+    expectLine("empty brackets", "x=[ ]", "x = []")
+    expectLine("empty parentheses", "foo( )", "foo()")
+    expectLine("nested calls", "foo(bar(baz( 1 )),2)", "foo(bar(baz(1)), 2)")
+    expectLine("println without a gap is kept", "println(x)", "println(x)")
+    expectLine("println with a gap is kept", "println (x)", "println (x)")
+    expectLine("println with a gap and an operator", "println (2+3)*4", "println (2 + 3) * 4")
+    expectLine("println spaces inside", "println( x )", "println(x)")
+    expectLine("a call after a bracket", "x=a[0](1)", "x = a[0](1)")
+}
+
+method runPunctuationCases() {
+    expectLine("comma", "foo(a ,b,c)", "foo(a, b, c)")
+    expectLine("trailing comma", "x=[1,2 , ]", "x = [1, 2,]")
+    expectLine("colon in a declaration", "var x:integer=3", "var x: integer = 3")
+    expectLine("colon of a return type", "method f():integer{", "method f(): integer {")
+    expectLine("member access", "x=a . b . c", "x = a.b.c")
+    expectLine("call chain", "x=a.b( c ).d", "x = a.b(c).d")
+    expectLine("semicolons", "a=1;b=2", "a = 1; b = 2")
+    expectLine("empty statement", "a=1 ;", "a = 1;")
+    expectLine("string concatenation", "x=\"a\"+\"b\"", "x = \"a\" + \"b\"")
+    expectLine("float literal", "x=1.5*2", "x = 1.5 * 2")
+    expectLine("integer then member access", "x=1 .foo", "x = 1 .foo")
+}
+
+method runGenericCases() {
+    expectLine("array type", "array<string>args", "array<string> args")
+    expectLine("map type", "map<string,integer>m", "map<string, integer> m")
+    expectLine("nested generics", "map<string,array<integer>>m", "map<string, array<integer>> m")
+    expectLine("generics with spaces", "array < string > items", "array<string> items")
+    expectLine("generic parameter and return type", "method f(array<string> a):map<string,bool>{", "method f(array<string> a): map<string, bool> {")
+    expectLine("generic typed declaration", "array<integer> xs=[1]", "array<integer> xs = [1]")
+    expectLine("a comparison with a variable named array", "if(array<3){", "if (array < 3) {")
+    expectLine("less than is a comparison", "x=a<b", "x = a < b")
+    expectLine("a type that never closes is a comparison", "x=map<y&&z", "x = map < y && z")
+}
+
+method runDeepGenericCases() {
+    expectLine("three nested generics stay together", "var m: map<string, array<array<integer>>> = {}", "var m: map<string, array<array<integer>>> = {}")
+    expectLine("three nested generics without spaces", "array<array<array<string>>>x", "array<array<array<string>>> x")
+    expectLine("four nested generics", "array<array<array<array<string>>>>x", "array<array<array<array<string>>>> x")
+    expectLine("closers written apart stay apart, joining them would change the tokens", "array<array<array<string> > >x", "array<array<array<string> > > x")
+    expectStable("three nested generics", "var m: map<string, array<array<integer>>> = {}\n")
+    expectStable("four nested generics", "array<array<array<array<string>>>>x\n")
+    expectLine("a block after a generic return type is padded", "method f(): array<string> {return []}", "method f(): array<string> { return [] }")
+    expectLine("a block after a nested generic return type", "method f(): map<string,array<integer>> {return {}}", "method f(): map<string, array<integer>> { return {} }")
+    expectLine("a block after a plain return type", "method f(): integer {return 1}", "method f(): integer { return 1 }")
+}
+
+method runImportBraceCases() {
+    expectStable("a brace on an import line that closes later", "import << { ]map\nif }\n")
+    expectStable("a brace on an import line, tab variant", "import<=\t{\t||\n\n\n\nelse>= (}\n")
+    expectStable("a tight brace on an import line", "import {a\nb}\n")
+}
+
+method runImportCases() {
+    expectLine("import package", "import   geo/shapes", "import geo/shapes")
+    expectLine("import with spaces around the slash", "import geo / shapes", "import geo/shapes")
+    expectLine("import file", "import @ helper", "import @helper")
+    expectLine("import file in a folder", "import @geo / circle", "import @geo/circle")
+    expectLine("import dependency", "import   \"github.com/x/y\"", "import \"github.com/x/y\"")
+    expectLine("package", "package   main", "package main")
+    expectLine("a division after import is no path", "import json\nx=a/b", "import json\nx = a / b")
+}
+
+method runBraceCases() {
+    expectLine("block header", "method main(){", "method main() {")
+    expectLine("block without a name", "method main{", "method main {")
+    expectLine("class header", "define class Foo based Bar{", "define class Foo based Bar {")
+    expectLine("block on one line", "method f(){return 1}", "method f() { return 1 }")
+    expectLine("else", "}else{", "} else {")
+    expectLine("else if", "}else if(x){", "} else if (x) {")
+    expectLine("empty block", "method f() { }", "method f() {}")
+    expectLine("empty map", "x={ }", "x = {}")
+    expectLine("map without padding stays tight", "x={\"a\":1,\"b\":2}", "x = {\"a\": 1, \"b\": 2}")
+    expectLine("map with padding stays padded", "x={ \"a\":1, \"b\":2 }", "x = { \"a\": 1, \"b\": 2 }")
+    expectLine("map padded on the left only is padded", "x={ \"a\":1}", "x = { \"a\": 1 }")
+    expectLine("map padded on the right only is tight", "x={\"a\":1 }", "x = {\"a\": 1}")
+    expectLine("map in a call", "foo({\"a\":1},[1,2])", "foo({\"a\": 1}, [1, 2])")
+    expectLine("object literal", "p=Point{x=0,y=0}", "p = Point{x=0, y=0}")
+    expectLine("object literal with spaces", "p=Point { x = 0, y = 0 }", "p = Point{x=0, y=0}")
+    expectLine("object literal in an array", "xs=[A{n=1},B{n=2}]", "xs = [A{n=1}, B{n=2}]")
+    expectLine("object literal after return", "return P{a=1}", "return P{a=1}")
+    expectLine("annotation", "@Deprecated{text=\"old\",since=\"1\"}", "@Deprecated{text=\"old\", since=\"1\"}")
+    expectLine("annotation with spaces", "@Deprecated { text = \"old\" }", "@Deprecated{text=\"old\"}")
+    expectLine("annotation without arguments", "@Interface", "@Interface")
+    expectLine("return type before the body", "method area(float r):float{", "method area(float r): float {")
+    expectLine("return type without parameters", "method main:integer{", "method main: integer {")
+    expectLine("construct", "construct(x){this.x=x}", "construct(x) { this.x = x }")
+    expectLine("nested braces", "if(a){if(b){x=1}}", "if (a) { if (b) { x = 1 } }")
+    expectLine("equal sign outside of an object literal", "x={\"k\":a=1}", "x = {\"k\": a = 1}")
+}
+
+method runUnknownCases() {
+    expectLine("unknown character with spaces", "a $ b", "a $ b")
+    expectLine("unknown character without spaces stays joined", "a$b", "a$b")
+    expectLine("unknown character on one side", "a $b", "a $b")
+    expectLine("several unknown characters", "x=a # b ? c", "x = a # b ? c")
+    expectLine("non-ascii text outside a string", "x=a é b", "x = a é b")
+}
+
+method runSpacingCases() {
+    println("--- spacing")
+    runOperatorCases()
+    runUnaryCases()
+    runBracketCases()
+    runPunctuationCases()
+    runGenericCases()
+    runDeepGenericCases()
+    runImportCases()
+    runImportBraceCases()
+    runBraceCases()
+    runUnknownCases()
+}

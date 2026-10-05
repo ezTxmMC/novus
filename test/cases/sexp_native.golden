@@ -1,0 +1,26 @@
+samples: 26 nodes
+generated: 1500 nodes
+atomEnd: checked
+wide block: 3000 statements
+collections: 40 rounds
+eviction: 5000 nodes
+collections between nodes: 300 nodes
+(a (b c) d)
+(b c)
+3
+bc
+f
+"it's \"quoted\"\n"
+round	trip
+IDENT
+main.nv:12
+some value with spaces
++
+
+A
+b
+c
+true
+charAt index 7 out of bounds (length 7)
+checks: 69956
+mismatches: 0

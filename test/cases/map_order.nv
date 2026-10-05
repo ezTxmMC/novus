@@ -1,0 +1,211 @@
+package main
+
+import arrays
+import json
+
+// A map shows its entries in key order however they were put in and taken
+// out. The map keeps a list of positions in key order for the entries added
+// after it was last sorted, so this mixes the things that list has to survive
+// - inserts that arrive out of order, more of them at once than it places one
+// by one, removals of placed and of pending entries, overwrites - and after
+// every step compares keys(), values(), a for loop, display and json with a
+// plain model (a parallel pair of arrays sorted with arrays.sort).
+
+final KEY_SPACE = 600
+final STEPS = 3000
+final BIG_BATCH = 50
+final REPORT_EVERY = 500
+final LCG_MULTIPLIER = 1103515245
+final LCG_INCREMENT = 12345
+final LCG_MODULUS = 2147483648
+final LARGE_MAP = 200
+
+method nextRandom(integer state): integer {
+    return (state * LCG_MULTIPLIER + LCG_INCREMENT) % LCG_MODULUS
+}
+
+method indexOfKey(array keys, string key): integer {
+    var i = 0
+    while (i < keys.length()) {
+        if (keys[i] == key) {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+method putInModel(array keys, array values, string key, integer value) {
+    var at = indexOfKey(keys, key)
+    if (at >= 0) {
+        values[at] = value
+        return
+    }
+    keys.append(key)
+    values.append(value)
+}
+
+method removeFromModel(array keys, array values, string key) {
+    var at = indexOfKey(keys, key)
+    if (at < 0) {
+        return
+    }
+    keys.remove(at)
+    values.remove(at)
+}
+
+method sortedModel(array keys, array values): map {
+    var sortedKeys = arrays.sort(keys)
+    var sortedValues = []
+    for (key in sortedKeys) {
+        sortedValues.append(values[indexOfKey(keys, key)])
+    }
+    return {"keys": sortedKeys, "values": sortedValues}
+}
+
+method sameArray(array actual, array expected): bool {
+    if (actual.length() != expected.length()) {
+        return false
+    }
+    var i = 0
+    while (i < actual.length()) {
+        if (actual[i] != expected[i]) {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+method loopKeys(map m): array {
+    var seen = []
+    for (key in m) {
+        seen.append(key)
+    }
+    return seen
+}
+
+method rendered(array keys, array values): string {
+    var text = "{"
+    var i = 0
+    while (i < keys.length()) {
+        if (i > 0) {
+            text = text + ", "
+        }
+        text = text + keys[i] + ": " + values[i]
+        i = i + 1
+    }
+    return text + "}"
+}
+
+method jsonOf(array keys, array values): string {
+    var text = "{"
+    var i = 0
+    while (i < keys.length()) {
+        if (i > 0) {
+            text = text + ","
+        }
+        text = text + "\"" + keys[i] + "\":" + values[i]
+        i = i + 1
+    }
+    return text + "}"
+}
+
+// How many of keys(), values(), for, display and json disagree with the model.
+method disagreements(map actual, array modelKeys, array modelValues): integer {
+    var model = sortedModel(modelKeys, modelValues)
+    var wrong = 0
+    if (sameArray(actual.keys(), model["keys"]) == false) {
+        wrong = wrong + 1
+    }
+    if (sameArray(actual.values(), model["values"]) == false) {
+        wrong = wrong + 1
+    }
+    if (sameArray(loopKeys(actual), model["keys"]) == false) {
+        wrong = wrong + 1
+    }
+    if ("${actual}" != rendered(model["keys"], model["values"])) {
+        wrong = wrong + 1
+    }
+    if (json.stringify(actual) != jsonOf(model["keys"], model["values"])) {
+        wrong = wrong + 1
+    }
+    if (actual.length() != modelKeys.length()) {
+        wrong = wrong + 1
+    }
+    return wrong
+}
+
+method randomKey(integer state): string {
+    return "key" + (state / 7) % KEY_SPACE
+}
+
+method main {
+    var actual = {}
+    var modelKeys = []
+    var modelValues = []
+    var state = 7
+    var wrong = 0
+    var step = 0
+    // a first batch makes the map big enough for the position list
+    while (step < LARGE_MAP) {
+        state = nextRandom(state)
+        var key = randomKey(state)
+        actual[key] = step
+        putInModel(modelKeys, modelValues, key, step)
+        step = step + 1
+    }
+    wrong = wrong + disagreements(actual, modelKeys, modelValues)
+    while (step < STEPS) {
+        state = nextRandom(state)
+        var key = randomKey(state)
+        state = nextRandom(state)
+        var action = state / 13 % 10
+        if (action < 5) {
+            actual[key] = step
+            putInModel(modelKeys, modelValues, key, step)
+        }
+        if (action >= 5 && action < 8) {
+            actual.remove(key)
+            removeFromModel(modelKeys, modelValues, key)
+        }
+        if (action == 8) {
+            var burst = 0
+            while (burst < BIG_BATCH) {
+                state = nextRandom(state)
+                var batchKey = randomKey(state)
+                actual[batchKey] = step + burst
+                putInModel(modelKeys, modelValues, batchKey, step + burst)
+                burst = burst + 1
+            }
+        }
+        if (action == 9 || step % 3 == 0) {
+            wrong = wrong + disagreements(actual, modelKeys, modelValues)
+        }
+        step = step + 1
+        if (step % REPORT_EVERY == 0) {
+            println "step ${step}: ${actual.length()} entries, disagreements so far: ${wrong}"
+        }
+    }
+    println "final: ${disagreements(actual, modelKeys, modelValues)} disagreements"
+
+    // removing the entry that was added last, before and after looking at the order
+    var small = {}
+    var i = 0
+    while (i < LARGE_MAP) {
+        small["n" + (i * 37) % LARGE_MAP] = i
+        i = i + 1
+    }
+    println small.keys().length()
+    small["a-late"] = 1
+    small["z-late"] = 2
+    small.remove("z-late")
+    var smallKeys = small.keys()
+    println "${smallKeys[0]} ${smallKeys[small.length() - 1]}"
+    small["b-late"] = 3
+    small.remove("a-late")
+    smallKeys = small.keys()
+    var hasA = small.has("a-late")
+    var hasB = small.has("b-late")
+    println "${smallKeys[0]} ${hasA} ${hasB}"
+}

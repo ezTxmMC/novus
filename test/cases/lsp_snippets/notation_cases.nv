@@ -1,0 +1,74 @@
+package main
+
+import json
+import "novus/lsp/services/snippets"
+
+// Novus Snippet Notation: the validator, the LSP writer and the plain writer (DESIGN 7.2).
+// The notations are Novus string literals, so the NSN choice comma `\,` is written `\\,` here
+// and the indentation marker is a real TAB written `\t`.
+
+method showLsp(string label, string notation, string indentUnit) {
+    println "lsp   " + label + ": " + json.stringify(renderLspSnippet(notation, indentUnit))
+}
+
+method showPlain(string label, string notation, map<integer, string> overrides) {
+    println "plain " + label + ": " + json.stringify(renderPlainSnippet(notation, overrides, "    "))
+}
+
+method showValidation(string notation) {
+    var message = validateNotation(notation)
+    if (message == "") {
+        message = "valid"
+    }
+    println "validate " + json.stringify(notation) + ": " + message
+}
+
+method lspCases() {
+    var indent = "    "
+    showLsp("text", "hello", indent)
+    showLsp("final stop", "a#0b", indent)
+    showLsp("tabstops", "#1 #{2}", indent)
+    showLsp("placeholder", "#{1:name}", indent)
+    showLsp("nested", "method #{1:f}(#{2:integer value})#{3:: #{4:integer}} {", indent)
+    showLsp("choice comma", "#{1|a\\,b,c|}", indent)
+    showLsp("source literal", "#{3|get,get\\, set,set|}", indent)
+    showLsp("hash and dollar", "## #d{#1}", indent)
+    showLsp("mirror", "#{1:x} = #1", indent)
+    showLsp("braces in default", "#{3:{\"key\": \"value\"}}", indent)
+    showLsp("backslash", "a\\b", indent)
+    showLsp("indent 4", "if (x) {\n\t#0\n}", indent)
+    showLsp("indent tab", "if (x) {\n\t#0\n}", "\t")
+    showLsp("invalid is literal", "#x $1", indent)
+}
+
+method plainCases() {
+    showPlain("defaults", "#{1:a}#{2:b}#1#2", {})
+    showPlain("override", "#{1:a}#{2:b}#1#2", {2: "X"})
+    showPlain("choice", "#{1|get,get\\, set,set|}", {})
+    showPlain("choice first comma", "#{1|a\\,b,c|}", {})
+    showPlain("choice override", "#{1|get,get\\, set,set|}", {1: "set"})
+    showPlain("nested", "m#{3:: #{4:integer}}", {})
+    showPlain("nested override", "m#{3:: #{4:integer}}", {4: "long"})
+    showPlain("plain stop override", "#{1:Point}(#{2})", {2: "1"})
+    showPlain("mirror before definition", "#1|#{1:late}", {})
+    showPlain("end and escapes", "a#0## #d{#1}", {})
+    showPlain("indent", "{\n\t#0\n}", {})
+    showPlain("invalid is literal", "#{1:oops", {})
+}
+
+method validationCases() {
+    var notations = ["", "#{1:a} #{2|x,y|} #3 #0 ## #d", "{ } plain braces", "#", "#x", "#{", "#{1", "#{x}", "#{1:abc"]
+    for (notation in notations) {
+        showValidation(notation)
+    }
+    var more = ["#{1|a|}", "#{1|a\\x,b|}", "#{1|a,b", "#{1:#{2:#{3:#{4:x}}}}", "#{1:#{2:#{3:x}}}", "$1", "#{0:x}", "#12345"]
+    for (notation in more) {
+        showValidation(notation)
+    }
+}
+
+method runNotationCases() {
+    lspCases()
+    plainCases()
+    validationCases()
+}

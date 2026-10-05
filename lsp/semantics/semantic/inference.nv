@@ -1,0 +1,184 @@
+package semantic
+
+import base/maybe
+import syntax/lexing
+import syntax/outline
+import syntax/scanning
+
+private final SEMANTIC_INFERENCE_DEPTH = 64
+private final SEMANTIC_LOOP_ORIGIN = "loop"
+private final SEMANTIC_COMPARISON_OPERATORS = ["==", "!=", "<", ">", "<=", ">=", "&&", "||"]
+private final SEMANTIC_ASYNC_WORDS = ["await", "thread", "virtual", "async"]
+
+// Light type inference for receiver chains and locals; Resolver delegates here. Nothing here can fail: whatever it
+// cannot type is `unknownType()`. The work is done by one object per query, which carries the recursion depth
+// (a local can be typed from another local, so the depth is capped, LSP-R12).
+define class TypeInference {
+    Resolver resolver
+
+    construct(Resolver resolver) {
+        this.resolver = resolver
+    }
+
+    method typeOfChain(Scope scope, array<ChainStep> chain): TypeRef {
+        return SemanticChainTyper(this.resolver, scope, 0).typeOf(chain)
+    }
+
+    method typeOfLocal(Scope scope, Local local): TypeRef {
+        return SemanticLocalTyper(this.resolver, 0).typeOf(scope, local)
+    }
+}
+
+// Index of the first token that starts at or after the offset (tokens are ascending).
+method semanticFirstTokenAtOrAfter(array<Token> tokens, integer offset): integer {
+    var low = 0
+    var high = tokens.length()
+    while (low < high) {
+        var middle = (low + high) / 2
+        if (tokens[middle].start >= offset) {
+            high = middle
+            continue
+        }
+        low = middle + 1
+    }
+    return low
+}
+
+// The type of a local: the declared type, else the element of the iterated expression for a loop variable, else the
+// type of the initializer expression read from the tokens of the file (so a file without tokens only has declared types).
+define class SemanticLocalTyper {
+    Resolver resolver
+    integer depth
+
+    construct(Resolver resolver, integer depth) {
+        this.resolver = resolver
+        this.depth = depth
+    }
+
+    method typeOf(Scope scope, Local local): TypeRef {
+        if (this.depth > SEMANTIC_INFERENCE_DEPTH) {
+            return unknownType()
+        }
+        if (local.typeText != "") {
+            return typeFromText(local.typeText)
+        }
+        if (this.hasTokens(scope) == false) {
+            return unknownType()
+        }
+        if (local.origin == SEMANTIC_LOOP_ORIGIN) {
+            return this.loopVariableType(scope, local)
+        }
+        if (local.initializer.start < 0) {
+            return unknownType()
+        }
+        var tokens = scope.file.syntax.tokens
+        var first = semanticFirstTokenAtOrAfter(tokens, local.initializer.start)
+        var last = semanticFirstTokenAtOrAfter(tokens, local.initializer.end) - 1
+        return this.expressionType(scope, local.initializer.start, first, last)
+    }
+
+    method hasTokens(Scope scope): bool {
+        return isSome(scope.file) && isSome(scope.file.syntax) && scope.file.syntax.tokens.length() > 0
+    }
+
+    // `for (x in expression)`: the element of an array, a map's key (a string) or a string's byte.
+    method loopVariableType(Scope scope, Local local): TypeRef {
+        var tokens = scope.file.syntax.tokens
+        var nameIndex = semanticFirstTokenAtOrAfter(tokens, local.nameSpan.start)
+        var inIndex = nameIndex + 1
+        var first = inIndex + 1
+        if (first >= tokens.length() || tokens[inIndex].isWord("in") == false) {
+            return unknownType()
+        }
+        var close = this.closingParenthesis(tokens, first)
+        var iterated = this.expressionType(scope, tokens[first].start, first, close - 1)
+        if (iterated.isArray()) {
+            return typeFromText(iterated.element)
+        }
+        if (iterated.isMap() || iterated.isString()) {
+            return TypeRef(SEMANTIC_TYPE_STRING, "", true)
+        }
+        return unknownType()
+    }
+
+    // The `)` that closes the `for (` whose header begins before `first`; the token count when it is missing.
+    method closingParenthesis(array<Token> tokens, integer first): integer {
+        var depth = 1
+        var i = first
+        while (i < tokens.length()) {
+            depth = depth + this.depthChange(tokens[i])
+            if (depth == 0) {
+                return i
+            }
+            i = i + 1
+        }
+        return tokens.length()
+    }
+
+    method depthChange(Token token): integer {
+        if (token.isPunct("(") || token.isPunct("[") || token.isPunct("{")) {
+            return 1
+        }
+        if (token.isPunct(")") || token.isPunct("]") || token.isPunct("}")) {
+            return -1
+        }
+        return 0
+    }
+
+    // The type of the expression made of tokens `first` to `last`: a receiver chain that spans it all (a leading `-`
+    // is skipped), a comparison or `!` (bool), a concatenation that starts with a string literal, else unknown.
+    method expressionType(Scope scope, integer offset, integer first, integer last): TypeRef {
+        if (last < first || last >= scope.file.syntax.tokens.length()) {
+            return unknownType()
+        }
+        var tokens = scope.file.syntax.tokens
+        if (SEMANTIC_ASYNC_WORDS.contains(tokens[first].text) || tokens[first].kind == TokenKind.EndOfFile) {
+            return unknownType()
+        }
+        if (tokens[first].isPunct("!") || this.hasComparison(tokens, first, last)) {
+            return TypeRef(SEMANTIC_TYPE_BOOL, "", true)
+        }
+        var chainFirst = first
+        if (tokens[first].isPunct("-")) {
+            chainFirst = first + 1
+        }
+        return this.spanTypeOf(scope, offset, chainFirst, last)
+    }
+
+    method spanTypeOf(Scope scope, integer offset, integer chainFirst, integer last): TypeRef {
+        var tokens = scope.file.syntax.tokens
+        if (chainFirst > last) {
+            return unknownType()
+        }
+        var chain = chainEndingAt(tokens, last)
+        if (chain.length() > 0 && chainStartIndex(tokens, last) == chainFirst) {
+            var inner = this.resolver.scopeAt(scope.file, offset)
+            return SemanticChainTyper(this.resolver, inner, this.depth + 1).typeOf(chain)
+        }
+        if (this.startsConcatenation(tokens, chainFirst, last)) {
+            return TypeRef(SEMANTIC_TYPE_STRING, "", true)
+        }
+        return unknownType()
+    }
+
+    // Only `"literal" + ...` is known to be a string; a literal that is a call receiver says nothing about the result.
+    method startsConcatenation(array<Token> tokens, integer first, integer last): bool {
+        if (first + 1 > last || tokens[first].kind != TokenKind.String) {
+            return false
+        }
+        return tokens[first + 1].isPunct("+")
+    }
+
+    method hasComparison(array<Token> tokens, integer first, integer last): bool {
+        var depth = 0
+        var i = first
+        while (i <= last) {
+            depth = depth + this.depthChange(tokens[i])
+            if (depth == 0 && tokens[i].kind == TokenKind.Punct && SEMANTIC_COMPARISON_OPERATORS.contains(tokens[i].value)) {
+                return true
+            }
+            i = i + 1
+        }
+        return false
+    }
+}

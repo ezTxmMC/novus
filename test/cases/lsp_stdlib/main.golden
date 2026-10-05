@@ -1,0 +1,35 @@
+== listing
+  at least the 30 modules of the contract: true, first is arrays: true
+  has os true has unicode true has nope false has empty false
+  sorted true
+== module strings
+  name strings file std:strings kind nv
+  declares repeat true and compare true
+  source starts with package line true
+  hash matches source true
+  no tokens kept true issues 0
+  imports []
+  summary String helpers beyond the builtin methods (length, charAt, substring, indexOf, contains, startsWith, endsWith, split, replace, trim, toUpper, toLower).
+  log imports [strings, time]
+  json imports []
+== summaries
+  hash: Non-cryptographic hashes.
+  csv: Comma separated values with quoting ("" inside quoted fields).
+  bits: Bit operations that have no operator.
+  config: Configuration files by their extension: .json, .toml, .yaml/.yml, .properties/.cfg/.ini (see the modules of those names).
+== docs
+  fnv1a native nv_hash_fnv1a doc [64-bit FNV-1a, always >= 0]
+  signature method fnv1a(string text): integer
+== every module
+  issues 0 has declarations true
+== caching
+  nothing parsed yet true
+  same module object true
+  cache holds os true and not zlib false
+  unknown module is nothing true
+  shared library is one object true
+  shared library caches too true
+  a fresh library has its own cache true
+== fingerprint
+  format true
+  stable true

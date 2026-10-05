@@ -1,0 +1,29 @@
+package main
+
+import @support
+import @fixtures
+import @hover_cases
+
+private final HOVER_TYPED_RETURN_TEXT = "method f(): integer {\n    var count = 1\n    count = 2\n    return count\n}\n\nmethod g(): string {\n    var text = \"a\"\n    text = \"b\"\n    return text\n}\n\nmethod main() {\n    var total = 1\n    try {\n        total = 2\n    } catch (e) {\n    }\n}\n"
+
+private final HOVER_CLASS_RETURN_TEXT = "define class P {\n    integer size\n}\n\nmethod make(): P {\n    var item = P(1)\n    item = P(2)\n    return item\n}\n"
+
+private final HOVER_BACKTICK_TEXT = "method main() {\n    var count = \"`x`\"\n    var long = \"0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789\"\n    println(count)\n    println(long)\n}\n"
+
+method hoverSingle(string text, string needle, integer shift): NavWorld {
+    return NavWorld({"/t/project.nv": "project \"t\"\nmain \"main.nv\"\n", "/t/main.nv": hoverMarked(text, needle, shift)})
+}
+
+method runAssignmentHoverCases() {
+    println("== assignments in blocks with a return type")
+    hoverCase("assignment in a method returning integer", hoverSingle(HOVER_TYPED_RETURN_TEXT, "count = 2", 1))
+    hoverCase("assignment in a method returning string", hoverSingle(HOVER_TYPED_RETURN_TEXT, "text = \"b\"", 1))
+    hoverCase("assignment inside a try block", hoverSingle(HOVER_TYPED_RETURN_TEXT, "total = 2", 1))
+    hoverCase("assignment in a method returning a class", hoverSingle(HOVER_CLASS_RETURN_TEXT, "item = P(2)", 1))
+}
+
+method runDeclarationLineCases() {
+    println("== declaration line in the hover")
+    hoverCase("a line with backticks", hoverSingle(HOVER_BACKTICK_TEXT, "println(count", 8))
+    hoverCase("a very long line is cut", hoverSingle(HOVER_BACKTICK_TEXT, "println(long", 8))
+}

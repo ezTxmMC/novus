@@ -1,0 +1,20 @@
+package wiring
+
+import features/candidates
+import features/completion
+import server/queries
+
+private final WIRING_METHOD_COMPLETION = "textDocument/completion"
+private final WIRING_METHOD_COMPLETION_RESOLVE = "completionItem/resolve"
+
+// One engine behind both methods; every source holds the settings object of the session, so a configuration change
+// reaches it (6.30), and the snippet catalogue is the one that `buildApplication` loaded.
+method registerCompletionHandlers(ServerParts parts) {
+    var session = parts.session
+    var symbols = SymbolSources(session.workspace, session.settings)
+    var modules = ModuleSources(session.workspace, session.settings)
+    var lexical = LexicalSources(session.workspace, parts.snippets, session.settings)
+    var engine = CompletionEngine(symbols, modules, lexical, session.settings)
+    parts.router.registerHandler(WIRING_METHOD_COMPLETION, CompletionHandler(session, engine, parts.encoder))
+    parts.router.registerHandler(WIRING_METHOD_COMPLETION_RESOLVE, CompletionResolveHandler(session, engine))
+}

@@ -1,0 +1,35 @@
+package wiring
+
+import server/rpc
+import server/session
+
+private final WIRING_LOG_MESSAGE = "window/logMessage"
+private final WIRING_LOG_TYPE_ERROR = 1
+
+// Shows the user that a worker thread died: the log line goes to stderr, which an editor user never reads (5.12).
+// contract-note: std/log has no hook, so the other error-level lines cannot be mirrored from wiring; see DESIGN-NOTES.md.
+define class WiringErrorMirror based EnvelopeListener {
+    Session session
+    MessageWriter writer
+    map<string, bool> mirrored
+
+    construct(Session session, MessageWriter writer) {
+        this.session = session
+        this.writer = writer
+        this.mirrored = {}
+    }
+
+    // Once per kind of worker, and only while the client can still take notifications.
+    method onEnvelope(Envelope envelope) {
+        if (envelope.kind != ENVELOPE_WORKER_FAILED) {
+            return
+        }
+        var failure = envelope.payload
+        if (this.session.initialized == false || this.session.shutdownRequested || this.mirrored.has(failure.worker)) {
+            return
+        }
+        this.mirrored[failure.worker] = true
+        var text = "novus: the " + failure.worker + " worker failed: " + failure.message
+        this.writer.sendNotification(WIRING_LOG_MESSAGE, {"type": WIRING_LOG_TYPE_ERROR, "message": text})
+    }
+}

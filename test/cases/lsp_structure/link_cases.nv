@@ -1,0 +1,22 @@
+package main
+
+import "novus/lsp/features/structure"
+import "novus/lsp/base/model"
+import "novus/lsp/base/text"
+import @support
+import @fixtures
+
+method runLinkCases() {
+    println("== document links")
+    var files = structProject()
+    files["/p/main.nv"] = "import geo\nimport strings\nimport @helper\nimport \"ex.com/lib\"\nimport nowhere\n\nmethod main() {\n}\n"
+    files["/p/project.nv"] = "project \"p\"\nmain \"main.nv\"\nrequire \"ex.com/lib\"\nreplace \"ex.com/lib\" \"lib\"\n"
+    files["/p/lib/lib.nv"] = "method libEntry(): integer {\n    return 1\n}\n"
+    var world = StructWorld(files)
+    var context = world.context("/p/main.nv")
+    for (link in LinkBuilder().links(context)) {
+        var shown = context.document.text.substring(link.span.start, link.span.end)
+        structCheck("link " + shown, link.targetPath)
+    }
+    structCheck("manifest", "" + LinkBuilder().links(world.context("/p/project.nv")).length() + " links")
+}

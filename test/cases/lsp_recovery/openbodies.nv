@@ -1,0 +1,50 @@
+package main
+
+import "novus/lsp/base/maybe"
+import "novus/lsp/syntax/outline"
+import "novus/lsp/syntax/parsing"
+import "novus/lsp/syntax/scanning"
+
+private final UNCLOSED_METHOD = "method f(integer p) {\n  var a = 1\n  a"
+private final UNCLOSED_BEFORE_NEXT = "method f(integer p) {\n  var a = 1\n  \n\nmethod g() { }\n"
+private final UNCLOSED_CLASS = "define class A {\n  method m(integer p): integer {\n    var a = 1\n    a.\n"
+
+// `callable[: local local]` of the innermost callable around the offset, `none` when there is none.
+method probe(string source, integer offset): string {
+    var file = parseSourceText("o.nv", source, editorParseOptions())
+    var callable = file.enclosingCallable(offset)
+    if (isNone(callable)) {
+        return "none"
+    }
+    var names = []
+    for (local in localsVisibleAt(callable, offset)) {
+        names.append(local.name)
+    }
+    return callable.name + ": " + names.join(" ")
+}
+
+method checkOpenBodies() {
+    var end = UNCLOSED_METHOD.length()
+    expectEqual("open/method-at-the-end-of-the-text", "f: p a", probe(UNCLOSED_METHOD, end))
+    expectEqual("open/method-before-the-last-character", "f: p a", probe(UNCLOSED_METHOD, end - 1))
+    expectEqual("open/method-before-the-first-character", "none", probe(UNCLOSED_METHOD, 0 - 1))
+    var gap = UNCLOSED_BEFORE_NEXT.indexOf("\n\nmethod g", 0)
+    expectEqual("open/end-of-the-last-line-of-the-body", "f: p a", probe(UNCLOSED_BEFORE_NEXT, gap))
+    expectEqual("open/blank-line-in-front-of-the-next-method", "f: p a", probe(UNCLOSED_BEFORE_NEXT, gap + 1))
+    expectEqual("open/the-next-method-starts-its-own-span", "g: ", probe(UNCLOSED_BEFORE_NEXT, gap + 2))
+    var inClass = UNCLOSED_CLASS.length()
+    expectEqual("open/class-member-after-the-dot", "m: p a", probe(UNCLOSED_CLASS, inClass - 1))
+    expectEqual("open/class-member-at-the-end-of-the-text", "m: p a", probe(UNCLOSED_CLASS, inClass))
+    expectEqual("open/closed-method-ends-with-its-brace", "none", probe("method f() {\n}", 14))
+}
+
+method checkOpenSpans() {
+    var file = parseSourceText("o.nv", UNCLOSED_BEFORE_NEXT, editorParseOptions())
+    var next = UNCLOSED_BEFORE_NEXT.indexOf("method g", 0)
+    expectEqual("open/span-ends-where-the-next-declaration-starts", "" + next, "" + file.decls[0].fullSpan.end)
+    expectEqual("open/body-span-ends-with-the-full-span", "" + next, "" + file.decls[0].bodySpan.end)
+    var tail = parseSourceText("o.nv", UNCLOSED_METHOD, editorParseOptions())
+    expectEqual("open/span-of-the-last-declaration-ends-with-the-text", "" + UNCLOSED_METHOD.length(), "" + tail.decls[0].fullSpan.end)
+    var owner = parseSourceText("o.nv", UNCLOSED_CLASS, editorParseOptions()).decls[0]
+    expectEqual("open/member-stays-inside-an-unclosed-class", "true", "" + (owner.members[0].fullSpan.end <= owner.fullSpan.end))
+}

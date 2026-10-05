@@ -1,0 +1,32 @@
+package main
+
+// A tiny self-checking harness: every check prints `ok <name>` or a FAIL block, and finishChecks() sets the exit code.
+private final CHECK_COUNTS = [0, 0]
+
+method expectEqual(string name, string expected, string actual) {
+    CHECK_COUNTS[0] = CHECK_COUNTS[0] + 1
+    if (expected == actual) {
+        println("ok   " + name)
+        return
+    }
+    CHECK_COUNTS[1] = CHECK_COUNTS[1] + 1
+    println("FAIL " + name)
+    println("  expected: " + expected)
+    println("  actual:   " + actual)
+}
+
+method expectInt(string name, integer expected, integer actual) {
+    expectEqual(name, "" + expected, "" + actual)
+}
+
+method expectTrue(string name, bool condition) {
+    expectEqual(name, "true", "" + condition)
+}
+
+method finishChecks(): integer {
+    println(CHECK_COUNTS[0] + " checks, " + CHECK_COUNTS[1] + " failed")
+    if (CHECK_COUNTS[1] > 0) {
+        return 1
+    }
+    return 0
+}

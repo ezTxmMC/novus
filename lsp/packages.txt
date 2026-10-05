@@ -1,0 +1,37 @@
+base/maybe: 
+base/model: text
+base/platform: 
+base/text: 
+features/actions: candidates closure lexing model modules outline semantic text workspace
+features/candidates: builtins closure lexing model modules outline parsing platform scanning semantic snippets stdlib text workspace
+features/completion: candidates closure lexing markup model outline parsing scanning semantic snippets text workspace
+features/hover: builtins closure lexing model outline parsing scanning semantic targets text workspace
+features/navigation: closure lexing markup model outline parsing scanning semantic targets text workspace
+features/semtok: lexing model outline semantic text workspace
+features/structure: closure lexing model outline semantic text workspace
+projects/closure: manifest markup modules outline parsing platform stdlib text
+projects/manifest: lexing platform text
+projects/modules: manifest platform text
+projects/stdlib: outline parsing text
+projects/workspace: closure manifest markup modules outline parsing platform semantic stdlib text
+semantics/builtins: 
+semantics/semantic: builtins closure lexing outline parsing scanning stdlib text
+semantics/targets: closure lexing outline scanning semantic text
+server/edits: actions format lexing model navigation protocol rpc session text workspace
+server/jobs: checker closure maybe model platform protocol pureline rpc session text workspace
+server/lifecycle: checker jobs model platform protocol rpc session text workspace
+server/protocol: model text
+server/queries: completion hover model navigation protocol rpc semtok session structure text workspace
+server/rpc: maybe model platform text
+server/session: model protocol text workspace
+server/wiring: actions candidates checker completion diagnostics edits format hover jobs lifecycle model navigation platform protocol pureline queries rpc semtok session snippets stdlib structure text workspace
+services/checker: model platform text
+services/diagnostics: closure lexing model modules outline platform semantic text workspace
+services/format: lexing model text
+services/pureline: lexing model outline platform text
+services/snippets: 
+syntax/lexing: text
+syntax/markup: lexing outline parsing text
+syntax/outline: lexing text
+syntax/parsing: lexing outline scanning text
+syntax/scanning: lexing outline text

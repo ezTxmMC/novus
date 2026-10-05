@@ -1,0 +1,123 @@
+package structure
+
+import base/maybe
+import base/model
+import base/text
+import projects/workspace
+import syntax/outline
+
+private final STRUCTURE_MODIFIER_FINAL = "final"
+
+// The LSP symbol kind of a declaration: methods of a class are methods, top-level methods functions, a field with an
+// accessor a property, a final global a constant.
+method structureKindOf(Decl decl): OutlineKind {
+    if (decl.kind == DeclKind.Enum) {
+        return OutlineKind.Enum
+    }
+    if (decl.kind == DeclKind.Interface) {
+        return OutlineKind.Interface
+    }
+    if (decl.kind == DeclKind.Class || decl.kind == DeclKind.AbstractClass || decl.kind == DeclKind.Annotation) {
+        return OutlineKind.Class
+    }
+    return structureMemberKindOf(decl)
+}
+
+method structureMemberKindOf(Decl decl): OutlineKind {
+    if (decl.kind == DeclKind.Constructor) {
+        return OutlineKind.Constructor
+    }
+    if (decl.isCallable() && decl.container != "") {
+        return OutlineKind.Method
+    }
+    if (decl.isCallable()) {
+        return OutlineKind.Function
+    }
+    if (decl.kind == DeclKind.EnumConstant) {
+        return OutlineKind.EnumMember
+    }
+    if (decl.kind == DeclKind.Field && decl.accessors.length() > 0) {
+        return OutlineKind.Property
+    }
+    if (decl.kind == DeclKind.Field) {
+        return OutlineKind.Field
+    }
+    if (decl.hasModifier(STRUCTURE_MODIFIER_FINAL)) {
+        return OutlineKind.Constant
+    }
+    return OutlineKind.Variable
+}
+
+// The detail line next to a symbol: the parameter list and result of a callable, the type of a field or global, the
+// base of a type.
+method structureDetailOf(Decl decl): string {
+    if (decl.isCallable()) {
+        var detail = "(" + decl.paramsText() + ")"
+        if (decl.typeText != "" && decl.kind != DeclKind.Constructor) {
+            return detail + ": " + decl.typeText
+        }
+        return detail
+    }
+    if (decl.isType()) {
+        if (decl.baseName != "") {
+            return "based " + decl.baseName
+        }
+        return ""
+    }
+    return decl.typeText
+}
+
+// A span that names the declaration inside its full span; the start of the full span when the name is unknown.
+method structureNameSpanOf(Decl decl): Span {
+    if (decl.nameSpan.start >= decl.fullSpan.start && decl.nameSpan.end <= decl.fullSpan.end) {
+        return decl.nameSpan
+    }
+    return Span(decl.fullSpan.start, decl.fullSpan.start)
+}
+
+// Declarations in source order: a component lists its `define` blocks before the class that holds the header.
+method structureInSourceOrder(array<Decl> decls): array<Decl> {
+    var sorted = []
+    for (decl in decls) {
+        var at = sorted.length()
+        while (at > 0 && sorted[at - 1].fullSpan.start > decl.fullSpan.start) {
+            at = at - 1
+        }
+        sorted.insert(at, decl)
+    }
+    return sorted
+}
+
+// Document symbols: the declarations of the file with their members as children. Locals are not symbols. The depth
+// is capped at `MAX_NESTING_DEPTH`; a declaration without a name (a torn parse) is left out.
+define class OutlineBuilder {
+    construct() {
+    }
+
+    method documentSymbols(FileContext context): array<OutlineEntry> {
+        if (isNone(context.syntax)) {
+            return []
+        }
+        return this.entriesOf(structureInSourceOrder(context.syntax.decls), 0)
+    }
+
+    method entriesOf(array<Decl> decls, integer depth): array<OutlineEntry> {
+        var entries = []
+        if (depth >= MAX_NESTING_DEPTH) {
+            return entries
+        }
+        for (decl in decls) {
+            if (decl.name != "") {
+                entries.append(this.entryOf(decl, depth))
+            }
+        }
+        return entries
+    }
+
+    method entryOf(Decl decl, integer depth): OutlineEntry {
+        var entry = OutlineEntry(decl.name, structureDetailOf(decl), structureKindOf(decl), decl.fullSpan, structureNameSpanOf(decl))
+        entry.deprecated = decl.isDeprecated()
+        entry.children = this.entriesOf(decl.members, depth + 1)
+        return entry
+    }
+}

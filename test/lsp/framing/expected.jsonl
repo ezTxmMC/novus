@@ -1,0 +1,6 @@
+{"id":1,"jsonrpc":"2.0","result":{"capabilities":"@CAPABILITIES@","serverInfo":{"name":"novus-lsp","version":"0.1.0"}}}
+{"error":{"code":-32601,"message":"method not found: nope/größe/日本語/😀"},"id":2,"jsonrpc":"2.0"}
+{"error":{"code":-32601,"message":"method not found: nope/spelling"},"id":3,"jsonrpc":"2.0"}
+{"error":{"code":-32601,"message":"method not found: nope/first"},"id":4,"jsonrpc":"2.0"}
+{"error":{"code":-32601,"message":"method not found: nope/second"},"id":5,"jsonrpc":"2.0"}
+{"id":6,"jsonrpc":"2.0","result":null}

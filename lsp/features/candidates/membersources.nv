@@ -1,0 +1,196 @@
+package candidates
+
+import base/maybe
+import base/model
+import projects/closure
+import projects/workspace
+import semantics/builtins
+import semantics/semantic
+import syntax/outline
+
+private final CANDIDATES_NO_OFFSET = -1
+private final CANDIDATES_VAR_ORIGIN = "var"
+private final CANDIDATES_STATEMENT_WINDOW = 2000
+private final CANDIDATES_TYPED_ORIGIN = "typed"
+private final CANDIDATES_STEP_NAME = "name"
+private final CANDIDATES_VALUES_METHOD = "values"
+private final CANDIDATES_UNKNOWN_STATUS = "unknown"
+private final CANDIDATES_RECEIVER_SEPARATOR = ", "
+
+// Members after a dot and the bare members of the enclosing class.
+define class MemberSources {
+    Workspace workspace
+
+    construct(Workspace workspace) {
+        this.workspace = workspace
+    }
+
+    // 8.4: a module, a package or an enum name before the dot, else the typed value, else everything that is known.
+    method afterDot(FileContext context, CompletionContext request): array<CompletionItem> {
+        if (isNone(context.closureFile) || request.receiver.length() == 0) {
+            return []
+        }
+        var resolver = context.resolver()
+        var scope = resolver.scopeAt(context.closureFile, request.replaceSpan.start)
+        var first = request.receiver[0]
+        if (request.receiver.length() == 1 && first.kind == CANDIDATES_STEP_NAME && this.isValueName(resolver, scope, first.text) == false) {
+            var named = this.namedReceiver(context, resolver, first.text)
+            if (isSome(named)) {
+                return named
+            }
+        }
+        return this.valueMembers(context, resolver, resolver.typeOfChain(scope, request.receiver))
+    }
+
+    // The fields and methods of the enclosing class, written without a receiver.
+    method bare(FileContext context, CompletionContext request): array<CompletionItem> {
+        if (isNone(context.closureFile)) {
+            return []
+        }
+        var resolver = context.resolver()
+        var scope = resolver.scopeAt(context.closureFile, request.replaceSpan.start)
+        if (isNone(scope.enclosingType) || isNone(scope.enclosingCallable)) {
+            return []
+        }
+        return this.itemsOf(context, resolver.membersOf(resolver.thisType(scope)))
+    }
+
+    method isValueName(Resolver resolver, Scope scope, string name): bool {
+        return isSome(resolver.localNamed(scope, name)) || resolver.lookupName(scope, name).status != CANDIDATES_UNKNOWN_STATUS
+    }
+
+    // nil when the name is neither an enum, a class, a module nor a package: the caller then types it as a value.
+    method namedReceiver(FileContext context, Resolver resolver, string name): array<CompletionItem> {
+        var typeSymbol = resolver.lookupType(name)
+        if (isSome(typeSymbol) && typeSymbol.decl.kind == DeclKind.Enum) {
+            return this.enumMembers(context, resolver, typeSymbol)
+        }
+        if (isSome(typeSymbol)) {
+            return []
+        }
+        if (resolver.isModuleQualifier(name)) {
+            return this.qualifierMembers(context, resolver, name)
+        }
+        return nothing()
+    }
+
+    method enumMembers(FileContext context, Resolver resolver, Symbol enumSymbol): array<CompletionItem> {
+        var items = this.itemsOf(context, resolver.constantsOf(enumSymbol.decl.name))
+        var values = candidatesItem(CANDIDATES_VALUES_METHOD, CompletionKind.Method, "method values(): array<" + enumSymbol.decl.name + ">", CANDIDATES_BUCKET_MEMBER)
+        values.insertText = CANDIDATES_VALUES_METHOD + "()"
+        values.labelDescription = enumSymbol.decl.name
+        items.append(values)
+        return items
+    }
+
+    // The functions and globals of a std module or package; a std module that the file does not import brings its import.
+    method qualifierMembers(FileContext context, Resolver resolver, string name): array<CompletionItem> {
+        var items = this.itemsOf(context, resolver.qualifierMembers(name))
+        if (context.index().isStandardQualifier(name) == false || CandidatesImports(context, CANDIDATES_NO_OFFSET).importsStandard(name)) {
+            return items
+        }
+        var edit = importEditFor(context.syntax, context.document.text, CANDIDATES_IMPORT_PREFIX + name, true)
+        if (isNone(edit)) {
+            return items
+        }
+        for (item in items) {
+            item.additionalEdits = [edit]
+        }
+        return items
+    }
+
+    method valueMembers(FileContext context, Resolver resolver, TypeRef type): array<CompletionItem> {
+        if (type.known == false) {
+            return this.unknownMembers(context, resolver)
+        }
+        if (isSome(resolver.lookupType(type.name))) {
+            return this.itemsOf(context, resolver.membersOf(type))
+        }
+        var builtin = builtinMembersOf(type.name)
+        return this.builtinItems(builtin, type.name)
+    }
+
+    method itemsOf(FileContext context, array<Symbol> symbols): array<CompletionItem> {
+        var items = []
+        for (symbol in symbols) {
+            items.append(candidatesSymbolItem(symbol, context.document.uri, CANDIDATES_BUCKET_MEMBER, CANDIDATES_MODE_CALL))
+        }
+        return items
+    }
+
+    method builtinItems(array<BuiltinMember> members, string receiver): array<CompletionItem> {
+        var items = []
+        for (member in members) {
+            items.append(this.builtinItem(member, receiver, CANDIDATES_BUCKET_MEMBER))
+        }
+        return items
+    }
+
+    method builtinItem(BuiltinMember member, string receivers, string bucket): CompletionItem {
+        var item = candidatesItem(member.name, CompletionKind.Method, member.signature, bucket)
+        item.labelDescription = receivers
+        item.documentation = member.documentation
+        candidatesApplyCall(item, member.maxArity, member.name)
+        return item
+    }
+
+    // Never an empty list (8.4): the members of every built-in receiver, then those of every class of the program.
+    method unknownMembers(FileContext context, Resolver resolver): array<CompletionItem> {
+        var receiversByName = {}
+        var firstByName = {}
+        for (receiver in builtinsReceiverTypes()) {
+            for (member in builtinMembersOf(receiver)) {
+                this.noteBuiltin(receiversByName, firstByName, member, receiver)
+            }
+        }
+        var items = []
+        for (name in firstByName.keys()) {
+            items.append(this.builtinItem(firstByName[name], receiversByName[name].join(CANDIDATES_RECEIVER_SEPARATOR), CANDIDATES_BUCKET_MEMBER))
+        }
+        for (item in this.classMemberItems(context, resolver, firstByName)) {
+            items.append(item)
+        }
+        return items
+    }
+
+    method noteBuiltin(map<string, array<string>> receiversByName, map<string, BuiltinMember> firstByName, BuiltinMember member, string receiver) {
+        if (firstByName.has(member.name) == false) {
+            firstByName[member.name] = member
+            receiversByName[member.name] = []
+        }
+        receiversByName[member.name].append(receiver)
+    }
+
+    method classMemberItems(FileContext context, Resolver resolver, map<string, BuiltinMember> taken): array<CompletionItem> {
+        var items = []
+        var seen = {}
+        for (typeSymbol in context.index().allTypes()) {
+            for (member in context.index().membersOfType(typeSymbol.decl.name)) {
+                if (this.isWeakCandidate(typeSymbol, member, seen, taken)) {
+                    seen[member.decl.name] = true
+                    items.append(candidatesSymbolItem(member, context.document.uri, CANDIDATES_BUCKET_WEAK, CANDIDATES_MODE_CALL))
+                }
+            }
+        }
+        return items
+    }
+
+    method isWeakCandidate(Symbol typeSymbol, Symbol member, map<string, bool> seen, map<string, BuiltinMember> taken): bool {
+        var isInstanceMember = member.decl.kind == DeclKind.Field || member.decl.isCallable() && member.decl.kind != DeclKind.Constructor
+        return isInstanceMember && typeSymbol.origin() != FileOrigin.Standard && seen.has(member.decl.name) == false && taken.has(member.decl.name) == false
+    }
+}
+
+// A `var` or typed local whose own statement is still being written: `var total = <cursor>`. A statement is one line, so
+// a local further back than the window is a finished one and its text is never copied (that made a method with many
+// locals quadratic).
+method candidatesIsBeingDeclared(string text, Local local, integer offset): bool {
+    if (local.origin != CANDIDATES_VAR_ORIGIN && local.origin != CANDIDATES_TYPED_ORIGIN) {
+        return false
+    }
+    if (local.nameSpan.end > offset || offset - local.nameSpan.end > CANDIDATES_STATEMENT_WINDOW) {
+        return false
+    }
+    var between = text.substring(local.nameSpan.end, offset)
+    return between.indexOf("\n") < 0 && between.indexOf(";") < 0 && between.indexOf("{") < 0 && between.indexOf("}") < 0
+}

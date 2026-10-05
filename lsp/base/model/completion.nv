@@ -1,0 +1,66 @@
+package model
+
+import base/text
+
+// Completion results before wire encoding.
+define enum CompletionKind {
+    Text(1), Method(2), Function(3), Constructor(4), Field(5), Variable(6), Class(7), Interface(8),
+    Module(9), Property(10), Enum(13), Keyword(14), Snippet(15), File(17), Folder(19),
+    EnumMember(20), Constant(21), Struct(22);
+    integer code
+
+    construct(integer code) {
+        this.code = code
+    }
+}
+
+// A producer that never sets replaceSpan leaves this marker; the encoder then sends insertText instead of a textEdit at offset 0.
+private final MODEL_UNSET_REPLACE_OFFSET = -1
+
+define class CompletionItem {
+    string label
+    CompletionKind kind
+    string detail
+    string labelDescription
+    string documentation
+    string insertText
+    bool isSnippet
+    string filterText
+    string sortText
+    Span replaceSpan
+    array<TextEdit> additionalEdits
+    string command
+    bool deprecated
+    string resolveKey
+
+    construct(string label, CompletionKind kind, string detail) {
+        this.label = label
+        this.kind = kind
+        this.detail = detail
+        this.labelDescription = ""
+        this.documentation = ""
+        this.insertText = ""
+        this.isSnippet = false
+        this.filterText = ""
+        this.sortText = ""
+        this.replaceSpan = Span(MODEL_UNSET_REPLACE_OFFSET, MODEL_UNSET_REPLACE_OFFSET)
+        this.additionalEdits = []
+        this.command = ""
+        this.deprecated = false
+        this.resolveKey = ""
+    }
+
+    method hasReplaceSpan(): bool {
+        return this.replaceSpan.start >= 0
+    }
+}
+
+define class CompletionList {
+    bool isIncomplete
+    array<CompletionItem> items
+
+    construct(bool isIncomplete, array<CompletionItem> items) {
+        this.isIncomplete = isIncomplete
+        this.items = items
+    }
+}

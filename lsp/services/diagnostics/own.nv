@@ -1,0 +1,188 @@
+package diagnostics
+
+import arrays
+import base/maybe
+import base/model
+import base/text
+import projects/workspace
+import syntax/outline
+
+// One rule family of the own semantic layer (5.9); `OwnDiagnostics` runs the list and every rule answers for one file.
+define interface DiagnosticRule {
+    check(FileContext context): array<Diagnostic>
+}
+
+private final DIAGNOSTICS_SOURCE = "novus"
+
+// The producer of source `novus` (5.9): the syntax issues of the parser, then the semantic rules. A rule that fails
+// is trapped by the scheduler (6.31), so none needs a guard of its own. Settings are read at use time (6.30).
+define class OwnDiagnostics based DiagnosticProducer {
+    Workspace workspace
+    Settings settings
+    array<DiagnosticRule> rules
+
+    construct(Workspace workspace, Settings settings) {
+        this.workspace = workspace
+        this.settings = settings
+        this.rules = [SyntaxDiagnosticRule(), ImportDiagnosticRule(settings), DefinitionDiagnosticRule(), CallDiagnosticRule(), MemberDiagnosticRule(), DiagnosticsBindRule()]
+    }
+
+    method produce(Document document): array<Diagnostic> {
+        var found = []
+        if (this.settings.ownDiagnostics == false || document.fileKind() == FILE_KIND_MANIFEST) {
+            return found
+        }
+        var context = this.workspace.contextFor(document)
+        if (isNone(context) || isNone(context.closureFile)) {
+            return found
+        }
+        for (rule in this.rules) {
+            diagnosticsAppendAll(found, rule.check(context))
+        }
+        return found
+    }
+}
+
+method diagnosticsAppendAll(array<Diagnostic> found, array<Diagnostic> more) {
+    for (diagnostic in more) {
+        found.append(diagnostic)
+    }
+}
+
+// A finding of the own layer: source `novus`, the code is a stable id (5.9) and never reworded.
+method diagnosticsFinding(Span span, Severity severity, string code, string message): Diagnostic {
+    return Diagnostic(span, severity, DIAGNOSTICS_SOURCE, code, message)
+}
+
+// True while the program is incomplete: a dependency is not fetched or an import leads nowhere, so a name may live in
+// a file that was never loaded and the compiler could not finish either (5.9, V126 c).
+method diagnosticsProgramIncomplete(FileContext context): bool {
+    if (context.project.hasUnfetchedDependencies()) {
+        return true
+    }
+    for (issue in context.project.closure.issues) {
+        if (issue.code == DIAGNOSTICS_UNRESOLVED_IMPORT) {
+            return true
+        }
+    }
+    return false
+}
+
+// True when the file is one the semantic rules judge: a Novus source that belongs to a closure.
+method diagnosticsIsSemanticFile(FileContext context): bool {
+    return isSome(context.closureFile) && context.syntax.fileKind == FILE_KIND_NV
+}
+
+// A program has an entry: some user file declares `method main`. A library file, a package folder without a manifest and a
+// std module have none, so the names they use may be declared by a program that includes them and nobody can say they are
+// unknown (the compiler cannot check such a project either, 5.9 step 1).
+method diagnosticsHasEntry(FileContext context): bool {
+    for (file in context.project.userFiles()) {
+        for (decl in file.syntax.topLevelNamed("main")) {
+            if (decl.kind == DeclKind.Method) {
+                return true
+            }
+        }
+    }
+    return false
+}
+
+// A manifest names the entry and the module root, and an entry file is its own program: there an import that leads nowhere
+// fails the compiler for certain. A file of a manifest-less folder without `method main` is a part of a program that the
+// server cannot see (the entry that imports it decides the module root), so there it is only a warning (Amendment 7, V135).
+method diagnosticsImportSeverity(FileContext context, string code): Severity {
+    var isCertain = code != DIAGNOSTICS_UNRESOLVED_IMPORT || context.project.layout.hasManifest() || diagnosticsHasEntry(context)
+    if (isCertain) {
+        return Severity.Error
+    }
+    return Severity.Warning
+}
+
+// A syntax error makes the locals and the declarations unreliable: the loop variable of `for (var i = 0; ...)` is not
+// declared, an unterminated string swallows a name. The syntax rule reports the error and the name rules wait.
+method diagnosticsHasSyntaxError(FileContext context): bool {
+    for (issue in context.syntax.issues) {
+        if (issue.warning == false && issue.isHint() == false) {
+            return true
+        }
+    }
+    return false
+}
+
+// The names of a file are judged only when the program is complete, has an entry and the file parses without an error.
+method diagnosticsJudgesNames(FileContext context): bool {
+    if (diagnosticsIsSemanticFile(context) == false || diagnosticsHasSyntaxError(context)) {
+        return false
+    }
+    return diagnosticsProgramIncomplete(context) == false && diagnosticsHasEntry(context)
+}
+
+// ASCII classes of one character (a byte of a multi-byte character is none of them); the predicates of the package.
+method diagnosticsIsLetterByte(string character): bool {
+    return (character >= "a" && character <= "z") || (character >= "A" && character <= "Z")
+}
+
+method diagnosticsIsDigitByte(string character): bool {
+    return character >= "0" && character <= "9"
+}
+
+private final DIAGNOSTICS_REPORT_FIRST_NUMBER = 1
+private final DIAGNOSTICS_REPORT_PAD_WIDTH = 10
+
+// `path:line:column: source severity code: message`, one line per finding of every layer of this package (the own layer
+// and the manifest layer; `novusc` and `pureline` come from their own packages), in position order. Lines and byte
+// columns count from 1, as the corpus tools of the syntax layer print them. The file is read through the workspace's
+// cache, so a caller that gave it a `MemoryTextSource` or a `DiskTextSource` decides where the text comes from.
+method diagnosticReportLines(Workspace workspace, Settings settings, string filePath): array<string> {
+    var document = Document(filePathToUri(filePath), "novus", DIAGNOSTICS_REPORT_FIRST_NUMBER, workspace.files.textOf(filePath))
+    var findings = OwnDiagnostics(workspace, settings).produce(document)
+    var manifest = ManifestDiagnostics(workspace)
+    manifest.settings = settings
+    diagnosticsAppendAll(findings, manifest.produce(document))
+    var keyed = {}
+    var keys = []
+    var index = 0
+    for (finding in findings) {
+        var key = diagnosticsReportKey(finding, index)
+        keyed[key] = diagnosticsReportLine(document, finding)
+        keys.append(key)
+        index = index + 1
+    }
+    var lines = []
+    for (key in arrays.sort(keys)) {
+        lines.append(keyed[key])
+    }
+    return lines
+}
+
+method diagnosticsReportKey(Diagnostic finding, integer index): string {
+    return diagnosticsPad(finding.span.start) + "." + diagnosticsPad(index)
+}
+
+method diagnosticsPad(integer number): string {
+    var digits = "" + number
+    while (digits.length() < DIAGNOSTICS_REPORT_PAD_WIDTH) {
+        digits = "0" + digits
+    }
+    return digits
+}
+
+method diagnosticsReportLine(Document document, Diagnostic finding): string {
+    var line = document.lines.lineOf(finding.span.start) + DIAGNOSTICS_REPORT_FIRST_NUMBER
+    var column = document.lines.byteColumn(finding.span.start) + DIAGNOSTICS_REPORT_FIRST_NUMBER
+    var severity = diagnosticsSeverityName(finding.severity)
+    return document.filePath + ":" + line + ":" + column + ": " + finding.source + " " + severity + " " + finding.code + ": " + finding.message
+}
+
+method diagnosticsSeverityName(Severity severity): string {
+    if (severity == Severity.Error) {
+        return "error"
+    }
+    if (severity == Severity.Warning) {
+        return "warning"
+    }
+    if (severity == Severity.Information) {
+        return "information"
+    }
+    return "hint"
+}

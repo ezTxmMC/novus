@@ -1,0 +1,14 @@
+# Scenarios of abuse.py that fail on the current tree (reported in the robustness report of the final phase).
+# One name per line. A scenario that passes although it is listed prints XPASS: remove it from this list when its defect is fixed.
+huge_100k_lines                      # semanticTokens/full is quadratic: the main loop is blocked for minutes
+huge_100k_lines_one_method           # the same (locals of one method)
+huge_single_line_5mb_code            # the same (one very long line)
+huge_5mb_tokens_one_line             # the same
+semantic_tokens_scale_many_locals    # lsp/features/semtok/names.nv localDeclaredAt: one scan of all locals per identifier
+semantic_tokens_scale_long_line      # lsp/server/protocol/semtokenencoder.nv deltaEncode: column conversion from the line start per token
+semantic_tokens_scale_many_methods   # lsp/features/semtok/scopes.nv: one Resolver.scopeAt per scope segment
+scan_of_document_in_root_directory   # lsp/projects/workspace/scanner.nv + lsp/base/platform/walker.nv: no entry budget in the walk
+dependency_replace_to_huge_directory # DependencyIndex without a budget (G-23)
+directory_uri_as_document            # lsp/projects/workspace: no resolver for a document whose path is a directory
+completion_items_have_labels_for_unterminated_require  # lsp/features/candidates/modulesources.nv addModule: empty module key
+kill_checker_children_after_exit     # lsp/server/jobs: a running novusc check is not killed when the server ends

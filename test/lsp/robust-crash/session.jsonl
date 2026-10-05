@@ -1,0 +1,7 @@
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"rootUri":"@ROOTURI@","capabilities":{}}}
+{"jsonrpc":"2.0","id":2,"method":"novus/test/crash","params":{}}
+{"jsonrpc":"2.0","id":3,"method":"nope/after-crash"}
+{"jsonrpc":"2.0","method":"novus/test/crash","params":{}}
+{"jsonrpc":"2.0","id":4,"method":"novus/test/crash"}
+{"jsonrpc":"2.0","id":5,"method":"shutdown"}
+{"jsonrpc":"2.0","method":"exit"}

@@ -1,0 +1,86 @@
+package main
+
+import "novus/lsp/base/text"
+import "novus/lsp/syntax/lexing"
+import "novus/lsp/syntax/scanning"
+
+// Index of the last token that starts before the end of `marker`'s first occurrence in the source.
+method tokenEndingAt(string source, string marker): integer {
+    var lexed = lexText(source)
+    return lexed.indexBefore(source.indexOf(marker, 0) + marker.length())
+}
+
+method renderSteps(string source, array<ChainStep> steps): string {
+    var parts = []
+    for (step in steps) {
+        var text = source.substring(step.span.start, step.span.end)
+        parts.append(step.kind + ":" + step.text + "/" + step.argCount + "<" + text + ">")
+    }
+    return parts.join(" ")
+}
+
+// The chain that ends with the last token of `marker`.
+method chainOf(string source, string marker): string {
+    var tokens = lexText(source).tokens
+    return renderSteps(source, chainEndingAt(tokens, tokenEndingAt(source, marker)))
+}
+
+method startOf(string source, string marker): integer {
+    return chainStartIndex(lexText(source).tokens, tokenEndingAt(source, marker))
+}
+
+method checkChains() {
+    expectEqual("chain/name", "name:foo/0<foo>", chainOf("x = foo", "foo"))
+    expectEqual("chain/member-access", "name:a/0<a> name:b/0<b>", chainOf("a.b", "a.b"))
+    expectEqual("chain/call-with-arguments", "name:a/0<a> call:b/2<b(1, 2)> name:c/0<c>", chainOf("a.b(1, 2).c", "a.b(1, 2).c"))
+    expectEqual("chain/index-after-call", "name:a/0<a> call:b/1<b(c)> name:d/0<d> index:[]/1<[0]>", chainOf("a.b(c).d[0]", "[0]"))
+    expectEqual("chain/string-literal-receiver", "literal:\"abc\"/0<\"abc\"> call:length/0<length()>", chainOf("\"abc\".length()", "length()"))
+    expectEqual("chain/group-receiver", "group:()/1<(x + 1)> call:foo/0<foo()>", chainOf("(x + 1).foo()", "foo()"))
+    expectEqual("chain/free-call", "call:f/0<f()>", chainOf("f()", "f()"))
+    expectEqual("chain/array-literal-receiver", "literal:[]/0<[1, 2]> call:length/0<length()>", chainOf("[1, 2].length()", "length()"))
+    expectEqual("chain/chained-indexes", "name:a/0<a> index:[]/1<[0]> index:[]/1<[1]>", chainOf("a[0][1]", "[1]"))
+    expectEqual("chain/map-index-then-member", "name:m/0<m> index:[]/1<[\"k\"]> name:v/0<v>", chainOf("m[\"k\"].v", "v"))
+    expectEqual("chain/this-member", "name:this/0<this> name:items/0<items>", chainOf("this.items", "items"))
+    expectEqual("chain/number-receiver", "literal:5/0<5> call:foo/0<foo()>", chainOf("5.foo()", "foo()"))
+    expectEqual("chain/object-literal-receiver", "literal:P/2<P{a = 1, b = 2}> name:a/0<a>", chainOf("P{a = 1, b = 2}.a", "}.a"))
+}
+
+method checkArgumentCounts() {
+    expectEqual("argc/empty", "call:f/0<f()>", chainOf("f()", "f()"))
+    expectEqual("argc/trailing-comma", "call:f/1<f(1,)>", chainOf("f(1,)", "f(1,)"))
+    expectEqual("argc/nested-calls-and-literals", "call:f/3<f(a, g(b, c), d)>", chainOf("f(a, g(b, c), d)", "d)"))
+    expectEqual("argc/array-and-map", "call:f/2<f([1, 2], {\"a\": 1})>", chainOf("f([1, 2], {\"a\": 1})", "1})"))
+    expectEqual("argc/string-with-comma", "call:f/1<f(\"a, b\")>", chainOf("f(\"a, b\")", "b\")"))
+}
+
+method checkChainBoundaries() {
+    expectEqual("chain/stops-at-an-operator", "name:b/0<b>", chainOf("a + b", "b"))
+    expectEqual("chain/stops-at-assignment", "name:a/0<a> name:b/0<b>", chainOf("x = a.b", "a.b"))
+    expectEqual("chain/keyword-ends-it", "name:x/0<x>", chainOf("return x", "x"))
+    expectEqual("chain/paren-after-keyword-is-a-group", "group:()/1<(a)>", chainOf("if (a)", "(a)"))
+    expectEqual("chain/no-chain-at-an-operator", "", renderSteps("", chainEndingAt(lexText("a +").tokens, 1)))
+    expectEqual("chain/index-out-of-range", "", renderSteps("", chainEndingAt(lexText("a").tokens, 9)))
+    expectEqual("chain/negative-index", "", renderSteps("", chainEndingAt(lexText("a").tokens, -1)))
+    expectEqual("chain/empty-token-list", "", renderSteps("", chainEndingAt([], 0)))
+    expectEqual("chain/dangling-dot", "", renderSteps("", chainEndingAt(lexText("a.").tokens, 1)))
+    expectEqual("chain/unbalanced-close", "", renderSteps("", chainEndingAt(lexText("a)").tokens, 1)))
+}
+
+method checkChainStart() {
+    expectInt("start/member-chain", 2, startOf("x = a.b(1).c", "a.b(1).c"))
+    expectInt("start/single-name", 0, startOf("foo", "foo"))
+    expectInt("start/operator-is-no-chain", -1, chainStartIndex(lexText("a +").tokens, 1))
+    expectInt("start/index-chain-includes-receiver", 2, startOf("x = m[0]", "m[0]"))
+    expectInt("start/call-without-receiver", 2, startOf("x = f(1)", "f(1)"))
+}
+
+method checkChainDepthCap() {
+    var source = "a"
+    var count = 0
+    while (count < 400) {
+        source = source + ".a"
+        count = count + 1
+    }
+    var steps = chainEndingAt(lexText(source).tokens, lexText(source).tokens.length() - 2)
+    expectTrue("chain/depth-is-capped", steps.length() > 0 && steps.length() <= 200)
+}

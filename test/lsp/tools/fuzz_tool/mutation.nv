@@ -1,0 +1,110 @@
+package main
+
+import @random
+
+private final FUZZ_TOOL_TRUNCATIONS = 40
+private final FUZZ_TOOL_DELETIONS = 20
+private final FUZZ_TOOL_PIECE_INSERTIONS = 20
+private final FUZZ_TOOL_NUL_INSERTIONS = 20
+private final FUZZ_TOOL_KIND_TRUNCATE = "truncate"
+private final FUZZ_TOOL_KIND_DELETE = "delete"
+private final FUZZ_TOOL_KIND_INSERT = "insert"
+private final FUZZ_TOOL_NUL_CODE = 0
+
+// One deterministic change of a source text: cut it at an offset, delete the byte at an offset or insert a piece there.
+define class FuzzToolMutation {
+    string kind
+    integer offset
+    string piece
+
+    construct(string kind, integer offset, string piece) {
+        this.kind = kind
+        this.offset = offset
+        this.piece = piece
+    }
+
+    method apply(string source): string {
+        if (this.kind == FUZZ_TOOL_KIND_TRUNCATE) {
+            return source.substring(0, this.offset)
+        }
+        if (this.kind == FUZZ_TOOL_KIND_DELETE) {
+            return source.substring(0, this.offset) + source.substring(this.offset + 1, source.length())
+        }
+        return source.substring(0, this.offset) + this.piece + source.substring(this.offset, source.length())
+    }
+
+    // Enough to find the case again: the file, the kind and the byte offset (the piece is named for insertions).
+    method label(): string {
+        if (this.kind == FUZZ_TOOL_KIND_INSERT) {
+            return "insert " + fuzzToolPieceName(this.piece) + " at " + this.offset
+        }
+        return this.kind + " at " + this.offset
+    }
+}
+
+method fuzzToolPieceName(string piece): string {
+    if (piece.length() > 0 && ord(piece.charAt(0)) == FUZZ_TOOL_NUL_CODE) {
+        return "NUL"
+    }
+    return piece
+}
+
+// The characters that open or close what the lexer and the parser track (strings, interpolations, comments, brackets).
+method fuzzToolInsertPieces(): array<string> {
+    var interpolation = "$" + "{"
+    return ["\"", "{", "}", "(", ")", "/", "*", "$", interpolation]
+}
+
+// 40 truncations, 20 single-byte deletions, 20 insertions of the pieces and 20 insertions of a NUL byte (DESIGN 9.5-5).
+method fuzzToolPlanMutations(integer length, integer seed): array<FuzzToolMutation> {
+    var random = FuzzToolRandom(seed)
+    var pieces = fuzzToolInsertPieces()
+    var plan = []
+    var i = 0
+    while (i < FUZZ_TOOL_TRUNCATIONS) {
+        plan.append(FuzzToolMutation(FUZZ_TOOL_KIND_TRUNCATE, random.next(length + 1), ""))
+        i = i + 1
+    }
+    fuzzToolPlanDeletions(plan, random, length)
+    fuzzToolPlanInsertions(plan, random, length, pieces)
+    return plan
+}
+
+method fuzzToolPlanDeletions(array<FuzzToolMutation> plan, FuzzToolRandom random, integer length) {
+    if (length == 0) {
+        return
+    }
+    var i = 0
+    while (i < FUZZ_TOOL_DELETIONS) {
+        plan.append(FuzzToolMutation(FUZZ_TOOL_KIND_DELETE, random.next(length), ""))
+        i = i + 1
+    }
+}
+
+method fuzzToolPlanInsertions(array<FuzzToolMutation> plan, FuzzToolRandom random, integer length, array<string> pieces) {
+    var i = 0
+    while (i < FUZZ_TOOL_PIECE_INSERTIONS) {
+        var piece = pieces[random.next(pieces.length())]
+        plan.append(FuzzToolMutation(FUZZ_TOOL_KIND_INSERT, random.next(length + 1), piece))
+        i = i + 1
+    }
+    i = 0
+    while (i < FUZZ_TOOL_NUL_INSERTIONS) {
+        plan.append(FuzzToolMutation(FUZZ_TOOL_KIND_INSERT, random.next(length + 1), chr(FUZZ_TOOL_NUL_CODE)))
+        i = i + 1
+    }
+}
+
+// Every kind of mutation stays in a plan that is cut down to `count` entries.
+method fuzzToolThinPlan(array<FuzzToolMutation> plan, integer count): array<FuzzToolMutation> {
+    if (plan.length() <= count) {
+        return plan
+    }
+    var thinned = []
+    var i = 0
+    while (i < count) {
+        thinned.append(plan[i * plan.length() / count])
+        i = i + 1
+    }
+    return thinned
+}

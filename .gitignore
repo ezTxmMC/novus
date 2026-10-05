@@ -9,6 +9,10 @@ dist/
 *.pdb
 a.out
 
+# novus-lsp: `make lsp` writes build/novus-lsp; a build without -o leaves the binary next to the sources
+lsp/novus-lsp
+lsp/novus-lsp.exe
+
 # Generated C: `novusc emit` / `novusc build --keep-c` next to the sources.
 # The bootstrap snapshot is the one C file that is tracked.
 *.c
@@ -67,3 +71,5 @@ benchmarks/.build/
 benchmarks/input.txt
 benchmarks/java/*.class
 !benchmarks/*.c
+**claude**
+DESIGN**.md

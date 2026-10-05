@@ -1,0 +1,45 @@
+package main
+
+import "novus/lsp/base/model"
+import "novus/lsp/base/text"
+import "novus/lsp/server/jobs"
+import "novus/lsp/server/session"
+import "novus/lsp/services/pureline"
+
+private final PRODUCER_MIXED = "package main\n\nprintln(\"top\")\n\nmethod main() {\n    for (var i = 0; i < 3; i = i + 1) {\n        return\n    }\n    var n = 1#\n}\n"
+
+method describeDiagnostics(array<Diagnostic> diagnostics): string {
+    var lines = []
+    for (diagnostic in diagnostics) {
+        lines.push("  " + diagnostic.source + " " + diagnostic.code + " severity=" + diagnostic.severity.code + " " + diagnostic.span.start + "-" + diagnostic.span.end)
+    }
+    if (diagnostics.length() == 0) {
+        return "0"
+    }
+    return "" + diagnostics.length() + "\n" + lines.join("\n")
+}
+
+method runProducerCases() {
+    println("--- producers: SyntaxIssueProducer")
+    var state = fixtureSession()
+    var uri = fixtureOpen(state, "/proj/main.nv", 1, PRODUCER_MIXED)
+    var syntax = SyntaxIssueProducer(state)
+    println("issues of the editor parse: " + describeDiagnostics(syntax.produce(state.documentFor(uri))))
+    state.settings.ownDiagnostics = false
+    println("switched off: " + describeDiagnostics(syntax.produce(state.documentFor(uri))))
+    var manifestUri = fixtureOpen(state, "/proj/project.nv", 1, "project \"p\"\nbogus value\n")
+    state.settings.ownDiagnostics = true
+    println("a manifest has none in Wave 3: " + describeDiagnostics(syntax.produce(state.documentFor(manifestUri))))
+    println("--- producers: LintCoordinator")
+    runLintCases(state, uri)
+}
+
+method runLintCases(Session state, string uri) {
+    var lint = LintCoordinator(state, PurelineLinter(state.settings.pureline))
+    println("off by default: " + describeDiagnostics(lint.produce(state.documentFor(uri))))
+    state.settings.pureline.enabled = true
+    println("enabled: " + describeDiagnostics(lint.produce(state.documentFor(uri))))
+    state.settings.pureline.allowedShortNames = ["i", "n"]
+    println("the linter reads the shared settings at use time: " + describeDiagnostics(lint.produce(state.documentFor(uri))))
+    println("a uri that is not open: " + describeDiagnostics(lint.lintDocument("file:///proj/none.nv")))
+}

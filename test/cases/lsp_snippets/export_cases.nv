@@ -1,0 +1,86 @@
+package main
+
+import json
+import os
+import path
+import strings
+import "novus/lsp/services/snippets"
+
+// The VS Code export (DESIGN 7.6) and the verification projects (DESIGN 7.5).
+
+private final SHOWN_PROJECTS = ["construct/p/main.nv", "classb/p/main.nv", "elif/p/main.nv", "newcall/p/main.nv", "importn/p/main.nv",
+    "importn/p/geo/shapes/shapes.nv", "importm/p/project.nv", "mf_replace/p/project.nv", "mf_main/p/project.nv", "nvh_click/p/comp.nvh"]
+
+method runExportCases() {
+    var catalogue = loadSnippetCatalogue()
+    checkExport(catalogue)
+    var work = path.join(os.temp(), "novus_lsp_snippets_test_" + os.pid())
+    os.removeAll(work)
+    checkVerification(catalogue, work)
+    checkBlockedWrite(catalogue, work)
+    os.removeAll(work)
+}
+
+method checkExport(SnippetCatalogue catalogue) {
+    var text = exportVsCodeSnippets(catalogue)
+    var parsed = json.parse(text)
+    var exported = countInScopes(catalogue, ["toplevel", "class", "statement", "expression"])
+    println "exported entries: " + parsed.length() + " (catalogue entries in a scope of the VS Code format: " + exported + ")"
+    println "ends with a line break: " + text.endsWith("}\n") + ", starts with: " + json.stringify(text.substring(0, 28))
+    var order = [text.indexOf("\"Program entry point\""), text.indexOf("\"Counted loop\""), text.indexOf("\"HTTP GET returning the body\"")]
+    println "catalogue order kept: " + (order[0] < order[1] && order[1] < order[2])
+    println "manifest and nvh left out: " + (text.contains("\"project.nv header\"") == false && text.contains("Component with a prop") == false)
+    println "empty catalogue: " + json.stringify(exportVsCodeSnippets(SnippetCatalogue([])))
+    printEntry(parsed, "Program entry point receiving the command line arguments")
+    printEntry(parsed, "Field with getter and/or setter")
+    printEntry(parsed, "Print a variable with its name")
+    printEntry(parsed, "HTTP POST of a map or array as JSON")
+    printEntry(parsed, "Class with fields and a constructor")
+}
+
+// Each snippet counts once, however many of the scopes it has.
+method countInScopes(SnippetCatalogue catalogue, array<string> scopes): integer {
+    var counted = {}
+    for (scope in scopes) {
+        for (snippet in catalogue.forScope(scope)) {
+            counted[snippet.id] = true
+        }
+    }
+    return counted.length()
+}
+
+method printEntry(map<string, object> parsed, string name) {
+    var entry = parsed[name]
+    println name + ": prefix " + json.stringify(entry["prefix"]) + ", body " + json.stringify(entry["body"])
+}
+
+method checkVerification(SnippetCatalogue catalogue, string work) {
+    var written = writeVerificationFiles(catalogue, work)
+    println "verification projects written: " + written + " of " + catalogue.all.length()
+    var index = []
+    for (line in strings.lines(readFile(path.join(work, "INDEX.txt")))) {
+        if (line != "") {
+            index.append(line)
+        }
+    }
+    var builds = 0
+    for (line in index) {
+        if (line.endsWith(" build")) {
+            builds = builds + 1
+        }
+    }
+    println "index lines: " + index.length() + ", build: " + builds + ", check only: " + (index.length() - builds)
+    println "first index lines: " + index[0] + " / " + index[3] + " / " + index[index.length() - 1]
+    for (shown in SHOWN_PROJECTS) {
+        println "---- " + shown
+        print readFile(path.join(work, shown))
+    }
+    println "---- fixtures: " + os.isFile(path.join(work, "importm", "module", "lib.nv")) + " " + os.isFile(path.join(work, "mf_require", "lib", "lib.nv"))
+}
+
+// A failing write is a result, never an abort (LSP-R08).
+method checkBlockedWrite(SnippetCatalogue catalogue, string work) {
+    var blocker = path.join(work, "blocker.txt")
+    writeFile(blocker, "a file where a directory is needed")
+    println "blocked output directory: " + writeVerificationFiles(catalogue, path.join(blocker, "out"))
+}

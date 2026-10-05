@@ -1,0 +1,26 @@
+package lexing
+
+// The compiler knows exactly these 19 keywords; every other word is an identifier decided by position.
+private final LEXING_KEYWORDS = ["package", "import", "method", "var", "println", "print", "eprintln",
+    "private", "final", "return", "if", "else", "while", "for", "in", "true", "false", "break", "continue"]
+
+private final LEXING_KEYWORD_SET = { "package": true, "import": true, "method": true, "var": true,
+    "println": true, "print": true, "eprintln": true, "private": true, "final": true, "return": true,
+    "if": true, "else": true, "while": true, "for": true, "in": true, "true": true, "false": true,
+    "break": true, "continue": true }
+
+define enum TokenKind {
+    Ident, Keyword, Integer, Float, String, Punct, Comment, Unknown, EndOfFile
+}
+
+method isKeywordWord(string word): bool {
+    return LEXING_KEYWORD_SET.has(word)
+}
+
+method keywordWords(): array<string> {
+    var copy = []
+    for (word in LEXING_KEYWORDS) {
+        copy.append(word)
+    }
+    return copy
+}

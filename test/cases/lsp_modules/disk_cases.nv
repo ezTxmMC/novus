@@ -1,0 +1,42 @@
+package main
+
+import os
+import "novus/lsp/base/platform"
+import "novus/lsp/projects/manifest"
+import "novus/lsp/projects/modules"
+import @show
+
+method relative(string root, string target): string {
+    return target.replace(root, "<root>")
+}
+
+method runCacheDirectory() {
+    println("== cache directory")
+    os.setEnv("NOVUS_DEPS", "/custom/deps")
+    println("  from NOVUS_DEPS: " + dependencyCacheDirectory())
+    os.setEnv("NOVUS_DEPS", "")
+    println("  default is ~/.novus/deps: " + (dependencyCacheDirectory() == homeDirectory() + "/.novus/deps"))
+}
+
+method runDiskTree() {
+    var root = createTempDirectory("lsp-modules-")
+    makeDirectories(root + "/deps/x.example/dep@v1")
+    writeTextFile(root + "/deps/x.example/dep@v1/lib.nv", "package dep")
+    makeDirectories(root + "/proj/vendored")
+    writeTextFile(root + "/proj/vendored/main.nv", "package main")
+    os.setEnv("NOVUS_DEPS", root + "/deps")
+    var manifestText = "require \"x.example/dep\" \"v1\"\nrequire \"x.example/vendored\"\nreplace \"x.example/vendored\" \"vendored\"\nrequire \"x.example/none\" \"v1\"\n"
+    var manifest = parseManifestText(root + "/proj/project.nv", manifestText)
+    var table = ModuleTableBuilder(DiskTextSource(), dependencyCacheDirectory()).build(manifest)
+    println("== disk tree")
+    for (entry in table.entries) {
+        println("  " + entry.module + " " + entry.status + " dir=" + relative(root, entry.dir) + " entry=[" + relative(root, entry.entryFile) + "]")
+    }
+    os.setEnv("NOVUS_DEPS", "")
+    removeTree(root)
+}
+
+method runDiskCases() {
+    runCacheDirectory()
+    runDiskTree()
+}

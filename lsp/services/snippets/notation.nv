@@ -1,0 +1,194 @@
+package snippets
+
+// The tree of Novus Snippet Notation (DESIGN 7.2) and its writers: the LSP snippet syntax for clients, plain text
+// for the compile check. Both walk the tree of SnippetsReader (validation.nv).
+
+private final SNIPPETS_NODE_TEXT = "text"
+private final SNIPPETS_NODE_STOP = "stop"
+private final SNIPPETS_NODE_PLACEHOLDER = "placeholder"
+private final SNIPPETS_NODE_CHOICE = "choice"
+private final SNIPPETS_FINAL_STOP = 0
+private final SNIPPETS_ASCII_LIMIT = 128
+private final SNIPPETS_ESCAPED_COMMA = "\\,"
+
+define class SnippetsNode {
+    string kind
+    string text
+    integer number
+    array<SnippetsNode> children
+    array<string> options
+
+    construct(string kind, string text, integer number) {
+        this.kind = kind
+        this.text = text
+        this.number = number
+        this.children = []
+        this.options = []
+    }
+}
+
+define class SnippetsLspWriter {
+    string indentUnit
+
+    construct(string indentUnit) {
+        this.indentUnit = indentUnit
+    }
+
+    method write(array<SnippetsNode> nodes, integer level): string {
+        var pieces = []
+        for (node in nodes) {
+            pieces.append(this.writeNode(node, level))
+        }
+        return pieces.join("")
+    }
+
+    method writeNode(SnippetsNode node, integer level): string {
+        if (node.kind == SNIPPETS_NODE_TEXT) {
+            return snippetsEscapeText(node.text.replace("\t", this.indentUnit), level > 0)
+        }
+        if (node.kind == SNIPPETS_NODE_STOP && node.number == SNIPPETS_FINAL_STOP) {
+            return "$0"
+        }
+        if (node.kind == SNIPPETS_NODE_STOP) {
+            return "$" + "{" + node.number + "}"
+        }
+        if (node.kind == SNIPPETS_NODE_PLACEHOLDER) {
+            return "$" + "{" + node.number + ":" + this.write(node.children, level + 1) + "}"
+        }
+        return "$" + "{" + node.number + "|" + snippetsEscapeOptions(node.options) + "|}"
+    }
+}
+
+define class SnippetsPlainWriter {
+    map<integer, string> overrides
+    string indentUnit
+    map<integer, string> values
+
+    construct(map<integer, string> overrides, string indentUnit) {
+        this.overrides = overrides
+        this.indentUnit = indentUnit
+        this.values = {}
+    }
+
+    method write(array<SnippetsNode> nodes): string {
+        var pieces = []
+        for (node in nodes) {
+            pieces.append(this.writeNode(node))
+        }
+        return pieces.join("")
+    }
+
+    method writeNode(SnippetsNode node): string {
+        if (node.kind == SNIPPETS_NODE_TEXT) {
+            return node.text.replace("\t", this.indentUnit)
+        }
+        if (node.kind == SNIPPETS_NODE_STOP) {
+            return this.stopText(node.number)
+        }
+        if (this.overrides.has(node.number)) {
+            return this.remember(node.number, this.overrides[node.number])
+        }
+        if (node.kind == SNIPPETS_NODE_PLACEHOLDER) {
+            return this.remember(node.number, this.write(node.children))
+        }
+        return this.remember(node.number, node.options[0])
+    }
+
+    // A tabstop without a default shows an override, else the first text written for that number.
+    method stopText(integer number): string {
+        if (number == SNIPPETS_FINAL_STOP) {
+            return ""
+        }
+        if (this.overrides.has(number)) {
+            return this.remember(number, this.overrides[number])
+        }
+        return this.values.get(number, "")
+    }
+
+    // The first text written for a number wins, so every mirror repeats the first placeholder.
+    method remember(integer number, string text): string {
+        if (this.values.has(number) == false) {
+            this.values[number] = text
+        }
+        return this.values[number]
+    }
+}
+
+method snippetsEscapeText(string text, bool insidePlaceholder): string {
+    var escaped = text.replace("\\", "\\\\").replace("$", "\\$")
+    if (insidePlaceholder) {
+        return escaped.replace("}", "\\}")
+    }
+    return escaped
+}
+
+method snippetsEscapeOptions(array<string> options): string {
+    var escaped = []
+    for (option in options) {
+        escaped.append(option.replace("\\", "\\\\").replace(",", "\\,").replace("|", "\\|"))
+    }
+    return escaped.join(",")
+}
+
+// Invalid notation never aborts: it is shown as literal text.
+method renderLspSnippet(string notation, string indentUnit): string {
+    var reader = SnippetsReader(notation)
+    var nodes = reader.read()
+    if (reader.error != "") {
+        return snippetsEscapeText(notation.replace("\t", indentUnit), false)
+    }
+    return SnippetsLspWriter(indentUnit).write(nodes, 0)
+}
+
+method renderPlainSnippet(string notation, map<integer, string> overrides, string indentUnit): string {
+    var reader = SnippetsReader(notation)
+    var nodes = reader.read()
+    if (reader.error != "") {
+        return notation.replace("\t", indentUnit)
+    }
+    return SnippetsPlainWriter(overrides, indentUnit).write(nodes)
+}
+
+// The authoring errors of NSN; "" when the notation is valid.
+method validateNotation(string notation): string {
+    var reader = SnippetsReader(notation)
+    reader.read()
+    return reader.error
+}
+
+// The reader looks at one byte only; a byte of a multibyte character would make the message invalid UTF-8.
+method snippetsUnknownEscape(string next): string {
+    if (next != "" && ord(next) >= SNIPPETS_ASCII_LIMIT) {
+        return "unknown escape '#' before a non-ASCII character"
+    }
+    return "unknown escape '#" + next + "'"
+}
+
+// The options of a choice, with "\\," read as a comma; no option list at all (an empty array) means a
+// backslash that is not part of "\\,".
+method snippetsSplitOptions(string text): array<string> {
+    var options = []
+    var current = ""
+    var i = 0
+    while (i < text.length()) {
+        var character = text.charAt(i)
+        if (text.indexOf(SNIPPETS_ESCAPED_COMMA, i) == i) {
+            current = current + ","
+            i = i + SNIPPETS_ESCAPED_COMMA.length()
+            continue
+        }
+        if (character == "\\") {
+            return []
+        }
+        if (character == ",") {
+            options.append(current)
+            current = ""
+            i = i + 1
+            continue
+        }
+        current = current + character
+        i = i + 1
+    }
+    options.append(current)
+    return options
+}

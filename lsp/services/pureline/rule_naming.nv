@@ -1,0 +1,37 @@
+package pureline
+
+import base/model
+import base/platform
+import base/text
+import syntax/outline
+
+// PL-NAME-001: a local, parameter or field with a one-letter name or a placeholder name (tmp, obj, thing, data2).
+// Locals come from the editor parse (`Decl.locals`); a file parsed without them is checked for parameters and fields only.
+define class PurelineNamingRule based PurelineRule {
+    PurelineSettings settings
+
+    construct(PurelineSettings settings) {
+        this.settings = settings
+    }
+
+    method check(Document document, SourceFile syntax, TextSource files): array<Diagnostic> {
+        var names = PurelineNameCheck(this.settings, document)
+        for (decl in syntax.decls) {
+            this.checkDecl(names, decl)
+            for (member in decl.members) {
+                this.checkDecl(names, member)
+            }
+        }
+        return names.found
+    }
+
+    method checkDecl(PurelineNameCheck names, Decl decl) {
+        if (decl.isCallable()) {
+            names.checkCallable(decl)
+            return
+        }
+        if (decl.kind == DeclKind.Field) {
+            names.checkField(decl)
+        }
+    }
+}

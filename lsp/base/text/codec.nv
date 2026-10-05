@@ -1,0 +1,112 @@
+package text
+
+import base/maybe
+import unicode
+
+// Wire positions (units follow the negotiated encoding) and byte offset <-> LSP position conversion.
+private final TEXT_ENCODING_UTF8 = "utf-8"
+private final TEXT_ENCODING_UTF16 = "utf-16"
+
+define class WirePosition {
+    integer line
+    integer character
+
+    construct(integer line, integer character) {
+        this.line = line
+        this.character = character
+    }
+}
+
+define class WireRange {
+    WirePosition start
+    WirePosition end
+
+    construct(WirePosition start, WirePosition end) {
+        this.start = start
+        this.end = end
+    }
+}
+
+method textClamp(integer value, integer low, integer high): integer {
+    if (value < low) {
+        return low
+    }
+    if (value > high) {
+        return high
+    }
+    return value
+}
+
+// The single place that turns wire units into bytes and back; utf-8 clients skip the natives.
+define class PositionCodec {
+    string encoding
+
+    construct(string encoding) {
+        this.encoding = encoding
+    }
+
+    method countsBytes(): bool {
+        return this.encoding == TEXT_ENCODING_UTF8
+    }
+
+    method columnToBytes(string lineText, integer character): integer {
+        if (character <= 0) {
+            return 0
+        }
+        if (this.countsBytes()) {
+            return textSnapToBoundary(lineText, textClamp(character, 0, lineText.length()))
+        }
+        return unicode.utf16ToByte(lineText, character)
+    }
+
+    method bytesToColumn(string lineText, integer byteColumn): integer {
+        var column = textClamp(byteColumn, 0, lineText.length())
+        if (this.countsBytes()) {
+            return textSnapToBoundary(lineText, column)
+        }
+        return unicode.byteToUtf16(lineText, column)
+    }
+
+    // A line past the last one is the end of the text, as in the reference implementation of the LSP libraries
+    // (a client may send a whole-document range as (0,0)-(lineCount,0)); a negative line is the first one.
+    method offsetOf(LineIndex lines, WirePosition position): integer {
+        if (position.line >= lines.lineCount()) {
+            return lines.text.length()
+        }
+        var line = lines.clampLine(position.line)
+        var lineText = lines.lineText(line)
+        return lines.lineStart(line) + this.columnToBytes(lineText, position.character)
+    }
+
+    method positionOf(LineIndex lines, integer offset): WirePosition {
+        var target = textClamp(offset, 0, lines.text.length())
+        var line = lines.lineOf(target)
+        var lineText = lines.lineText(line)
+        var character = this.bytesToColumn(lineText, target - lines.lineStart(line))
+        return WirePosition(line, character)
+    }
+
+    // A reversed range from a client is read as the same two positions in order.
+    method spanOf(LineIndex lines, WireRange range): Span {
+        var first = this.offsetOf(lines, range.start)
+        var second = this.offsetOf(lines, range.end)
+        if (second < first) {
+            return Span(second, first)
+        }
+        return Span(first, second)
+    }
+
+    method rangeOf(LineIndex lines, Span span): WireRange {
+        return WireRange(this.positionOf(lines, span.start), this.positionOf(lines, span.end))
+    }
+}
+
+method negotiatePositionEncoding(array<string> clientEncodings): string {
+    if (isNone(clientEncodings)) {
+        return TEXT_ENCODING_UTF16
+    }
+    if (clientEncodings.contains(TEXT_ENCODING_UTF8)) {
+        return TEXT_ENCODING_UTF8
+    }
+    return TEXT_ENCODING_UTF16
+}

@@ -1,0 +1,7 @@
+{"id":1,"jsonrpc":"2.0","result":{"capabilities":"@CAPABILITIES@","serverInfo":{"name":"novus-lsp","version":"0.1.0"}}}
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@ROOTURI@/big.nv","version":1}}
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[{"code":"unknown-character","message":"unknown character '#' is ignored by the compiler","range":{"end":{"character":11,"line":8999},"start":{"character":10,"line":8999}},"severity":2,"source":"novus"}],"uri":"@ROOTURI@/big.nv","version":2}}
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[{"code":"unknown-character","message":"unknown character '#' is ignored by the compiler","range":{"end":{"character":11,"line":9003},"start":{"character":10,"line":9003}},"severity":2,"source":"novus"}],"uri":"@ROOTURI@/big.nv","version":3}}
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@ROOTURI@/big.nv","version":4}}
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@ROOTURI@/big.nv"}}
+{"id":2,"jsonrpc":"2.0","result":null}

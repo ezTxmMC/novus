@@ -1,0 +1,104 @@
+package main
+
+import strings
+import unicode
+import "novus/lsp/base/text"
+import "novus/lsp/base/model"
+import "novus/lsp/server/protocol"
+
+method newEncoder(string encoding, ClientInfo client): WireEncoder {
+    return WireEncoder(PositionCodec(encoding), client)
+}
+
+method testBasicEncoders() {
+    println "== range, location, textEdit, workspaceEdit, prepareRename"
+    var emoji = unicode.fromCodePoint(128512)
+    var lines = LineIndex("a" + emoji + "bc\nsecond line\n")
+    var encoder = newEncoder("utf-16", ClientInfo())
+    showJson("range", encoder.range(lines, Span(1, 6)))
+    showJson("range empty", encoder.range(lines, Span(6, 6)))
+    showJson("range multi-line", encoder.range(lines, Span(2, 12)))
+    showJson("encodeRange", encodeRange(PositionCodec("utf-16"), lines, Span(0, 5)))
+    showJson("location", encoder.location("file:///work/a.nv", lines, Span(5, 7)))
+    showJson("textEdit", encoder.textEdit(lines, TextEdit(Span(5, 6), "X\nY")))
+    showJson("prepareRename", encoder.prepareRename(lines, Span(8, 14)))
+    showJson("prepareRename emoji", encoder.prepareRename(lines, Span(0, 6)))
+    var other = LineIndex("one\ntwo")
+    var byPath = {"/work/a.nv": lines, "/work/b.nv": other}
+    var edits = [FileEdit("/work/a.nv", [TextEdit(Span(0, 0), "import x\n")]), FileEdit("/work/b.nv", [TextEdit(Span(4, 7), "TWO")]), FileEdit("/work/a.nv", [TextEdit(Span(5, 6), "")]), FileEdit("/work/missing.nv", [TextEdit(Span(0, 0), "lost")])]
+    showJson("workspaceEdit", encoder.workspaceEdit(byPath, edits))
+    showJson("workspaceEdit none", encoder.workspaceEdit({}, []))
+    showJson("utf-8 range", newEncoder("utf-8", ClientInfo()).range(lines, Span(1, 6)))
+}
+
+method sampleDiagnostic(): Diagnostic {
+    var diagnostic = Diagnostic(Span(0, 3), Severity.Warning, "novus", "unused-name", "x is unused")
+    diagnostic.unnecessary = true
+    diagnostic.data = "fix:remove"
+    diagnostic.related = [RelatedInfo("/work/b.nv", Span(4, 7), "declared here"), RelatedInfo("/work/unknown.nv", Span(0, 1), "lost")]
+    return diagnostic
+}
+
+method testDiagnosticEncoders() {
+    println "== diagnostics"
+    var lines = LineIndex("var x\nsecond")
+    var other = LineIndex("one\ntwo")
+    var byPath = {"/work/b.nv": other}
+    var plainClient = ClientInfo()
+    var relatedClient = newClient(false, false, true, false)
+    var diagnostic = sampleDiagnostic()
+    showJson("two arguments", newEncoder("utf-16", relatedClient).diagnostic(lines, diagnostic))
+    showJson("three arguments, client without related", newEncoder("utf-16", plainClient).diagnostic(lines, diagnostic, byPath))
+    showJson("three arguments, client with related", newEncoder("utf-16", relatedClient).diagnostic(lines, diagnostic, byPath))
+    var minimal = Diagnostic(Span(4, 5), Severity.Error, "", "", "boom")
+    showJson("minimal", newEncoder("utf-16", plainClient).diagnostic(lines, minimal))
+    var hint = Diagnostic(Span(0, 0), Severity.Hint, "novusc", "", "hint")
+    hint.deprecated = true
+    showJson("deprecated hint", newEncoder("utf-16", plainClient).diagnostic(lines, hint))
+    var encoder = newEncoder("utf-16", plainClient)
+    var encoded = [encoder.diagnostic(lines, minimal)]
+    showJson("publishParams", encoder.publishParams("file:///work/a.nv", 3, encoded))
+    showJson("publishParams unknown version", encoder.publishParams("file:///work/a.nv", -1, []))
+    showJson("publishParams version 0", encoder.publishParams("file:///work/a.nv", 0, []))
+    showJson("logMessage", encoder.logMessage(1, "failed"))
+    showJson("logMessage clamped high", encoder.logMessage(9, "x"))
+    showJson("logMessage clamped low", encoder.logMessage(0, "y"))
+}
+
+method testSharedState() {
+    println "== client flags and codec are read at every call"
+    var emoji = unicode.fromCodePoint(128512)
+    var lines = LineIndex(emoji + "ab")
+    var client = ClientInfo()
+    var codec = PositionCodec("utf-16")
+    var encoder = WireEncoder(codec, client)
+    var diagnostic = sampleDiagnostic()
+    var byPath = {"/work/b.nv": LineIndex("one\ntwo")}
+    var before = encoder.diagnostic(lines, diagnostic, byPath)
+    client.relatedInformation = true
+    var after = encoder.diagnostic(lines, diagnostic, byPath)
+    show("related before/after", before.has("relatedInformation") + " " + after.has("relatedInformation"))
+    showJson("range utf-16", encoder.range(lines, Span(4, 5)))
+    codec.encoding = "utf-8"
+    showJson("range utf-8", encoder.range(lines, Span(4, 5)))
+    var item = CompletionItem("n", CompletionKind.Field, "")
+    item.documentation = "doc"
+    item.labelDescription = "pkg"
+    show("markdown flag off", typeOf(encoder.completionItem(lines, item)["documentation"]) + " " + encoder.completionItem(lines, item).has("labelDetails"))
+    client.markdownDocumentation = true
+    client.labelDetailsSupport = true
+    show("markdown flag on", typeOf(encoder.completionItem(lines, item)["documentation"]) + " " + encoder.completionItem(lines, item).has("labelDetails"))
+}
+
+method testClipping() {
+    println "== free text is clipped on a character boundary"
+    var emoji = unicode.fromCodePoint(128512)
+    var long = strings.repeat("a", 262143) + emoji + "tail"
+    var encoder = newEncoder("utf-16", ClientInfo())
+    var message = encoder.logMessage(3, long)["message"]
+    show("clipped length", message.length())
+    show("clipped valid utf-8", unicode.isValidUtf8(message))
+    var exact = strings.repeat("b", 262144)
+    show("exact length kept", encoder.logMessage(3, exact)["message"].length())
+    show("short text kept", encoder.logMessage(3, "short" + emoji)["message"] == "short" + emoji)
+}

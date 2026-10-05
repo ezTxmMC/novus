@@ -1,0 +1,16 @@
+package main
+
+import "novus/lsp/base/platform"
+
+method say(string line) {
+    stdoutWriteText(line + "\n")
+}
+
+method sayCase(string label, object value) {
+    say(label + ": " + value)
+}
+
+// MessageWriter writes frames without a trailing newline; this ends the line for the golden file.
+method endFrameLine() {
+    stdoutWriteText("\n")
+}

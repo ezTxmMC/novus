@@ -1,0 +1,64 @@
+package main
+
+// What a loop over a map sees when the map changes inside the loop: it walks
+// the keys the map had when the loop began, in key order; entries that are
+// removed meanwhile are still visited (ask has() before reading), and entries
+// that are added are not.
+
+final ENTRIES = 100
+
+method fill(map m) {
+    var i = 0
+    while (i < ENTRIES) {
+        m["k" + (i * 41) % ENTRIES] = i
+        i = i + 1
+    }
+}
+
+method main {
+    var m = {}
+    fill(m)
+
+    var visited = 0
+    var missing = 0
+    var firstVisited = ""
+    var lastVisited = ""
+    for (key in m) {
+        if (visited == 0) {
+            firstVisited = key
+        }
+        lastVisited = key
+        visited = visited + 1
+        if (m.has(key) == false) {
+            missing = missing + 1
+        }
+        m.remove("k99")
+        m.remove("k" + (visited % ENTRIES))
+        m["added" + visited] = visited
+    }
+    println "visited ${visited} first ${firstVisited} last ${lastVisited} missing ${missing}"
+    var hasK99 = m.has("k99")
+    println "length ${m.length()} has k99 ${hasK99}"
+    println m.keys()
+
+    // the order after removals and additions is the key order again
+    var after = []
+    for (key in m) {
+        after.append(key)
+    }
+    println after.length()
+    println after[0] + " " + after[after.length() - 1]
+
+    // keys() is a snapshot too
+    var keys = m.keys()
+    m.remove(keys[0])
+    println "${keys.length()} ${m.length()} ${m.has(keys[0])}"
+
+    // a loop that removes every key it visits ends with an empty map
+    for (key in m) {
+        m.remove(key)
+    }
+    println "${m.length()} ${m.keys()}"
+    m["again"] = 1
+    println m
+}

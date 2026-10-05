@@ -1,0 +1,41 @@
+package main
+
+// The arguments of an enum constant are evaluated left to right as well. The
+// constants are built before main runs, so the log shows the order of the
+// constructor arguments in nv_init_globals.
+
+final TRACE = []
+final BASE = "base"
+
+method note(string name): string {
+    TRACE.append(name)
+    return name
+}
+
+method join2(string a, string b): string {
+    return a + b
+}
+
+define enum Color {
+    RED(note("r1"), note("r2")),
+    GREEN(note("g1") + note("g2"), note("g3")),
+    BLUE(BASE, note("b2")),
+    PLAIN("x", "y");
+
+    private final string first: get
+    private final string second: get
+
+    private construct(string first, string second) {
+        this.first = first
+        this.second = second
+    }
+}
+
+method main {
+    println TRACE.join(" ")
+    println Color.RED.first() + Color.RED.second()
+    println Color.GREEN.first() + Color.GREEN.second()
+    println Color.BLUE.first() + Color.BLUE.second()
+    println Color.PLAIN.first() + Color.PLAIN.second()
+    println join2(Color.RED.first(), Color.GREEN.second())
+}

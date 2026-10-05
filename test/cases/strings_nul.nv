@@ -1,0 +1,149 @@
+package main
+
+import hash
+import strings
+import arrays
+
+// Strings are byte strings: a NUL byte is an ordinary character for
+// comparison, search, split, replace, join, hashing and sorting.
+
+final NUL = chr(0)
+
+// The parts joined by "|", with NUL shown as "~".
+method describe(array<string> parts): string {
+    var shown = []
+    for (part in parts) {
+        shown.append(visible(part))
+    }
+    return "${parts.length()}: " + shown.join("|")
+}
+
+// Shows NUL as "~" so the output stays readable text.
+method visible(string text): string {
+    return text.replace(NUL, "~")
+}
+
+method printComparisons() {
+    var a = "a" + NUL + "b"
+    var c = "a" + NUL + "c"
+    println a == c
+    println a != c
+    println a == "a"
+    println "a" == a
+    println a == "a" + NUL + "b"
+    println a < c
+    println c > a
+    println a < "a"
+    println "a" < a
+    println a <= a
+    println NUL == ""
+    println NUL == NUL
+    println NUL + NUL == NUL
+    println NUL < "a"
+    println "" < NUL
+    println a.length()
+    println ord(a.charAt(1))
+}
+
+method printSearches() {
+    var text = "ab" + NUL + "cd" + NUL + NUL + "ef"
+    println text.length()
+    println text.indexOf(NUL)
+    println text.indexOf(NUL, 3)
+    println text.indexOf(NUL, 6)
+    println text.indexOf("cd")
+    println text.indexOf("d" + NUL)
+    println text.indexOf(NUL + NUL)
+    println text.indexOf(NUL + NUL + "e")
+    println text.indexOf("ef")
+    println text.contains("b" + NUL + "c")
+    println text.contains("b" + NUL + "d")
+    println text.startsWith("ab" + NUL)
+    println text.startsWith("ab" + NUL + "cd")
+    println text.startsWith("ab" + NUL + "x")
+    println text.endsWith(NUL + "ef")
+    println text.endsWith("x" + NUL + "ef")
+    println text.endsWith(NUL + NUL + "ef")
+    println text.indexOf("abx")
+    var view = text.substring(1, 7)
+    println visible(view)
+    println view.indexOf("c")
+    println view.indexOf(NUL + NUL)
+    println view.contains("e")
+    println view.endsWith(NUL + NUL)
+}
+
+method printSplitsAndReplacements() {
+    var text = "one" + NUL + "two" + NUL + NUL + "three"
+    println describe(text.split(NUL))
+    println describe(text.split(NUL + NUL))
+    println text.split(NUL).length()
+    println visible(text.replace(NUL, "-"))
+    println visible(text.replace(NUL + NUL, "="))
+    println visible(text.replace("two", "2" + NUL + "2"))
+    println visible(text.replace("o", NUL))
+    println visible(text.replace("zzz", "y"))
+    println visible(text.replace(NUL, ""))
+    println text.replace(NUL, "").length()
+    println (NUL + "x").split(NUL).length()
+    println visible("a" + NUL).trim()
+    println ("  " + NUL + "  ").trim().length()
+}
+
+method printJoins() {
+    var parts = ["a", "b", "c"]
+    println visible(parts.join(NUL))
+    println parts.join(NUL).length()
+    println visible(["x" + NUL + "y", "z"].join("-"))
+    println visible(["x" + NUL + "y", "z"].join(NUL))
+}
+
+method printWords() {
+    var text = "ab" + NUL + "cd ef" + NUL + " gh"
+    println strings.words(text).length()
+    println visible(strings.words(text).join("|"))
+}
+
+method printHashes() {
+    var plain = "ab"
+    var withNul = "ab" + NUL + "cd"
+    var otherTail = "ab" + NUL + "ce"
+    println hash.fnv1a(plain) != hash.fnv1a(withNul)
+    println hash.fnv1a(withNul) != hash.fnv1a(otherTail)
+    println hash.crc32(plain) != hash.crc32(withNul)
+    println hash.crc32(withNul) != hash.crc32(otherTail)
+    println hash.fnv1a(NUL)
+    println hash.fnv1a(NUL + NUL)
+    println hash.crc32(NUL)
+    println hash.crc32(NUL + NUL)
+    println hash.fnv1a(withNul)
+    println hash.crc32(withNul)
+    println hash.fnv1a(withNul) == hash.fnv1a("ab" + NUL + "cd")
+    println hash.bucket(withNul, 1000) < 1000
+}
+
+method printSorting() {
+    var items = ["a" + NUL + "b", "a", "a" + NUL, "a" + NUL + "a", "b", ""]
+    println describe(arrays.sort(items))
+    println items.indexOf("a" + NUL)
+    println items.contains("a" + NUL + "a")
+    println items.contains("a" + NUL + "z")
+}
+
+method printCase() {
+    var text = "aB" + NUL + "cD"
+    println visible(text.toUpper())
+    println visible(text.toLower())
+    println text.toUpper().length()
+}
+
+method main {
+    printComparisons()
+    printSearches()
+    printSplitsAndReplacements()
+    printJoins()
+    printWords()
+    printHashes()
+    printSorting()
+    printCase()
+}

@@ -1,0 +1,34 @@
+package closure
+
+import base/platform
+import projects/manifest
+import projects/modules
+import projects/stdlib
+import syntax/outline
+
+// One thing an `import` can name: `kind` says the form (Package `import geo`, File `import @geo/circle`, Module
+// `import "mod/pkg"`), `text` is the bare target text of that form, `filePath` the folder or file it loads (the
+// logical `std:<module>` key for a std module).
+define class ImportTarget {
+    ImportKind kind
+    string text
+    string filePath
+    FileOrigin origin
+
+    construct(ImportKind kind, string text, string filePath, FileOrigin origin) {
+        this.kind = kind
+        this.text = text
+        this.filePath = filePath
+        this.origin = origin
+    }
+}
+
+method resolveImport(ProjectLayout layout, ModuleTable modules, TextSource source, StdLibrary library, ImportDecl declaration): ImportTarget {
+    return ImportResolver(layout, modules, source, library).resolve(declaration)
+}
+
+// The universe of imports for completion and links: every std module, every package folder and file of the
+// project, and the entry, package folders and files of every Ready dependency. Nothing is read from the net.
+method importableTargets(ProjectLayout layout, ModuleTable modules, TextSource source, StdLibrary library): array<ImportTarget> {
+    return ImportResolver(layout, modules, source, library).targets()
+}

@@ -1,0 +1,26 @@
+package main
+
+import "novus/lsp/server/rpc"
+
+// FrameReader on main.stdin: every status of a frame. A corrupt header block is followed at once by the next
+// block, because the reader never reads a body it did not accept (the server itself stops at the first one).
+method describeFrame(Frame frame): string {
+    var shown = frame.body.replace(chr(13), "<CR>").replace(chr(10), "<LF>")
+    if (frame.body.length() > 60) {
+        shown = frame.body.length() + " bytes, starts with [" + frame.body.substring(0, 12) + "], ends with [" + frame.body.substring(frame.body.length() - 12, frame.body.length()) + "]"
+    }
+    return frame.status + " body=[" + shown + "] detail=[" + frame.detail + "]"
+}
+
+method main() {
+    var reader = FrameReader()
+    var reading = true
+    var count = 0
+    while (reading) {
+        count = count + 1
+        var frame = reader.readFrame()
+        println(count + ": " + describeFrame(frame))
+        reading = frame.status != FRAME_EOF
+    }
+    println("after the end of input: " + describeFrame(reader.readFrame()))
+}

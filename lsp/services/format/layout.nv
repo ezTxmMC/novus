@@ -1,0 +1,166 @@
+package format
+
+import base/model
+import strings
+import syntax/lexing
+
+// One formatting pass: the text of every item is copied, only the whitespace between items is decided here. Line breaks are
+// kept (at most `maxBlankLines` blank lines in a row), so no line is ever joined or split.
+private final FORMAT_LINE_FEED = "\n"
+private final FORMAT_CRLF = "\r\n"
+private final FORMAT_SINGLE_SPACE = " "
+private final FORMAT_LINE_COMMENT = "//"
+
+define class FormatLayout {
+    string text
+    FormatSettings settings
+    FormatItems source
+    array<FormatGapScan> scans
+    FormatGapScan trailing
+    array<string> parts
+    SpacingRules rules
+    IndentTracker tracker
+    string eol
+    integer previousEnd
+
+    construct(string text, LexResult lexed, FormatSettings settings) {
+        this.text = text
+        this.settings = settings
+        this.source = FormatItems(lexed)
+        this.scans = []
+        this.parts = []
+        this.rules = SpacingRules()
+        this.rules.prepare(this.source.code)
+        this.tracker = IndentTracker(settings)
+        this.previousEnd = 0
+        this.eol = FORMAT_LINE_FEED
+        this.scanGaps()
+    }
+
+    method render(): string {
+        if (this.source.items.length() == 0) {
+            return this.emptyFile()
+        }
+        var index = 0
+        while (index < this.source.items.length()) {
+            this.emit(index)
+            index = index + 1
+        }
+        this.emitTail()
+        return this.parts.join("")
+    }
+
+    // A file without code is empty unless it holds a byte that is not whitespace.
+    method emptyFile(): string {
+        if (this.trailing.foreign) {
+            return this.text
+        }
+        return ""
+    }
+
+    // The line ending of the file is the one of its first line break between items (not inside a string, not before the first item).
+    method scanGaps() {
+        var end = 0
+        for (item in this.source.items) {
+            var scan = FormatGapScan(this.text.substring(end, item.start))
+            this.scans.append(scan)
+            end = item.end
+        }
+        this.trailing = FormatGapScan(this.text.substring(end, this.text.length()))
+        this.eol = this.eolOf(this.firstBreak())
+    }
+
+    method firstBreak(): FormatGapScan {
+        var index = 1
+        while (index < this.scans.length()) {
+            if (this.scans[index].newlines > 0 && this.scans[index].foreign == false) {
+                return this.scans[index]
+            }
+            index = index + 1
+        }
+        return this.trailing
+    }
+
+    method eolOf(FormatGapScan scan): string {
+        if (scan.newlines > 0 && scan.foreign == false && scan.crlf) {
+            return FORMAT_CRLF
+        }
+        return FORMAT_LINE_FEED
+    }
+
+    method emit(integer index) {
+        var item = this.source.items[index]
+        var gap = this.text.substring(this.previousEnd, item.start)
+        this.parts.append(this.gapBefore(index, gap))
+        this.parts.append(this.textOf(item))
+        this.tracker.advance(item)
+        this.previousEnd = item.end
+    }
+
+    method textOf(Token item): string {
+        if (item.kind == TokenKind.Comment && item.text.startsWith(FORMAT_LINE_COMMENT)) {
+            return formatTrimTrailingBlanks(item.text)
+        }
+        return item.text
+    }
+
+    method gapBefore(integer index, string gap): string {
+        var scan = this.scans[index]
+        var item = this.source.items[index]
+        if (index > 0 && scan.newlines > 0) {
+            var indent = this.tracker.indentOf(item)
+            return this.lineBreaks(scan, gap, indent)
+        }
+        if (scan.foreign) {
+            return gap
+        }
+        if (index == 0) {
+            return ""
+        }
+        return this.sameLineGap(index, gap)
+    }
+
+    method lineBreaks(FormatGapScan scan, string gap, string indent): string {
+        if (scan.foreign) {
+            return gap
+        }
+        var lines = scan.newlines
+        var most = this.settings.maxBlankLines + 1
+        if (most < 1) {
+            most = 1
+        }
+        if (lines > most) {
+            lines = most
+        }
+        return strings.repeat(this.eol, lines) + indent
+    }
+
+    method sameLineGap(integer index, string gap): string {
+        var left = this.source.items[index - 1]
+        var right = this.source.items[index]
+        if (left.kind == TokenKind.Comment || right.kind == TokenKind.Comment) {
+            return this.commentGap(gap)
+        }
+        if (gap == "" && (left.kind == TokenKind.Unknown || right.kind == TokenKind.Unknown)) {
+            return ""
+        }
+        return this.rules.gapAt(this.source.codeIndex[index])
+    }
+
+    // A comment keeps the blanks the author put in front of it (trailing comments are often aligned), at least one.
+    method commentGap(string gap): string {
+        if (gap == "") {
+            return FORMAT_SINGLE_SPACE
+        }
+        return gap
+    }
+
+    // Exactly one line break ends the file.
+    method emitTail() {
+        if (this.trailing.foreign) {
+            this.parts.append(this.text.substring(this.previousEnd, this.text.length()))
+            return
+        }
+        this.parts.append(this.eol)
+    }
+}

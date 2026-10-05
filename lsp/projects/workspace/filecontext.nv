@@ -1,0 +1,182 @@
+package workspace
+
+import base/maybe
+import base/platform
+import base/text
+import projects/closure
+import projects/manifest
+import projects/stdlib
+import semantics/semantic
+import syntax/outline
+import syntax/parsing
+
+private final WORKSPACE_SOURCE_EXTENSIONS = [".nv", ".nvh"]
+private final WORKSPACE_NO_IMPORT_LOOKUP = "the context has no import lookup"
+
+// The kinds of files that are program sources: `fileKindOf` calls everything that is no manifest and no `.nvh` a Novus
+// file, so a markdown or json buffer of the project folder would join the program as an orphan without this check.
+method workspaceIsNovusSource(string filePath): bool {
+    for (extension in WORKSPACE_SOURCE_EXTENSIONS) {
+        if (filePath.endsWith(extension)) {
+            return true
+        }
+    }
+    return false
+}
+
+// The bundle every feature receives for one file.
+define class FileContext {
+    Document document
+    SourceFile syntax
+    ProjectModel project
+    ClosureFile closureFile
+    // Additive (amendment 6, V112): what `lookupImport` reads; the workspace sets both through `withLookup`.
+    TextSource source
+    StdLibrary library
+
+    construct(Document document, SourceFile syntax, ProjectModel project, ClosureFile closureFile) {
+        this.document = document
+        this.syntax = syntax
+        this.project = project
+        this.closureFile = closureFile
+        this.source = nothing()
+        this.library = nothing()
+    }
+
+    // The workspace hands every context the text source and the std library its import lookup needs.
+    method withLookup(TextSource source, StdLibrary library): FileContext {
+        this.source = source
+        this.library = library
+        return this
+    }
+
+    // Where an import statement of this file leads, by the loader's rules (6.12): `found` is false, with a message, when it
+    // leads nowhere or when the context has no closure file (a manifest) or no lookup.
+    method lookupImport(ImportDecl declaration): ClosureResolution {
+        if (isNone(this.closureFile) || isNone(this.source) || isNone(this.library)) {
+            return ClosureResolution(false, WORKSPACE_NO_IMPORT_LOOKUP, "", "", ClosureScope("", FileOrigin.Project, ""))
+        }
+        var resolver = ImportResolver(this.project.layout, this.project.modules, this.source, this.library)
+        var scope = ClosureScope(this.closureFile.root, this.closureFile.origin, this.closureFile.moduleName)
+        return resolver.lookup(scope, declaration)
+    }
+
+    // Additive (Amendment 7, V139): the parse of a closure file that keeps its tokens, nil when the context has no source.
+    // The open document answers with its own editor parse; the source of a workspace context is its FileCache.
+    method syntaxWithTokens(string filePath): SourceFile {
+        if (filePath == this.document.filePath) {
+            return this.syntax
+        }
+        if (isNone(this.source)) {
+            return nothing()
+        }
+        return this.source.syntaxWithTokens(filePath)
+    }
+
+    method index(): ProgramIndex {
+        return this.project.index
+    }
+
+    method resolver(): Resolver {
+        return this.project.resolver
+    }
+}
+
+// The program of a scratch buffer (an `untitled:` document, no path): a model with the empty key whose closure holds
+// only that buffer, built by hand because `ClosureBuilder` ignores the empty path (V99).
+define class WorkspaceScratch {
+    Workspace workspace
+
+    construct(Workspace workspace) {
+        this.workspace = workspace
+    }
+
+    method model(): ProjectModel {
+        if (this.workspace.projects.has(WORKSPACE_SCRATCH_KEY) == false) {
+            this.workspace.projects[WORKSPACE_SCRATCH_KEY] = this.emptyModel()
+        }
+        return this.workspace.projects[WORKSPACE_SCRATCH_KEY]
+    }
+
+    // A model that holds nothing yet but answers every query, so that `projectFor("")` is usable before any buffer.
+    method emptyModel(): ProjectModel {
+        var model = ProjectModel(ProjectLayout("", "", ManifestFile(""), ""))
+        model.index = ProgramIndex(model.closure, this.workspace.library)
+        model.resolver = Resolver(model.index)
+        model.valid = true
+        return model
+    }
+
+    method contextFor(Document document): FileContext {
+        var model = this.model()
+        var scratchFile = model.closure.fileAt(WORKSPACE_SCRATCH_KEY)
+        if (isNone(scratchFile) || scratchFile.syntax.textHash != document.textHash) {
+            scratchFile = this.build(model, document)
+        }
+        return FileContext(document, scratchFile.syntax, model, scratchFile).withLookup(this.workspace.files, this.workspace.library)
+    }
+
+    method build(ProjectModel model, Document document): ClosureFile {
+        var syntax = parseSourceText(WORKSPACE_SCRATCH_KEY, document.text, editorParseOptions())
+        var closure = ProgramClosure(model.layout)
+        var scratchFile = ClosureFile("", FileOrigin.Project, "", "", syntax)
+        closure.add(scratchFile)
+        model.closure = closure
+        model.valid = true
+        model.rebuildIndex(this.workspace.library)
+        return scratchFile
+    }
+}
+
+// The open files that belong to the program of a model but that no import reaches (orphans). A file of a package
+// folder drags its folder along: a folder is a package, so every file of it is in the program as soon as anything
+// imports the folder, and the siblings are what the orphan's own names resolve to. A file at the root is alone.
+define class WorkspaceOrphans {
+    Workspace workspace
+
+    construct(Workspace workspace) {
+        this.workspace = workspace
+    }
+
+    method entriesFor(ProjectModel model): array<string> {
+        var entries = []
+        for (filePath in this.workspace.files.overlayPaths()) {
+            if (this.isOrphanOf(model, filePath)) {
+                this.addWithSiblings(model, filePath, entries)
+            }
+        }
+        return entries
+    }
+
+    method isOrphanOf(ProjectModel model, string filePath): bool {
+        if (workspaceIsNovusSource(filePath) == false || model.closure.has(filePath)) {
+            return false
+        }
+        return ProjectModel(findProjectLayout(this.workspace.files, filePath)).key() == model.key()
+    }
+
+    // True when the imports of the program (without any orphan entry) lead to the file.
+    method isReachedByImports(ProjectModel model, string filePath): bool {
+        var files = this.workspace.files
+        var builder = ClosureBuilder(model.layout, model.modules, files, CacheSourceProvider(files), this.workspace.library)
+        return builder.build([]).has(filePath)
+    }
+
+    method addWithSiblings(ProjectModel model, string filePath, array<string> entries) {
+        this.addOnce(entries, filePath)
+        var folder = manifestDirectoryOf(filePath)
+        if (folder == model.layout.root) {
+            return
+        }
+        var loader = PackageLoader(model.layout, this.workspace.files, CacheSourceProvider(this.workspace.files), this.workspace.library)
+        for (sibling in loader.sourceFilesOf(folder)) {
+            this.addOnce(entries, sibling)
+        }
+    }
+
+    method addOnce(array<string> entries, string filePath) {
+        if (entries.contains(filePath) == false && fileKindOf(filePath) != FILE_KIND_MANIFEST) {
+            entries.append(filePath)
+        }
+    }
+}

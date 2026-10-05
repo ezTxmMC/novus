@@ -1,0 +1,45 @@
+package main
+
+import "novus/lsp/base/model"
+import "novus/lsp/base/text"
+import "novus/lsp/server/session"
+
+method storeDiagnostic(string source, string code): Diagnostic {
+    return Diagnostic(Span(0, 1), Severity.Warning, source, code, code + " message")
+}
+
+method storeCodes(DiagnosticStore store, string uri): string {
+    var codes = []
+    for (diagnostic in store.merged(uri)) {
+        codes.push(diagnostic.source + ":" + diagnostic.code)
+    }
+    return "[" + codes.join(" ") + "]"
+}
+
+method storeUris(DiagnosticStore store, string source): string {
+    return "[" + store.urisOf(source).join(" ") + "]"
+}
+
+method runStoreCases() {
+    println("--- diagnostic store")
+    var store = DiagnosticStore()
+    println("empty merged: " + storeCodes(store, "file:///a.nv"))
+    println("empty urisOf: " + storeUris(store, "novus"))
+    store.replace("file:///a.nv", "pureline", [storeDiagnostic("pureline", "PL-NAME-001")])
+    store.replace("file:///a.nv", "novusc", [storeDiagnostic("novusc", "compile-error")])
+    store.replace("file:///a.nv", "novus", [storeDiagnostic("novus", "first"), storeDiagnostic("novus", "second")])
+    println("merged sources ascending, producer order kept: " + storeCodes(store, "file:///a.nv"))
+    store.replace("file:///b.nv", "novusc", [])
+    store.replace("file:///c.nv", "novusc", [storeDiagnostic("novusc", "compile-error")])
+    println("urisOf novusc includes the explicit empty list: " + storeUris(store, "novusc"))
+    println("urisOf novus: " + storeUris(store, "novus"))
+    println("an empty list holds no diagnostic: " + storeCodes(store, "file:///b.nv"))
+    store.replace("file:///a.nv", "novus", [])
+    println("replace overwrites one source: " + storeCodes(store, "file:///a.nv"))
+    println("the emptied source still counts as a holder: " + storeUris(store, "novus"))
+    store.clear("file:///a.nv")
+    println("clear drops every source: " + storeCodes(store, "file:///a.nv") + " " + storeUris(store, "novus"))
+    println("other files stay: " + storeUris(store, "novusc"))
+    store.clear("file:///never.nv")
+    println("clear of an unknown uri is harmless: " + storeUris(store, "novusc"))
+}

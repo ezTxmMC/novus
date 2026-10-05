@@ -1,0 +1,138 @@
+package main
+
+import os
+import path
+import time
+
+// The compiler on very wide nodes: a method of many statements, a method of
+// many blocks and locals, and a list of many elements. Its time must grow
+// linearly with the width. It used to grow with the square in three ways:
+// walking the children of a node scanned the node from its start for every
+// child (minutes for 20000 statements), a cache that dropped a long node's
+// bounds whenever a short node needed its slot did the same in a milder form,
+// and every block copied the whole map of locals (and removing from a map
+// cost the size of the map).
+//
+// Each shape is compiled at a size and at four times that size, taking the
+// best of a few runs of each to keep a busy machine from deciding the result;
+// four times the width may cost at most MAX_GROWTH times the time (linear is
+// 4, quadratic is 16). A hang ends at the case's time limit.
+
+final SMALL_WIDTH = 20000
+final SCALE = 4
+final RUNS = 3
+final MAX_GROWTH = 7.0
+final CHECK_OK = 0
+final MINIMUM_SECONDS = 0.001
+
+method statementsSource(integer width): string {
+    var lines = ["method main {", "    var total = 0"]
+    var i = 0
+    while (i < width) {
+        lines.append("    total = total + " + i % 7)
+        i = i + 1
+    }
+    lines.append("    println total")
+    lines.append("}")
+    return lines.join("\n") + "\n"
+}
+
+// Three statements per step, one of them a block, one a new local.
+method blocksSource(integer width): string {
+    var lines = ["method next(integer x): integer {", "    return x + 1", "}", "", "method main {", "    var total = 0"]
+    var i = 0
+    while (i < width / 3) {
+        lines.append("    if (total > " + i + ") {")
+        lines.append("        println next(total)")
+        lines.append("    }")
+        lines.append("    total = next(total) + " + i)
+        lines.append("    var s_" + i + " = \"x\" + total")
+        i = i + 1
+    }
+    lines.append("    println total")
+    lines.append("}")
+    return lines.join("\n") + "\n"
+}
+
+method listSource(integer width): string {
+    var items = []
+    var i = 0
+    while (i < width) {
+        items.append("" + i)
+        i = i + 1
+    }
+    return "final ITEMS = [" + items.join(", ") + "]\n\nmethod main {\n    println ITEMS.length()\n}\n"
+}
+
+method sourceOf(string shape, integer width): string {
+    if (shape == "statements") {
+        return statementsSource(width)
+    }
+    if (shape == "blocks") {
+        return blocksSource(width)
+    }
+    return listSource(width)
+}
+
+method compiler(): string {
+    var fromEnvironment = os.env("NOVUSC")
+    if (fromEnvironment == "") {
+        return "novusc"
+    }
+    return fromEnvironment
+}
+
+// The seconds one `novusc check` of the file took, -1.0 when it failed.
+method checkSeconds(string file): float {
+    var started = time.clock()
+    var result = os.run(os.shellQuote(compiler()) + " check " + os.shellQuote(file) + " 2>&1")
+    var seconds = time.clock() - started
+    if (result["code"] != CHECK_OK) {
+        return -1.0
+    }
+    return seconds
+}
+
+// The best of RUNS checks of a source of this shape and width, -1.0 when one failed.
+method bestSeconds(string dir, string shape, integer width): float {
+    var file = path.join(dir, shape + "-" + width + ".nv")
+    os.writeFile(file, sourceOf(shape, width))
+    var best = -1.0
+    var run = 0
+    while (run < RUNS) {
+        var seconds = checkSeconds(file)
+        if (seconds < 0.0) {
+            return -1.0
+        }
+        if (best < 0.0 || seconds < best) {
+            best = seconds
+        }
+        run = run + 1
+    }
+    return best
+}
+
+method scalesLinearly(string dir, string shape): bool {
+    var small = bestSeconds(dir, shape, SMALL_WIDTH)
+    var large = bestSeconds(dir, shape, SMALL_WIDTH * SCALE)
+    if (small < 0.0 || large < 0.0) {
+        return false
+    }
+    var baseline = small
+    if (baseline < MINIMUM_SECONDS) {
+        baseline = MINIMUM_SECONDS
+    }
+    return large / baseline <= MAX_GROWTH
+}
+
+method main {
+    var dir = path.join(os.temp(), "novus-compile-scale-" + os.pid())
+    os.mkdir(dir)
+    var statements = scalesLinearly(dir, "statements")
+    var blocks = scalesLinearly(dir, "blocks")
+    var list = scalesLinearly(dir, "list")
+    os.removeAll(dir)
+    println "statements: linear ${statements}"
+    println "blocks and locals: linear ${blocks}"
+    println "list: linear ${list}"
+}

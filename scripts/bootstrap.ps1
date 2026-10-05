@@ -9,7 +9,7 @@ $env:NOVUS_CC = $cc
 New-Item -ItemType Directory -Force -Path $out | Out-Null
 
 Write-Host "stage0: $cc bootstrap\novusc.c -> $out\novusc0.exe"
-& $cc -O2 (Join-Path $root "bootstrap\novusc.c") -o (Join-Path $out "novusc0.exe") -lm
+& $cc -O2 -ffp-contract=off (Join-Path $root "bootstrap\novusc.c") -o (Join-Path $out "novusc0.exe") -lm
 if ($LASTEXITCODE -ne 0) { throw "stage0 failed" }
 
 Write-Host "stage1: compiling compiler\main.nv with the snapshot"

@@ -1,0 +1,149 @@
+package protocol
+
+import arrays
+import base/model
+import base/text
+
+// Semantic token encoding: orders spans, resolves overlaps, splits multi-line spans, converts to the wire units, delta-encodes.
+private final PROTOCOL_TOKEN_KEY_SHIFT = 16777216
+private final PROTOCOL_TOKEN_MAX_LENGTH = 16777215
+private final PROTOCOL_TOKEN_END_OF_TEXT = 4611686018427387904
+
+// Key that sorts by start, then longer spans first; one key per (start, length), the later input span replaces the earlier.
+method protocolTokenKey(Span span): integer {
+    var length = span.length()
+    if (length > PROTOCOL_TOKEN_MAX_LENGTH) {
+        length = PROTOCOL_TOKEN_MAX_LENGTH
+    }
+    return span.start * PROTOCOL_TOKEN_KEY_SHIFT + (PROTOCOL_TOKEN_MAX_LENGTH - length)
+}
+
+// Spans clamped to the text; empty and negative ones are dropped.
+method protocolNormalizeSpans(array<SemanticSpan> spans, integer textLength): array<SemanticSpan> {
+    var normalized = []
+    for (entry in spans) {
+        var end = entry.span.end
+        if (end > textLength) {
+            end = textLength
+        }
+        if (entry.span.start >= 0 && entry.span.start < end) {
+            normalized.append(SemanticSpan(Span(entry.span.start, end), entry.tokenType, entry.modifiers))
+        }
+    }
+    return normalized
+}
+
+method protocolOrderSpans(array<SemanticSpan> spans): array<SemanticSpan> {
+    var byKey = {}
+    var keys = []
+    for (entry in spans) {
+        var key = protocolTokenKey(entry.span)
+        if (byKey.has("" + key) == false) {
+            keys.append(key)
+        }
+        byKey["" + key] = entry
+    }
+    var ordered = []
+    for (key in arrays.sort(keys)) {
+        ordered.append(byKey["" + key])
+    }
+    return ordered
+}
+
+method protocolEmitPiece(array<SemanticSpan> pieces, SemanticSpan owner, integer from, integer to) {
+    if (to > from) {
+        pieces.append(SemanticSpan(Span(from, to), owner.tokenType, owner.modifiers))
+    }
+}
+
+// Pops every active span that ends at or before the boundary, emitting the part not yet written.
+method protocolCloseFinished(array<SemanticSpan> pieces, array<SemanticSpan> active, integer cursor, integer boundary): integer {
+    var written = cursor
+    while (active.length() > 0 && active[active.length() - 1].span.end <= boundary) {
+        var top = active.pop()
+        protocolEmitPiece(pieces, top, written, top.span.end)
+        if (top.span.end > written) {
+            written = top.span.end
+        }
+    }
+    return written
+}
+
+// A span that starts inside an earlier one cuts it; the earlier one resumes after the later one ends.
+method protocolResolveOverlaps(array<SemanticSpan> ordered): array<SemanticSpan> {
+    var pieces = []
+    var active = []
+    var cursor = 0
+    for (entry in ordered) {
+        cursor = protocolCloseFinished(pieces, active, cursor, entry.span.start)
+        if (active.length() > 0) {
+            protocolEmitPiece(pieces, active[active.length() - 1], cursor, entry.span.start)
+        }
+        cursor = entry.span.start
+        active.append(entry)
+    }
+    protocolCloseFinished(pieces, active, cursor, PROTOCOL_TOKEN_END_OF_TEXT)
+    return pieces
+}
+
+// One segment per line the span touches; line terminators are never part of a token.
+method protocolSplitByLine(LineIndex lines, Span span): array<Span> {
+    var segments = []
+    var cursor = span.start
+    while (cursor < span.end) {
+        var line = lines.lineOf(cursor)
+        var segmentEnd = lines.lineEnd(line)
+        if (segmentEnd > span.end) {
+            segmentEnd = span.end
+        }
+        if (segmentEnd > cursor) {
+            segments.append(Span(cursor, segmentEnd))
+        }
+        if (line + 1 >= lines.lineCount()) {
+            break
+        }
+        cursor = lines.lineStart(line + 1)
+    }
+    return segments
+}
+
+define class SemanticTokenEncoder {
+    PositionCodec codec
+
+    construct(PositionCodec codec) {
+        this.codec = codec
+    }
+
+    method encode(LineIndex lines, array<SemanticSpan> spans): map<string, object> {
+        var ordered = protocolOrderSpans(protocolNormalizeSpans(spans, lines.text.length()))
+        return {"data": this.deltaEncode(lines, protocolResolveOverlaps(ordered))}
+    }
+
+    // Relative to the previous token: line delta, then the start column (relative only on the same line).
+    method deltaEncode(LineIndex lines, array<SemanticSpan> pieces): array<integer> {
+        var data = []
+        var previousLine = 0
+        var previousStart = 0
+        for (piece in pieces) {
+            for (segment in protocolSplitByLine(lines, piece.span)) {
+                var first = this.codec.positionOf(lines, segment.start)
+                var length = this.codec.positionOf(lines, segment.end).character - first.character
+                if (length <= 0) {
+                    continue
+                }
+                var deltaStart = first.character
+                if (first.line == previousLine) {
+                    deltaStart = first.character - previousStart
+                }
+                data.append(first.line - previousLine)
+                data.append(deltaStart)
+                data.append(length)
+                data.append(piece.tokenType)
+                data.append(piece.modifiers)
+                previousLine = first.line
+                previousStart = first.character
+            }
+        }
+        return data
+    }
+}

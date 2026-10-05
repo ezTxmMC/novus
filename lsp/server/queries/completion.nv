@@ -1,0 +1,95 @@
+package queries
+
+import base/maybe
+import base/model
+import base/text
+import features/completion
+import server/protocol
+import server/rpc
+import server/session
+
+private final QUERIES_COMPLETION_CONTEXT = "context"
+private final QUERIES_TRIGGER_CHARACTER = "triggerCharacter"
+private final QUERIES_ITEM_DATA = "data"
+private final QUERIES_ITEM_LABEL = "label"
+private final QUERIES_ITEM_DETAIL = "detail"
+private final QUERIES_ITEM_DOCUMENTATION = "documentation"
+private final QUERIES_MARKDOWN = "markdown"
+
+define class CompletionHandler based RequestHandler {
+    Session session
+    CompletionEngine engine
+    WireEncoder encoder
+
+    construct(Session session, CompletionEngine engine, WireEncoder encoder) {
+        this.session = session
+        this.engine = engine
+        this.encoder = encoder
+    }
+
+    // An unknown document gives an empty list; a client without snippet support gets plain text (V127).
+    method handle(Request request): object {
+        var target = this.session.targetAt(request.params)
+        if (isNone(target)) {
+            return {"isIncomplete": false, "items": []}
+        }
+        var trigger = protocolText(protocolField(request.params, QUERIES_COMPLETION_CONTEXT), QUERIES_TRIGGER_CHARACTER, "")
+        var list = this.engine.complete(target.context, target.offset, trigger)
+        if (this.session.client.snippetSupport == false) {
+            list = completionWithoutSnippets(list)
+        }
+        return this.encoded(target.context.document.lines, list)
+    }
+
+    method encoded(LineIndex lines, CompletionList list): map<string, object> {
+        var items = []
+        for (item in list.items) {
+            items.append(this.encoder.completionItem(lines, item))
+        }
+        return {"isIncomplete": list.isIncomplete, "items": items}
+    }
+}
+
+define class CompletionResolveHandler based RequestHandler {
+    Session session
+    CompletionEngine engine
+
+    construct(Session session, CompletionEngine engine) {
+        this.session = session
+        this.engine = engine
+    }
+
+    // The item as received, with the documentation (and a missing detail) that its `resolveKey` leads to.
+    method handle(Request request): object {
+        var key = protocolText(request.params, QUERIES_ITEM_DATA, "")
+        var context = this.session.contextFor(completionUriOfKey(key))
+        if (key == "" || isNone(context)) {
+            return request.params
+        }
+        var label = protocolText(request.params, QUERIES_ITEM_LABEL, "")
+        var item = CompletionItem(label, CompletionKind.Text, protocolText(request.params, QUERIES_ITEM_DETAIL, ""))
+        item.resolveKey = key
+        return this.merged(request.params, this.engine.resolve(context, item))
+    }
+
+    method merged(map<string, object> received, CompletionItem resolved): map<string, object> {
+        var answer = {}
+        for (name in received.keys()) {
+            answer[name] = received[name]
+        }
+        if (resolved.detail != "") {
+            answer[QUERIES_ITEM_DETAIL] = resolved.detail
+        }
+        if (resolved.documentation != "") {
+            answer[QUERIES_ITEM_DOCUMENTATION] = this.documentation(resolved.documentation)
+        }
+        return answer
+    }
+
+    method documentation(string text): object {
+        if (this.session.client.markdownDocumentation) {
+            return {"kind": QUERIES_MARKDOWN, "value": text}
+        }
+        return text
+    }
+}

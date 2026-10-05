@@ -1,0 +1,164 @@
+package navigation
+
+import base/maybe
+import base/model
+import projects/workspace
+import semantics/semantic
+import semantics/targets
+import syntax/lexing
+import syntax/outline
+
+// Whether the new name collides with something that the renamed declaration would then shadow or duplicate.
+define class NavigationRenameConflicts {
+    FileContext context
+    Symbol target
+    string newName
+
+    construct(FileContext context, Symbol target, string newName) {
+        this.context = context
+        this.target = target
+        this.newName = newName
+    }
+
+    method reason(): string {
+        var index = this.context.index()
+        if (this.target.isLocal()) {
+            return this.localReason()
+        }
+        if (this.target.decl.isType()) {
+            return this.existsReason(isSome(index.typeNamed(this.newName)), "a type")
+        }
+        var clash = this.declarationReason()
+        if (clash != "") {
+            return clash
+        }
+        return this.shadowReason()
+    }
+
+    method declarationReason(): string {
+        if (this.target.decl.kind == DeclKind.EnumConstant) {
+            return this.constantReason()
+        }
+        if (this.target.isMember()) {
+            return this.memberReason()
+        }
+        return this.topLevelReason()
+    }
+
+    method existsReason(bool exists, string what): string {
+        if (exists) {
+            return what + " named '" + this.newName + "' already exists"
+        }
+        return ""
+    }
+
+    method topLevelReason(): string {
+        var index = this.context.index()
+        var named = index.globalsNamed(this.newName)
+        if (this.target.decl.isCallable()) {
+            named = index.functionsNamed(this.newName)
+        }
+        for (symbol in named) {
+            if (symbol.qualifier == this.target.qualifier && navigationSameShape(symbol, this.target)) {
+                return this.existsReason(true, "a declaration")
+            }
+        }
+        return ""
+    }
+
+    method constantReason(): string {
+        for (constant in this.context.resolver().constantsOf(this.target.container)) {
+            if (constant.decl.name == this.newName) {
+                return "'" + this.target.container + "' already has a member named '" + this.newName + "'"
+            }
+        }
+        return ""
+    }
+
+    // A parameter or a local of the new name, visible where the target is used by its bare name, would hide it: the
+    // use would then refer to the variable. Callables and keys of a literal are not looked up as variables.
+    method shadowReason(): string {
+        if (this.target.decl.isCallable()) {
+            return ""
+        }
+        var finder = ReferenceFinder()
+        for (location in finder.occurrencesOf(this.context, this.target, NeverCancelled())) {
+            if (this.hidesUseAt(location)) {
+                return "a variable named '" + this.newName + "' would hide '" + this.target.name() + "' where it is used"
+            }
+        }
+        return ""
+    }
+
+    method hidesUseAt(Location location): bool {
+        var file = this.context.project.closure.fileAt(location.filePath)
+        if (isNone(file)) {
+            return false
+        }
+        var syntax = navigationTokenSyntax(this.context, file)
+        var tokens = targetsIslandAt(syntax.tokens, location.span.start)
+        if (isNone(tokens)) {
+            tokens = syntax.tokens
+        }
+        var index = targetsIdentifierIndex(tokens, location.span.start)
+        if (index < 0 || this.isBareUse(tokens, index) == false) {
+            return false
+        }
+        var scope = this.context.resolver().scopeAt(navigationFileWithSyntax(file, syntax), location.span.start)
+        return isSome(this.context.resolver().localNamed(scope, this.newName))
+    }
+
+    method isBareUse(array<Token> tokens, integer index): bool {
+        if (index > 0 && tokens[index - 1].isPunct(".")) {
+            return false
+        }
+        return targetsTypedLiteralOwner(this.context.resolver(), tokens, index) == ""
+    }
+
+    method memberReason(): string {
+        if (navigationHasFamily(this.target) == false) {
+            return ""
+        }
+        var related = navigationRelatedTypes(this.context.index(), this.target.container)
+        for (symbol in this.context.index().declarersOfMember(this.newName)) {
+            if (related.has(symbol.container) && navigationSameShape(symbol, this.target)) {
+                return "'" + symbol.container + "' already has a member named '" + this.newName + "'"
+            }
+        }
+        return ""
+    }
+
+    // Another variable of that name is visible at the declaration, or the name is used inside the scope of the local
+    // (a global or a field that the renamed local would then hide).
+    method localReason(): string {
+        var local = navigationLocalOf(this.context, this.target)
+        if (isNone(local)) {
+            return ""
+        }
+        var scope = this.context.resolver().scopeAt(this.context.closureFile, local.nameSpan.start)
+        if (isSome(this.context.resolver().localNamed(scope, this.newName))) {
+            return "a variable named '" + this.newName + "' is already visible here"
+        }
+        for (tokens in navigationStreams(this.context.syntax.tokens)) {
+            var i = 0
+            while (i < tokens.length()) {
+                if (this.usesNameIn(tokens, i, local)) {
+                    return "the name '" + this.newName + "' is already used in this scope"
+                }
+                i = i + 1
+            }
+        }
+        return ""
+    }
+
+    method usesNameIn(array<Token> tokens, integer index, Local local): bool {
+        var token = tokens[index]
+        if (token.kind != TokenKind.Ident || token.text != this.newName) {
+            return false
+        }
+        if (token.start < local.scope.start || token.start >= local.scope.end) {
+            return false
+        }
+        return index == 0 || tokens[index - 1].isPunct(".") == false
+    }
+}

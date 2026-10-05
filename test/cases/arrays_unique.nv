@@ -1,0 +1,73 @@
+package main
+
+import arrays
+
+// arrays.unique keeps the first occurrence of each value in order and agrees
+// with contains() on what "the same value" means, whatever mix of types the
+// array holds. Strings only and numbers only take a linear path, everything
+// else compares pairwise; both have to give these answers.
+
+final MANY = 3000
+final DISTINCT = 97
+
+method show(string label, array items) {
+    println "${label}: ${arrays.unique(items)} (${arrays.unique(items).length()} of ${items.length()})"
+}
+
+method sameAsContains(array items): bool {
+    var expected = []
+    for (x in items) {
+        if (expected.contains(x) == false) {
+            expected.append(x)
+        }
+    }
+    var actual = arrays.unique(items)
+    if (actual.length() != expected.length()) {
+        return false
+    }
+    var i = 0
+    while (i < actual.length()) {
+        if (actual[i] != expected[i]) {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+method main {
+    show("empty", [])
+    show("one", ["a"])
+    show("strings", ["b", "a", "b", "c", "a", "", "", "A"])
+    show("integers", [3, 1, 3, 2, 1, -1, -1, 0])
+    show("floats", [1.5, 2.5, 1.5, 0.5])
+    show("int and float", [1, 1.0, 2, 2.5, 2.0, 0, -0.0, 0.0])
+    show("big integers", [9007199254740993, 9007199254740992, 9007199254740993, 4611686018427387904, 4611686018427387905])
+    show("mixed", [1, "1", 1.0, "a", "a", true, "true", true, false, 2])
+    show("text and number", ["1", 1, "2", 2, "1", 1])
+    show("bools", [true, false, true, false])
+    show("nested", [[1], [1], "x"])
+
+    var holder = [1, 2]
+    show("same array twice", [holder, holder, [1, 2]])
+    show("characters", arrays.unique("mississippi"))
+    show("map keys", arrays.unique({"b": 1, "a": 2}))
+
+    var many = []
+    var i = 0
+    while (i < MANY) {
+        many.append("w" + (i * 31) % DISTINCT)
+        i = i + 1
+    }
+    println "${arrays.unique(many).length()} ${sameAsContains(many)}"
+    var numbers = []
+    i = 0
+    while (i < MANY) {
+        numbers.append((i * 31) % DISTINCT)
+        i = i + 1
+    }
+    println "${arrays.unique(numbers).length()} ${sameAsContains(numbers)}"
+    var original = ["x", "y", "x"]
+    arrays.unique(original)
+    println original
+}

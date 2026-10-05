@@ -1,0 +1,22 @@
+{"id":1,"jsonrpc":"2.0","result":{"capabilities":"@CAPABILITIES@","serverInfo":{"name":"novus-lsp","version":"0.1.0"}}}
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@ROOTURI@/main.nv","version":1}}
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@ROOTURI@/geo/shape.nv","version":1}}
+{"id":2,"jsonrpc":"2.0","result":{"placeholder":"doubled","range":{"end":{"character":15,"line":5},"start":{"character":8,"line":5}}}}
+{"id":3,"jsonrpc":"2.0","result":{"changes":{"@ROOTURI@/main.nv":[{"newText":"scaled","range":{"end":{"character":15,"line":5},"start":{"character":8,"line":5}}},{"newText":"scaled","range":{"end":{"character":18,"line":6},"start":{"character":11,"line":6}}}]}}}
+{"error":{"code":-32602,"message":"a variable named 'value' is already visible here"},"id":4,"jsonrpc":"2.0"}
+{"error":{"code":-32602,"message":"'1scaled' is not a valid name: use letters, digits and '_', not starting with a digit"},"id":5,"jsonrpc":"2.0"}
+{"error":{"code":-32602,"message":"'while' is a keyword and cannot be used as a name"},"id":6,"jsonrpc":"2.0"}
+{"error":{"code":-32602,"message":"'' is not a valid name: use letters, digits and '_', not starting with a digit"},"id":7,"jsonrpc":"2.0"}
+{"id":8,"jsonrpc":"2.0","result":{"placeholder":"helper","range":{"end":{"character":22,"line":14},"start":{"character":16,"line":14}}}}
+{"id":9,"jsonrpc":"2.0","result":{"changes":{"@ROOTURI@/main.nv":[{"newText":"assist","range":{"end":{"character":13,"line":4},"start":{"character":7,"line":4}}},{"newText":"assist","range":{"end":{"character":22,"line":14},"start":{"character":16,"line":14}}}],"@ROOTURI@/util/uses.nv":[{"newText":"assist","range":{"end":{"character":17,"line":3},"start":{"character":11,"line":3}}},{"newText":"assist","range":{"end":{"character":29,"line":3},"start":{"character":23,"line":3}}}]}}}
+{"id":10,"jsonrpc":"2.0","result":{"changes":{"@ROOTURI@/geo/shape.nv":[{"newText":"Disc","range":{"end":{"character":19,"line":2},"start":{"character":13,"line":2}}},{"newText":"Disc","range":{"end":{"character":21,"line":22},"start":{"character":15,"line":22}}},{"newText":"Disc","range":{"end":{"character":17,"line":23},"start":{"character":11,"line":23}}}],"@ROOTURI@/main.nv":[{"newText":"Disc","range":{"end":{"character":22,"line":15},"start":{"character":16,"line":15}}}]}}}
+{"error":{"code":-32602,"message":"ambiguous member name"},"id":11,"jsonrpc":"2.0"}
+{"error":{"code":-32602,"message":"ambiguous member name"},"id":12,"jsonrpc":"2.0"}
+{"id":13,"jsonrpc":"2.0","result":{"changes":{"@ROOTURI@/geo/shape.nv":[{"newText":"size","range":{"end":{"character":16,"line":3},"start":{"character":10,"line":3}}},{"newText":"size","range":{"end":{"character":19,"line":6},"start":{"character":13,"line":6}}},{"newText":"size","range":{"end":{"character":26,"line":10},"start":{"character":20,"line":10}}},{"newText":"size","range":{"end":{"character":40,"line":10},"start":{"character":34,"line":10}}}]}}}
+{"error":{"code":-32602,"message":"packages and modules cannot be renamed"},"id":14,"jsonrpc":"2.0"}
+{"error":{"code":-32602,"message":"standard library declarations cannot be renamed"},"id":15,"jsonrpc":"2.0"}
+{"error":{"code":-32602,"message":"standard library declarations cannot be renamed"},"id":16,"jsonrpc":"2.0"}
+{"id":17,"jsonrpc":"2.0","result":null}
+{"id":18,"jsonrpc":"2.0","result":null}
+{"id":19,"jsonrpc":"2.0","result":null}
+{"id":900,"jsonrpc":"2.0","result":null}

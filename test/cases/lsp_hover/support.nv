@@ -1,0 +1,83 @@
+package main
+
+import "novus/lsp/base/maybe"
+import "novus/lsp/base/model"
+import "novus/lsp/base/platform"
+import "novus/lsp/base/text"
+import "novus/lsp/projects/stdlib"
+import "novus/lsp/projects/workspace"
+
+private final NAV_MARKER = "@@"
+
+// A project in memory with one cursor: the marker `@@` in one file is removed and remembered as a byte offset.
+define class NavWorld {
+    map<string, string> files
+    FileCache cache
+    Workspace space
+    string cursorPath
+    integer cursorOffset
+
+    construct(map<string, string> files) {
+        this.files = files
+        this.cursorPath = ""
+        this.cursorOffset = -1
+        for (filePath in files.keys()) {
+            this.takeMarker(filePath)
+        }
+        this.cache = FileCache(MemoryTextSource(this.files))
+        this.space = Workspace(this.cache, standardLibrary())
+    }
+
+    method takeMarker(string filePath) {
+        var content = this.files[filePath]
+        var at = content.indexOf(NAV_MARKER)
+        if (at < 0) {
+            return
+        }
+        this.files[filePath] = content.substring(0, at) + content.substring(at + NAV_MARKER.length(), content.length())
+        this.cursorPath = filePath
+        this.cursorOffset = at
+    }
+
+    method context(): FileContext {
+        return this.contextOf(this.cursorPath)
+    }
+
+    method contextOf(string filePath): FileContext {
+        var document = Document(filePathToUri(filePath), "novus", 1, this.files[filePath])
+        return this.space.contextFor(document)
+    }
+
+    // A location as `path:line:column "text"`, 1-based line and byte column, the text under the span.
+    method describe(Location location): string {
+        if (location.filePath.startsWith("std:")) {
+            return location.filePath + " " + this.stdShape(location.span)
+        }
+        var content = this.cache.textOf(location.filePath)
+        var lines = LineIndex(content)
+        var shown = content.substring(location.span.start, location.span.end)
+        return location.filePath + ":" + (lines.lineOf(location.span.start) + 1) + ":" + (lines.byteColumn(location.span.start) + 1) + " \"" + shown + "\""
+    }
+
+    method stdShape(Span span): string {
+        if (span.isEmpty()) {
+            return "(module)"
+        }
+        return "(" + span.length() + " bytes)"
+    }
+
+    method describeAll(array<Location> locations): string {
+        var parts = []
+        for (location in locations) {
+            parts.append(this.describe(location))
+        }
+        if (parts.length() == 0) {
+            return "(none)"
+        }
+        return parts.join("; ")
+    }
+}
+
+method navCheck(string label, string actual) {
+    println(label + ": " + actual)
+}

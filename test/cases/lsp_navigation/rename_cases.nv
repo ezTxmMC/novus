@@ -1,0 +1,58 @@
+package main
+
+import "novus/lsp/features/navigation"
+import "novus/lsp/base/maybe"
+import "novus/lsp/base/model"
+import "novus/lsp/base/text"
+import @support
+import @fixtures
+
+method navEditsText(NavWorld world, array<FileEdit> edits): string {
+    if (edits.length() == 0) {
+        return "(none)"
+    }
+    var parts = []
+    for (fileEdit in edits) {
+        var spans = []
+        for (edit in fileEdit.edits) {
+            var lines = LineIndex(world.cache.textOf(fileEdit.filePath))
+            spans.append((lines.lineOf(edit.span.start) + 1) + ":" + (lines.byteColumn(edit.span.start) + 1))
+        }
+        parts.append(fileEdit.filePath + " [" + spans.join(" ") + "] -> " + fileEdit.edits[0].newText)
+    }
+    return parts.join("; ")
+}
+
+method navRename(string label, NavWorld world, string newName) {
+    var renamer = Renamer(ReferenceFinder())
+    var context = world.context()
+    var offset = world.cursorOffset
+    var span = renamer.prepare(context, offset)
+    var prepared = "no span"
+    if (isSome(span)) {
+        prepared = "span " + world.cache.textOf(world.cursorPath).substring(span.start, span.end)
+    }
+    var refusal = renamer.refusal(context, offset)
+    var problem = renamer.problem(context, offset, newName)
+    var edits = renamer.rename(context, offset, newName)
+    navCheck(label, prepared + " | refusal '" + refusal + "' | problem '" + problem + "' | " + navEditsText(world, edits))
+}
+
+method runRenameCases() {
+    println("== rename")
+    navRename("local variable", NavWorld(navMain("total = total", 1)), "sum")
+    navRename("class", NavWorld(navMain("Circle(2.0)", 1)), "Disc")
+    navRename("function by name and arity", NavWorld(navMain("scaled(1.0) +", 1)), "scaledBy")
+    navRename("function used qualified", NavWorld(navMain("describe(circle)", 2)), "summarize")
+    navRename("field of a class", NavWorld(navShape("float radius\n", 7)), "size")
+    navRename("method with its override", NavWorld(navMain("area()", 1)), "surface")
+    navRename("parameter", NavWorld(navShape("(float radius)", 8)), "extent")
+    navRename("enum constant", NavWorld(navMain("Red\n", 1)), "Crimson")
+    navRename("std function is refused", NavWorld(navMain("repeat(", 1)), "again")
+    navRename("keyword as new name", NavWorld(navMain("total = total", 1)), "while")
+    navRename("invalid new name", NavWorld(navMain("total = total", 1)), "1abc")
+    navRename("conflict with a visible variable", NavWorld(navMain("total = total", 1)), "area")
+    navRename("conflict with an existing type", NavWorld(navMain("Circle(2.0)", 1)), "Shape")
+    navRename("conflict with the same arity", NavWorld(navMain("scaled(1.0) +", 1)), "describe")
+    navRename("nothing under the cursor", NavWorld(navMain("method main", 2)), "x")
+}

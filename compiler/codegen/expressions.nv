@@ -10,6 +10,23 @@ import std
 // NOTE: this file is part of the bootstrap chain: it must stay compilable
 // by the previous compiler snapshot (bootstrap/novusc.c).
 
+// The runtime functions of the comparison and operator nodes. Built once:
+// genCondition and genExpr run for every node of every expression.
+private final CONDITION_FUNCTIONS = {"<": "nv_lt_bool", ">": "nv_gt_bool", "<=": "nv_le_bool", ">=": "nv_ge_bool",
+    "==": "nv_eq_bool", "!=": "nv_ne_bool"}
+
+// Integer arithmetic that wraps around (see nv_iadd).
+private final WRAPPING_FUNCTIONS = {"+": "nv_iadd", "-": "nv_isub", "*": "nv_imul"}
+
+// The runtime functions of a float operand next to any value (suffix _du:
+// the value is on the right, _ud: on the left).
+private final MIXED_FUNCTIONS = {"-": "nv_fsub", "*": "nv_fmul", "/": "nv_fdiv", "%": "nv_fmod"}
+
+// *_fast are inline wrappers that keep small-integer arithmetic in registers
+private final OPERATOR_FUNCTIONS = {"+": "nv_add_fast", "-": "nv_sub_fast", "*": "nv_mul_fast", "/": "nv_div_fast", "%": "nv_mod_fast",
+    "==": "nv_eq", "!=": "nv_ne", "<": "nv_lt", ">": "nv_gt", "<=": "nv_le", ">=": "nv_ge",
+    "&": "nv_band", "|": "nv_bor", "^": "nv_bxor", "<<": "nv_shl", ">>": "nv_shr"}
+
 method isIdentAtom(string node): bool {
     if (node.length() == 0 || isList(node)) {
         return false
@@ -70,29 +87,47 @@ method resolveVar(string name, map<string, string> prog, map<string, string> ctx
     return ""
 }
 
-// The C expression for a node that isFloatValue() accepted: plain double
+// The C expression for a node of kind float (kinds.nv): plain double
 // arithmetic. Integer sub-expressions are cast.
 method genFloat(string node, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
     if (isList(node) == false) {
-        if (isNumberAtom(node)) {
-            return node
-        }
-        return locals[node]
+        return genNumericAtom(node, KIND_FLOAT, prog, ctx, locals)
+    }
+    var sequence = sequenceOperands(node, prog, ctx, locals)
+    if (sequence.length() > 0) {
+        return sequencedExpr(sequence, genFloat(sequence[0], prog, ctx, locals))
     }
     var head = nodeHead(node)
+    if (head == "rawd") {
+        return nodeChild(node, 1)
+    }
     if (head == "neg") {
         return "(-" + genFloat(nodeChild(node, 1), prog, ctx, locals) + ")"
     }
+    if (head == "call" || head == "mcall") {
+        return genTypedCall(node, KIND_FLOAT, prog, ctx, locals)
+    }
+    return genFloatOperation(node, head, prog, ctx, locals)
+}
+
+// The operands of a float operation: unboxed doubles, a cast integer, or - on
+// one side only - any value, which the runtime checks (nv_fmul_du).
+method genFloatOperation(string node, string head, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
     var left = nodeChild(node, 1)
     var right = nodeChild(node, 2)
-    var l = genFloat(left, prog, ctx, locals)
-    var r = genFloat(right, prog, ctx, locals)
-    if (isFloatValue(left, locals) == false) {
-        l = "(double)(" + genInt(left, prog, ctx, locals) + ")"
+    var leftKind = kindOf(left, prog, ctx, locals)
+    var rightKind = kindOf(right, prog, ctx, locals)
+    if (isNumericKind(leftKind) && isNumericKind(rightKind)) {
+        return genFloatArithmetic(head, genFloatOperand(left, prog, ctx, locals), genFloatOperand(right, prog, ctx, locals))
     }
-    if (isFloatValue(right, locals) == false) {
-        r = "(double)(" + genInt(right, prog, ctx, locals) + ")"
+    var helper = MIXED_FUNCTIONS[head]
+    if (isNumericKind(rightKind) == false) {
+        return helper + "_du(" + genFloatOperand(left, prog, ctx, locals) + ", " + genExpr(right, prog, ctx, locals) + ")"
     }
+    return helper + "_ud(" + genExpr(left, prog, ctx, locals) + ", " + genFloatOperand(right, prog, ctx, locals) + ")"
+}
+
+method genFloatArithmetic(string head, string l, string r): string {
     if (head == "/") {
         return "nv_fdiv(" + l + ", " + r + ")"
     }
@@ -102,24 +137,31 @@ method genFloat(string node, map<string, string> prog, map<string, string> ctx, 
     return "(" + l + " " + head + " " + r + ")"
 }
 
-// The C expression for a node that isIntExpr() accepted: plain long long
-// arithmetic, no boxing at all.
+// The C expression for a node of kind integer: plain long long arithmetic,
+// no boxing at all.
 method genInt(string node, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
     if (isList(node) == false) {
-        if (isNumberAtom(node)) {
-            return node + "LL"
-        }
-        if (locals.has(node) == false) {
-            fail("internal: '" + node + "' inferred as an integer but not a local", ctx["pos"])
-        }
-        return locals[node]
+        return genNumericAtom(node, KIND_INT, prog, ctx, locals)
+    }
+    var sequence = sequenceOperands(node, prog, ctx, locals)
+    if (sequence.length() > 0) {
+        return sequencedExpr(sequence, genInt(sequence[0], prog, ctx, locals))
     }
     var head = nodeHead(node)
+    if (head == "rawi") {
+        return nodeChild(node, 1)
+    }
     if (head == "neg") {
-        return "(-" + genInt(nodeChild(node, 1), prog, ctx, locals) + ")"
+        return "nv_ineg(" + genInt(nodeChild(node, 1), prog, ctx, locals) + ")"
+    }
+    if (head == "call" || head == "mcall") {
+        return genTypedCall(node, KIND_INT, prog, ctx, locals)
     }
     var left = genInt(nodeChild(node, 1), prog, ctx, locals)
     var right = genInt(nodeChild(node, 2), prog, ctx, locals)
+    if (WRAPPING_FUNCTIONS.has(head)) {
+        return WRAPPING_FUNCTIONS[head] + "(" + left + ", " + right + ")"
+    }
     if (head == "/") {
         return "nv_idiv(" + left + ", " + right + ")"
     }
@@ -133,6 +175,54 @@ method genInt(string node, map<string, string> prog, map<string, string> ctx, ma
         return "nv_ishr(" + left + ", " + right + ")"
     }
     return "(" + left + " " + head + " " + right + ")"
+}
+
+// A number literal, an unboxed local or a numeric field of `this`.
+method genNumericAtom(string node, string kind, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    if (isNumberAtom(node)) {
+        if (kind == KIND_INT) {
+            return node + "LL"
+        }
+        return node
+    }
+    if (isIntLocal(locals, node) || isFloatLocal(locals, node)) {
+        return locals[node]
+    }
+    if (isTypedContext(ctx) && isImplicitField(node, prog, ctx, locals)) {
+        return unboxCode(nv_fieldSlotCode(prog, ctx, node), kind)
+    }
+    fail("internal: '" + node + "' inferred as a number but not a local", ctx["pos"])
+    return ""
+}
+
+// The C code that reads a numeric value out of a boxed one of the kind the
+// declaration promises.
+method unboxCode(string boxed, string kind): string {
+    if (kind == KIND_INT) {
+        return "nv_unbox_int(" + boxed + ")"
+    }
+    return "nv_unbox_float(" + boxed + ")"
+}
+
+// The slot of a field of `this` as C.
+method nv_fieldSlotCode(map<string, string> prog, map<string, string> ctx, string name): string {
+    return "nv_fields(self->o)[" + fieldSlot(prog, ctx["class"], name) + "]"
+}
+
+// The unboxed expression of a node whose kind is `kind`.
+method genTyped(string node, string kind, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    if (kind == KIND_INT) {
+        return genInt(node, prog, ctx, locals)
+    }
+    return genFloat(node, prog, ctx, locals)
+}
+
+// The head of the node that stands for a temporary holding a value of `kind`.
+method rawHead(string kind): string {
+    if (kind == KIND_INT) {
+        return "rawi"
+    }
+    return "rawd"
 }
 
 // Error for an identifier that names a module but is used like a value.
@@ -160,24 +250,27 @@ method genCondition(string node, map<string, string> prog, map<string, string> c
     if (head == "!") {
         return "(!(" + genCondition(nodeChild(node, 1), prog, ctx, locals) + "))"
     }
-    var bools = {"<": "nv_lt_bool", ">": "nv_gt_bool", "<=": "nv_le_bool", ">=": "nv_ge_bool",
-        "==": "nv_eq_bool", "!=": "nv_ne_bool"}
-    if (bools.has(head) && nodeCount(node) == 3) {
+    if (CONDITION_FUNCTIONS.has(head) && nodeCount(node) == 3) {
+        var sequence = sequenceOperands(node, prog, ctx, locals)
+        if (sequence.length() > 0) {
+            return sequencedExpr(sequence, genCondition(sequence[0], prog, ctx, locals))
+        }
         var left = nodeChild(node, 1)
         var right = nodeChild(node, 2)
-        if (isIntValue(left, locals) && isIntValue(right, locals)) {
+        var leftKind = kindOf(left, prog, ctx, locals)
+        var rightKind = kindOf(right, prog, ctx, locals)
+        if (comparesValues(head, left, right, prog, ctx, locals)) {
+            return CONDITION_FUNCTIONS[head] + "(" + genExpr(left, prog, ctx, locals) + ", " + genExpr(right, prog, ctx, locals) + ")"
+        }
+        if (leftKind == KIND_INT && rightKind == KIND_INT) {
             // both sides are unboxed integers: compare them directly (no outer
             // parentheses - comparisons bind tighter than && and ||)
             return genInt(left, prog, ctx, locals) + " " + head + " " + genInt(right, prog, ctx, locals)
         }
-        if (isFloatValue(left, locals) || isFloatValue(right, locals)) {
-            var numeric = isFloatValue(left, locals) || isIntValue(left, locals)
-            numeric = numeric && (isFloatValue(right, locals) || isIntValue(right, locals))
-            if (numeric) {
-                return genFloatOperand(left, prog, ctx, locals) + " " + head + " " + genFloatOperand(right, prog, ctx, locals)
-            }
+        if (isNumericKind(leftKind) && isNumericKind(rightKind)) {
+            return genFloatOperand(left, prog, ctx, locals) + " " + head + " " + genFloatOperand(right, prog, ctx, locals)
         }
-        return bools[head] + "(" + genExpr(left, prog, ctx, locals) + ", " + genExpr(right, prog, ctx, locals) + ")"
+        return CONDITION_FUNCTIONS[head] + "(" + genExpr(left, prog, ctx, locals) + ", " + genExpr(right, prog, ctx, locals) + ")"
     }
     if (node == "true") {
         return "1"
@@ -188,12 +281,22 @@ method genCondition(string node, map<string, string> prog, map<string, string> c
     return "nv_truthy(" + genExpr(node, prog, ctx, locals) + ")"
 }
 
+// Does `left == right` compare values as they are? A field that holds no
+// number is a value like any other there, so equality with a bare read of a
+// numeric field is not a numeric comparison.
+method comparesValues(string head, string left, string right, map<string, string> prog, map<string, string> ctx, map<string, string> locals): bool {
+    if (head != "==" && head != "!=") {
+        return false
+    }
+    return isBareRead(left, prog, ctx, locals) || isBareRead(right, prog, ctx, locals)
+}
+
 // A comparison operand as a double, casting an integer side.
 method genFloatOperand(string node, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
-    if (isFloatValue(node, locals)) {
+    if (kindOf(node, prog, ctx, locals) == KIND_FLOAT) {
         return genFloat(node, prog, ctx, locals)
     }
-    return "(double)(" + genInt(node, prog, ctx, locals) + ")"
+    return "nv_i2d(" + genInt(node, prog, ctx, locals) + ")"
 }
 
 method genExpr(string node, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
@@ -239,6 +342,10 @@ method genExpr(string node, map<string, string> prog, map<string, string> ctx, m
     var head = nodeHead(node)
     if (head == "str") {
         return litRef(prog, nodeChild(node, 1))
+    }
+    var sequence = sequenceOperands(node, prog, ctx, locals)
+    if (sequence.length() > 0) {
+        return sequencedExpr(sequence, genExpr(sequence[0], prog, ctx, locals))
     }
     if (head == "await") {
         return "nv_await(" + genExpr(nodeChild(node, 1), prog, ctx, locals) + ")"
@@ -350,19 +457,20 @@ method genExpr(string node, map<string, string> prog, map<string, string> ctx, m
             if (mtarget == "this" && ctx["class"] != "" && fieldSlot(prog, ctx["class"], mname) >= 0) {
                 return "nv_fields(self->o)[" + fieldSlot(prog, ctx["class"], mname) + "]"
             }
-            return invokeCall0(genExpr(mtarget, prog, ctx, locals), mname)
+            return invokeCall0(genExpr(mtarget, prog, ctx, locals), mname, prog)
         }
-        return invokeCall(genExpr(mtarget, prog, ctx, locals), mname, nargs, genArgs(node, 3, prog, ctx, locals))
+        return invokeCall(genExpr(mtarget, prog, ctx, locals), mname, nargs, genArgs(node, 3, prog, ctx, locals), prog)
     }
     if (head == "call") {
         return genCall(node, prog, ctx, locals)
     }
     // A sub-expression that can only be numeric is computed unboxed and
     // boxed once at the end, instead of boxing every intermediate result.
-    if (isIntValue(node, locals)) {
+    var kind = kindOf(node, prog, ctx, locals)
+    if (kind == KIND_INT) {
         return "nv_int(" + genInt(node, prog, ctx, locals) + ")"
     }
-    if (isFloatValue(node, locals)) {
+    if (kind == KIND_FLOAT) {
         return "nv_float(" + genFloat(node, prog, ctx, locals) + ")"
     }
     if (head == "+" && isList(nodeChild(node, 1)) && nodeHead(nodeChild(node, 1)) == "+") {
@@ -376,35 +484,20 @@ method genExpr(string node, map<string, string> prog, map<string, string> ctx, m
     if (head == "||") {
         return "nv_bool(nv_truthy(" + l + ") || nv_truthy(" + r + "))"
     }
-    // *_fast are inline wrappers that keep small-integer arithmetic in registers
-    var ops = {"+": "nv_add_fast", "-": "nv_sub_fast", "*": "nv_mul_fast", "/": "nv_div", "%": "nv_mod",
-        "==": "nv_eq", "!=": "nv_ne", "<": "nv_lt", ">": "nv_gt", "<=": "nv_le", ">=": "nv_ge",
-        "&": "nv_band", "|": "nv_bor", "^": "nv_bxor", "<<": "nv_shl", ">>": "nv_shr"}
-    if (ops.has(head) == false) {
+    if (OPERATOR_FUNCTIONS.has(head) == false) {
         fail("unsupported expression '" + head + "'", ctx["pos"])
     }
-    return ops[head] + "(" + l + ", " + r + ")"
+    return OPERATOR_FUNCTIONS[head] + "(" + l + ", " + r + ")"
 }
 
 // `a + b + c + ...` becomes one runtime call. Chains like this are how
 // strings are built, and every step of the nested form allocates a value and
 // walks the accumulated text again; the fused call fills one buffer.
 method genAddChain(string node, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
-    var parts = []
-    var walk = node
-    while (isList(walk) && nodeHead(walk) == "+" && nodeCount(walk) == 3 && parts.length() < 15) {
-        parts.append(nodeChild(walk, 2))
-        walk = nodeChild(walk, 1)
+    var parts = chainParts(node)
+    var args = []
+    for (part in parts) {
+        args.append(genExpr(part, prog, ctx, locals))
     }
-    parts.append(walk)
-    var args = ""
-    var i = parts.length()
-    while (i > 0) {
-        if (args != "") {
-            args = args + ", "
-        }
-        args = args + genExpr(parts[i - 1], prog, ctx, locals)
-        i = i - 1
-    }
-    return "nv_add_chain(" + parts.length() + ", " + args + ")"
+    return "nv_add_chain(" + parts.length() + ", " + args.join(", ") + ")"
 }

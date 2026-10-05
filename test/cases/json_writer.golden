@@ -1,0 +1,27 @@
+replacement: 239,191,189
+stray high byte: 5 bytes, valid UTF-8 true, valid JSON true
+  bytes: 34,239,191,189,34
+stray continuation: 5 bytes, valid UTF-8 true, valid JSON true
+  bytes: 34,239,191,189,34
+truncated two byte: 6 bytes, valid UTF-8 true, valid JSON true
+  bytes: 34,97,239,191,189,34
+truncated three byte: 8 bytes, valid UTF-8 true, valid JSON true
+  bytes: 34,239,191,189,239,191,189,34
+overlong slash: 8 bytes, valid UTF-8 true, valid JSON true
+  bytes: 34,239,191,189,239,191,189,34
+utf-8 surrogate: 11 bytes, valid UTF-8 true, valid JSON true
+  bytes: 34,239,191,189,239,191,189,239,191,189,34
+beyond U+10FFFF: 14 bytes, valid UTF-8 true, valid JSON true
+  bytes: 34,239,191,189,239,191,189,239,191,189,239,191,189,34
+well formed: 34 bytes, valid UTF-8 true, valid JSON true
+"é€😀 \"quoted\" \\ \n\u0001"
+true
+true
+true
+[1.5,2.0,1234567.125,-0.25]
+[null,null]
+{"nan":null,"ok":0.5}
+[
+  null
+]
+true

@@ -1,0 +1,54 @@
+package main
+
+import json
+import strings
+
+// tryError() returns the whole text of a runtime error up to 4095 bytes (it
+// was cut at 511). Longer texts are cut at that limit, never overrun. A
+// text of that size survives a json.tryParse that fails in between.
+
+final LIMIT = 4095
+
+define class Raiser {
+    private final integer size
+
+    construct(integer size) {
+        this.size = size
+    }
+
+    method run(): object {
+        return raise(strings.repeat("e", size))
+    }
+}
+
+method tryRun(object task): object native "nv_try_run"
+method tryFailed(): bool native "nv_try_failed"
+method tryError(): string native "nv_try_error"
+method raise(string message): object native "nv_try_raise"
+
+method report(integer size) {
+    tryRun(Raiser(size))
+    var text = tryError()
+    var whole = text == strings.repeat("e", text.length())
+    println "${size} raised: failed ${tryFailed()}, ${text.length()} bytes, all of it from the message ${whole}"
+}
+
+method reportKeptAcrossTryParse() {
+    tryRun(Raiser(LIMIT))
+    json.tryParse("[nope")
+    json.tryParse("[1, 2]")
+    var text = tryError()
+    var intact = text == strings.repeat("e", LIMIT)
+    println "kept across tryParse: failed ${tryFailed()}, ${text.length()} bytes, intact ${intact}"
+}
+
+method main {
+    report(100)
+    report(511)
+    report(512)
+    report(3000)
+    report(LIMIT)
+    report(LIMIT + 1)
+    report(100000)
+    reportKeptAcrossTryParse()
+}

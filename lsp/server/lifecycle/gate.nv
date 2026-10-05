@@ -1,0 +1,60 @@
+package lifecycle
+
+import server/rpc
+import server/session
+
+private final LIFECYCLE_GATE_OPEN = 0
+private final LIFECYCLE_METHOD_INITIALIZE = "initialize"
+private final LIFECYCLE_METHOD_EXIT = "exit"
+
+// Before initialize only initialize and exit pass (-32002); after shutdown only exit (-32600); a second initialize is refused.
+define class LifecycleGate based RequestGate {
+    Session session
+
+    construct(Session session) {
+        this.session = session
+    }
+
+    method check(Request request): integer {
+        var name = request.methodName
+        if (this.session.shutdownRequested) {
+            return this.afterShutdown(name)
+        }
+        if (this.session.initialized == false) {
+            return this.beforeInitialize(name)
+        }
+        if (name == LIFECYCLE_METHOD_INITIALIZE) {
+            return rpcInvalidRequest()
+        }
+        return LIFECYCLE_GATE_OPEN
+    }
+
+    method afterShutdown(string name): integer {
+        if (name == LIFECYCLE_METHOD_EXIT) {
+            return LIFECYCLE_GATE_OPEN
+        }
+        return rpcInvalidRequest()
+    }
+
+    method beforeInitialize(string name): integer {
+        if (name == LIFECYCLE_METHOD_INITIALIZE || name == LIFECYCLE_METHOD_EXIT) {
+            return LIFECYCLE_GATE_OPEN
+        }
+        return rpcServerNotInitialized()
+    }
+}
+
+// The end of input decides the exit code: 0 after shutdown, else 1 (5.10).
+define class EofListener based EnvelopeListener {
+    Session session
+    MainLoop loop
+
+    construct(Session session, MainLoop loop) {
+        this.session = session
+        this.loop = loop
+    }
+
+    method onEnvelope(Envelope envelope) {
+        this.loop.stop(lifecycleExitCode(this.session))
+    }
+}

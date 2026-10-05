@@ -1,0 +1,33 @@
+package main
+
+import @support
+
+private final CX_MAIN = "/p/main.nv"
+private final CX_MANIFEST = "/p/project.nv"
+
+// The lexer lets a string that is open on its line run on to a later quote; accepting an item must not swallow the
+// code in between, and a key of several segments replaces what is left of the string.
+method runStringSpanCases() {
+    println("#### strings that run over lines")
+    var world = CxWorld(cxProject())
+    var later = "package main\n\nimport \"ex.com/<|>\nimport geo\nmethod main() {\n    println(\"x\")\n}\n"
+    cxShowContext("open import string", world, CX_MAIN, later)
+    cxAccept("accept below the module", world, CX_MAIN, later, "lib")
+    cxAccept("accept a whole key", world, CX_MAIN, "package main\n\nimport \"ex.c<|>\nimport geo\nmethod main() {\n    println(\"x\")\n}\n", "ex.com/lib")
+    cxAccept("crlf", world, CX_MAIN, "package main\r\n\r\nimport \"ex.c<|>\r\nimport geo\r\n", "ex.com/lib")
+    cxAccept("the closing quote is on the same line", world, CX_MAIN, "package main\n\nimport \"ex.c<|>\"\n", "ex.com/lib")
+    cxAccept("the cursor in the first segment", world, CX_MAIN, "package main\n\nimport \"ex.c<|>om/lib\"\n", "ex.com/lib")
+    cxAccept("the cursor in a segment below a module", world, CX_MAIN, "package main\n\nimport \"ex.com/lib/s<|>ub/x\"\n", "sub")
+    var open = "project \"p\"\nrequire \"ex.com/lib\"\nrequire \"ex.c<|>\nversion \"1\"\n"
+    cxShowContext("open require string", world, CX_MANIFEST, open)
+    cxAccept("accept in a manifest", world, CX_MANIFEST, open, "ex.com/lib")
+    cxAccept("replace module", world, CX_MANIFEST, "project \"p\"\nrequire \"ex.com/lib\"\nreplace \"ex.c<|>\nversion \"1\"\n", "ex.com/lib")
+    cxAccept("replace directory", world, CX_MANIFEST, "project \"p\"\nrequire \"ex.com/lib\"\nreplace \"ex.com/lib\" \"l<|>\nversion \"1\"\n", "lib")
+}
+
+method runBasedWithoutBodyCases() {
+    println("#### based on the class that is being declared")
+    var world = CxWorld(cxProject())
+    cxShow("header without a body", world, CX_MAIN, "package main\n\ndefine class A based <|>\n", 6)
+    cxShow("header with a body", world, CX_MAIN, "package main\n\ndefine class A based <|> {\n}\n", 6)
+}

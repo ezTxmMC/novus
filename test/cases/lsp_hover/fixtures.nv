@@ -1,0 +1,29 @@
+package main
+
+private final HOVER_MAIN_TEXT = "import geo\nimport strings\nimport @helper\n\ndefine enum Color {\n    Red,\n    Green\n}\n\nmethod main() {\n    var circle = Circle(2.0)\n    var area = circle.area()\n    println(geo.describe(circle))\n    println(strings.repeat(\"a\", 2))\n    var shade = Color.Red\n    var total = helper(1)\n    total = total + helper(2)\n    var words = [\"a\", \"b\"]\n    println(words.length())\n    println(readFile(\"x\"))\n    println(strings.words(\"a b\"))\n    println(scaled(1.0) + scaled(1.0, 2.0))\n    for (word in words) {\n        println(word)\n    }\n}\n"
+
+private final HOVER_SHAPE_TEXT = "package geo\n\n// A shape with an area.\ndefine abstract Shape {\n    abstract method area(): float\n\n    // The name of the shape.\n    method label(): string {\n        return \"shape\"\n    }\n}\n\n// A circle of a given radius.\ndefine class Circle based Shape {\n    float radius\n\n    construct(float radius) {\n        this.radius = radius\n    }\n\n    method area(): float {\n        return radius * radius\n    }\n\n    @Deprecated\n    method grow(float by): float {\n        var next = radius + by\n        return next\n    }\n}\n\nmethod describe(Shape shape): string {\n    return shape.label()\n}\n\n// Scales one value.\nmethod scaled(float factor): float {\n    return factor\n}\n\nmethod scaled(float factor, float extra): float {\n    return factor + extra\n}\n\ndefine class Point {\n    float x\n    float y\n}\n"
+
+private final HOVER_HELPER_TEXT = "method helper(integer count): integer {\n    return count + 1\n}\n"
+
+method hoverProject(string mainText, string shapeText): map<string, string> {
+    return {
+        "/p/project.nv": "project \"p\"\nmain \"main.nv\"\n",
+        "/p/main.nv": mainText,
+        "/p/geo/shape.nv": shapeText,
+        "/p/helper.nv": HOVER_HELPER_TEXT
+    }
+}
+
+method hoverMain(string needle, integer shift): map<string, string> {
+    return hoverProject(hoverMarked(HOVER_MAIN_TEXT, needle, shift), HOVER_SHAPE_TEXT)
+}
+
+method hoverShape(string needle, integer shift): map<string, string> {
+    return hoverProject(HOVER_MAIN_TEXT, hoverMarked(HOVER_SHAPE_TEXT, needle, shift))
+}
+
+method hoverMarked(string content, string needle, integer shift): string {
+    var at = content.indexOf(needle) + shift
+    return content.substring(0, at) + "@@" + content.substring(at, content.length())
+}

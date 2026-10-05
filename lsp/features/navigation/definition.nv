@@ -1,0 +1,87 @@
+package navigation
+
+import base/maybe
+import base/model
+import base/text
+import projects/closure
+import projects/workspace
+import semantics/semantic
+import semantics/targets
+
+// Go to definition. An import statement and a `<Tag>` are answered by `importdefinition.nv`; every other identifier
+// is resolved like a reference (a call with the wrong number of arguments still finds its function). A built-in
+// has no declaration and gives no location. `Location.filePath` is the logical path of the declaring file.
+define class DefinitionFinder {
+    construct() {
+    }
+
+    method find(FileContext context, integer offset): array<Location> {
+        if (isNone(context.closureFile)) {
+            return []
+        }
+        var imported = ImportDefinitions().find(context, offset)
+        if (imported.length() > 0) {
+            return imported
+        }
+        var tagged = TagDefinitions().find(context, offset)
+        if (tagged.length() > 0) {
+            return tagged
+        }
+        var target = TargetFinder(context.resolver()).targetAt(context.closureFile, context.syntax, offset, true)
+        if (isNone(target)) {
+            return []
+        }
+        return this.locationsOf(context, target)
+    }
+
+    method locationsOf(FileContext context, IdentifierTarget target): array<Location> {
+        if (target.kind == TARGETS_KIND_QUALIFIER) {
+            return this.qualifierLocations(context, target.name)
+        }
+        if (target.isSymbol() == false) {
+            return []
+        }
+        var candidates = target.symbols
+        if (target.isAmbiguous()) {
+            candidates = [target.symbols[0]]
+        }
+        return this.declarationsOf(candidates)
+    }
+
+    method declarationsOf(array<Symbol> symbols): array<Location> {
+        var found = []
+        var seen = {}
+        for (symbol in symbols) {
+            var location = navigationLocationOf(symbol)
+            if (isNone(location)) {
+                continue
+            }
+            var key = location.filePath + "@" + location.span.start
+            if (seen.has(key) == false) {
+                seen[key] = true
+                found.append(location)
+            }
+        }
+        return found
+    }
+
+    // A std module or a package name leads to the module (its logical key) or to the first file of the package.
+    method qualifierLocations(FileContext context, string qualifier): array<Location> {
+        if (context.index().isStandardQualifier(qualifier)) {
+            return [Location(stdFileKey(qualifier), Span(0, 0))]
+        }
+        var files = context.project.closure.filesOfQualifier(qualifier)
+        if (files.length() == 0) {
+            return []
+        }
+        return [Location(files[0].filePath, Span(0, 0))]
+    }
+}
+
+// Where a symbol is declared: its file and the span of its name; nil for a symbol without a file or a name.
+method navigationLocationOf(Symbol symbol): Location {
+    if (isNone(symbol.file) || symbol.decl.nameSpan.start < 0) {
+        return nothing()
+    }
+    return Location(symbol.file.filePath, symbol.decl.nameSpan)
+}

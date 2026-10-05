@@ -1,0 +1,153 @@
+package workspace
+
+import base/maybe
+import base/platform
+import projects/closure
+import projects/manifest
+import projects/modules
+import projects/stdlib
+import semantics/semantic
+import syntax/outline
+
+private final WORKSPACE_SCAN_MAX_AGE_MILLIS = 30000
+private final WORKSPACE_MAIN_METHOD = "main"
+
+// Everything known about one project root: the layout (manifest or the file that is its own program), the module
+// table, the program closure, the symbol index and the resolver over it, and the cached scan of the folder. It is
+// invalidated by events and rebuilt lazily (by `Workspace`); `revision` grows with every rebuild of the closure or of
+// the index, so everything that was derived from an older revision (cross-file diagnostics) knows it is stale. A body
+// edit changes neither.
+define class ProjectModel {
+    ProjectLayout layout
+    ModuleTable modules
+    ProgramClosure closure
+    ProgramIndex index
+    Resolver resolver
+    ProjectScan scan
+    integer scannedAt
+    integer revision
+    bool valid
+
+    construct(ProjectLayout layout) {
+        this.layout = layout
+        this.modules = ModuleTable()
+        this.closure = ProgramClosure(layout)
+        this.scan = nothing()
+        this.scannedAt = -1
+        this.revision = 0
+        this.valid = false
+    }
+
+    // The path of the manifest when there is one, else the file that is its own program; `""` for a scratch buffer.
+    method key(): string {
+        if (this.layout.hasManifest()) {
+            return this.layout.manifestPath
+        }
+        return this.layout.mainFile
+    }
+
+    // Marks the model stale; the next `Workspace.contextFor` rebuilds it.
+    method invalidate() {
+        this.valid = false
+    }
+
+    method invalidateScan() {
+        this.scan = nothing()
+        this.scannedAt = -1
+    }
+
+    // Reads the layout, the module table and the closure again (the main file first, then the extra entries that no
+    // import reaches) and builds the index and the resolver. Every read goes through `files`, so open buffers count.
+    method rebuild(FileCache files, StdLibrary library, array<string> extraEntries) {
+        this.layout = this.currentLayout(files)
+        this.modules = ModuleTableBuilder(files, dependencyCacheDirectory()).build(this.layout.manifest)
+        var builder = ClosureBuilder(this.layout, this.modules, files, CacheSourceProvider(files), library)
+        this.closure = builder.build(extraEntries)
+        this.valid = true
+        this.rebuildIndex(library)
+    }
+
+    // The layout as the disk (and the open buffers) describe it now: a manifest that changed gives a new main file.
+    method currentLayout(FileCache files): ProjectLayout {
+        if (this.layout.hasManifest()) {
+            return findProjectLayout(files, this.layout.manifestPath)
+        }
+        if (this.layout.mainFile != "") {
+            return findProjectLayout(files, this.layout.mainFile)
+        }
+        if (this.layout.root != "") {
+            return findProjectLayout(files, this.layout.root)
+        }
+        return this.layout
+    }
+
+    // Additive: the index and the resolver over the current closure, for a change of a declaration signature.
+    method rebuildIndex(StdLibrary library) {
+        this.index = ProgramIndex(this.closure, library)
+        this.resolver = Resolver(this.index)
+        this.revision = this.revision + 1
+    }
+
+    // The scan of the project folder, cached for 30 seconds or until `invalidateScan` (or the clock goes backwards).
+    method scanFor(TextSource source, integer nowMillis): ProjectScan {
+        var age = nowMillis - this.scannedAt
+        if (isSome(this.scan) && age >= 0 && age <= WORKSPACE_SCAN_MAX_AGE_MILLIS) {
+            return this.scan
+        }
+        this.scan = scanProject(source, this.layout)
+        this.scannedAt = nowMillis
+        return this.scan
+    }
+
+    // The file that `novusc check` runs on: the main file when the closure has it and it declares `main`; when the
+    // main file does not exist, the open file when it belongs to the project and declares `main`; else `""` (a library).
+    method checkEntry(string openFilePath): string {
+        var main = this.layout.mainFile
+        var mainFile = this.closure.fileAt(main)
+        if (main != "" && isSome(mainFile)) {
+            return this.entryIfRunnable(mainFile)
+        }
+        var openFile = this.closure.fileAt(manifestNormalizePath(openFilePath))
+        if (isNone(openFile) || openFile.origin != FileOrigin.Project) {
+            return ""
+        }
+        return this.entryIfRunnable(openFile)
+    }
+
+    method entryIfRunnable(ClosureFile file): string {
+        for (decl in file.syntax.topLevelNamed(WORKSPACE_MAIN_METHOD)) {
+            if (decl.kind == DeclKind.Method) {
+                return file.filePath
+            }
+        }
+        return ""
+    }
+
+    method hasUnfetchedDependencies(): bool {
+        return this.modules.notReady().length() > 0
+    }
+
+    // The files of the project's own tree (not those of a `replace`d dependency), in closure order.
+    method userFiles(): array<ClosureFile> {
+        var own = []
+        for (file in this.closure.files) {
+            if (file.origin == FileOrigin.Project) {
+                own.append(file)
+            }
+        }
+        return own
+    }
+
+    // Additive: whether the path lies below the project root (a scratch model has no root and contains nothing).
+    method containsPath(string filePath): bool {
+        var root = this.layout.root
+        if (root == "") {
+            return false
+        }
+        var prefix = root
+        if (root.endsWith(WORKSPACE_SLASH) == false) {
+            prefix = root + WORKSPACE_SLASH
+        }
+        return filePath.startsWith(prefix) || filePath == this.layout.manifestPath
+    }
+}

@@ -1,0 +1,151 @@
+package main
+
+import json
+import unicode
+
+// json: surrogate pairs, tryParse, strict isValid, the nesting limit and
+// strings that carry a NUL byte.
+
+final MAX_DEPTH = 256
+
+define class ParseTask {
+    private string text: get, set
+    method run(): object {
+        return json.parse(text)
+    }
+}
+
+define class StringifyTask {
+    private object value: get, set
+    method run(): object {
+        return json.stringify(value)
+    }
+}
+
+method tryRun(object task): object native "nv_try_run"
+method tryFailed(): bool native "nv_try_failed"
+method tryError(): string native "nv_try_error"
+
+method nested(integer depth): object {
+    var value = []
+    var level = 1
+    while (level < depth) {
+        value = [value]
+        level = level + 1
+    }
+    return value
+}
+
+method brackets(integer depth): string {
+    var opening = ""
+    var closing = ""
+    var level = 0
+    while (level < depth) {
+        opening = opening + "["
+        closing = closing + "]"
+        level = level + 1
+    }
+    return opening + closing
+}
+
+method report(string label, string text) {
+    println "${label}: ${text.length()} bytes, valid UTF-8 ${unicode.isValidUtf8(text)}, first ${unicode.codePointAt(text, 0)}"
+}
+
+method printSurrogates() {
+    report("pair", json.parse("\"\\uD83D\\uDE00\""))
+    report("pair in text", json.parse("\"a\\uD83D\\uDE00b\""))
+    report("lone high", json.parse("\"\\uD83D\""))
+    report("lone low", json.parse("\"\\uDE00\""))
+    report("high then letter", json.parse("\"\\uD83D\\u0041\""))
+    report("high then high", json.parse("\"\\uD83D\\uD83D\\uDE00\""))
+    report("reversed", json.parse("\"\\uDE00\\uD83D\""))
+    report("bmp", json.parse("\"\\u00e9\\u20AC\""))
+    println json.stringify(json.parse("\"\\uD83D\\uDE00\"")) == "\"" + unicode.fromCodePoint(128512) + "\""
+}
+
+method printNulStrings() {
+    var withNul = "a" + chr(0) + "b"
+    var text = json.stringify(withNul)
+    println text
+    var back = json.parse(text)
+    println "${back.length()} ${ord(back.charAt(1))}"
+    println json.stringify({"k": withNul})
+}
+
+method printTryParse() {
+    println json.tryParse("{\"a\": [1, 2.5, true]}")
+    println typeOf(json.tryParse("{bad"))
+    println typeOf(json.tryParse(""))
+    println typeOf(json.tryParse("   "))
+    println typeOf(json.tryParse("[1,]"))
+    println typeOf(json.tryParse("\"unterminated"))
+    println typeOf(json.tryParse("null"))
+    println json.tryParse("42") + 1
+    println typeOf(json.tryParse(brackets(MAX_DEPTH)))
+    println typeOf(json.tryParse(brackets(MAX_DEPTH + 1)))
+    println typeOf(json.tryParse("\"x\\uZZZZ\""))
+}
+
+method printValid(string text) {
+    var shown = text.replace("\n", "<LF>").replace("\t", "<TAB>")
+    println "isValid ${json.isValid(text)}  ${shown}"
+}
+
+method printStrictness() {
+    var accepted = ["0", "-0", "10", "1.5", "-1.5e+10", "1E5", "0.0e-1", "\"\"", "\"\\u00e9\\n\\/\"", "[]", "{}", "[1, 2, {\"a\": null}]", " true ", "false", "null"]
+    var rejected = ["", "[01]", "01", "1.", ".5", "-", "+1", "1e", "1e+", "[1-2]", "1.2.3", "\"a\nb\"", "\"a\tb\"", "\"\\x\"", "\"\\u12\"", "\"\\u12G4\"", "\"abc", "[1,]", "[1 2]", "{\"a\" 1}", "{a: 1}", "{\"a\": 1,}", "tru", "nulll", "[", "{\"a\":"]
+    for (text in accepted) {
+        printValid(text)
+    }
+    for (text in rejected) {
+        printValid(text)
+    }
+}
+
+method printDepth() {
+    println json.isValid(brackets(MAX_DEPTH))
+    println json.isValid(brackets(MAX_DEPTH + 1))
+    println json.isValid(brackets(100000))
+    tryRun(ParseTask{text=brackets(MAX_DEPTH + 1)})
+    println "parse: ${tryFailed()} ${tryError()}"
+    tryRun(ParseTask{text=brackets(MAX_DEPTH)})
+    println "parse at the limit: ${tryFailed()}"
+    var deepest = json.stringify(nested(MAX_DEPTH))
+    println "stringify at the limit: ${deepest.length()} bytes"
+    tryRun(StringifyTask{value=nested(MAX_DEPTH + 1)})
+    println "stringify: ${tryFailed()} ${tryError()}"
+}
+
+// json stops at 256 levels, but display has no limit and tracks every level
+// of its cycle detection: past the 256 entries of the fixed table too.
+method printDeepButAllowed() {
+    var text = json.stringify(nested(MAX_DEPTH))
+    println "stringify ${MAX_DEPTH} levels: ${text.length()} bytes, valid ${json.isValid(text)}"
+    println "pretty ${MAX_DEPTH} levels: ${json.pretty(nested(MAX_DEPTH)).length()} bytes"
+    var shown = "" + nested(300)
+    println "display 300 levels: ${shown.length()} bytes"
+}
+
+method printCycles() {
+    var node = {"name": "loop"}
+    node["self"] = node
+    println json.stringify(node)
+    var deep = nested(200)
+    var innermost = deep
+    while (innermost.length() > 0 && typeOf(innermost[0]) == "array") {
+        innermost = innermost[0]
+    }
+    innermost.append(deep)
+    println json.stringify(deep).length()
+}
+
+method main {
+    printSurrogates()
+    printNulStrings()
+    printTryParse()
+    printStrictness()
+    printDepth()
+    printDeepButAllowed()
+    printCycles()
+}

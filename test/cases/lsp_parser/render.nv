@@ -1,0 +1,84 @@
+package main
+
+import "novus/lsp/base/text"
+import "novus/lsp/syntax/outline"
+
+// A string literal cannot contain an interpolation opener, so sources in tests spell it `@{`.
+method dollar(string template): string {
+    return template.replace("@" + "{", "$" + "{")
+}
+
+method visible(string value): string {
+    return value.replace(chr(10), "\\n")
+}
+
+// One line per declaration: signature, owner, modifiers, accessors, native name, annotations and doc.
+method renderDecl(Decl decl): string {
+    var parts = [decl.signatureText()]
+    if (decl.container != "") {
+        parts.append("in=" + decl.container)
+    }
+    if (decl.modifiers.length() > 0) {
+        parts.append("mods=" + decl.modifiers.join(","))
+    }
+    if (decl.accessors.length() > 0) {
+        parts.append("acc=" + decl.accessors.join(","))
+    }
+    if (decl.nativeName != "") {
+        parts.append("native=" + decl.nativeName)
+    }
+    for (annotation in decl.annotations) {
+        parts.append("@" + annotation.name + renderValues(annotation))
+    }
+    if (decl.doc != "") {
+        parts.append("doc=" + visible(decl.doc))
+    }
+    return parts.join(" | ")
+}
+
+method renderValues(AnnotationUse annotation): string {
+    var keys = annotation.values.keys()
+    if (keys.length() == 0) {
+        return ""
+    }
+    var pairs = []
+    for (key in keys) {
+        pairs.append(key + "=" + annotation.values[key])
+    }
+    return "{" + pairs.join(",") + "}"
+}
+
+// The declarations of a file, members indented below their owner.
+method renderOutline(SourceFile file): string {
+    var lines = []
+    for (decl in file.decls) {
+        lines.append(renderDecl(decl))
+        for (member in decl.members) {
+            lines.append("    " + renderDecl(member))
+        }
+    }
+    return lines.join("\n")
+}
+
+method renderImports(SourceFile file): string {
+    var parts = []
+    for (importDecl in file.imports) {
+        parts.append("" + importDecl.kind + ":" + importDecl.target)
+    }
+    return parts.join(" ")
+}
+
+method renderIssues(SourceFile file): string {
+    var parts = []
+    for (issue in file.issues) {
+        var severity = "error"
+        if (issue.isHint()) {
+            severity = "hint"
+        }
+        if (issue.isHint() == false && issue.warning) {
+            severity = "warning"
+        }
+        parts.append(issue.code + "@" + issue.span.start + "-" + issue.span.end + "/" + severity)
+    }
+    return parts.join(" ")
+}

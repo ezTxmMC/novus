@@ -1,0 +1,102 @@
+package main
+
+import "novus/lsp/base/maybe"
+import "novus/lsp/base/model"
+import "novus/lsp/base/platform"
+import "novus/lsp/base/text"
+import "novus/lsp/features/candidates"
+import "novus/lsp/projects/stdlib"
+import "novus/lsp/projects/workspace"
+import "novus/lsp/services/snippets"
+import "novus/lsp/syntax/outline"
+import "novus/lsp/syntax/parsing"
+
+// One program in memory with the three source classes over it; a case writes its context by hand.
+define class CaWorld {
+    map<string, string> files
+    FileCache cache
+    Workspace space
+    Settings settings
+    SymbolSources symbols
+    ModuleSources modules
+    LexicalSources lexical
+
+    construct(map<string, string> files) {
+        this.files = files
+        this.cache = FileCache(MemoryTextSource(files))
+        this.space = Workspace(this.cache, standardLibrary())
+        this.settings = Settings()
+        this.symbols = SymbolSources(this.space, this.settings)
+        this.modules = ModuleSources(this.space, this.settings)
+        this.lexical = LexicalSources(this.space, loadSnippetCatalogue(), this.settings)
+    }
+
+    method open(string filePath, string source): FileContext {
+        this.files[filePath] = source
+        return this.space.contextFor(Document(filePathToUri(filePath), "novus", 1, source))
+    }
+}
+
+method caEscape(string value): string {
+    return value.replace("\r", "\\r").replace("\n", "\\n").replace("\t", "\\t")
+}
+
+method caContext(string kind, string prefix, integer offset): CompletionContext {
+    return CompletionContext(kind, prefix, Span(offset - prefix.length(), offset))
+}
+
+method caItemLine(CompletionItem item): string {
+    var line = item.sortText + " " + item.label + " (" + item.kind + ")"
+    if (item.detail != "") {
+        line = line + " " + item.detail
+    }
+    if (item.insertText != "") {
+        line = line + " => " + caEscape(item.insertText)
+    }
+    for (edit in item.additionalEdits) {
+        line = line + " +edit@" + edit.span.start + "[" + caEscape(edit.newText) + "]"
+    }
+    if (item.deprecated) {
+        line = line + " deprecated"
+    }
+    return line
+}
+
+method caPrint(string title, array<CompletionItem> items) {
+    caPrintFirst(title, items, items.length())
+}
+
+// The first `limit` items and the count.
+method caPrintFirst(string title, array<CompletionItem> items, integer limit) {
+    println("== " + title + " (" + items.length() + ")")
+    var shown = 0
+    for (item in items) {
+        if (shown < limit) {
+            println("  " + caItemLine(item))
+        }
+        shown = shown + 1
+    }
+}
+
+method caLabels(array<CompletionItem> items): string {
+    var labels = []
+    for (item in items) {
+        labels.append(item.label)
+    }
+    return labels.join(" ")
+}
+
+method caProject(): map<string, string> {
+    return {
+        "/p/project.nv": "project \"p\"\nmain \"main.nv\"\nrequire \"ex.com/lib\"\nreplace \"ex.com/lib\" \"lib\"\n",
+        "/p/main.nv": "package main\n\nimport geo\n\nmethod main() {\n}\n",
+        "/p/util.nv": "package main\n\nmethod helper(integer n): integer {\n    return n\n}\n",
+        "/p/geo/shape.nv": "package geo\n\n// A shape with an area.\ndefine class Shape {\n    string name\n    float size: get, set\n    // The area of the shape.\n    method area(): float {\n        return 1.0\n    }\n}\ndefine enum Color { Red, Green; }\nmethod describe(Shape shape): string {\n    return shape.name\n}\n@Deprecated{text=\"old\"}\nmethod legacy() {\n}\n",
+        "/p/geo/extra.nv": "package geo\n\ndefine interface Named {\n    label(): string\n}\ndefine annotation Audited {\n}\n",
+        "/p/geo/shapes/round.nv": "package shapes\n\ndefine class Round {\n    float radius\n}\n",
+        "/p/lib/sub/extra.nv": "package sub\n\nmethod subFunction(): integer {\n    return 1\n}\n",
+        "/p/other/thing.nv": "package other\n\ndefine class Thing {\n    integer id\n}\nmethod describe(Thing thing): string {\n    return \"x\"\n}\nmethod helper(integer n): integer {\n    return n\n}\n",
+        "/p/lib/lib.nv": "// Returns its argument.\nmethod libFunction(integer a): integer {\n    return a\n}\ndefine class LibThing {\n    string label\n}\n",
+        "/p/my-dir/odd.nv": "define class Odd {\n}\n"
+    }
+}

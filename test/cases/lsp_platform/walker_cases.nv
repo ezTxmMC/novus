@@ -1,0 +1,87 @@
+package main
+
+import "novus/lsp/base/platform"
+import strings
+
+method relativeList(array<string> paths, string root): array<string> {
+    var out = []
+    for (item in paths) {
+        out.push(strings.stripPrefix(item, root + "/"))
+    }
+    return out
+}
+
+method showWalk(string label, object value) {
+    println("walk " + label + ": " + value)
+}
+
+method bigText(integer extra): string {
+    var text = strings.repeat("x", 1024)
+    var doublings = 0
+    while (doublings < 11) {
+        text = text + text
+        doublings = doublings + 1
+    }
+    return text + strings.repeat("y", extra)
+}
+
+method buildTree(string root) {
+    makeDirectories(root + "/sub/deep/deeper")
+    makeDirectories(root + "/.hidden")
+    makeDirectories(root + "/build")
+    makeDirectories(root + "/dist")
+    makeDirectories(root + "/out")
+    makeDirectories(root + "/node_modules")
+    var names = ["a.nv", "b.nvh", "c.txt", "project.nv", ".hidden/h.nv", "build/b.nv", "dist/d.nv", "out/o.nv", "node_modules/n.nv", "sub/s.nv", "sub/deep/d.nv", "sub/deep/deeper/dd.nv"]
+    for (name in names) {
+        writeTextFile(root + "/" + name, "text")
+    }
+    writeTextFile(root + "/exact.nv", bigText(0))
+    writeTextFile(root + "/big.nv", bigText(1))
+}
+
+method buildLink(string root, string outside) {
+    if (operatingSystem() == "windows") {
+        return
+    }
+    writeTextFile(outside + "/l.nv", "text")
+    runCommand("ln -s " + shellQuote(outside) + " " + shellQuote(root + "/linkdir"), 5)
+}
+
+method runDiskWalk() {
+    var root = createTempDirectory("lsp-walk-")
+    var outside = createTempDirectory("lsp-walk-outside-")
+    buildTree(root)
+    buildLink(root, outside)
+    var source = DiskTextSource()
+    showWalk("disk .nv, depth 12 (skips dot/build/dist/out/node_modules, the link and big.nv)", relativeList(walkSourceFiles(source, root, [".nv"], 12), root))
+    showWalk("disk .nv and .nvh", relativeList(walkSourceFiles(source, root, [".nv", ".nvh"], 12), root))
+    showWalk("disk depth 0", relativeList(walkSourceFiles(source, root, [".nv"], 0), root))
+    showWalk("disk depth 1", relativeList(walkSourceFiles(source, root, [".nv"], 1), root))
+    showWalk("disk depth 2", relativeList(walkSourceFiles(source, root, [".nv"], 2), root))
+    showWalk("disk no extensions", walkSourceFiles(source, root, [], 12))
+    showWalk("disk root is a file", walkSourceFiles(source, root + "/a.nv", [".nv"], 12))
+    showWalk("disk missing root", walkSourceFiles(source, root + "/nope", [".nv"], 12))
+    removeTree(root)
+    removeTree(outside)
+}
+
+method runMemoryWalk() {
+    var files = {"/w/a.nv": "x", "/w/sub/b.nv": "y", "/w/.git/c.nv": "z", "/w/node_modules/d.nv": "q", "/w/sub/deep/e.nvh": "e", "/w/big.nv": bigText(1)}
+    var source = MemoryTextSource(files)
+    showWalk("memory .nv, big files are not filtered", walkSourceFiles(source, "/w", [".nv"], 12))
+    showWalk("memory .nv and .nvh", walkSourceFiles(source, "/w/", [".nv", ".nvh"], 12))
+    showWalk("memory depth 1", walkSourceFiles(source, "/w", [".nv", ".nvh"], 1))
+    showWalk("memory missing root", walkSourceFiles(source, "/elsewhere", [".nv"], 12))
+}
+
+method runWalkerCases() {
+    println("--- walker")
+    var skipped = [".git", ".", ".hidden", "build", "dist", "out", "node_modules", "src", "Build", "outside", "_x", "distribution"]
+    for (name in skipped) {
+        println("isSkippedDirectoryName(" + name + "): " + isSkippedDirectoryName(name))
+    }
+    println("MAX_SOURCE_FILE_BYTES: " + MAX_SOURCE_FILE_BYTES)
+    runMemoryWalk()
+    runDiskWalk()
+}

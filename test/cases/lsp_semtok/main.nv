@@ -1,0 +1,32 @@
+package main
+
+import @support
+import @legend_cases
+import @lexical_cases
+import @resolved_cases
+import @member_cases
+import @string_cases
+import @scope_cases
+import @odd_cases
+import @range_cases
+import @encode_cases
+import @extra_cases
+import @fix_cases
+
+method main() {
+    runLegendCases()
+    runLexicalCases()
+    runWordCases()
+    runResolvedCases()
+    runMemberCases()
+    runStringCases()
+    runScopeCases()
+    runOddCases()
+    runKindCases()
+    runClosedCases()
+    runRangeCases()
+    runPassCases()
+    runEncodeCases()
+    runDeclarationCases()
+    runFixCases()
+}

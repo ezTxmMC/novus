@@ -1,0 +1,239 @@
+== packages, nested package, @file, std, unreachable files
+  root=[/p] files=16
+  /p/main.nv Project root=/p q=[] package=[] module=[] rootLevel=true
+  /p/geo/Sub.nvh Project root=/p q=[geo] package=[geo] module=[] rootLevel=false
+  /p/geo/circle.nv Project root=/p q=[geo] package=[geo] module=[] rootLevel=false
+  /p/geo/units.nv Project root=/p q=[geo] package=[geo] module=[] rootLevel=false
+  /p/helpers.nv Project root=/p q=[] package=[] module=[] rootLevel=true
+  /p/geo/shapes/square.nv Project root=/p q=[shapes] package=[geo/shapes] module=[] rootLevel=false
+  std: [web, strings, bytes, crypto, io, json, math, net, os, path]
+== qualifier is the last segment, package main means root level
+  root=[/p] files=5
+  /p/main.nv Project root=/p q=[] package=[] module=[] rootLevel=true
+  /p/geo/shapes/a.nv Project root=/p q=[shapes] package=[geo/shapes] module=[] rootLevel=false
+  /p/draw/shapes/b.nv Project root=/p q=[shapes] package=[draw/shapes] module=[] rootLevel=false
+  /p/tools/helper.nv Project root=/p q=[] package=[tools] module=[] rootLevel=true
+  /p/tools/other.nv Project root=/p q=[tools] package=[tools] module=[] rootLevel=false
+  std: []
+  files of qualifier shapes: [/p/geo/shapes/a.nv, /p/draw/shapes/b.nv]
+  files of qualifier tools: [/p/tools/other.nv]
+  root level files: [/p/main.nv, /p/tools/helper.nv]
+== a local folder wins over the std module of the same name
+  root=[/p] files=3
+  /p/main.nv Project root=/p q=[] package=[] module=[] rootLevel=true
+  /p/json/mine.nv Project root=/p q=[json] package=[json] module=[] rootLevel=false
+  std: [strings]
+== package line against the folder
+  root=[/p] files=5
+  /p/main.nv Project root=/p q=[] package=[] module=[] rootLevel=true
+  /p/util/help.nv Project root=/p q=[util] package=[util] module=[] rootLevel=false
+  /p/misc/a.nv Project root=/p q=[misc] package=[misc] module=[] rootLevel=false
+  /p/misc/b.nv Project root=/p q=[misc] package=[misc] module=[] rootLevel=false
+  /p/free/c.nv Project root=/p q=[] package=[free] module=[] rootLevel=true
+  std: []
+  issue package-folder-mismatch /p/util/help.nv 8-13: the file declares package tools but lives in the folder of package util - a folder is a package, so write 'package util'
+== every import that names nothing is an issue, never an abort
+  root=[/p] files=3
+  /p/main.nv Project root=/p q=[] package=[] module=[] rootLevel=true
+  /p/other.nv Project root=/p q=[] package=[] module=[] rootLevel=true
+  /p/geo/a.nv Project root=/p q=[geo] package=[geo] module=[] rootLevel=false
+  std: []
+  issue unresolved-import /p/main.nv 7-11: no package 'nope': there is no folder nope with .nv files and no standard module of that name
+  issue unresolved-import /p/main.nv 20-27: import @missing: there is no missing.nv (or .nvh)
+  issue unresolved-import /p/main.nv 36-43: import @geo/zzz: there is no geo/zzz.nv (or .nvh)
+  issue unresolved-import /p/main.nv 52-61: import "no/module": no dependency module of that name in project.nv (packages of this project are imported without quotes: import no/module)
+  issue unresolved-import /p/main.nv 71-77: import "a/b.nv": file paths are not imported - a folder is a package: import it (import a) or one file of it (import @a/b, relative to the project root)
+  issue unresolved-import /p/other.nv 7-12: no package 'empty': there is no folder empty with .nv files and no standard module of that name
+== no entries: the manifest main (in a folder: its qualifier)
+  root=[/p] files=3
+  /p/cmd/start.nv Project root=/p q=[cmd] package=[cmd] module=[] rootLevel=false
+  /p/cmd/extra.nv Project root=/p q=[cmd] package=[cmd] module=[] rootLevel=false
+  /p/lib/l.nv Project root=/p q=[lib] package=[lib] module=[] rootLevel=false
+  std: []
+== an orphan is an extra entry
+  root=[/p] files=4
+  /p/cmd/start.nv Project root=/p q=[cmd] package=[cmd] module=[] rootLevel=false
+  /p/orphan.nv Project root=/p q=[] package=[] module=[] rootLevel=true
+  /p/cmd/extra.nv Project root=/p q=[cmd] package=[cmd] module=[] rootLevel=false
+  /p/lib/l.nv Project root=/p q=[lib] package=[lib] module=[] rootLevel=false
+  std: []
+== an orphan alone still gets the program of the project
+  root=[/p] files=4
+  /p/cmd/start.nv Project root=/p q=[cmd] package=[cmd] module=[] rootLevel=false
+  /p/orphan.nv Project root=/p q=[] package=[] module=[] rootLevel=true
+  /p/cmd/extra.nv Project root=/p q=[cmd] package=[cmd] module=[] rootLevel=false
+  /p/lib/l.nv Project root=/p q=[lib] package=[lib] module=[] rootLevel=false
+  std: []
+== entry outside the root has no qualifier
+  root=[/p] files=5
+  /p/cmd/start.nv Project root=/p q=[cmd] package=[cmd] module=[] rootLevel=false
+  /outside/stray.nv Project root=/p q=[] package=[] module=[] rootLevel=true
+  /p/cmd/extra.nv Project root=/p q=[cmd] package=[cmd] module=[] rootLevel=false
+  /p/lib/l.nv Project root=/p q=[lib] package=[lib] module=[] rootLevel=false
+  std: [strings]
+== missing and empty entries are skipped
+  root=[/p] files=3
+  /p/cmd/start.nv Project root=/p q=[cmd] package=[cmd] module=[] rootLevel=false
+  /p/cmd/extra.nv Project root=/p q=[cmd] package=[cmd] module=[] rootLevel=false
+  /p/lib/l.nv Project root=/p q=[lib] package=[lib] module=[] rootLevel=false
+  std: []
+== a scratch buffer has no project
+  root=[] files=0
+  std: []
+== import cycles end
+  root=[/p] files=3
+  /p/main.nv Project root=/p q=[] package=[] module=[] rootLevel=true
+  /p/a/a.nv Project root=/p q=[a] package=[a] module=[] rootLevel=false
+  /p/b/b.nv Project root=/p q=[b] package=[b] module=[] rootLevel=false
+  std: []
+== lookups
+  has main true has unreachable false
+  fileAt known /p/geo/units.nv
+  fileAt unknown is nothing true
+  std keys std:os -> [os] [] []
+  the provider was asked once per project file: true
+  std file in the closure true origin Standard q=strings rootLevel=false
+== package loader
+  loadFolder /p/geo/Sub.nvh q=[geo] package=[geo]
+  loadFolder /p/geo/circle.nv q=[geo] package=[geo]
+  loadFolder /p/geo/units.nv q=[geo] package=[geo]
+  loadFolder of a missing folder: 0, of a file: 0
+  loadFile with package main: q=[]
+  loadFile normalises the path: /p/geo/circle.nv q=[geo]
+  loadFile of a missing file is nothing true, of a folder true
+  loadStandard: std:strings Standard q=[strings] module=[strings] root=[]
+  loadStandard of an unknown module is nothing true
+== entries are normalised
+  root=[/p] files=16
+  /p/main.nv Project root=/p q=[] package=[] module=[] rootLevel=true
+  /p/geo/Sub.nvh Project root=/p q=[geo] package=[geo] module=[] rootLevel=false
+  /p/geo/circle.nv Project root=/p q=[geo] package=[geo] module=[] rootLevel=false
+  /p/geo/units.nv Project root=/p q=[geo] package=[geo] module=[] rootLevel=false
+  /p/helpers.nv Project root=/p q=[] package=[] module=[] rootLevel=true
+  /p/geo/shapes/square.nv Project root=/p q=[shapes] package=[geo/shapes] module=[] rootLevel=false
+  std: [web, strings, bytes, crypto, io, json, math, net, os, path]
+== dependencies: entry, package, file, transitive, replace, statuses
+  root=[/p] files=9
+  /p/main.nv Project root=/p q=[] package=[] module=[] rootLevel=true
+  /cache/g.example/geo@v1/main.nv Dependency root=/cache/g.example/geo@v1 q=[] package=[] module=[g.example/geo] rootLevel=true
+  /cache/g.example/geo@v1/shapes/s.nv Dependency root=/cache/g.example/geo@v1 q=[shapes] package=[shapes] module=[g.example/geo] rootLevel=false
+  /cache/g.example/geo@v1/util.nv Dependency root=/cache/g.example/geo@v1 q=[] package=[] module=[g.example/geo] rootLevel=true
+  /loc/lib.nv Dependency root=/loc q=[] package=[] module=[g.example/loc] rootLevel=true
+  /cache/g.example/inner@v2/src/entry.nv Dependency root=/cache/g.example/inner@v2 q=[src] package=[src] module=[g.example/inner] rootLevel=false
+  /loc/sub/x.nv Dependency root=/loc q=[sub] package=[sub] module=[g.example/loc] rootLevel=false
+  /cache/g.example/inner@v2/helper.nv Dependency root=/cache/g.example/inner@v2 q=[] package=[] module=[g.example/inner] rootLevel=true
+  std: [strings]
+  issue unresolved-import /p/main.nv 102-123: module g.example/geo has no package or file 'nothing'
+  issue unresolved-import /p/main.nv 133-147: import "g.example/gone": the dependency g.example/gone @ v1 is not fetched yet (run novusc deps)
+  issue unresolved-import /p/main.nv 180-194: import "g.example/lost": the replace target of g.example/lost does not exist: /lost
+  issue unresolved-import /p/main.nv 229-247: import "g.example/stranger": no dependency module of that name in project.nv (packages of this project are imported without quotes: import g.example/stranger)
+  not ready: [g.example/gone:NotFetched, g.example/lost:ReplaceMissing]
+  /cache/g.example/geo@v1/main.nv moduleName=g.example/geo
+  /cache/g.example/geo@v1/shapes/s.nv moduleName=g.example/geo
+  /cache/g.example/geo@v1/util.nv moduleName=g.example/geo
+  /loc/lib.nv moduleName=g.example/loc
+  /cache/g.example/inner@v2/src/entry.nv moduleName=g.example/inner
+  /loc/sub/x.nv moduleName=g.example/loc
+  /cache/g.example/inner@v2/helper.nv moduleName=g.example/inner
+== a module import with a trailing slash loads the whole module root
+  root=[/p] files=3
+  /p/main.nv Project root=/p q=[] package=[] module=[] rootLevel=true
+  /cache/ex.com/lib@v1/main.nv Dependency root=/cache/ex.com/lib@v1 q=[] package=[] module=[ex.com/lib] rootLevel=true
+  /cache/ex.com/lib@v1/other.nv Dependency root=/cache/ex.com/lib@v1 q=[] package=[] module=[ex.com/lib] rootLevel=true
+  std: []
+== components: implicit web, tags found next to the file, in components/ and ../components/
+  root=[/p] files=15
+  /p/main.nv Project root=/p q=[] package=[] module=[] rootLevel=true
+  /p/pages/Home.nvh Project root=/p q=[pages] package=[pages] module=[] rootLevel=false
+  /p/pages/components/Item.nvh Project root=/p q=[components] package=[pages/components] module=[] rootLevel=false
+  /p/components/Card.nvh Project root=/p q=[components] package=[components] module=[] rootLevel=false
+  /p/helpers.nv Project root=/p q=[] package=[] module=[] rootLevel=true
+  std: [strings, web, bytes, crypto, io, json, math, net, os, path]
+  Ghost (inside <style>) loaded false, Hidden (in a comment) loaded false
+  page kind nvh imports 1 class Home
+== a component as the main file
+  root=[/p] files=11
+  /p/Page.nvh Project root=/p q=[] package=[] module=[] rootLevel=true
+  std: [web, bytes, crypto, io, json, math, net, os, path, strings]
+== a local web folder wins over the std web module
+  root=[/p] files=3
+  /p/main.nv Project root=/p q=[] package=[] module=[] rootLevel=true
+  /p/ui/Page.nvh Project root=/p q=[ui] package=[ui] module=[] rootLevel=false
+  /p/web/w.nv Project root=/p q=[web] package=[web] module=[] rootLevel=false
+  std: []
+== importable targets
+  Package geo -> /p/geo Project
+  Package geo/shapes -> /p/geo/shapes Project
+  Package geo/shapes/deep -> /p/geo/shapes/deep Project
+  Package json -> /p/json Project
+  Package only/sub -> /p/only/sub Project
+  Package web -> /p/web Project
+  File geo/circle -> /p/geo/circle.nv Project
+  File geo/shapes/deep/cube -> /p/geo/shapes/deep/cube.nv Project
+  File geo/shapes/square -> /p/geo/shapes/square.nv Project
+  File helpers -> /p/helpers.nv Project
+  File json/mine -> /p/json/mine.nv Project
+  File main -> /p/main.nv Project
+  File only/sub/s -> /p/only/sub/s.nv Project
+  File web/Page -> /p/web/Page.nvh Project
+  Module d.example/lib -> /cache/d.example/lib@v1/entry.nv Dependency
+  Module d.example/lib/pkg -> /cache/d.example/lib@v1/pkg Dependency
+  Module d.example/lib/pkg/inner -> /cache/d.example/lib@v1/pkg/inner Dependency
+  Module d.example/lib/entry -> /cache/d.example/lib@v1/entry.nv Dependency
+  Module d.example/lib/pkg/a -> /cache/d.example/lib@v1/pkg/a.nv Dependency
+  Module d.example/lib/pkg/inner/b -> /cache/d.example/lib@v1/pkg/inner/b.nv Dependency
+  Module d.example/lib/top -> /cache/d.example/lib@v1/top.nv Dependency
+  standard targets: every module except the hidden ones true
+  std os true std json (hidden by the local json folder) false std web (hidden by the local web folder) false std unicode true
+  every std target is a std key true
+== resolveImport
+  package geo -> Package geo /p/geo Project
+  package geo/shapes -> Package geo/shapes /p/geo/shapes Project
+  package os (std) -> Package os std:os Standard
+  package json (local folder wins) -> Package json /p/json Project
+  package docs (no sources) -> nothing
+  package nope -> nothing
+  file helpers -> File helpers /p/helpers.nv Project
+  file web/Page (nvh) -> File web/Page /p/web/Page.nvh Project
+  file missing -> nothing
+  module entry -> Module d.example/lib /cache/d.example/lib@v1/entry.nv Dependency
+  module package -> Module d.example/lib/pkg /cache/d.example/lib@v1/pkg Dependency
+  module file -> Module d.example/lib/top /cache/d.example/lib@v1/top.nv Dependency
+  module not fetched -> nothing
+  module unknown -> nothing
+== a relative root
+  root=[.]
+  Package geo -> geo
+  File geo/f13 -> geo/f13.nv
+  File main -> main.nv
+  closure main.nv
+  closure geo/f13.nv
+== resolver of a bare project
+  targets are the std modules only true, std os resolves true
+== real examples/mccloud/main.nv
+  files 4 same set as novusc true; std modules 3 same set as novusc true; issues 0
+== real examples/shapes/main.nv
+  files 1 same set as novusc true; std modules 0 same set as novusc true; issues 0
+== real examples/web/main.nv
+  files 10 same set as novusc true; std modules 11 same set as novusc true; issues 0
+== real test/cases/imports/main.nv
+  files 4 same set as novusc true; std modules 1 same set as novusc true; issues 0
+== real test/cases/packages/main.nv
+  files 6 same set as novusc true; std modules 0 same set as novusc true; issues 0
+== real test/cases/project/main.nv
+  files 3 same set as novusc true; std modules 0 same set as novusc true; issues 0
+== real test/cases/web/main.nv
+  files 6 same set as novusc true; std modules 10 same set as novusc true; issues 0
+== live compiler/main.nv
+  issues 0 all files exist true follows imports true uses std true
+== qualifiers of test/cases/packages/main.nv
+  test/cases/packages/draw/canvas.nv Project q=[draw] package=[draw] module=[]
+  test/cases/packages/draw/shapes/square.nv Project q=[shapes] package=[draw/shapes] module=[]
+  test/cases/packages/geo/circle.nv Project q=[geo] package=[geo] module=[]
+  test/cases/packages/geo/units.nv Project q=[geo] package=[geo] module=[]
+  test/cases/packages/helpers.nv Project q=[] package=[] module=[]
+  test/cases/packages/main.nv Project q=[] package=[] module=[]
+== qualifiers of test/cases/project/main.nv
+  test/cases/project/lib/lib.nv Dependency q=[] package=[] module=[example.com/geo]
+  test/cases/project/lib/shapes/circle.nv Dependency q=[shapes] package=[shapes] module=[example.com/geo]
+  test/cases/project/main.nv Project q=[] package=[] module=[]

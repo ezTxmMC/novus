@@ -1,0 +1,54 @@
+package main
+
+import "novus/lsp/base/maybe"
+import "novus/lsp/base/model"
+import "novus/lsp/base/text"
+import @support
+
+method runSyntaxCases() {
+    println("== the syntax rule: severities of the parser issues")
+    var world = DgWorld({
+        "/p/project.nv": "project \"p\"\n",
+        "/p/main.nv": "println(\"top\")\n\ndefine class Box {\n    integer size\n\n    construct() {\n        this.size = 1\n    }\n\n    construct(integer size) {\n        this.size = size\n    }\n}\n\nmethod main() {\n    else {\n        return\n    }\n    var x = 1\n    x += 2\n}\n"
+    })
+    dgShow("main.nv", world.ownOf("/p/main.nv"))
+    println("== the same file through SyntaxDiagnosticRule alone")
+    var context = world.context("/p/main.nv")
+    dgShow("rule", dgLines(context.document, SyntaxDiagnosticRule().check(context)))
+    println("== a component keeps only the syntax rule")
+    var component = DgWorld({
+        "/p/project.nv": "project \"p\"\n",
+        "/p/main.nv": "method main() {\n    return\n}\n",
+        "/p/page.nvh": "<?nv\nprop string title\n"
+    })
+    dgShow("page.nvh", component.ownOf("/p/page.nvh"))
+    runBindCases()
+}
+
+method runBindCases() {
+    println("== bind-not-ref: bind=\"x\" in a tag needs a ref or var of that name in the header")
+    var template = "<?nv\nimport strings\n\ndefine class Entry {\n    private string name: get\n}\n\nprop string who = \"w\"\nref string color = \"red\"\nvar last = \"-\"\n?>\n<p>the word bind=\"nothing\" in text</p>\n<input bind=\"color\">\n<input bind=\"who\">\n<input bind=\"last\">\n<input bind:value=\"color\">\n<input bind=\"missing\">\n<input bind=\"1bad\">\n<input bind={expr}>\n<input type=\"checkbox\" bind='color'>\n<input bind='who'>\n"
+    var world = DgWorld({
+        "/p/project.nv": "project \"p\"\n",
+        "/p/main.nv": "method main() {\n    return\n}\n",
+        "/p/Page.nvh": template
+    })
+    dgShow("Page.nvh: prop, missing; the header class Entry is not the component", world.ownOf("/p/Page.nvh"))
+    var plain = DgWorld({
+        "/p/project.nv": "project \"p\"\n",
+        "/p/Plain.nvh": "<div bind=\"anything\"></div>\n"
+    })
+    dgShow("a component without a header: nothing is declared", plain.ownOf("/p/Plain.nvh"))
+    runBindTextCases()
+}
+
+// The template is read tag by tag: the words of an attribute value, a comment or an escaped brace are no attributes.
+method runBindTextCases() {
+    var template = "<?nv\nref string name = \"\"\n?>\n<div title='see bind=\"nope\"' data-x=\"bind='nada'\">\n<!-- <input bind=\"hidden\"> -->\n<input\n    bind =\n\"name\"\n    value={name == \"bind\" ? 1 : 2}>\n<p>a < b and \\{ bind=\"x\" \\}</p>\n<input bind=\"absent\"/>\n</div>\n"
+    var world = DgWorld({
+        "/p/project.nv": "project \"p\"\n",
+        "/p/main.nv": "method main() {\n    return\n}\n",
+        "/p/Page.nvh": template
+    })
+    dgShow("Page.nvh: only the attribute of the last tag is reported", world.ownOf("/p/Page.nvh"))
+}

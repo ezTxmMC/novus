@@ -1,0 +1,53 @@
+package model
+
+import base/text
+
+// A finding in domain terms (byte span, no LSP encoding) and the severities with their LSP numbers.
+define enum Severity {
+    Error(1), Warning(2), Information(3), Hint(4);
+    integer code
+
+    construct(integer code) {
+        this.code = code
+    }
+}
+
+define class RelatedInfo {
+    string filePath
+    Span span
+    string message
+
+    construct(string filePath, Span span, string message) {
+        this.filePath = filePath
+        this.span = span
+        this.message = message
+    }
+}
+
+define class Diagnostic {
+    Span span
+    Severity severity
+    string source
+    string code
+    string message
+    bool unnecessary
+    bool deprecated
+    array<RelatedInfo> related
+    string data
+
+    construct(Span span, Severity severity, string source, string code, string message) {
+        this.span = span
+        this.severity = severity
+        this.source = source
+        this.code = code
+        this.message = message
+        this.unnecessary = false
+        this.deprecated = false
+        this.related = []
+        this.data = ""
+    }
+}
+
+define interface DiagnosticProducer {
+    produce(Document document): array<Diagnostic>
+}

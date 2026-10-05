@@ -1,0 +1,50 @@
+package main
+
+import "novus/lsp/projects/closure"
+import @support
+
+method componentFiles(): map<string, string> {
+    return {
+        "/p/project.nv": "project \"p\"\n",
+        "/p/main.nv": "import @pages/Home\n",
+        "/p/pages/Home.nvh": "<?nv\nimport strings\nprop string title = \"x\"\n?>\n<h1>{title}</h1>\n<Item text=\"a\"/>\n<Card/>\n<Home/>\n<Missing/>\n<div class=\"a\"><Outside/></div>\n<style> .a { color: red } <Ghost/> </style>\n<!-- <Hidden/> -->\n<p>{ items.length() < 3 }</p>\n",
+        "/p/pages/components/Item.nvh": "<li>{text}</li>\n",
+        "/p/pages/Ghost.nvh": "<i/>\n",
+        "/p/pages/Hidden.nvh": "<i/>\n",
+        "/p/components/Card.nvh": "<?nv\nimport @helpers\n?>\n<section><Item/></section>\n",
+        "/p/helpers.nv": "package main\n",
+        "/outside/components/Outside.nvh": "<i/>\n"
+    }
+}
+
+method runComponentFixture() {
+    var world = TestWorld(componentFiles(), "/p/main.nv", [])
+    showClosure("components: implicit web, tags found next to the file, in components/ and ../components/", world)
+    println("  Ghost (inside <style>) loaded " + world.closure.has("/p/pages/Ghost.nvh") + ", Hidden (in a comment) loaded " + world.closure.has("/p/pages/Hidden.nvh"))
+    var page = world.closure.fileAt("/p/pages/Home.nvh")
+    println("  page kind " + page.syntax.fileKind + " imports " + page.syntax.imports.length() + " class " + page.syntax.decls[0].name)
+}
+
+method runStandaloneComponent() {
+    var files = {
+        "/p/project.nv": "project \"p\"\nmain \"Page.nvh\"\n",
+        "/p/Page.nvh": "<h1>hi</h1>\n"
+    }
+    showClosure("a component as the main file", TestWorld(files, "/p/Page.nvh", []))
+}
+
+method runLocalWebFolder() {
+    var files = {
+        "/p/project.nv": "project \"p\"\n",
+        "/p/main.nv": "import ui\n",
+        "/p/ui/Page.nvh": "<h1>hi</h1>\n",
+        "/p/web/w.nv": "package web\n"
+    }
+    showClosure("a local web folder wins over the std web module", TestWorld(files, "/p/main.nv", []))
+}
+
+method runComponentCases() {
+    runComponentFixture()
+    runStandaloneComponent()
+    runLocalWebFolder()
+}

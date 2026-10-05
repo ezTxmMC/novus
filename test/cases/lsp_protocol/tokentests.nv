@@ -1,0 +1,109 @@
+package main
+
+import json
+import unicode
+import "novus/lsp/base/text"
+import "novus/lsp/base/model"
+import "novus/lsp/server/protocol"
+
+method token(integer start, integer end, integer tokenType): SemanticSpan {
+    return SemanticSpan(Span(start, end), tokenType, 0)
+}
+
+// Prints the data array as groups of five: deltaLine deltaStart length type modifiers.
+method showTokens(string label, WireEncoder encoder, LineIndex lines, array<SemanticSpan> spans) {
+    var data = encoder.semanticTokens(lines, spans)["data"]
+    var groups = []
+    var i = 0
+    while (i < data.length()) {
+        groups.append("(" + data[i] + " " + data[i + 1] + " " + data[i + 2] + " " + data[i + 3] + " " + data[i + 4] + ")")
+        i = i + 5
+    }
+    println label + ": " + groups.join(" ")
+}
+
+method testTokenBasics() {
+    println "== semantic tokens: ordering and delta encoding"
+    var lines = LineIndex("var x = 1\nvar yy = 22\n")
+    var encoder = newEncoder("utf-16", ClientInfo())
+    showTokens("sorted", encoder, lines, [token(0, 3, 1), token(4, 5, 2), token(8, 9, 3), token(10, 13, 1), token(14, 16, 2)])
+    showTokens("unsorted input", encoder, lines, [token(14, 16, 2), token(0, 3, 1), token(10, 13, 1), token(4, 5, 2)])
+    showTokens("empty input", encoder, lines, [])
+    showTokens("empty and negative spans dropped", encoder, lines, [token(3, 3, 1), token(-4, 2, 1), token(5, 4, 1), token(4, 5, 2)])
+    showTokens("clamped to the text", encoder, lines, [token(19, 500, 4), token(100, 120, 4)])
+    var withModifiers = SemanticSpan(Span(4, 5), 2, 5)
+    showTokens("modifiers", encoder, lines, [withModifiers])
+    showJson("whole result", encoder.semanticTokens(lines, [token(0, 3, 1)]))
+}
+
+method testTokenOverlaps() {
+    println "== semantic tokens: overlap rule"
+    var lines = LineIndex("var s = \"ab " + "$" + "{x} cd\" + y")
+    var encoder = newEncoder("utf-16", ClientInfo())
+    showTokens("interpolation cuts the string", encoder, lines, [token(8, 20, 7), token(12, 16, 8), token(14, 15, 9)])
+    showTokens("input order does not matter", encoder, lines, [token(14, 15, 9), token(8, 20, 7), token(12, 16, 8)])
+    showTokens("partial overlap", encoder, lines, [token(0, 10, 1), token(5, 15, 2)])
+    showTokens("same start, longer first", encoder, lines, [token(0, 4, 2), token(0, 10, 1)])
+    showTokens("identical spans keep the later one", encoder, lines, [token(0, 3, 1), token(0, 3, 2), token(4, 5, 6)])
+    showTokens("nested resumes after inner", encoder, lines, [token(0, 20, 1), token(5, 8, 2), token(10, 12, 3)])
+    showTokens("adjacent spans", encoder, lines, [token(0, 3, 1), token(3, 6, 2)])
+    showTokens("inner reaches outer end", encoder, lines, [token(0, 10, 1), token(6, 10, 2)])
+}
+
+method testTokenLines() {
+    println "== semantic tokens: multi-line spans, CRLF, wide characters"
+    var encoder = newEncoder("utf-16", ClientInfo())
+    var block = LineIndex("/* one\n  two\n\nthree */ x")
+    showTokens("multi-line comment", encoder, block, [token(0, 22, 5), token(23, 24, 2)])
+    var crlf = LineIndex("ab\r\ncd\r\nef")
+    showTokens("CRLF is never part of a token", encoder, crlf, [token(0, 10, 3)])
+    var emoji = unicode.fromCodePoint(128512)
+    var wide = LineIndex("\"" + emoji + "\" x\n" + emoji + emoji + "yz")
+    showTokens("utf-16 lengths and starts", encoder, wide, [token(0, 6, 7), token(7, 8, 2), token(9, 17, 3), token(17, 19, 4)])
+    var bytes = newEncoder("utf-8", ClientInfo())
+    showTokens("utf-8 lengths and starts", bytes, wide, [token(0, 6, 7), token(7, 8, 2), token(9, 17, 3), token(17, 19, 4)])
+    var cut = LineIndex(emoji + "abc")
+    showTokens("span ending inside a character", encoder, cut, [token(0, 2, 1), token(4, 5, 2)])
+}
+
+method testTokenScale() {
+    println "== semantic tokens: many tokens"
+    var parts = []
+    var spans = []
+    var i = 0
+    while (i < 2000) {
+        parts.append("ab " + i)
+        i = i + 1
+    }
+    var lines = LineIndex(parts.join("\n"))
+    var offset = 0
+    for (part in parts) {
+        spans.append(token(offset, offset + 2, 1))
+        offset = offset + part.length() + 1
+    }
+    var encoder = newEncoder("utf-16", ClientInfo())
+    var data = encoder.semanticTokens(lines, spans)["data"]
+    show("data length", data.length())
+    show("last group", data[data.length() - 5] + " " + data[data.length() - 4] + " " + data[data.length() - 3])
+    show("every group is one line down", countOrderedGroups(data))
+    var reversed = []
+    var j = spans.length() - 1
+    while (j >= 0) {
+        reversed.append(spans[j])
+        j = j - 1
+    }
+    show("reversed input gives the same data", json.stringify(encoder.semanticTokens(lines, reversed)["data"]) == json.stringify(data))
+}
+
+// Group 0 starts on line 0; every later group is the next line, column 0, length 2.
+method countOrderedGroups(array<integer> data): integer {
+    var ordered = 0
+    var i = 5
+    while (i < data.length()) {
+        if (data[i] == 1 && data[i + 1] == 0 && data[i + 2] == 2) {
+            ordered = ordered + 1
+        }
+        i = i + 5
+    }
+    return ordered
+}

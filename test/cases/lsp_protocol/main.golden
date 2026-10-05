@@ -1,0 +1,210 @@
+== parseClientInfo
+full client: name=[Code] encodings=utf-16 flags=true,true,true,true,true,true,true,true
+utf-8 client: name=[] encodings=utf-32,utf-8,utf-16 flags=false,false,false,false,false,false,false,false
+empty object: name=[] encodings= flags=false,false,false,false,false,false,false,false
+wrong types: name=[] encodings= flags=false,false,false,false,false,false,false,false
+nothing at all: name=[] encodings= flags=false,false,false,false,false,false,false,false
+markdown from hover: name=[] encodings= flags=false,false,false,false,false,false,true,false
+plaintext only: name=[] encodings= flags=false,false,false,false,false,false,false,false
+== position decoders
+positionParams: file:///a.nv 3:7
+broken positionParams: [] 0:0
+whole floats: 2:4
+documentUri: file:///b.nv
+documentUri missing: []
+wireRange: 1:2-3:4
+wireRange empty: 0:0-0:0
+selectedRange: 0:1-0:5
+renameName: renamed
+renameName missing: []
+symbolQuery: Circ
+symbolQuery number: []
+== contentChanges and text document item
+mixed count: 2
+  change hasRange=true range=[0:1-0:2] text=[X]
+  change hasRange=false range=[] text=[whole]
+not an array: 0
+nil: 0
+item: file:///work/a.nv /work/a.nv novus v4 lines 2 kind nv
+scratch item: untitled:Untitled-1 [] v1
+empty item: [] [] v0 []
+== decodeContextDiagnostics
+count: 3
+  5-6 sev=2 source=[novus] code=[unused-name] message=[b is unused] unnecessary=true deprecated=true data=[payload]
+  7-13 sev=1 source=[] code=[42] message=[numeric code] unnecessary=false deprecated=false data=[]
+  0-0 sev=1 source=[] code=[] message=[bare] unnecessary=false deprecated=false data=[]
+no context: 0
+  5-6 sev=1 source=[] code=[] message=[in bytes] unnecessary=false deprecated=false data=[]
+== workspace decoders
+folders win: /work/a | /work/b c
+rootUri: /work/root
+rootPath: /old/root
+empty folders fall back: /work/root
+none: 0
+folder change: /work/new / /work/old
+folder change empty: 0 0
+watched: /work/a.nv=1 /work/b.nv=2 /work/c.nv=3
+watched constants: 1 2 3
+watched empty: 0
+== formatting options and commands
+options: 2 false 1
+defaults: 4 true 1
+invalid: 4 true
+command: novus.fetchDependencies file:///work | 3 | true | {"k":[1]}
+command without arguments: novus.rerunChecks 0
+command empty: []
+== buildServerCapabilities
+utf-16 only client: {"codeActionProvider":{"codeActionKinds":["quickfix","source.organizeImports"]},"completionProvider":{"resolveProvider":true,"triggerCharacters":[".","@","\"","/","<",":"]},"definitionProvider":true,"documentFormattingProvider":true,"documentHighlightProvider":true,"documentLinkProvider":{"resolveProvider":false},"documentRangeFormattingProvider":true,"documentSymbolProvider":true,"executeCommandProvider":{"commands":["novus.fetchDependencies","novus.rerunChecks"]},"foldingRangeProvider":true,"hoverProvider":true,"positionEncoding":"utf-16","referencesProvider":true,"renameProvider":{"prepareProvider":true},"semanticTokensProvider":{"full":true,"legend":{"tokenModifiers":["declaration","deprecated"],"tokenTypes":["namespace","class","method"]},"range":true},"signatureHelpProvider":{"retriggerCharacters":[","],"triggerCharacters":["(",","]},"textDocumentSync":{"change":2,"openClose":true,"save":{"includeText":false}},"workspace":{"workspaceFolders":{"changeNotifications":true,"supported":true}},"workspaceSymbolProvider":true}
+utf-8 client: {"codeActionProvider":{"codeActionKinds":["quickfix","source.organizeImports"]},"completionProvider":{"completionItem":{"labelDetailsSupport":true},"resolveProvider":true,"triggerCharacters":[".","@","\"","/","<",":"]},"definitionProvider":true,"documentFormattingProvider":true,"documentHighlightProvider":true,"documentLinkProvider":{"resolveProvider":false},"documentRangeFormattingProvider":true,"documentSymbolProvider":true,"executeCommandProvider":{"commands":["novus.fetchDependencies","novus.rerunChecks"]},"foldingRangeProvider":true,"hoverProvider":true,"positionEncoding":"utf-8","referencesProvider":true,"renameProvider":{"prepareProvider":true},"semanticTokensProvider":{"full":true,"legend":{"tokenModifiers":["declaration","deprecated"],"tokenTypes":["namespace","class","method"]},"range":true},"signatureHelpProvider":{"retriggerCharacters":[","],"triggerCharacters":["(",","]},"textDocumentSync":{"change":2,"openClose":true,"save":{"includeText":false}},"workspace":{"workspaceFolders":{"changeNotifications":true,"supported":true}},"workspaceSymbolProvider":true}
+bootstrap only: {"positionEncoding":"utf-16"}
+nothing registered: {"positionEncoding":"utf-16"}
+partial: {"executeCommandProvider":{"commands":["novus.rerunChecks"]},"positionEncoding":"utf-16","renameProvider":true,"semanticTokensProvider":{"full":true,"legend":{"tokenModifiers":["declaration","deprecated"],"tokenTypes":["namespace","class","method"]},"range":false},"textDocumentSync":{"change":2,"openClose":false,"save":{"includeText":false}}}
+== initialize result
+buildInitializeResult: {"capabilities":{"positionEncoding":"utf-16"},"serverInfo":{"name":"novus-lsp","version":"0.1.0"}}
+buildInitializeResult empty: {"capabilities":{},"serverInfo":{"name":"novus-lsp","version":"0.1.0"}}
+serverVersionText: novus-lsp 0.1.0
+SERVER_NAME SERVER_VERSION: novus-lsp 0.1.0
+== range, location, textEdit, workspaceEdit, prepareRename
+range: {"end":{"character":4,"line":0},"start":{"character":1,"line":0}}
+range empty: {"end":{"character":4,"line":0},"start":{"character":4,"line":0}}
+range multi-line: {"end":{"character":4,"line":1},"start":{"character":1,"line":0}}
+encodeRange: {"end":{"character":3,"line":0},"start":{"character":0,"line":0}}
+location: {"range":{"end":{"character":5,"line":0},"start":{"character":3,"line":0}},"uri":"file:///work/a.nv"}
+textEdit: {"newText":"X\nY","range":{"end":{"character":4,"line":0},"start":{"character":3,"line":0}}}
+prepareRename: {"placeholder":"second","range":{"end":{"character":6,"line":1},"start":{"character":0,"line":1}}}
+prepareRename emoji: {"placeholder":"a😀b","range":{"end":{"character":4,"line":0},"start":{"character":0,"line":0}}}
+workspaceEdit: {"changes":{"file:///work/a.nv":[{"newText":"import x\n","range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}}},{"newText":"","range":{"end":{"character":4,"line":0},"start":{"character":3,"line":0}}}],"file:///work/b.nv":[{"newText":"TWO","range":{"end":{"character":3,"line":1},"start":{"character":0,"line":1}}}]}}
+workspaceEdit none: {"changes":{}}
+utf-8 range: {"end":{"character":6,"line":0},"start":{"character":1,"line":0}}
+== diagnostics
+two arguments: {"code":"unused-name","data":"fix:remove","message":"x is unused","range":{"end":{"character":3,"line":0},"start":{"character":0,"line":0}},"severity":2,"source":"novus","tags":[1]}
+three arguments, client without related: {"code":"unused-name","data":"fix:remove","message":"x is unused","range":{"end":{"character":3,"line":0},"start":{"character":0,"line":0}},"severity":2,"source":"novus","tags":[1]}
+three arguments, client with related: {"code":"unused-name","data":"fix:remove","message":"x is unused","range":{"end":{"character":3,"line":0},"start":{"character":0,"line":0}},"relatedInformation":[{"location":{"range":{"end":{"character":3,"line":1},"start":{"character":0,"line":1}},"uri":"file:///work/b.nv"},"message":"declared here"}],"severity":2,"source":"novus","tags":[1]}
+minimal: {"message":"boom","range":{"end":{"character":5,"line":0},"start":{"character":4,"line":0}},"severity":1}
+deprecated hint: {"message":"hint","range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"severity":4,"source":"novusc","tags":[2]}
+publishParams: {"diagnostics":[{"message":"boom","range":{"end":{"character":5,"line":0},"start":{"character":4,"line":0}},"severity":1}],"uri":"file:///work/a.nv","version":3}
+publishParams unknown version: {"diagnostics":[],"uri":"file:///work/a.nv"}
+publishParams version 0: {"diagnostics":[],"uri":"file:///work/a.nv","version":0}
+logMessage: {"message":"failed","type":1}
+logMessage clamped high: {"message":"x","type":4}
+logMessage clamped low: {"message":"y","type":1}
+== client flags and codec are read at every call
+related before/after: false true
+range utf-16: {"end":{"character":3,"line":0},"start":{"character":2,"line":0}}
+range utf-8: {"end":{"character":5,"line":0},"start":{"character":4,"line":0}}
+markdown flag off: string false
+markdown flag on: map true
+== free text is clipped on a character boundary
+clipped length: 262143
+clipped valid utf-8: true
+exact length kept: 262144
+short text kept: true
+== completion items
+minimal: {"kind":6,"label":"circle","textEdit":{"newText":"circle","range":{"end":{"character":10,"line":0},"start":{"character":8,"line":0}}}}
+full, plain client: {"additionalTextEdits":[{"newText":"import geo\n","range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}}}],"command":{"command":"editor.action.triggerParameterHints","title":"editor.action.triggerParameterHints"},"data":"file:///work/a.nv|7|file:///work/geo/shapes.nv|120","detail":"method area(): float","documentation":"Computes the **area**.","filterText":"area","insertTextFormat":2,"kind":2,"label":"area","sortText":"1_area","tags":[1],"textEdit":{"newText":"area($1)","range":{"end":{"character":10,"line":0},"start":{"character":8,"line":0}}}}
+full, rich client: {"additionalTextEdits":[{"newText":"import geo\n","range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}}}],"command":{"command":"editor.action.triggerParameterHints","title":"editor.action.triggerParameterHints"},"data":"file:///work/a.nv|7|file:///work/geo/shapes.nv|120","detail":"method area(): float","documentation":{"kind":"markdown","value":"Computes the **area**."},"filterText":"area","insertTextFormat":2,"kind":2,"label":"area","labelDetails":{"description":"geo"},"sortText":"1_area","tags":[1],"textEdit":{"newText":"area($1)","range":{"end":{"character":10,"line":0},"start":{"character":8,"line":0}}}}
+replace after emoji, utf-16: {"kind":5,"label":"ab","textEdit":{"newText":"ab","range":{"end":{"character":4,"line":0},"start":{"character":2,"line":0}}}}
+replace after emoji, utf-8: {"kind":5,"label":"ab","textEdit":{"newText":"ab","range":{"end":{"character":6,"line":0},"start":{"character":4,"line":0}}}}
+== symbols
+documentSymbol: {"children":[{"detail":"method area(): float","kind":6,"name":"area","range":{"end":{"character":4,"line":2},"start":{"character":10,"line":1}},"selectionRange":{"end":{"character":21,"line":1},"start":{"character":17,"line":1}},"tags":[1]},{"detail":"float","kind":8,"name":"radius","range":{"end":{"character":9,"line":0},"start":{"character":5,"line":0}},"selectionRange":{"end":{"character":8,"line":0},"start":{"character":6,"line":0}}}],"detail":"define class Circle","kind":5,"name":"Circle","range":{"end":{"character":6,"line":2},"start":{"character":0,"line":0}},"selectionRange":{"end":{"character":7,"line":1},"start":{"character":1,"line":1}}}
+documentSymbolFlat: [{"kind":5,"location":{"range":{"end":{"character":6,"line":2},"start":{"character":0,"line":0}},"uri":"file:///work/geo.nv"},"name":"Circle"},{"containerName":"Circle","kind":6,"location":{"range":{"end":{"character":4,"line":2},"start":{"character":10,"line":1}},"uri":"file:///work/geo.nv"},"name":"area","tags":[1]},{"containerName":"Circle","kind":8,"location":{"range":{"end":{"character":9,"line":0},"start":{"character":5,"line":0}},"uri":"file:///work/geo.nv"},"name":"radius"}]
+leaf without detail: {"kind":12,"name":"main","range":{"end":{"character":4,"line":0},"start":{"character":0,"line":0}},"selectionRange":{"end":{"character":4,"line":0},"start":{"character":0,"line":0}}}
+leaf flat: [{"kind":12,"location":{"range":{"end":{"character":4,"line":0},"start":{"character":0,"line":0}},"uri":"file:///work/geo.nv"},"name":"main"}]
+workspaceSymbol: {"containerName":"geo","kind":5,"location":{"range":{"end":{"character":12,"line":1},"start":{"character":0,"line":1}},"uri":"file:///work/geo.nv"},"name":"Circle"}
+workspaceSymbol without index: {"containerName":"geo","kind":5,"location":{"range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}},"uri":"file:///work/geo.nv"},"name":"Circle"}
+workspaceSymbol without container: {"kind":12,"location":{"range":{"end":{"character":12,"line":1},"start":{"character":0,"line":1}},"uri":"file:///work/geo.nv"},"name":"main"}
+== document symbols stop below the JSON nesting limit
+hierarchical depth: 80
+deepest tree still serialises: true
+flat entries: 201
+== hover, signature help, folding, highlight, link
+hover plain client: {"contents":"```novus\nmethod area(): float\n```","range":{"end":{"character":12,"line":0},"start":{"character":8,"line":0}}}
+hover markdown client: {"contents":{"kind":"markdown","value":"```novus\nmethod area(): float\n```"},"range":{"end":{"character":12,"line":0},"start":{"character":8,"line":0}}}
+hover without range: {"contents":"text"}
+signatureHelp plain client: {"activeParameter":1,"activeSignature":0,"signatures":[{"documentation":"Computes the area.","label":"area(float radius, int scale)","parameters":[{"label":"float radius"},{"label":"int scale"}]},{"label":"area()","parameters":[]}]}
+signatureHelp markdown client: {"activeParameter":1,"activeSignature":0,"signatures":[{"documentation":{"kind":"markdown","value":"Computes the area."},"label":"area(float radius, int scale)","parameters":[{"label":"float radius"},{"label":"int scale"}]},{"label":"area()","parameters":[]}]}
+signatureHelp empty: {"activeParameter":0,"activeSignature":0,"signatures":[]}
+foldingRange region: {"endLine":9,"kind":"region","startLine":2}
+foldingRange imports: {"endLine":3,"kind":"imports","startLine":0}
+foldingRange without kind: {"endLine":8,"startLine":4}
+highlight: {"kind":2,"range":{"end":{"character":12,"line":0},"start":{"character":8,"line":0}}}
+documentLink: {"range":{"end":{"character":7,"line":0},"start":{"character":0,"line":0}},"target":"file:///work/geo/shapes.nv"}
+documentLink without target: {"range":{"end":{"character":7,"line":0},"start":{"character":0,"line":0}}}
+== code actions
+quickfix: {"diagnostics":[{"code":"unknown-name","message":"unknown name 'use'","range":{"end":{"character":3,"line":1},"start":{"character":0,"line":1}},"severity":1,"source":"novus"}],"edit":{"changes":{"file:///work/a.nv":[{"newText":"import geo\n","range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}}}]}},"isPreferred":true,"kind":"quickfix","title":"Import 'geo'"}
+command only: {"command":{"arguments":["/work"],"command":"novus.fetchDependencies","title":"Fetch dependencies"},"title":"Fetch dependencies"}
+organize: {"edit":{"changes":{"file:///work/a.nv":[{"newText":"var x = 2","range":{"end":{"character":9,"line":0},"start":{"character":0,"line":0}}},{"newText":"// c\n","range":{"end":{"character":0,"line":1},"start":{"character":0,"line":1}}}]}},"kind":"source.organizeImports","title":"Organize imports"}
+title only: {"title":"Nothing"}
+== semantic tokens: ordering and delta encoding
+sorted: (0 0 3 1 0) (0 4 1 2 0) (0 4 1 3 0) (1 0 3 1 0) (0 4 2 2 0)
+unsorted input: (0 0 3 1 0) (0 4 1 2 0) (1 0 3 1 0) (0 4 2 2 0)
+empty input: 
+empty and negative spans dropped: (0 4 1 2 0)
+clamped to the text: (1 9 2 4 0)
+modifiers: (0 4 1 2 5)
+whole result: {"data":[0,0,3,1,0]}
+== semantic tokens: overlap rule
+interpolation cuts the string: (0 8 4 7 0) (0 4 2 8 0) (0 2 1 9 0) (0 1 1 8 0) (0 1 4 7 0)
+input order does not matter: (0 8 4 7 0) (0 4 2 8 0) (0 2 1 9 0) (0 1 1 8 0) (0 1 4 7 0)
+partial overlap: (0 0 5 1 0) (0 5 10 2 0)
+same start, longer first: (0 0 4 2 0) (0 4 6 1 0)
+identical spans keep the later one: (0 0 3 2 0) (0 4 1 6 0)
+nested resumes after inner: (0 0 5 1 0) (0 5 3 2 0) (0 3 2 1 0) (0 2 2 3 0) (0 2 8 1 0)
+adjacent spans: (0 0 3 1 0) (0 3 3 2 0)
+inner reaches outer end: (0 0 6 1 0) (0 6 4 2 0)
+== semantic tokens: multi-line spans, CRLF, wide characters
+multi-line comment: (0 0 6 5 0) (1 0 5 5 0) (2 0 8 5 0) (0 9 1 2 0)
+CRLF is never part of a token: (0 0 2 3 0) (1 0 2 3 0) (1 0 2 3 0)
+utf-16 lengths and starts: (0 0 4 7 0) (0 5 1 2 0) (1 0 4 3 0) (0 4 2 4 0)
+utf-8 lengths and starts: (0 0 6 7 0) (0 7 1 2 0) (1 0 8 3 0) (0 8 2 4 0)
+span ending inside a character: (0 2 1 2 0)
+== semantic tokens: many tokens
+data length: 10000
+last group: 1 0 2
+every group is one line down: 1999
+reversed input gives the same data: true
+== regression: insertTextMode of snippet items
+client announces mode 2: true
+client announces only mode 1: false
+wrong shape: false
+empty object: false
+snippet, supporting client: 2
+plain item, supporting client: false
+snippet, other client: false
+== regression: edit texts are not clipped
+textEdit: 624288
+workspaceEdit: 624288
+completion textEdit: 624288
+completion additionalTextEdits: 624288
+labels are still clipped: 262144
+== regression: completion item without replaceSpan
+has replaceSpan: false
+unset: {"insertText":"lbl","kind":2,"label":"lbl"}
+unset with insertText: {"insertText":"lbl($1)","insertTextFormat":2,"kind":2,"label":"lbl"}
+empty span at 0 is a real span: true
+set at 0: {"newText":"lbl($1)","range":{"end":{"character":0,"line":0},"start":{"character":0,"line":0}}}
+== regression: symbols without a name
+hierarchical: <unnamed> / m
+flat: <unnamed> / m in <unnamed>
+workspace: <unnamed>
+a real name is kept: Circle
+== regression: numbers outside the int64 range
+1e300 / -1e300: 9223372036854775807 -9223372036854775808
+integers saturate alike: 9223372036854775807 -9223372036854775808
+above the limit / fraction: 9223372036854775807 3
+a huge line reaches the end of the text: 3
+== regression: a malformed range drops the change
+empty range: 0 []
+start without numbers: 0 []
+end missing: 0 []
+float positions are fine: 1 [true:a]
+whole document: 1 [false:a]
+== regression: tabSize has an upper bound
+tabSize 1000000000: 4
+tabSize 65: 4
+tabSize 64: 64
+tabSize 1: 1
+tabSize 0: 4
+== regression: code action edits in other files
+per file line indexes: {"changes":{"file:///a.nv":[{"newText":"B","range":{"end":{"character":1,"line":1},"start":{"character":0,"line":1}}}],"file:///b.nv":[{"newText":"2nd","range":{"end":{"character":6,"line":1},"start":{"character":0,"line":1}}}]}}
+same-document form uses one index for every file (DESIGN-NOTES 2): [{"newText":"2nd","range":{"end":{"character":1,"line":1},"start":{"character":1,"line":1}}}]

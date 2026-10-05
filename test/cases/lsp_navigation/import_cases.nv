@@ -1,0 +1,81 @@
+package main
+
+import "novus/lsp/features/navigation"
+import "novus/lsp/base/maybe"
+import "novus/lsp/base/model"
+import "novus/lsp/base/text"
+import "novus/lsp/projects/workspace"
+import @support
+import @fixtures
+
+private final NAV_IMPORTS_TEXT = "import strings\nimport geo\nimport @helper\nimport \"ex.com/lib\"\nimport \"ex.com/lib/sub\"\nimport nowhere\n\nmethod main() {\n}\n"
+
+method navImports(string needle, integer shift): NavWorld {
+    var files = {
+        "/q/project.nv": "project \"q\"\nmain \"main.nv\"\nrequire \"ex.com/lib\"\nreplace \"ex.com/lib\" \"lib\"\n",
+        "/q/main.nv": navMarked(NAV_IMPORTS_TEXT, needle, shift),
+        "/q/geo/shape.nv": "package geo\n\ndefine class Shape {\n}\n",
+        "/q/geo/extra.nv": "package geo\n\nmethod extra(): integer {\n    return 1\n}\n",
+        "/q/helper.nv": "method helper(): integer {\n    return 1\n}\n",
+        "/q/lib/lib.nv": "method libEntry(): integer {\n    return 1\n}\n",
+        "/q/lib/sub/part.nv": "package sub\n\nmethod part(): integer {\n    return 1\n}\n"
+    }
+    return NavWorld(files)
+}
+
+method navImportDefinition(string label, string needle, integer shift) {
+    var world = navImports(needle, shift)
+    var found = DefinitionFinder().find(world.context(), world.cursorOffset)
+    navCheck(label, world.describeAll(found))
+}
+
+method runImportCases() {
+    println("== imports")
+    navImportDefinition("std module", "strings", 2)
+    navImportDefinition("package folder", "geo", 1)
+    navImportDefinition("root file", "helper", 1)
+    navImportDefinition("dependency entry", "ex.com/lib\"\n", 2)
+    navImportDefinition("dependency package", "ex.com/lib/sub", 12)
+    navImportDefinition("import that leads nowhere", "nowhere", 1)
+    navImportDefinition("the import keyword itself", "import geo", 2)
+}
+
+method runTagCases() {
+    println("== tags")
+    var page = "<?nv\nmethod title(): string {\n    return \"x\"\n}\n?>\n<h1>{title()}</h1>\n<Button label=\"ok\"/>\n<Unknown/>\n"
+    var files = {
+        "/n/project.nv": "project \"n\"\nmain \"main.nv\"\n",
+        "/n/main.nv": "method main() {\n}\n",
+        "/n/pages/Home.nvh": navMarked(page, "Button", 2),
+        "/n/components/Button.nvh": "<?nv\nprop string label\n?>\n<button>{label}</button>\n"
+    }
+    var world = NavWorld(files)
+    navCheck("component tag", world.describeAll(DefinitionFinder().find(world.context(), world.cursorOffset)))
+    var other = NavWorld({"/n/project.nv": "project \"n\"\nmain \"main.nv\"\n", "/n/main.nv": "method main() {\n}\n", "/n/pages/Home.nvh": navMarked(page, "Unknown", 2)})
+    navCheck("tag without a component", other.describeAll(DefinitionFinder().find(other.context(), other.cursorOffset)))
+    var header = NavWorld({"/n/project.nv": "project \"n\"\nmain \"main.nv\"\n", "/n/main.nv": "method main() {\n}\n", "/n/pages/Home.nvh": navMarked(page, "title(): string", 1)})
+    navCheck("a header member of the component", header.describeAll(DefinitionFinder().find(header.context(), header.cursorOffset)))
+}
+
+method runScratchCases() {
+    println("== scratch buffer")
+    var world = NavWorld({"/s/project.nv": "project \"s\"\nmain \"main.nv\"\n", "/s/main.nv": "method main() {\n}\n"})
+    var content = "method helper(): integer {\n    return 1\n}\n\nmethod caller(): integer {\n    return helper()\n}\n"
+    var offset = content.indexOf("helper()\n}") + 1
+    var context = world.space.contextFor(Document("untitled:Untitled-1", "novus", 1, content))
+    var found = DefinitionFinder().find(context, offset)
+    navCheck("definition inside a scratch buffer", found.length() + " location, path '" + found[0].filePath + "', name " + content.substring(found[0].span.start, found[0].span.end))
+    var refs = ReferenceFinder().find(context, offset, true)
+    navCheck("references inside a scratch buffer", refs.length() + " locations")
+}
+
+method runManifestCases() {
+    println("== manifest and non-source documents")
+    var world = NavWorld(navMain("Circle(2.0)", 1))
+    var manifest = world.contextOf("/p/project.nv")
+    navCheck("definition in a manifest", world.describeAll(DefinitionFinder().find(manifest, 5)))
+    navCheck("references in a manifest", world.describeAll(ReferenceFinder().find(manifest, 5, true)))
+    var renamer = Renamer(ReferenceFinder())
+    navCheck("rename in a manifest", "span " + isSome(renamer.prepare(manifest, 5)) + " refusal '" + renamer.refusal(manifest, 5) + "' edits " + renamer.rename(manifest, 5, "other").length())
+    navCheck("highlights in a manifest", "" + ReferenceFinder().highlights(manifest, 5).length())
+}

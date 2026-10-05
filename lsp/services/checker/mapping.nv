@@ -1,0 +1,47 @@
+package checker
+
+import base/platform
+
+// Paths in novusc output name the shadow tree; the editor must see the real project paths.
+private final CHECKER_MAPPING_SLASH = "/"
+
+define class CheckerPathMapper {
+    string workDir
+    string realRoot
+    array<string> spellings
+
+    // The work directory is matched in the spelling it was given in and with every link resolved
+    // (a temp directory below a symlink is printed resolved by some systems).
+    construct(string workDir, string realRoot) {
+        this.workDir = checkerNormalize(workDir)
+        this.realRoot = checkerNormalize(realRoot)
+        this.spellings = []
+        this.collectSpellings(workDir)
+    }
+
+    method collectSpellings(string rawWorkDir) {
+        if (rawWorkDir == "") {
+            return
+        }
+        this.spellings.append(this.workDir)
+        var resolved = realPath(rawWorkDir)
+        if (resolved != "" && checkerSamePath(resolved, rawWorkDir) == false) {
+            this.spellings.append(checkerNormalize(resolved))
+        }
+    }
+
+    // A relative path is read against the work directory; a path inside it moves to the real root.
+    method map(string reported): string {
+        var normalized = checkerNormalize(reported)
+        if (checkerIsAbsolute(normalized) == false && this.workDir != "") {
+            normalized = this.workDir + CHECKER_MAPPING_SLASH + normalized
+        }
+        for (spelling in this.spellings) {
+            var below = checkerRelativeBelow(spelling, normalized)
+            if (below != "") {
+                return this.realRoot + CHECKER_MAPPING_SLASH + below
+            }
+        }
+        return normalized
+    }
+}

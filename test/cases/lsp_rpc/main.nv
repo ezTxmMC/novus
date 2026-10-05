@@ -1,0 +1,26 @@
+package main
+
+import @output
+import @guard_cases
+import @message_cases
+import @cancel_cases
+import @router_cases
+import @gate_cases
+import @loop_cases
+import @reader_cases
+
+import log
+
+// lsp/server/rpc: the guard and its error convention, message classification, the cancel registry, the
+// router (gate, handlers, listeners, responses), the main loop and the reader thread on main.stdin.
+// Every line goes out through stdoutWriteText (flushed), so the lines the log writes to stderr stay in order.
+method main() {
+    log.setTimestamps(false)
+    log.setLevel("warn")
+    runGuardCases()
+    runMessageCases()
+    runCancelCases()
+    runRouterCases()
+    runLoopCases()
+    runReaderCases()
+}

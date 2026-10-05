@@ -1,0 +1,91 @@
+package closure
+
+import path
+import projects/manifest
+
+private final CLOSURE_OUTSIDE_ROOT = "?"
+private final CLOSURE_CURRENT = "."
+private final CLOSURE_PARENT = ".."
+private final CLOSURE_SLASH = "/"
+private final CLOSURE_BACKSLASH = "\\"
+private final CLOSURE_DRIVE_COLON_AT = 1
+
+// Path rules of compiler/loader/paths.nv, on strings only.
+method closureIsAbsolute(string target): bool {
+    if (target == "") {
+        return false
+    }
+    var first = target.charAt(0)
+    if (first == CLOSURE_SLASH || first == CLOSURE_BACKSLASH) {
+        return true
+    }
+    return target.length() > CLOSURE_DRIVE_COLON_AT && target.charAt(CLOSURE_DRIVE_COLON_AT) == ":"
+}
+
+// `dir/rel` normalised; an absolute `rel` stands for itself (joinPath of the loader).
+method closureJoin(string dir, string rel): string {
+    if (closureIsAbsolute(rel)) {
+        return manifestNormalizePath(rel)
+    }
+    if (dir == "" || dir == CLOSURE_CURRENT) {
+        return manifestNormalizePath(rel)
+    }
+    return manifestNormalizePath(dir + CLOSURE_SLASH + rel)
+}
+
+// Where the package folder `dir` lies below `root`: "" for the root itself, "geo" or "geo/shapes" below it and "?"
+// for a folder that is not below the root at all (packagePath of the loader).
+method closurePackagePath(string root, string dir): string {
+    var base = closureNormalRoot(root)
+    var folder = manifestNormalizePath(dir)
+    if (folder == base) {
+        return ""
+    }
+    if (base == CLOSURE_CURRENT) {
+        return closureRelativeToCurrent(folder)
+    }
+    var prefix = base
+    if (prefix.endsWith(CLOSURE_SLASH) == false) {
+        prefix = prefix + CLOSURE_SLASH
+    }
+    if (folder.startsWith(prefix)) {
+        return folder.substring(prefix.length(), folder.length())
+    }
+    return CLOSURE_OUTSIDE_ROOT
+}
+
+method closureNormalRoot(string root): string {
+    if (root == "") {
+        return CLOSURE_CURRENT
+    }
+    return manifestNormalizePath(root)
+}
+
+method closureRelativeToCurrent(string folder): string {
+    if (folder == CLOSURE_PARENT || folder.startsWith(CLOSURE_PARENT + CLOSURE_SLASH) || closureIsAbsolute(folder)) {
+        return CLOSURE_OUTSIDE_ROOT
+    }
+    return folder
+}
+
+// The name a package is called by: the last folder of its path; "" for the root and for a folder outside it.
+method closureQualifierOf(string packagePath): string {
+    if (packagePath == "" || packagePath == CLOSURE_OUTSIDE_ROOT) {
+        return ""
+    }
+    return path.basename(packagePath)
+}
+
+method closureStripSourceExtension(string fileName): string {
+    if (fileName.endsWith(".nvh")) {
+        return fileName.substring(0, fileName.length() - 4)
+    }
+    if (fileName.endsWith(".nv")) {
+        return fileName.substring(0, fileName.length() - 3)
+    }
+    return fileName
+}
+
+method closureIsSourceName(string fileName): bool {
+    return fileName.endsWith(".nv") || fileName.endsWith(".nvh")
+}

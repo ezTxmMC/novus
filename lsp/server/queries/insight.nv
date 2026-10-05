@@ -1,0 +1,57 @@
+package queries
+
+import base/maybe
+import features/hover
+import server/protocol
+import server/rpc
+import server/session
+
+// textDocument/hover: the markdown of the symbol, keyword, built-in or import under the cursor, `null` for nothing.
+define class HoverHandler based RequestHandler {
+    Session session
+    HoverEngine engine
+    WireEncoder encoder
+
+    construct(Session session, HoverEngine engine, WireEncoder encoder) {
+        this.session = session
+        this.engine = engine
+        this.encoder = encoder
+    }
+
+    method handle(Request request): object {
+        var target = this.session.targetAt(request.params)
+        if (isNone(target)) {
+            return nothing()
+        }
+        var info = this.engine.hover(target.context, target.offset)
+        if (isNone(info)) {
+            return nothing()
+        }
+        return this.encoder.hover(target.context.document.lines, info)
+    }
+}
+
+// textDocument/signatureHelp: the signatures of the call whose argument list holds the cursor, `null` outside a call.
+define class SignatureHelpHandler based RequestHandler {
+    Session session
+    SignatureEngine engine
+    WireEncoder encoder
+
+    construct(Session session, SignatureEngine engine, WireEncoder encoder) {
+        this.session = session
+        this.engine = engine
+        this.encoder = encoder
+    }
+
+    method handle(Request request): object {
+        var target = this.session.targetAt(request.params)
+        if (isNone(target)) {
+            return nothing()
+        }
+        var help = this.engine.signatureHelp(target.context, target.offset)
+        if (isNone(help)) {
+            return nothing()
+        }
+        return this.encoder.signatureHelp(help)
+    }
+}

@@ -1,0 +1,2 @@
+{"id":1,"jsonrpc":"2.0","result":{"capabilities":"@CAPABILITIES@","serverInfo":{"name":"novus-lsp","version":"0.1.0"}}}
+{"error":{"code":-32600,"message":"Content-Length exceeds the limit of 67108864 bytes"},"id":null,"jsonrpc":"2.0"}

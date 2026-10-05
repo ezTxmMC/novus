@@ -1,0 +1,17 @@
+package main
+
+method checkLists() {
+    scenario("list/unterminated-parameters-before-the-next-method", "method f(integer a,\nmethod g() {\n}\n", "method f(integer a) / method g()", "unterminated-list@1/e expected-token@2/e")
+    scenario("list/unterminated-global-initializer-stops-at-the-next-declaration", "X = foo(1,\nmethod m() {\n}\nY = [1, 2\ndefine class C {\n}\n", "X / method m() / Y / define class C", "unterminated-list@1/e unterminated-list@4/e")
+    scenario("list/unterminated-parameters-before-a-block", "method f(integer a {\n}\n", "method f(integer a)", "unterminated-list@1/e")
+    scenario("list/missing-comma-between-parameters-is-fine", "method f(integer a integer b) {\n}\n", "method f(integer a, integer b)", "")
+    scenario("list/trailing-comma-is-fine", "method f(integer a, integer b,) {\n}\n", "method f(integer a, integer b)", "")
+    scenario("list/unterminated-annotation-arguments", "@A{x=\"1\"\nmethod m() {\n}\n", "method m()", "unterminated-list@1/e")
+    scenario("list/valid-annotation-arguments", "@A{x=\"1\", y=2 z=\"3\",}\nmethod m() {\n}\n", "method m()", "")
+    scenario("list/unterminated-call-in-a-body", "method a() {\n    foo(1,\n}\n", "method a()", "unterminated-list@2/e")
+    scenario("list/unterminated-generic-type", "method f(array<integer a) {\n}\n", "method f()", "unterminated-list@1/e expected-token@1/e")
+    scenario("list/missing-type", "method f(, integer a) {\n}\n", "method f(integer a)", "expected-token@1/e")
+    scenario("list/generic-closing-fuses-with-equals", "var X: array<integer>= []\nY = 2\n", "X: array<integer> / Y", "generic-shift-token@1/w")
+    scenario("list/typed-global-needs-var", "X: integer = 3\nY = 2\n", "Y", "unexpected-token@1/e")
+    scenario("list/nested-generics", "method f(map<string, array<integer>> m): array<array<integer>> {\n}\n", "method f(map<string,array<integer>> m): array<array<integer>>", "")
+}

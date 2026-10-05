@@ -1,0 +1,34 @@
+package pureline
+
+import base/model
+import base/text
+
+// Shared by the rules: the diagnostic of source "pureline" and the line arithmetic on spans.
+private final PURELINE_SOURCE = "pureline"
+
+method purelineDiagnostic(Span span, Severity severity, string code, string message): Diagnostic {
+    return Diagnostic(span, severity, PURELINE_SOURCE, code, message)
+}
+
+// Lines from the one that holds the start to the one that holds the last byte, both counted (a span of one line is 1).
+method purelineLinesOf(LineIndex lines, Span span): integer {
+    var lastByte = span.end - 1
+    if (lastByte < span.start) {
+        lastByte = span.start
+    }
+    return lines.lineOf(lastByte) - lines.lineOf(span.start) + 1
+}
+
+// The lines of the file without the empty one that follows a final line break.
+method purelineFileLines(Document document): integer {
+    var count = document.lines.lineCount()
+    var lastStart = document.lines.lineStart(count - 1)
+    if (count > 1 && lastStart >= document.text.length()) {
+        return count - 1
+    }
+    return count
+}
+
+method purelineFirstLine(Document document): Span {
+    return Span(document.lines.lineStart(0), document.lines.lineEnd(0))
+}

@@ -1,0 +1,137 @@
+package main
+
+import "novus/lsp/features/semtok"
+import @support
+import time
+
+private final FIX_PERFORMANCE_LINES = 1200
+private final FIX_PERFORMANCE_LIMIT_MS = 5000
+private final FIX_LONG_ELEMENTS = 1100
+
+// The cases of the review round: the scope is not rebuilt for every identifier, a generic's closing brackets are no
+// operator, long argument lists and initializers keep their classification, a member that is assigned is modified.
+method runFixCases() {
+    runScopeReuseCases()
+    runGenericCloseCases()
+    runLongListCases()
+    runMemberAssignmentCases()
+    runAsyncClassCases()
+}
+
+method runScopeReuseCases() {
+    println("== scope reuse")
+    var perf = ["import test", "method main() {"]
+    var i = 0
+    while (i < FIX_PERFORMANCE_LINES) {
+        perf.append("    test.assertEqual(compute(1, \"a\"), 1, \"case\")")
+        i = i + 1
+    }
+    perf.append("}")
+    perf.append("method compute(integer a, string b): integer { return a }")
+    var source = stLines(perf)
+    var world = StWorld(stProject(source))
+    var start = time.clock()
+    var spans = world.spans("/p/main.nv", source)
+    var elapsed = time.elapsedMs(start)
+    stCheck("a long method without locals is fast", "" + (elapsed < FIX_PERFORMANCE_LIMIT_MS), "true")
+    stCheck("and fully classified", stAt(source, spans, "compute(1", 1), "function")
+    runReuseBoundaryCases()
+}
+
+// Names change inside one callable where a local begins, and between callables: the reused scope must not leak.
+method runReuseBoundaryCases() {
+    var source = stLines([
+        "final total = 1",
+        "method plain() {",
+        "    println(total)",
+        "    println(total)",
+        "}",
+        "method shadow() {",
+        "    println(total)",
+        "    var total = 2",
+        "    println(total)",
+        "}",
+        "method after(integer total) {",
+        "    println(total)",
+        "}",
+        "method last() {",
+        "    println(total)",
+        "}"
+    ])
+    var world = StWorld(stProject(source))
+    stShow("scope boundaries", source, world.spans("/p/main.nv", source))
+}
+
+method runGenericCloseCases() {
+    println("== generic brackets")
+    var source = stLines(["method f(map<string, array<integer>> m, integer a): integer {", "    return a + 1", "}"])
+    var world = StWorld(stProject(source))
+    stShow("closing two generics", source, world.spans("/p/main.nv", source))
+}
+
+method runLongListCases() {
+    println("== long lists")
+    var elements = []
+    var i = 0
+    while (i < FIX_LONG_ELEMENTS) {
+        elements.append("1")
+        i = i + 1
+    }
+    var source = stLines([
+        "method f(array<integer> a, integer b): integer { return b }",
+        "method main() { f([" + elements.join(", ") + "], 2) }"
+    ])
+    var world = StWorld(stProject(source))
+    var spans = world.spans("/p/main.nv", source)
+    stCheck("the call after a long first argument", stAt(source, spans, "f([", 1), "function")
+    runLongInitializerCase()
+}
+
+method runLongInitializerCase() {
+    var fields = []
+    var i = 0
+    while (i < FIX_LONG_ELEMENTS) {
+        fields.append("1")
+        i = i + 1
+    }
+    var source = stLines([
+        "define class Box {",
+        "    array<integer> items",
+        "    integer size",
+        "}",
+        "method main() { var box = Box{items=[" + fields.join(", ") + "], size=2} }"
+    ])
+    var world = StWorld(stProject(source))
+    var spans = world.spans("/p/main.nv", source)
+    stCheck("a field after a long initializer", stAt(source, spans, "size=2", 1), "property")
+}
+
+method runMemberAssignmentCases() {
+    println("== assigned members")
+    var source = stLines([
+        "define class Counter {",
+        "    integer count: get, set",
+        "    method bump() {",
+        "        var local = 1",
+        "        local = 2",
+        "        this.count = 3",
+        "        if (this.count == 3) {",
+        "            this.count = this.count + 1",
+        "        }",
+        "    }",
+        "}",
+        "method main() {",
+        "    var counter = Counter{count=1}",
+        "    counter.count = 5",
+        "}"
+    ])
+    var world = StWorld(stProject(source))
+    stShow("member assignments", source, world.spans("/p/main.nv", source))
+}
+
+method runAsyncClassCases() {
+    println("== async only for callables")
+    var source = stLines(["@Async", "define class Worker {", "}", "@Async", "method run() {", "}"])
+    var world = StWorld(stProject(source))
+    stShow("annotated class and method", source, world.spans("/p/main.nv", source))
+}

@@ -1,0 +1,7 @@
+package unused
+
+define class Spare {
+    method circleArea(): float {
+        return 1.0
+    }
+}

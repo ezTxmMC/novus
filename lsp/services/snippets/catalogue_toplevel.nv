@@ -1,0 +1,69 @@
+package snippets
+
+// Top-level snippets (DESIGN Appendix A): entry points, imports, globals, methods, tryrun, doc.
+// Bodies are Novus Snippet Notation: #{n:default}, #n mirror, #0 end, ## is #, #d is $, a TAB is
+// one indentation level.
+
+method toplevelSnippets(): array<Snippet> {
+    return snippetsConcat([snippetsEntryPoints(), snippetsImports(), snippetsDeclarations()])
+}
+
+method snippetsEntryPoints(): array<Snippet> {
+    var top = [SNIPPETS_SCOPE_TOPLEVEL]
+    return [
+        Snippet("main", ["main"], "Program entry point", top,
+            "method main {\n\t#0\n}").withVerify(SNIPPETS_VERIFY_FILE),
+        Snippet("psvm", ["psvm", "mainargs"], "Program entry point receiving the command line arguments", top,
+            "method main(array<string> args) {\n\t#0\n}").withVerify(SNIPPETS_VERIFY_FILE),
+        Snippet("mainexit", ["maine", "psvmi"], "Entry point whose return value is the exit code", top,
+            "method main(array<string> args): integer {\n\t#0\n\treturn #{1:0}\n}").withVerify(SNIPPETS_VERIFY_FILE),
+        Snippet("package", ["pkg", "package"], "Package declaration (must equal the folder name, or main)", top,
+            "package #{1:main}\n\n#0").withVerify(SNIPPETS_VERIFY_TOPLEVEL_RAW)
+    ]
+}
+
+method snippetsImports(): array<Snippet> {
+    var top = [SNIPPETS_SCOPE_TOPLEVEL]
+    return [
+        Snippet("import", ["import"], "Import a package folder or a standard module", top,
+            "import #{1:json}").withVerify(SNIPPETS_VERIFY_TOPLEVEL),
+        Snippet("importf", ["importf", "importfile"], "Import one file of the project (no extension)", top,
+            "import @#{1:geo}/#{2:circle}").withVerify(SNIPPETS_VERIFY_TOPLEVEL).withFixtures({SNIPPETS_FIXTURE_KEY: SNIPPETS_FIXTURE_GEO_CIRCLE}),
+        Snippet("importn", ["importn", "importnested"], "Import a nested package folder", top,
+            "import #{1:geo}/#{2:shapes}").withVerify(SNIPPETS_VERIFY_TOPLEVEL).withFixtures({SNIPPETS_FIXTURE_KEY: SNIPPETS_FIXTURE_GEO_SHAPES}),
+        Snippet("importm", ["importm", "importmod"], "Import a dependency module (path from require in project.nv)", top,
+            "import \"#{1:github.com/user/module}\"").withVerify(SNIPPETS_VERIFY_TOPLEVEL).withFixtures({SNIPPETS_FIXTURE_KEY: SNIPPETS_FIXTURE_MODULE})
+    ]
+}
+
+method snippetsDeclarations(): array<Snippet> {
+    var top = [SNIPPETS_SCOPE_TOPLEVEL]
+    var topOrClass = [SNIPPETS_SCOPE_TOPLEVEL, SNIPPETS_SCOPE_CLASS]
+    var either = SNIPPETS_VERIFY_TOPLEVEL_OR_MEMBER
+    return [
+        Snippet("global", ["psf", "const", "final"], "Top-level constant", top,
+            "private final #{1:NAME} = #{2:0}").withVerify(SNIPPETS_VERIFY_TOPLEVEL),
+        Snippet("globalv", ["gvar"], "Top-level mutable global", top,
+            "var #{1:name} = #{2:0}").withVerify(SNIPPETS_VERIFY_TOPLEVEL),
+        Snippet("method", ["method", "meth"], "Method with parameters and return type", topOrClass,
+            "method #{1:name}(#{2:integer value})#{3:: #{4:integer}} {\n\t#0\n}").withVerify(either),
+        Snippet("methodv", ["methodv", "methodn"], "Method without a parameter list", topOrClass,
+            "method #{1:name} {\n\t#0\n}").withVerify(either),
+        Snippet("methoda", ["methoda", "async"], "Async method: calls start on a virtual thread and return a task", top,
+            "async method #{1:name}(#{2:integer value}): #{3:integer} {\n\t#0\n\treturn #{4:value}\n}").withVerify(SNIPPETS_VERIFY_TOPLEVEL),
+        snippetsTryRunSnippet(),
+        Snippet("doc", ["doc"], "Documentation comment (a // block above the declaration)", topOrClass,
+            "// #{1:What it does and why}").withVerify(either)
+    ]
+}
+
+method snippetsTryRunSnippet(): Snippet {
+    var body = "method tryRun(object task): object native \"nv_try_run\"\n" +
+        "method tryFailed(): bool native \"nv_try_failed\"\n" +
+        "method tryError(): string native \"nv_try_error\"\n\n" +
+        "define class #{1:GuardedTask} {\n\tmethod run(): object {\n\t\t#0\n\t\treturn 0\n\t}\n}"
+    var description = "Run a task so that a runtime error becomes a value (natives as in std/toml.nv). " +
+        "Insert once per package: a second copy duplicates the three native declarations"
+    return Snippet("tryrun", ["tryrun", "guarded"], description, [SNIPPETS_SCOPE_TOPLEVEL],
+        body).withVerify(SNIPPETS_VERIFY_TOPLEVEL)
+}

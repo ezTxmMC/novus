@@ -1,0 +1,196 @@
+package scanning
+
+import base/text
+import syntax/lexing
+
+// if / else, while, for, sync and the blocks they own.
+define class ScanningControl {
+    ScanningWalker walker
+
+    construct(ScanningWalker walker) {
+        this.walker = walker
+    }
+
+    method handles(string word): bool {
+        return word == "if" || word == "while" || word == "for" || word == "else"
+    }
+
+    method walkKeyword(string word) {
+        if (word == "if") {
+            this.walkIf()
+            return
+        }
+        if (word == "while") {
+            this.walkWhile()
+            return
+        }
+        if (word == "for") {
+            this.walkFor()
+            return
+        }
+        this.walkStrayElse()
+    }
+
+    method walkIf() {
+        var walker = this.walker
+        var more = true
+        while (more) {
+            walker.pos = walker.pos + 1
+            this.header("if")
+            this.body("if")
+            if (walker.cursor.isKeyword(walker.pos, "else") == false) {
+                return
+            }
+            walker.pos = walker.pos + 1
+            more = walker.cursor.isKeyword(walker.pos, "if")
+        }
+        this.body("else")
+    }
+
+    method walkWhile() {
+        this.walker.pos = this.walker.pos + 1
+        this.header("while")
+        this.body("while")
+    }
+
+    method walkSync() {
+        var walker = this.walker
+        walker.pos = walker.pos + 1
+        if (walker.cursor.isPunct(walker.pos, "(")) {
+            walker.pos = walker.expressions.groupEnd(walker.pos)
+        }
+        this.body("sync")
+    }
+
+    // `else` without a preceding `if` block: report it and still walk what follows for locals.
+    method walkStrayElse() {
+        var walker = this.walker
+        walker.report(walker.cursor.spanAt(walker.pos), "else-without-if", "'else' needs an 'if' block right before it")
+        walker.pos = walker.pos + 1
+        if (walker.cursor.isPunct(walker.pos, "{")) {
+            this.walkBlock()
+        }
+    }
+
+    method header(string word) {
+        var walker = this.walker
+        if (walker.cursor.isPunct(walker.pos, "(") == false) {
+            walker.report(walker.cursor.spanAt(walker.pos), "missing-parens", "expected '(' after '" + word + "' but found " + walker.cursor.describeAt(walker.pos))
+            this.skipHeaderLine()
+            return
+        }
+        walker.pos = walker.expressions.groupEnd(walker.pos)
+    }
+
+    // The condition of a header without parentheses runs up to the block on the same line.
+    method skipHeaderLine() {
+        var walker = this.walker
+        var keyword = walker.pos - 1
+        while (walker.cursor.sameLine(keyword, walker.pos) && walker.cursor.isPunct(walker.pos, "{") == false) {
+            walker.pos = walker.pos + 1
+        }
+    }
+
+    // A block, or (reported) a single statement where the compiler requires braces.
+    method body(string word) {
+        var walker = this.walker
+        if (walker.cursor.isPunct(walker.pos, "{")) {
+            this.walkBlock()
+            return
+        }
+        walker.report(walker.cursor.spanAt(walker.pos), "braceless-body", "expected '{' to open the body of '" + word + "' but found " + walker.cursor.describeAt(walker.pos))
+        if (walker.cursor.has(walker.pos)) {
+            this.walkLoneStatement()
+        }
+    }
+
+    // The single statement of a braceless body counts as one nesting level like a block, or `if (a) if (a) ...` would
+    // recurse without a limit; past the limit the rest of its line is skipped.
+    method walkLoneStatement() {
+        var walker = this.walker
+        if (walker.depth >= MAX_NESTING_DEPTH) {
+            this.skipLine()
+            return
+        }
+        walker.depth = walker.depth + 1
+        walker.statement()
+        walker.depth = walker.depth - 1
+    }
+
+    // Skips the tokens of the line of the walker position (brackets as a whole) up to a `}` that closes the block.
+    method skipLine() {
+        var walker = this.walker
+        var first = walker.pos
+        while (walker.cursor.sameLine(first, walker.pos) && walker.cursor.isPunct(walker.pos, "}") == false) {
+            walker.pos = this.afterToken(walker.pos)
+        }
+    }
+
+    method afterToken(integer index): integer {
+        var cursor = this.walker.cursor
+        if (cursor.isKind(index, TokenKind.Punct) && scanningIsOpener(cursor.tokens[index].value)) {
+            return cursor.afterGroup(index)
+        }
+        return index + 1
+    }
+
+    method walkBlock() {
+        var walker = this.walker
+        if (walker.depth >= MAX_NESTING_DEPTH) {
+            walker.pos = walker.cursor.afterGroup(walker.pos)
+            return
+        }
+        walker.scopes.push()
+        this.walkBlockBody()
+    }
+
+    // Walks the statements of the block that starts at the walker position and pops its scope.
+    method walkBlockBody() {
+        var walker = this.walker
+        walker.pos = walker.pos + 1
+        walker.depth = walker.depth + 1
+        while (walker.cursor.has(walker.pos) && walker.cursor.isPunct(walker.pos, "}") == false) {
+            walker.statement()
+        }
+        walker.depth = walker.depth - 1
+        var closeEnd = walker.unclosedEnd
+        if (walker.cursor.isPunct(walker.pos, "}")) {
+            closeEnd = walker.cursor.tokens[walker.pos].end
+            walker.pos = walker.pos + 1
+        }
+        walker.scopes.pop(closeEnd)
+    }
+
+    method walkFor() {
+        var walker = this.walker
+        walker.pos = walker.pos + 1
+        if (walker.cursor.isPunct(walker.pos, "(") == false) {
+            this.header("for")
+            this.body("for")
+            return
+        }
+        var close = walker.cursor.matchingClose(walker.pos)
+        if (close < 0) {
+            walker.report(walker.cursor.spanAt(walker.pos), "unterminated-list", "unterminated '(': the closing bracket is missing")
+            walker.pos = walker.cursor.limit
+            return
+        }
+        var variable = scanningReadForHeader(walker, walker.pos + 1, close)
+        walker.pos = close + 1
+        this.forBody(variable, close)
+    }
+
+    method forBody(integer variable, integer close) {
+        var walker = this.walker
+        if (walker.cursor.isPunct(walker.pos, "{") == false) {
+            this.body("for")
+            return
+        }
+        walker.scopes.push()
+        if (variable >= 0) {
+            var name = walker.cursor.tokens[variable].text
+            walker.scopes.declare(name, walker.cursor.spanAt(variable), "", "loop", Span(-1, -1), walker.cursor.tokens[close].end)
+        }
+        this.walkBlockBody()
+    }
+}

@@ -1,0 +1,60 @@
+package main
+
+import io
+
+// io.readBytes beyond the 1 MiB direct limit (buffer grows with the data), at
+// the 1 GiB limit, and past it. Stdin comes from io_limits.stdin.sh.
+
+final LIMIT = 1073741824
+final FIRST_HEADER = 1500000
+
+define class ReadTask {
+    private integer count: get, set
+    method run(): object {
+        return io.readBytes(count)
+    }
+}
+
+method tryRun(object task): object native "nv_try_run"
+method tryFailed(): bool native "nv_try_failed"
+method tryError(): string native "nv_try_error"
+
+method countFrom(string line): integer {
+    return parseInt(line)
+}
+
+// How many bytes of the body are `letter`, and the first and last byte.
+method describe(string label, string body, string letter) {
+    var others = body.replace(letter, "").length()
+    var last = body.charAt(body.length() - 1)
+    println "${label}: ${body.length()} bytes, ${others} not ${letter}, first ${body.charAt(0)}, last ${last}"
+}
+
+method printFrames() {
+    var first = io.readBytes(countFrom(io.readLine()))
+    describe("full buffer", first, "x")
+    println "small after large: ${io.readBytes(countFrom(io.readLine()))}"
+    var third = io.readBytes(countFrom(io.readLine()))
+    describe("short stream", third, "y")
+    println "eof: ${io.eof()}"
+    println "after eof: ${io.readBytes(7).length()}"
+}
+
+// An announced size that no stream will fill costs only what was delivered.
+method printHugeAnnouncement() {
+    var body = io.readBytes(LIMIT)
+    println "at the limit, nothing left: ${body.length()} bytes"
+}
+
+method printOverLimit(integer count) {
+    tryRun(ReadTask{count=count})
+    println "${count}: failed ${tryFailed()}, ${tryError()}"
+}
+
+method main {
+    printFrames()
+    printHugeAnnouncement()
+    printOverLimit(LIMIT + 1)
+    printOverLimit(2147483648)
+    printOverLimit(9000000000000)
+}

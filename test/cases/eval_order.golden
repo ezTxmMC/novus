@@ -1,0 +1,99 @@
+[g1, g2, g3]
+global initialiser: g1 g2 g3
+a-bc
+chain: a b c
+xpxq!
+chain with locals: p q
+first/second
+interpolation: first second
+27
+long chain: 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18
+7
+arithmetic: x y z
+6
+minus: p q
+false
+string equality: l r
+true
+comparison: l r
+true
+comparison value: l r
+both
+condition: a b c d
+short circuit and: a
+either
+short circuit or: a
+loop condition: c0 limit c1 limit c2 limit
+1
+global read before call: bump
+4
+global read after call: bump
+13
+locals around a call: bump
+oldnew
+field read before a call that changes it: 
+newnew
+field read after a call that changes it: 
+6
+element read before call: v
+a
+one argument: a
+ab
+two arguments: a b
+abc
+three arguments: a b c
+abcd
+four arguments: a b c d
+abcd
+nested calls: a b c d
+a-b
+literal between calls: a b
+ss
+module call: s n
+ghi
+return of a call: g h i
+B:a
+method one argument: a
+B:ab
+method two arguments: a b
+B:abc
+method three arguments: a b c
+B:abcd
+method four arguments: a b c d
+recvab
+receiver before arguments: recv a b
+recvabc
+receiver before three arguments: recv a b c
+[1, 2]
+append: v
+lr
+constructor: l r
+abcd
+constructor four arguments: a b c d
+[1, 2, 3]
+array literal: a b c
+{k1: 1, k2: 2}
+map literal: k1 v1 k2 v2
+Point{x: 1, y: 2}
+object literal: x y
+[[1, 2], [3, 4]]
+nested literals: a b c d
+20
+index target before index: list i
+[1, 9, 3]
+index assignment: i v
+new
+member assignment: new
+member assignment of a call result: target value
+m1m2
+class method body: m1 m2
+c1c2c3
+constructor body: c1 c2 c3
+xy
+async method body: x y
+abc
+thread arguments: a b c
+ab
+virtual arguments: a b
+recvab
+thread receiver and arguments: recv a b

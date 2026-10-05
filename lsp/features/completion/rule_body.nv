@@ -1,0 +1,99 @@
+package completion
+
+import base/maybe
+import features/candidates
+import projects/workspace
+import syntax/lexing
+
+private final COMPLETION_OPERATOR_PUNCTS = ["=", "(", ",", "[", "+", "-", "*", "/", "%", "<", ">", "!", "&", "|", "^", ":", "==", "!=", "<=", ">=", "&&", "||", "<<", ">>"]
+private final COMPLETION_VALUE_WORDS = ["println", "print", "eprintln", "in"]
+private final COMPLETION_PREFIX_WORDS = ["await", "thread", "virtual"]
+private final COMPLETION_OPERAND_ENDS = [")", "]", "}"]
+
+// Inside a method or constructor body and inside `${...}`: a statement starts or an expression is expected. A global's
+// initialiser at the top level is an expression too.
+define class BodyContextRule based ContextRule {
+    CompletionCursors cursors
+
+    construct(CompletionCursors cursors) {
+        this.cursors = cursors
+    }
+
+    method matches(FileContext context, integer offset): CompletionContext {
+        var cursor = this.cursors.cursorFor(context, offset)
+        var inBody = cursor.inInterpolation || completionInCallableBody(context, offset)
+        if (inBody == false && cursor.opener() >= 0) {
+            return nothing()
+        }
+        var kind = this.kindOf(context, cursor, offset, inBody)
+        if (kind == "") {
+            return nothing()
+        }
+        return CompletionContext(kind, cursor.prefix, cursor.replaceSpan)
+    }
+
+    method kindOf(FileContext context, CompletionCursor cursor, integer offset, bool inBody): string {
+        var previous = cursor.tokenBack(1)
+        if (isNone(previous)) {
+            return this.whenAlone(cursor, inBody)
+        }
+        if (this.expectsOperand(previous, cursor)) {
+            return CANDIDATES_KIND_EXPRESSION
+        }
+        if (inBody == false) {
+            return ""
+        }
+        if (previous.isPunct("{")) {
+            return this.afterBrace(context, cursor, offset)
+        }
+        if (previous.isPunct(";") || previous.isPunct("}") || (cursor.startsLine() && this.endsOperand(previous))) {
+            return CANDIDATES_KIND_STATEMENT
+        }
+        return ""
+    }
+
+    method whenAlone(CompletionCursor cursor, bool inBody): string {
+        if (cursor.inInterpolation) {
+            return CANDIDATES_KIND_EXPRESSION
+        }
+        if (inBody) {
+            return CANDIDATES_KIND_STATEMENT
+        }
+        return ""
+    }
+
+    // An operator, an opening bracket or a comma, `return` on the same line, a word that takes an operand.
+    method expectsOperand(Token previous, CompletionCursor cursor): bool {
+        if (previous.kind == TokenKind.Punct && previous.isPunct("{") == false) {
+            return COMPLETION_OPERATOR_PUNCTS.contains(previous.value)
+        }
+        if (previous.isKeyword("return")) {
+            return previous.line == cursor.line
+        }
+        if (previous.kind == TokenKind.Keyword) {
+            return COMPLETION_VALUE_WORDS.contains(previous.text)
+        }
+        return previous.kind == TokenKind.Ident && COMPLETION_PREFIX_WORDS.contains(previous.text)
+    }
+
+    method endsOperand(Token previous): bool {
+        if (previous.kind == TokenKind.Punct) {
+            return COMPLETION_OPERAND_ENDS.contains(previous.value)
+        }
+        return previous.kind != TokenKind.Keyword || previous.isKeyword("true") || previous.isKeyword("false") ||
+            previous.isKeyword("break") || previous.isKeyword("continue") || previous.isKeyword("return")
+    }
+
+    // A block opens a statement; the `{` of a map or object literal is followed by an expression.
+    method afterBrace(FileContext context, CompletionCursor cursor, integer offset): string {
+        var braceIndex = cursor.indexBack(1)
+        var before = cursor.tokenBefore(braceIndex)
+        if (isNone(before) || before.isPunct(")") || before.isKeyword("else") || before.isIdent("sync")) {
+            return CANDIDATES_KIND_STATEMENT
+        }
+        if (completionIsDeclarationBrace(context, cursor.tokens[braceIndex], offset)) {
+            return CANDIDATES_KIND_STATEMENT
+        }
+        return CANDIDATES_KIND_EXPRESSION
+    }
+}

@@ -1,0 +1,55 @@
+package main
+
+import json
+import os
+import path
+import "novus/lsp/services/snippets"
+
+// Regressions of the review round: entries own their lists, non-ASCII after '#', a control
+// character in a choice, and an index file that cannot be written.
+
+method runRegressionCases() {
+    checkEntriesAreIndependent()
+    checkNonAsciiEscape()
+    checkControlCharacterInChoice()
+    checkBlockedIndex()
+}
+
+method checkEntriesAreIndependent() {
+    var catalogue = loadSnippetCatalogue()
+    catalogue.byId("fori").scopes.append("class")
+    catalogue.byId("thread").imports.append("zzz")
+    catalogue.byId("jsonstr").overrides[9] = "changed"
+    catalogue.byId("importn").fixtures["extra"] = "changed"
+    catalogue.byId("fori").prefixes.append("changed")
+    println "fori scopes: " + catalogue.byId("fori").scopes.join(",") + " / forir scopes: " + catalogue.byId("forir").scopes.join(",")
+    println "thread imports: " + catalogue.byId("thread").imports.join(",") + " / await imports: " + catalogue.byId("await").imports.join(",")
+    println "forir prefixes: " + catalogue.byId("forir").prefixes.join(",") + ", fresh catalogue fori prefixes: " + loadSnippetCatalogue().byId("fori").prefixes.join(",")
+    println "overrides of a sibling: " + catalogue.byId("jsonpretty").overrides.has(9) + ", fixtures of a sibling: " + catalogue.byId("importm").fixtures.has("extra")
+}
+
+method checkNonAsciiEscape() {
+    for (notation in ["#æ", "#x", "#"]) {
+        println "escape " + notation.length() + " bytes: " + validateNotation(notation)
+    }
+    var message = validateNotation("#" + chr(230) + chr(151) + chr(165))
+    println "multibyte after hash is ASCII-only text: " + (ord(message.charAt(message.length() - 1)) < 128 && message.contains(chr(230)) == false)
+    println "emoji lead byte: " + validateNotation("#" + chr(240) + chr(159) + chr(152) + chr(128))
+}
+
+method checkControlCharacterInChoice() {
+    var notation = "#{1|a" + chr(1) + "b,c|}"
+    var plain = renderPlainSnippet(notation, {}, "    ")
+    println "plain keeps the control byte: " + (plain.length() == 3 && ord(plain.charAt(1)) == 1)
+    println "lsp form: " + json.stringify(renderLspSnippet(notation, "  ")) + ", valid: [" + validateNotation(notation) + "]"
+    println "escaped comma next to the control byte: " + renderPlainSnippet("#{1|a\\," + chr(1) + "b,c|}", {}, "    ").length()
+}
+
+method checkBlockedIndex() {
+    var work = path.join(os.temp(), "novus_lsp_snippets_index_" + os.pid())
+    os.removeAll(work)
+    os.mkdir(path.join(work, "INDEX.txt"))
+    var catalogue = loadSnippetCatalogue()
+    println "index cannot be written: " + writeVerificationFiles(catalogue, work) + " of " + catalogue.all.length()
+    os.removeAll(work)
+}

@@ -1,0 +1,57 @@
+package main
+
+import "novus/lsp/features/hover"
+import "novus/lsp/base/maybe"
+import "novus/lsp/base/model"
+import @support
+import @fixtures
+
+private final SIGNATURE_MAIN_TEXT = "import geo\nimport strings\n\nmethod main() {\n    var circle = Circle(2.0)\n    var grown = circle.grow(1.0)\n    var padded = strings.repeat(\"a\", 2)\n    var number = parseInt(\"12\")\n    var part = \"abc\".substring(1, 2)\n    var both = scaled(1.0, 2.0)\n    var point = Point(1.0, 2.0)\n    println(scaled(circle.area()))\n    sync (lock) {\n        println(1)\n    }\n}\n"
+
+method signatureCase(string label, string needle, integer shift) {
+    var files = hoverProject(hoverMarked(SIGNATURE_MAIN_TEXT, needle, shift), HOVER_SHAPE_TEXT)
+    var world = NavWorld(files)
+    var help = SignatureEngine().signatureHelp(world.context(), world.cursorOffset)
+    if (isNone(help)) {
+        navCheck(label, "(none)")
+        return
+    }
+    var parts = []
+    for (signature in help.signatures) {
+        parts.append(signature.label + " {" + signature.parameters.join("|") + "}")
+    }
+    navCheck(label, parts.join("; ") + " | active " + help.activeSignature + " parameter " + help.activeParameter)
+}
+
+method signatureInterpolated() {
+    var open = "$" + "{"
+    var main = "import geo\n\nmethod main() {\n    println(\"both " + open + "scaled(1.0, 2.0)} done\")\n}\n"
+    var world = NavWorld(hoverProject(hoverMarked(main, "2.0)} done", 0), HOVER_SHAPE_TEXT))
+    var help = SignatureEngine().signatureHelp(world.context(), world.cursorOffset)
+    navCheck("call inside an interpolation", "" + help.signatures.length() + " signatures, active " + help.activeSignature + " parameter " + help.activeParameter)
+}
+
+method runSignatureCases() {
+    println("== signature help")
+    signatureCase("explicit constructor", "Circle(2.0", 7)
+    signatureCase("method of a typed local", "grow(1.0", 5)
+    signatureCase("std function, second argument", "repeat(\"a\", 2", 12)
+    signatureCase("free builtin", "parseInt(\"12", 9)
+    signatureCase("builtin member, second argument", "substring(1, 2", 12)
+    signatureCase("overloads, second argument", "scaled(1.0, 2.0", 11)
+    signatureCase("overloads, first argument", "scaled(1.0, 2.0", 7)
+    signatureCase("implicit constructor from the fields", "Point(1.0", 6)
+    signatureCase("nested call picks the inner one", "scaled(circle.area()", 19)
+    signatureCase("empty argument list", "area())", 5)
+    signatureCase("sync statement is no call", "sync (lock", 6)
+    signatureCase("outside any call", "var both", 0)
+    signatureInterpolated()
+}
+
+method runManifestHoverCases() {
+    println("== manifest")
+    var world = NavWorld(hoverMain("Circle(2.0)", 1))
+    var manifest = world.contextOf("/p/project.nv")
+    navCheck("hover in a manifest", "" + isSome(HoverEngine().hover(manifest, 5)))
+    navCheck("signature help in a manifest", "" + isSome(SignatureEngine().signatureHelp(manifest, 5)))
+}

@@ -1,0 +1,81 @@
+package completion
+
+import base/maybe
+import features/candidates
+import projects/workspace
+import syntax/lexing
+
+private final COMPLETION_AT = "@"
+private final COMPLETION_SYNC_WORD = "sync"
+
+// After an adjacent `@`, and at a key position of `Type{` and `@Annotation{`.
+define class AnnotationContextRule based ContextRule {
+    CompletionCursors cursors
+
+    construct(CompletionCursors cursors) {
+        this.cursors = cursors
+    }
+
+    method matches(FileContext context, integer offset): CompletionContext {
+        var cursor = this.cursors.cursorFor(context, offset)
+        if (cursor.inInterpolation) {
+            return nothing()
+        }
+        if (cursor.isPunctBack(1, COMPLETION_AT) && cursor.isAdjacent()) {
+            return CompletionContext(CANDIDATES_KIND_ANNOTATION, cursor.prefix, cursor.replaceSpan)
+        }
+        return this.fieldContext(context, cursor, offset)
+    }
+
+    // A key position: the cursor is directly inside a `{` that follows a name, after the `{` or after a `,`.
+    method fieldContext(FileContext context, CompletionCursor cursor, integer offset): CompletionContext {
+        var open = cursor.openerToken()
+        if (isNone(open) || open.isPunct("{") == false) {
+            return nothing()
+        }
+        if (cursor.isPunctBack(1, "{") == false && cursor.isPunctBack(1, ",") == false) {
+            return nothing()
+        }
+        var nameIndex = cursor.significantAtOrBefore(cursor.opener() - 1)
+        if (nameIndex < 0 || cursor.tokens[nameIndex].kind != TokenKind.Ident || completionIsDeclarationBrace(context, open, offset)) {
+            return nothing()
+        }
+        var name = cursor.tokens[nameIndex]
+        if (name.text == COMPLETION_SYNC_WORD) {
+            return nothing()
+        }
+        var request = CompletionContext(CANDIDATES_KIND_FIELD_NAME, cursor.prefix, cursor.replaceSpan)
+        request.typeName = name.text
+        request.detail = this.formOf(cursor, nameIndex) + CANDIDATES_DETAIL_SEPARATOR + this.keysSet(cursor).join(",")
+        return request
+    }
+
+    method formOf(CompletionCursor cursor, integer nameIndex): string {
+        var at = cursor.significantAtOrBefore(nameIndex - 1)
+        if (at >= 0 && cursor.tokens[at].isPunct(COMPLETION_AT) && cursor.tokens[at].end == cursor.tokens[nameIndex].start) {
+            return CANDIDATES_DETAIL_ANNOTATION
+        }
+        return CANDIDATES_DETAIL_OBJECT
+    }
+
+    // The keys `name =` written directly inside the braces, before the cursor.
+    method keysSet(CompletionCursor cursor): array<string> {
+        var keys = []
+        var depth = 0
+        var at = cursor.opener() + 1
+        while (at <= cursor.lastIndex) {
+            var token = cursor.tokens[at]
+            if (token.kind == TokenKind.Punct && COMPLETION_OPENERS.contains(token.value)) {
+                depth = depth + 1
+            }
+            if (token.kind == TokenKind.Punct && COMPLETION_CLOSERS.contains(token.value)) {
+                depth = depth - 1
+            }
+            if (depth == 0 && token.kind == TokenKind.Ident && at + 1 <= cursor.lastIndex && cursor.tokens[at + 1].isPunct("=")) {
+                keys.append(token.text)
+            }
+            at = at + 1
+        }
+        return keys
+    }
+}

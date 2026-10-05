@@ -1,0 +1,56 @@
+package main
+
+import @check
+import @subject
+import "novus/lsp/base/text"
+import "novus/lsp/syntax/outline"
+
+// The scope end of a local of a body that is never closed may lie one byte past the end of the text (DESIGN 5.4, V55).
+private final FUZZ_TOOL_SCOPE_OVERHANG = 1
+private final FUZZ_TOOL_MAX_MEMBER_DEPTH = 8
+
+// Every declaration span lies inside the text, the name inside the full span, and the same holds for their members.
+define class FuzzToolDeclCheck based FuzzToolCheck {
+    construct() {
+    }
+
+    method check(FuzzToolSubject subject): array<string> {
+        var found = []
+        if (subject.hasSource() == false) {
+            return found
+        }
+        for (decl in subject.parsed.decls) {
+            fuzzToolCheckDecl(decl, subject.source.length(), 0, found)
+        }
+        return found
+    }
+}
+
+method fuzzToolCheckDecl(Decl decl, integer length, integer depth, array<string> found) {
+    if (fuzzToolInside(decl.fullSpan, length) == false) {
+        found.append(decl.name + ": fullSpan " + decl.fullSpan.start + ".." + decl.fullSpan.end + " is outside the text of " + length + " bytes")
+    }
+    if (fuzzToolNameInsideFull(decl) == false) {
+        found.append(decl.name + ": nameSpan " + decl.nameSpan.start + ".." + decl.nameSpan.end + " is not inside fullSpan " + decl.fullSpan.start + ".." + decl.fullSpan.end)
+    }
+    for (local in decl.locals) {
+        fuzzToolCheckLocal(decl, local, length, found)
+    }
+    if (depth >= FUZZ_TOOL_MAX_MEMBER_DEPTH) {
+        return
+    }
+    for (member in decl.members) {
+        fuzzToolCheckDecl(member, length, depth + 1, found)
+    }
+}
+
+method fuzzToolNameInsideFull(Decl decl): bool {
+    return decl.nameSpan.start >= decl.fullSpan.start && decl.nameSpan.end <= decl.fullSpan.end && decl.nameSpan.start <= decl.nameSpan.end
+}
+
+method fuzzToolCheckLocal(Decl owner, Local local, integer length, array<string> found) {
+    var scope = local.scope
+    if (scope.start < 0 || scope.start > scope.end || scope.end > length + FUZZ_TOOL_SCOPE_OVERHANG) {
+        found.append(owner.name + ": local " + local.name + " has the scope " + scope.start + ".." + scope.end + " in a text of " + length + " bytes")
+    }
+}

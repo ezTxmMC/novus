@@ -1,0 +1,9 @@
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"rootUri":"@ROOTURI@","capabilities":{}}}
+{"jsonrpc":"2.0","method":"initialized","params":{}}
+{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"@ROOTURI@/project.nv","languageId":"novus","version":1,"text":"project \"x\"\nbogus value\n"}}}
+{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"@ROOTURI@/a.nv","languageId":"novus","version":1,"text":"method main() {\n    println(nothingHere())\n}\n"}}}
+{"jsonrpc":"2.0","method":"workspace/didChangeConfiguration","params":{"settings":{"novus":{"diagnostics":{"own":false}}}}}
+{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"@ROOTURI@/project.nv","version":2},"contentChanges":[{"text":"project \"x\"\nbogus value\n\n"}]}}
+{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"@ROOTURI@/a.nv","version":2},"contentChanges":[{"text":"method main() {\n    println(nothingHere())\n}\n\n"}]}}
+{"jsonrpc":"2.0","id":900,"method":"shutdown"}
+{"jsonrpc":"2.0","method":"exit"}

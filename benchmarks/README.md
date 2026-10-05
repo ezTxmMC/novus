@@ -45,11 +45,36 @@ is, or how it behaves under a real workload. The numbers move with the
 machine, the CPU governor and the library versions.
 
 Where Novus does well: unboxed integer and float arithmetic (the compiler
-proves which locals are numbers and generates plain C), and memory, because
-values are tagged pointers, objects are one flat block and the garbage
-collector keeps the heap at about twice the live data - `nbody` and
-`spectral` allocate a boxed float per operation and stay within a few
-megabytes.
+proves which locals, parameters, results and fields are numbers and generates
+plain C), and memory, because values are tagged pointers (floats too, within
+2^-126..2^127), objects are one flat block and the garbage collector keeps the
+heap at about twice the live data.
+
+Typed code generation (`compiler/codegen/kinds.nv`) changed two of them a lot.
+Novus alone, same machine, best of five, `novusc build` with `cc -O2`, the
+compiler before and after the change:
+
+| workload   | before  | after  |
+| ---------- | ------: | -----: |
+| nbody      | 3436 ms | 383 ms |
+| spectral   |  140 ms |  22 ms |
+| fib        |    3 ms |   1 ms |
+| the other nine (array, loop, mandelbrot, map, objects, primes, sort, strings, wordfreq) | unchanged | unchanged |
+
+`nbody` used to box a float per operation and dispatch every getter by name;
+now the fields are read in place, the arithmetic is `double`, and a store
+boxes once. The steps, measured one on top of the other: 3.4 s with the old
+compiler, 2.2 s with call-site caches, 1.5 s with floats that live in the
+value word as well, 0.38 s with the typed code on top.
+
+The price is paid at compile time, and it is not nothing. `novusc emit` itself
+is as fast as before on ordinary programs (a millisecond or two on each
+benchmark), but typed code is more C: on a 26,000-line Novus program (a
+language server) the generated C grew from 44.8k to 45.6k lines, `gcc -O2`
+takes 10.5 s instead of 9.3 s (+14 %) and the binary grows from 1.18 MB to
+1.29 MB (+9 %). `novusc emit` on a synthetic expression of 2000 chained typed
+operations takes 2.0 s instead of 1.4 s (+43 %), and both grow with the square
+of the chain. Compile time is `gcc`'s, not the compiler's.
 
 Where it does not: sorting and allocation-heavy code, where every element is
 still a boxed value behind a pointer, and hash maps, which store more per

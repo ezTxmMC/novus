@@ -1,0 +1,191 @@
+package workspace
+
+import base/maybe
+import base/text
+import projects/closure
+import projects/manifest
+import syntax/outline
+import syntax/parsing
+
+// What happens to the models when documents change, close or change on disk (DESIGN 8.7, V102). The rule of thumb: a
+// body-only edit invalidates nothing (the closure file and its symbols are pointed at the newest parse), a change of
+// the declarations rebuilds the index, a change of the imports, of the package line or of a manifest invalidates the
+// model, which then rebuilds lazily.
+define class WorkspaceEvents {
+    Workspace workspace
+
+    construct(Workspace workspace) {
+        this.workspace = workspace
+    }
+
+    method documentChanged(Document document) {
+        var filePath = manifestNormalizePath(document.filePath)
+        if (filePath == WORKSPACE_SCRATCH_KEY) {
+            return
+        }
+        this.workspace.files.setOverlay(filePath, document.text)
+        if (document.fileKind() == FILE_KIND_MANIFEST) {
+            this.manifestChanged(filePath)
+            return
+        }
+        if (workspaceIsNovusSource(filePath) == false) {
+            return
+        }
+        var syntax = this.workspace.files.syntaxOf(filePath)
+        for (key in this.workspace.projects.keys()) {
+            this.noteChange(this.workspace.projects[key], filePath, syntax)
+        }
+    }
+
+    method noteChange(ProjectModel model, string filePath, SourceFile syntax) {
+        if (model.valid == false || model.key() == WORKSPACE_SCRATCH_KEY) {
+            return
+        }
+        var closureFile = model.closure.fileAt(filePath)
+        if (isSome(closureFile)) {
+            this.applyChange(model, closureFile, syntax)
+            return
+        }
+        this.noteNewFile(model, filePath)
+    }
+
+    // A file below a project with a manifest that neither the closure nor the scan knows may be what an unresolved
+    // import is waiting for. A program without a manifest only ever contains what its main file imports.
+    method noteNewFile(ProjectModel model, string filePath) {
+        if (model.layout.hasManifest() == false || model.containsPath(filePath) == false) {
+            return
+        }
+        if (isSome(model.scan) && model.scan.knows(filePath)) {
+            return
+        }
+        model.invalidate()
+        model.invalidateScan()
+    }
+
+    // Brings the closure file and the index to the newest parse of the file with as little work as the change needs.
+    method applyChange(ProjectModel model, ClosureFile closureFile, SourceFile syntax) {
+        var previous = closureFile.syntax
+        if (previous == syntax) {
+            return
+        }
+        if (this.importsChanged(previous, syntax)) {
+            model.invalidate()
+            return
+        }
+        if (previous.declSignature == syntax.declSignature && model.index.refreshFile(closureFile, syntax)) {
+            return
+        }
+        closureFile.syntax = syntax
+        model.rebuildIndex(this.workspace.library)
+    }
+
+    // The import list and the package line decide what the closure loads and which problems it reports.
+    method importsChanged(SourceFile previous, SourceFile current): bool {
+        if (previous.packageName != current.packageName || previous.imports.length() != current.imports.length()) {
+            return true
+        }
+        var i = 0
+        while (i < current.imports.length()) {
+            if (previous.imports[i].kind != current.imports[i].kind || previous.imports[i].target != current.imports[i].target) {
+                return true
+            }
+            i = i + 1
+        }
+        return false
+    }
+
+    // Closing a buffer discards unsaved edits: a model whose file now reads differently from disk is stale.
+    method documentClosed(string filePath) {
+        this.workspace.files.clearOverlay(filePath)
+        if (filePath == WORKSPACE_SCRATCH_KEY) {
+            this.workspace.projects.remove(WORKSPACE_SCRATCH_KEY)
+            return
+        }
+        if (fileKindOf(filePath) == FILE_KIND_MANIFEST) {
+            this.manifestChanged(filePath)
+            return
+        }
+        var hash = textHashOf(this.workspace.files.textOf(filePath))
+        for (key in this.workspace.projects.keys()) {
+            this.noteClosed(this.workspace.projects[key], filePath, hash)
+        }
+    }
+
+    // An orphan (no import reaches it) leaves the program with its buffer, whatever its text; the program then no longer
+    // holds names that `novusc` never sees.
+    method noteClosed(ProjectModel model, string filePath, integer diskHash) {
+        var closureFile = model.closure.fileAt(filePath)
+        if (model.valid == false || isNone(closureFile) || model.key() == WORKSPACE_SCRATCH_KEY) {
+            return
+        }
+        if (closureFile.syntax.textHash != diskHash || WorkspaceOrphans(this.workspace).isReachedByImports(model, filePath) == false) {
+            model.invalidate()
+        }
+    }
+
+    // Paths without the kind of the event: every event is treated alike (V102).
+    method filesChanged(array<string> filePaths) {
+        for (rawPath in filePaths) {
+            var filePath = manifestNormalizePath(rawPath)
+            this.workspace.files.forget(filePath)
+            if (fileKindOf(filePath) == FILE_KIND_MANIFEST) {
+                this.manifestChanged(filePath)
+            }
+            this.invalidateContaining(filePath)
+        }
+    }
+
+    method invalidateContaining(string filePath) {
+        for (key in this.workspace.projects.keys()) {
+            var model = this.workspace.projects[key]
+            if (model.containsPath(filePath) || model.closure.has(filePath)) {
+                model.invalidate()
+                model.invalidateScan()
+            }
+        }
+    }
+
+    // A manifest changed: the projects it belongs to or that take a module from it are stale. A program whose key
+    // changes with it (a manifest that was deleted, or one that appeared above a program without one) is dropped and
+    // made again, under its new key, by the next request.
+    method manifestChanged(string manifestPath) {
+        var folder = manifestDirectoryOf(manifestPath)
+        for (key in this.workspace.projects.keys()) {
+            var model = this.workspace.projects[key]
+            if (this.keyChanges(model, key, manifestPath, folder)) {
+                this.workspace.projects.remove(key)
+                continue
+            }
+            if (this.usesManifest(model, manifestPath, folder)) {
+                model.invalidate()
+                model.invalidateScan()
+            }
+        }
+    }
+
+    method keyChanges(ProjectModel model, string key, string manifestPath, string folder): bool {
+        if (key == WORKSPACE_SCRATCH_KEY) {
+            return false
+        }
+        if (model.layout.hasManifest()) {
+            return model.layout.manifestPath == manifestPath && this.workspace.files.exists(manifestPath) == false
+        }
+        return this.isUnder(model.layout.root, folder)
+    }
+
+    method usesManifest(ProjectModel model, string manifestPath, string folder): bool {
+        if (model.layout.manifestPath == manifestPath) {
+            return true
+        }
+        for (entry in model.modules.entries) {
+            if (entry.declaredIn == manifestPath || entry.dir == folder) {
+                return true
+            }
+        }
+        return false
+    }
+
+    method isUnder(string target, string folder): bool {
+        return target == folder || target.startsWith(folder + WORKSPACE_SLASH)
+    }
+}

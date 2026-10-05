@@ -1,0 +1,94 @@
+package stdlib
+
+import arrays
+import base/maybe
+import "novus/compiler/std"
+import syntax/outline
+import syntax/parsing
+
+private final STDLIB_KEY_PREFIX = "std:"
+private final STDLIB_SHARED_KEY = "library"
+private final STDLIB_SHARED = {}
+
+// One standard module: its embedded source and the declarations parsed from it (indexParseOptions, no tokens).
+define class StdModule {
+    string name
+    string source
+    SourceFile syntax
+    array<string> imports
+    string summary
+
+    construct(string name, string source, SourceFile syntax) {
+        this.name = name
+        this.source = source
+        this.syntax = syntax
+        this.imports = stdlibImportedModules(syntax)
+        this.summary = stdlibSummaryOf(source)
+    }
+}
+
+// The sources embedded in novusc, parsed lazily and kept for the life of the process: a module never changes.
+define class StdLibrary {
+    map<string, StdModule> cache
+
+    construct() {
+        this.cache = {}
+    }
+
+    method moduleNames(): array<string> {
+        return arrays.sort(stdModules())
+    }
+
+    method has(string name): bool {
+        return stdModules().contains(name)
+    }
+
+    // nil for a name that is no standard module.
+    method module(string name): StdModule {
+        if (this.cache.has(name)) {
+            return this.cache[name]
+        }
+        if (this.has(name) == false) {
+            return nothing()
+        }
+        var loaded = this.parseModule(name)
+        this.cache[name] = loaded
+        return loaded
+    }
+
+    method parseModule(string name): StdModule {
+        var source = stdSource(name)
+        var syntax = parseSourceText(STDLIB_KEY_PREFIX + name, source, indexParseOptions())
+        return StdModule(name, source, syntax)
+    }
+
+    // `<module count>-<total source bytes>`: it changes with every compiler build that changes the embedded std.
+    method fingerprint(): string {
+        var names = stdModules()
+        var total = 0
+        for (name in names) {
+            total = total + stdSource(name).length()
+        }
+        return "" + names.length() + "-" + total
+    }
+}
+
+// One shared library per process, so every user of it shares the parse cache.
+method standardLibrary(): StdLibrary {
+    if (STDLIB_SHARED.has(STDLIB_SHARED_KEY)) {
+        return STDLIB_SHARED[STDLIB_SHARED_KEY]
+    }
+    var library = StdLibrary()
+    STDLIB_SHARED[STDLIB_SHARED_KEY] = library
+    return library
+}
+
+method stdlibImportedModules(SourceFile syntax): array<string> {
+    var names = []
+    for (declaration in syntax.imports) {
+        if (declaration.kind == ImportKind.Package && names.contains(declaration.target) == false) {
+            names.append(declaration.target)
+        }
+    }
+    return names
+}

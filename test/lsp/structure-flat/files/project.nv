@@ -1,0 +1,2 @@
+project "nav"
+main "main.nv"

@@ -1,0 +1,32 @@
+package main
+
+import os
+import "novus/lsp/base/platform"
+import "novus/lsp/syntax/markup"
+import "novus/lsp/syntax/outline"
+import "novus/lsp/syntax/parsing"
+
+method describeFile(string repo, string relative) {
+    var filePath = repo + "/" + relative
+    var content = readTextFile(filePath)
+    var file = parseComponentText(filePath, content, editorParseOptions())
+    var component = file.decls[file.decls.length() - 1]
+    var members = []
+    for (member in component.members) {
+        members.append(member.name)
+    }
+    var tags = []
+    for (island in componentTagNames(content)) {
+        tags.append(content.substring(island.span.start, island.span.end))
+    }
+    println("== " + relative)
+    println("  class " + component.name + " members " + members + " imports " + file.imports.length() + " defines " + (file.decls.length() - 1) + " issues " + file.issues.length())
+    println("  tags " + tags + " header " + findIslands(content).length())
+}
+
+method runRealCases() {
+    var repo = os.realpath("../../..")
+    for (relative in ["examples/web/pages/Home.nvh", "examples/web/pages/Todos.nvh", "examples/web/pages/Chat.nvh", "examples/web/pages/Hello.nvh", "examples/web/components/Layout.nvh", "examples/web/components/Clock.nvh", "examples/web/components/TodoItem.nvh", "examples/web/components/Counter.nvh", "test/cases/web/Card.nvh", "test/cases/web/Item.nvh", "test/cases/web/Pair.nvh", "test/cases/web/Page.nvh", "test/cases/web/Fragile.nvh"]) {
+        describeFile(repo, relative)
+    }
+}

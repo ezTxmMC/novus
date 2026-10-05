@@ -1,0 +1,9 @@
+package main
+
+// A global whose initialiser uses the global itself.
+
+final LOOP = [LOOP]
+
+method main {
+    println LOOP
+}

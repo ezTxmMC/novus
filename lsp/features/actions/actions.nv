@@ -1,0 +1,54 @@
+package actions
+
+import base/maybe
+import base/model
+import base/text
+import projects/workspace
+
+// The code actions of one request: the quick fixes of the diagnostics that touch the range (imports, the dependency fetch and
+// the small manifest fixes), then *Organize imports*. A buffer without a path (a scratch buffer) gets none: an edit is addressed
+// by file path, and such a buffer has none. Nothing here changes server state; an action only describes an edit or names a
+// command, which the client sends back (9.9.4).
+define class ActionEngine {
+    Settings settings
+    ImportActions imports
+    ProjectActions project
+
+    construct(Settings settings) {
+        this.settings = settings
+        this.imports = ImportActions(settings)
+        this.project = ProjectActions()
+    }
+
+    method actionsFor(FileContext context, Span range, array<Diagnostic> diagnostics): array<CodeActionItem> {
+        var items = []
+        if (context.document.filePath == "") {
+            return items
+        }
+        var relevant = this.touching(diagnostics, range)
+        this.collect(this.imports.quickFixes(context, relevant), items)
+        this.collect(this.project.fixes(context, relevant), items)
+        var organize = this.imports.organize(context)
+        if (isSome(organize)) {
+            items.append(organize)
+        }
+        return items
+    }
+
+    // A diagnostic the client sends is not trusted to lie inside the range or the document: the rules check the span again.
+    method touching(array<Diagnostic> diagnostics, Span range): array<Diagnostic> {
+        var kept = []
+        for (diagnostic in diagnostics) {
+            if (diagnostic.span.overlaps(range) || diagnostic.span.touches(range.start) || diagnostic.span.touches(range.end)) {
+                kept.append(diagnostic)
+            }
+        }
+        return kept
+    }
+
+    method collect(array<CodeActionItem> found, array<CodeActionItem> items) {
+        for (item in found) {
+            items.append(item)
+        }
+    }
+}

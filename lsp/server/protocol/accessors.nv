@@ -1,0 +1,108 @@
+package protocol
+
+import base/maybe
+import math
+
+// Total accessors over decoded JSON: a missing key or a value of the wrong type gives the fallback, never an error (LSP-R08).
+private final PROTOCOL_TYPE_MAP = "map"
+private final PROTOCOL_TYPE_ARRAY = "array"
+private final PROTOCOL_TYPE_STRING = "string"
+private final PROTOCOL_TYPE_INTEGER = "integer"
+private final PROTOCOL_TYPE_FLOAT = "float"
+private final PROTOCOL_TYPE_BOOL = "bool"
+// The JSON parser saturates integers at the int64 limits; floats are cut at the same limits, as math.floor overflows to the minimum.
+private final PROTOCOL_WHOLE_MAX = 9223372036854775807
+private final PROTOCOL_WHOLE_MIN = 0 - PROTOCOL_WHOLE_MAX - 1
+private final PROTOCOL_WHOLE_FLOAT_LIMIT = 9200000000000000000.0
+
+method protocolIsMap(object value): bool {
+    return typeOf(value) == PROTOCOL_TYPE_MAP
+}
+
+method protocolField(object value, string key): object {
+    if (protocolIsMap(value) == false) {
+        return nothing()
+    }
+    if (value.has(key) == false) {
+        return nothing()
+    }
+    return value[key]
+}
+
+method protocolPath(object value, array<string> keys): object {
+    var current = value
+    for (key in keys) {
+        current = protocolField(current, key)
+    }
+    return current
+}
+
+method protocolText(object value, string key, string fallback): string {
+    var found = protocolField(value, key)
+    if (typeOf(found) == PROTOCOL_TYPE_STRING) {
+        return found
+    }
+    return fallback
+}
+
+method protocolFloatToWhole(float value): integer {
+    if (value >= PROTOCOL_WHOLE_FLOAT_LIMIT) {
+        return PROTOCOL_WHOLE_MAX
+    }
+    if (value <= 0.0 - PROTOCOL_WHOLE_FLOAT_LIMIT) {
+        return PROTOCOL_WHOLE_MIN
+    }
+    return math.floor(value)
+}
+
+method protocolIsNumber(object value): bool {
+    return typeOf(value) == PROTOCOL_TYPE_INTEGER || typeOf(value) == PROTOCOL_TYPE_FLOAT
+}
+
+method protocolWhole(object value, string key, integer fallback): integer {
+    var found = protocolField(value, key)
+    if (typeOf(found) == PROTOCOL_TYPE_INTEGER) {
+        return found
+    }
+    if (typeOf(found) == PROTOCOL_TYPE_FLOAT) {
+        return protocolFloatToWhole(found)
+    }
+    return fallback
+}
+
+method protocolFlag(object value, string key, bool fallback): bool {
+    var found = protocolField(value, key)
+    if (typeOf(found) == PROTOCOL_TYPE_BOOL) {
+        return found
+    }
+    return fallback
+}
+
+method protocolList(object value, string key): array<object> {
+    return protocolItems(protocolField(value, key))
+}
+
+method protocolItems(object value): array<object> {
+    if (typeOf(value) == PROTOCOL_TYPE_ARRAY) {
+        return value
+    }
+    return []
+}
+
+method protocolFlagAt(object root, array<string> keys, bool fallback): bool {
+    var found = protocolPath(root, keys)
+    if (typeOf(found) == PROTOCOL_TYPE_BOOL) {
+        return found
+    }
+    return fallback
+}
+
+method protocolTextList(object value): array<string> {
+    var texts = []
+    for (item in protocolItems(value)) {
+        if (typeOf(item) == PROTOCOL_TYPE_STRING) {
+            texts.append(item)
+        }
+    }
+    return texts
+}

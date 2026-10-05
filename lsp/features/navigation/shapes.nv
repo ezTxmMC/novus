@@ -1,0 +1,86 @@
+package navigation
+
+import base/maybe
+import semantics/semantic
+import semantics/targets
+import syntax/lexing
+import syntax/outline
+
+// The declarations that a member target stands for: the member itself and the members of that name in the types
+// related to its owner by inheritance (overrides and the overridden), as symbol keys. `byName` is true when every
+// declarer of the member name is in the family, so that a `.name` whose receiver cannot be typed can only be it.
+define class NavigationFamily {
+    string name
+    map<string, bool> keys
+    bool byName
+    integer arity
+
+    construct(string name, integer arity) {
+        this.name = name
+        this.keys = {}
+        this.byName = false
+        this.arity = arity
+    }
+
+    method accepts(IdentifierTarget found, array<Token> tokens, integer index): bool {
+        if (isNone(found)) {
+            return false
+        }
+        if (found.isSymbol()) {
+            return this.hasKeyOf(found)
+        }
+        if (found.kind != TARGETS_KIND_UNRESOLVED || this.byName == false || found.receiverKnown) {
+            return false
+        }
+        return this.arity == -1 || this.arity == targetsCallArity(tokens, index)
+    }
+
+    method hasKeyOf(IdentifierTarget found): bool {
+        for (symbol in found.symbols) {
+            if (this.keys.has(symbol.key)) {
+                return true
+            }
+        }
+        return false
+    }
+}
+
+method navigationFamilyOf(Resolver resolver, Symbol target): NavigationFamily {
+    var arity = -1
+    if (target.decl.isCallable()) {
+        arity = target.decl.arity()
+    }
+    var family = NavigationFamily(target.name(), arity)
+    family.keys[target.key] = true
+    if (navigationHasFamily(target) == false) {
+        return family
+    }
+    var related = navigationRelatedTypes(resolver.index, target.container)
+    var unrelated = 0
+    for (symbol in resolver.index.declarersOfMember(target.name())) {
+        if (related.has(symbol.container) == false) {
+            unrelated = unrelated + 1
+            continue
+        }
+        if (navigationSameShape(symbol, target)) {
+            family.keys[symbol.key] = true
+        }
+    }
+    family.byName = unrelated == 0
+    return family
+}
+
+// Constructors and enum constants are not looked up by name over several types.
+method navigationHasFamily(Symbol target): bool {
+    if (target.isMember() == false || target.isLocal()) {
+        return false
+    }
+    return target.decl.kind == DeclKind.Field || target.decl.kind == DeclKind.Method || target.decl.kind == DeclKind.AbstractMethod
+}
+
+method navigationSameShape(Symbol symbol, Symbol target): bool {
+    if (target.decl.isCallable()) {
+        return symbol.decl.isCallable() && symbol.decl.arity() == target.decl.arity()
+    }
+    return symbol.decl.isCallable() == false
+}

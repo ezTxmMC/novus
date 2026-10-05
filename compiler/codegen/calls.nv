@@ -136,9 +136,9 @@ method genCall(string node, map<string, string> prog, map<string, string> ctx, m
             if (fieldSlot(prog, ctx["class"], name) >= 0) {
                 return "nv_fields(self->o)[" + fieldSlot(prog, ctx["class"], name) + "]"
             }
-            return invokeCall0("self", name)
+            return invokeCall0("self", name, prog)
         }
-        return invokeCall("self", name, nargs, genArgs(node, 2, prog, ctx, locals))
+        return invokeCall("self", name, nargs, genArgs(node, 2, prog, ctx, locals), prog)
     }
     if (prog.has("func:" + key) == false && prog.has("unq:" + key)) {
         // a function of one of the program's packages, called unqualified

@@ -1,0 +1,64 @@
+package main
+
+import "novus/lsp/base/platform"
+import "novus/lsp/base/text"
+import "novus/lsp/projects/stdlib"
+import "novus/lsp/projects/workspace"
+import "novus/lsp/server/session"
+
+method newSession(): Session {
+    var files = FileCache(MemoryTextSource({"/proj/main.nv": "package main\n"}))
+    return Session(DocumentStore(), Workspace(files, standardLibrary()))
+}
+
+method runSessionCases() {
+    println("--- session")
+    var state = newSession()
+    println("initialized " + state.initialized + ", shutdown " + state.shutdownRequested)
+    println("placeholder codec " + state.codec.encoding)
+    println("lists start empty: " + state.tokenTypes.length() + " " + state.tokenModifiers.length() + " " + state.commandIds.length() + " " + state.registeredMethods.length())
+    println("settings are created once: " + (state.settings == state.settings) + " " + state.settings.check.mode)
+    println("a closed document: " + isNone(state.documentFor("file:///proj/main.nv")))
+    println("no context without a document: " + isNone(state.contextFor("file:///proj/main.nv")))
+    var document = Document("file:///proj/main.nv", "novus", 3, "package main\n")
+    state.documents.open(document)
+    println("an open document is found: " + (state.documentFor("file:///proj/main.nv") == document))
+    println("the context carries it: " + (state.contextFor("file:///proj/main.nv").document == document))
+    println("another uri is still unknown: " + isNone(state.documentFor("file:///proj/other.nv")) + " " + isNone(state.contextFor("file:///proj/other.nv")))
+    state.documents.close("file:///proj/main.nv")
+    println("after close: " + isNone(state.documentFor("file:///proj/main.nv")) + " " + isNone(state.contextFor("file:///proj/main.nv")))
+    runLocationCases()
+    runTargetCases()
+}
+
+// targetAt: the context and the byte offset of a position request (amendment 6, V111). The é is two bytes and one UTF-16 unit.
+method runTargetCases() {
+    println("--- targets")
+    var state = newSession()
+    var document = Document("file:///proj/main.nv", "novus", 1, "package main\n// éx\n")
+    state.documents.open(document)
+    state.workspace.onDocumentChanged(document)
+    var params = {"textDocument": {"uri": "file:///proj/main.nv"}, "position": {"line": 1, "character": 4}}
+    var target = state.targetAt(params)
+    println("open document: " + (target.context.document == document) + " offset " + target.offset)
+    params["position"] = {"line": 0, "character": 8}
+    println("another position: " + state.targetAt(params).offset)
+    params["textDocument"] = {"uri": "file:///proj/other.nv"}
+    println("unknown uri: " + isNone(state.targetAt(params)))
+    println("no parameters: " + isNone(state.targetAt({})))
+}
+
+// linesOf and uriOf: where an answer about a file points (amendment 6, V111).
+method runLocationCases() {
+    println("--- locations")
+    var state = newSession()
+    var open = Document("file:///proj/open.nv", "novus", 1, "package main\nmethod a() {\n}\n")
+    state.documents.open(open)
+    println("open file: " + state.uriOf("/proj/open.nv") + " " + state.linesOf("/proj/open.nv").lineCount())
+    println("file on disk: " + state.uriOf("/proj/main.nv") + " " + state.linesOf("/proj/main.nv").lineCount())
+    println("missing file: " + state.uriOf("/proj/none.nv") + " " + state.linesOf("/proj/none.nv").lineCount())
+    println("no path: '" + state.uriOf("") + "' " + state.linesOf("").lineCount())
+    var onDisk = Session(DocumentStore(), Workspace(FileCache(DiskTextSource()), standardLibrary()))
+    var stdPath = onDisk.workspace.editorPathOf("std:strings")
+    println("std key: " + (onDisk.uriOf("std:strings") == filePathToUri(stdPath)) + " " + (onDisk.linesOf("std:strings").lineCount() > 1))
+}

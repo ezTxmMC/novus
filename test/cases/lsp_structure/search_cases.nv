@@ -1,0 +1,56 @@
+package main
+
+import "novus/lsp/features/structure"
+import "novus/lsp/base/model"
+import @support
+import @fixtures
+
+private final STRUCT_MANY = 30
+
+define class StructCancelled based CancelCheck {
+    construct() {
+    }
+
+    method isCancelled(): bool {
+        return true
+    }
+}
+
+method structEntries(array<WorkspaceSymbolEntry> entries): string {
+    var parts = []
+    for (entry in entries) {
+        parts.append(entry.name + "/" + entry.kind.code + "/" + entry.containerName + "@" + entry.location.filePath)
+    }
+    if (parts.length() == 0) {
+        return "(none)"
+    }
+    return parts.join(" ")
+}
+
+method structSearch(string label, StructWorld world, string query, integer limit) {
+    var search = SymbolSearch(world.space)
+    world.context("/p/main.nv")
+    structCheck(label, structEntries(search.search(query, limit)))
+}
+
+method runSearchCases() {
+    println("== workspace symbols")
+    var world = StructWorld(structProject())
+    structSearch("exact name", world, "Circle", 50)
+    structSearch("prefix and substring rank before subsequence", world, "circ", 50)
+    structSearch("case-insensitive", world, "AREA", 50)
+    structSearch("subsequence", world, "dsc", 50)
+    structSearch("a file that no import reaches", world, "spare", 50)
+    structSearch("a root file that no import reaches", world, "loose", 50)
+    structSearch("no std symbols", world, "repeat", 50)
+    structSearch("limit", world, "a", 3)
+    structSearch("no match", world, "zzzz", 50)
+    var all = SymbolSearch(world.space).search("", 1000)
+    structCheck("empty query lists everything once", "" + all.length())
+    var cancelled = SymbolSearch(world.space).search("a", 50, StructCancelled())
+    structCheck("cancelled search answers what it has", structEntries(cancelled))
+    var empty = StructWorld({"/e/project.nv": "project \"e\"\nmain \"main.nv\"\n", "/e/main.nv": "method main() {\n}\n"})
+    structCheck("workspace without opened files and folders", structEntries(SymbolSearch(empty.space).search("main", 5)))
+    empty.space.setFolders(["/e"])
+    structCheck("workspace folder with a manifest", structEntries(SymbolSearch(empty.space).search("main", 5)))
+}

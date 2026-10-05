@@ -6,7 +6,7 @@ package os
 method mkdir(string path): bool native "nv_os_mkdir"           // creates missing parents
 method rmdir(string path): bool native "nv_os_rmdir"           // removes an empty directory
 method remove(string path): bool native "nv_remove_file"       // deletes a file
-method removeAll(string path): bool native "nv_os_remove_all"  // deletes a file or directory tree
+method removeAll(string path): bool native "nv_os_remove_all"  // deletes a file or directory tree; a link is removed itself, never followed
 method listDir(string path): array<string> native "nv_os_list_dir"
 method exists(string path): bool native "nv_path_exists"
 method isDir(string path): bool native "nv_os_is_dir"
@@ -15,6 +15,15 @@ method rename(string from, string to): bool native "nv_os_rename"
 method copy(string from, string to): bool native "nv_os_copy"
 method fileSize(string path): integer native "nv_os_file_size"   // -1 when missing
 method modified(string path): integer native "nv_os_modified"    // unix seconds, -1 when missing
+method modifiedMillis(string path): integer native "nv_os_modified_millis"   // unix milliseconds (negative before 1970), -1 when missing
+
+// Absolute path with every link resolved; "" when it does not exist (a link to
+// nowhere included). unix: realpath(3). Windows: the final path of the opened
+// file (GetFinalPathNameByHandle), so symbolic links, junctions and 8.3 short
+// names are resolved there too, with forward slashes and without the \\?\
+// prefix. The Windows branch was run under Wine, not on real Windows.
+method realpath(string path): string native "nv_os_realpath"
+method isSymlink(string path): bool native "nv_os_is_symlink"      // the path itself is a link (also a dangling one); on Windows also a junction
 method readFile(string path): string native "nv_read_file"
 method writeFile(string path, string content) native "nv_write_file"
 method appendFile(string path, string content) native "nv_append_file"
@@ -22,11 +31,44 @@ method cwd(): string native "nv_path_absolute"
 method chdir(string path): bool native "nv_os_chdir"
 method temp(): string native "nv_path_temp"
 method home(): string native "nv_os_home"
-method exec(string command): integer native "nv_exec"           // exit code
-method output(string command): string native "nv_os_output"     // captured stdout
+
+// exec and output run the command with the program's own stdin: a command that
+// reads input consumes what the program itself would read next. In a protocol
+// server (a language server on stdio) that swallows the next client message -
+// use run there, which closes the command's stdin.
+method exec(string command): integer native "nv_exec"           // exit code; inherits stdin
+method output(string command): string native "nv_os_output"     // captured stdout; inherits stdin
+
+// Runs a shell command and returns {code, output}: its exit code (-1 when it
+// was killed by a signal) and what it printed to stdout. stderr is not
+// captured - append 2>&1 to the command for that. The command's stdin is
+// closed, so it never reads the program's own input (unlike exec and output):
+// unix runs it after `exec </dev/null`; Windows puts `<NUL` in front of the
+// line, which redirects the first command of it (a pipeline or a command with
+// its own redirection keeps working; in `a & b` only `a` is detached). The
+// Windows branch was run under Wine, not on real Windows.
+method run(string command): map<string, object> native "nv_os_run"
+
+// The argument quoted for the shell of this platform, to be put into a command
+// line (os.run, exec, output). unix: single quotes, safe for any text.
+//
+// Windows (cmd.exe, then the program's own argument parser): double quotes,
+// where & | < > ^ ( ) are plain text; a backslash run before a quote or at the
+// end is doubled; the three characters that act even between quotes - " % ! -
+// are written outside the quotes with a ^ in front, so `a%b` becomes
+// `"a"^%"b"` and still reaches the program as one argument a%b. A line break
+// cannot be quoted for cmd.exe and is an error (catchable with tryRun). This
+// follows the documented behaviour of cmd.exe; the string rules are tested
+// everywhere (shellQuoteFor), and round trips of tricky arguments were run
+// under Wine's cmd.exe, a reimplementation - not on real Windows.
+method shellQuote(string argument): string native "nv_os_shell_quote"
+
+// The quoting of another platform: "windows", or "unix" / "linux" / "macos"
+// for sh. Any other name is an error.
+method shellQuoteFor(string platform, string argument): string native "nv_os_shell_quote_for"
 method env(string name): string native "nv_env"
 method setEnv(string name, string value): bool native "nv_os_set_env"
-method exit(integer code) native "nv_exit"
+method exit(integer code) native "nv_exit"                      // flushes stdout and stderr, ends the process even if a thread is blocked reading stdin
 method platform(): string native "nv_platform"                  // linux | macos | windows | unix
 method args(): array<string> native "nv_args"
 method pid(): integer native "nv_os_pid"

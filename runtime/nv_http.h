@@ -8,33 +8,6 @@
 
 static nv nv_json_stringify(nv v);
 
-static const char *nv_shell_quote(const char *s) {
-    NvSb sb;
-    nv_sb_init(&sb);
-#ifdef _WIN32
-    nv_sb_addc(&sb, '"');
-    for (; *s; s++) {
-        if (*s == '"') {
-            nv_sb_add(&sb, "\\\"");
-        } else {
-            nv_sb_addc(&sb, *s);
-        }
-    }
-    nv_sb_addc(&sb, '"');
-#else
-    nv_sb_addc(&sb, '\'');
-    for (; *s; s++) {
-        if (*s == '\'') {
-            nv_sb_add(&sb, "'\\''");
-        } else {
-            nv_sb_addc(&sb, *s);
-        }
-    }
-    nv_sb_addc(&sb, '\'');
-#endif
-    return nv_sb_finish(&sb);
-}
-
 static int nv_http_counter = 0;
 
 static nv nv_http_temp_name(const char *what) {
@@ -88,8 +61,8 @@ static nv nv_http_request(nv method, nv url, nv body, nv headers) {
     if (headers && nv_type_of(headers) == NV_MAP) {
         nv_map_order(headers->m);
         for (i = 0; i < headers->m->len; i++) {
-            nv line = nv_concat(nv_concat(nv_str(headers->m->items[i].key), nv_str(": ")), headers->m->items[i].val);
-            if (strcmp(nv_cstr(nv_str_case(nv_str(headers->m->items[i].key), 0)), "content-type") == 0) {
+            nv line = nv_concat(nv_concat(nv_str(nv_map_nth(headers->m, i)->key), nv_str(": ")), nv_map_nth(headers->m, i)->val);
+            if (strcmp(nv_cstr(nv_str_case(nv_str(nv_map_nth(headers->m, i)->key), 0)), "content-type") == 0) {
                 hasContentType = 1;
             }
             nv_sb_add(&cmd, " -H ");

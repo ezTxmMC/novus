@@ -1,0 +1,183 @@
+package candidates
+
+import arrays
+import strings
+import base/model
+import projects/workspace
+import semantics/semantic
+import semantics/builtins
+import syntax/outline
+
+// The sort buckets of 8.5; the digit leads the `sortText` that `rankItems` writes.
+private final CANDIDATES_BUCKET_LOCAL = "0"
+private final CANDIDATES_BUCKET_MEMBER = "1"
+private final CANDIDATES_BUCKET_PROJECT = "2"
+private final CANDIDATES_BUCKET_DEPENDENCY = "3"
+private final CANDIDATES_BUCKET_STANDARD = "4"
+private final CANDIDATES_BUCKET_KEYWORD = "5"
+private final CANDIDATES_BUCKET_SNIPPET = "6"
+private final CANDIDATES_BUCKET_IMPORT = "7"
+private final CANDIDATES_BUCKET_WEAK = "8"
+
+private final SORT_KEY_SEPARATOR = chr(1)
+private final SORT_INDEX_WIDTH = 6
+private final CANDIDATES_QUALITY_EXACT = 0
+private final CANDIDATES_QUALITY_PREFIX = 1
+private final CANDIDATES_QUALITY_PREFIX_FOLDED = 2
+private final CANDIDATES_QUALITY_SUBSEQUENCE = 3
+private final CANDIDATES_QUALITY_NONE = 9
+private final CANDIDATES_SUBSEQUENCE_MINIMUM = 2
+private final CANDIDATES_SORT_TEXT_SEPARATOR = "_"
+private final CANDIDATES_SORT_ZERO = "0"
+private final CANDIDATES_KEY_FIELDS = "|"
+
+// Filters by prefix, writes `sortText` (`<bucket><quality>_<label>`), drops keywords and built-ins that a snippet replaces,
+// de-duplicates by (label, kind, detail) and returns the items in sort order (8.1 step 3, 8.5, 8.9).
+method rankItems(array<CompletionItem> items, string prefix): array<CompletionItem> {
+    var snippetLabels = candidatesSnippetLabels(items)
+    var kept = []
+    var seen = {}
+    for (item in items) {
+        if (candidatesRanked(item, prefix, snippetLabels, seen)) {
+            kept.append(item)
+        }
+    }
+    return candidatesSorted(kept)
+}
+
+// Decides one item; a kept item has its `sortText` written. `seen` is the set of keys of the kept items.
+method candidatesRanked(CompletionItem item, string prefix, map<string, bool> snippetLabels, map<string, bool> seen): bool {
+    if (candidatesIsReplacedBySnippet(item, snippetLabels)) {
+        return false
+    }
+    var quality = matchQuality(candidatesMatchText(item), prefix)
+    var key = item.label + CANDIDATES_KEY_FIELDS + item.kind + CANDIDATES_KEY_FIELDS + item.detail
+    if (quality == CANDIDATES_QUALITY_NONE || seen.has(key)) {
+        return false
+    }
+    seen[key] = true
+    candidatesWriteSortText(item, prefix, quality)
+    return true
+}
+
+// 8.5 (Amendment 7, V134): a keyword and a free built-in function (bucket 5) are dropped when a snippet carries their label
+// (`exec` is both a built-in and a snippet prefix), so that no label appears twice (7.7).
+method candidatesIsReplacedBySnippet(CompletionItem item, map<string, bool> snippetLabels): bool {
+    var isBuiltin = item.kind == CompletionKind.Keyword || (item.kind == CompletionKind.Function && item.sortText == CANDIDATES_BUCKET_KEYWORD)
+    return isBuiltin && snippetLabels.has(item.label)
+}
+
+// What the prefix is compared with: the filter text (`Circle` for the item `Circle{}`) or the label.
+method candidatesMatchText(CompletionItem item): string {
+    if (item.filterText != "") {
+        return item.filterText
+    }
+    return item.label
+}
+
+method candidatesWriteSortText(CompletionItem item, string prefix, integer quality) {
+    var bucket = item.sortText
+    if (bucket.length() > 0) {
+        bucket = bucket.substring(0, 1)
+    }
+    if (bucket == "") {
+        bucket = CANDIDATES_BUCKET_KEYWORD
+    }
+    var rank = "" + quality
+    if (item.kind == CompletionKind.Snippet && prefix != "" && item.label.toLower() == prefix.toLower()) {
+        bucket = CANDIDATES_SORT_ZERO
+        rank = CANDIDATES_SORT_ZERO
+    }
+    item.sortText = bucket + rank + CANDIDATES_SORT_TEXT_SEPARATOR + item.label.toLower()
+    if (item.kind == CompletionKind.Snippet && item.documentation == "") {
+        item.documentation = keywordDocumentation(item.label)
+    }
+}
+
+method candidatesSnippetLabels(array<CompletionItem> items): map<string, bool> {
+    var labels = {}
+    for (item in items) {
+        if (item.kind == CompletionKind.Snippet) {
+            labels[item.label] = true
+        }
+    }
+    return labels
+}
+
+// Strings sort, objects do not: the sort key is `sortText`, a separator and the zero-padded input index, so equal
+// keys keep the input order and `1a_fo` comes before `1a_foo`.
+method candidatesSorted(array<CompletionItem> items): array<CompletionItem> {
+    var keys = []
+    var index = 0
+    while (index < items.length()) {
+        var padded = strings.padLeftWith("" + index, SORT_INDEX_WIDTH, CANDIDATES_SORT_ZERO)
+        keys.append(items[index].sortText + SORT_KEY_SEPARATOR + padded)
+        index = index + 1
+    }
+    var sortedKeys = arrays.sort(keys)
+    var ordered = []
+    for (key in sortedKeys) {
+        var digits = key.substring(key.length() - SORT_INDEX_WIDTH, key.length())
+        ordered.append(items[parseInt(digits)])
+    }
+    return ordered
+}
+
+// 0 exact, 1 case-sensitive prefix, 2 case-insensitive prefix, 3 subsequence of two or more letters (camel initials
+// are one), 9 no match; an empty prefix matches everything with 1.
+method matchQuality(string label, string prefix): integer {
+    if (prefix == "") {
+        return CANDIDATES_QUALITY_PREFIX
+    }
+    if (label == prefix) {
+        return CANDIDATES_QUALITY_EXACT
+    }
+    if (label.startsWith(prefix)) {
+        return CANDIDATES_QUALITY_PREFIX
+    }
+    var folded = label.toLower()
+    var foldedPrefix = prefix.toLower()
+    if (folded.startsWith(foldedPrefix)) {
+        return CANDIDATES_QUALITY_PREFIX_FOLDED
+    }
+    if (prefix.length() >= CANDIDATES_SUBSEQUENCE_MINIMUM && candidatesIsSubsequence(folded, foldedPrefix)) {
+        return CANDIDATES_QUALITY_SUBSEQUENCE
+    }
+    return CANDIDATES_QUALITY_NONE
+}
+
+method candidatesIsSubsequence(string text, string pattern): bool {
+    var at = 0
+    var index = 0
+    while (index < text.length() && at < pattern.length()) {
+        if (text.charAt(index) == pattern.charAt(at)) {
+            at = at + 1
+        }
+        index = index + 1
+    }
+    return at == pattern.length()
+}
+
+// A parameter, a local or a loop variable as an item: its origin, name and type when it is declared or can be inferred.
+method candidatesLocalItem(FileContext context, Scope scope, Local local): CompletionItem {
+    var typeText = local.typeText
+    var inferred = context.resolver().typeOfLocal(scope, local)
+    if (typeText == "" && inferred.known) {
+        typeText = inferred.display()
+    }
+    var detail = local.origin + " " + local.name
+    if (typeText != "") {
+        detail = detail + ": " + typeText
+    }
+    return candidatesItem(local.name, CompletionKind.Variable, detail, CANDIDATES_BUCKET_LOCAL)
+}
+
+// `Color.Red` for the constant `Red` of the enum `Color`; the filter text is the bare constant name.
+method candidatesConstantItem(Symbol enumSymbol, Symbol constant, string bucket): CompletionItem {
+    var qualified = enumSymbol.decl.name + "." + constant.decl.name
+    var item = candidatesItem(qualified, CompletionKind.EnumMember, enumSymbol.decl.name, bucket)
+    item.filterText = constant.decl.name
+    item.insertText = qualified
+    item.labelDescription = enumSymbol.decl.name
+    return item
+}

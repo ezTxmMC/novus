@@ -1,0 +1,93 @@
+package snippets
+
+// Snippets that use std modules: test, cli, http, json, files, os, io (DESIGN Appendix A).
+
+method librarySnippets(): array<Snippet> {
+    var groups = [snippetsProgramSnippets(), snippetsCliSnippets(), snippetsHttpSnippets()]
+    groups.append(snippetsJsonSnippets())
+    groups.append(snippetsSystemSnippets())
+    return snippetsConcat(groups)
+}
+
+method snippetsProgramSnippets(): array<Snippet> {
+    var top = [SNIPPETS_SCOPE_TOPLEVEL]
+    var statement = [SNIPPETS_SCOPE_STATEMENT]
+    var testBody = "import test\n\nmethod main {\n\ttest.assertEqual(#{1:1 + 1}, #{2:2}, \"#{3:addition}\")\n\t#0\n\texit(test.report())\n}"
+    var cliBody = "import cli\n\nmethod main(array<string> args) {\n\tvar parsed = cli.parse(args)\n" +
+        "\tvar #{1:input} = cli.argument(parsed, 0, \"#{2:default}\")\n\t#0\n}"
+    return [
+        Snippet("testmain", ["testmain", "tmain"], "Test program: assertions, then the exit code", top,
+            testBody).withVerify(SNIPPETS_VERIFY_FILE),
+        Snippet("maincli", ["maincli", "cli"], "Entry point parsing --options and positional arguments", top,
+            cliBody).withVerify(SNIPPETS_VERIFY_FILE),
+        Snippet("assertEqual", ["asserteq", "assertequal"], "Compare two values in a test", statement,
+            "test.assertEqual(#{1:actual}, #{2:expected}, \"#{3:name}\")").withImports(["test"]).withOverrides({1: "count", 2: "3"}),
+        Snippet("assertTrue", ["asserttrue", "assert"], "Assert a condition in a test", statement,
+            "test.assert(#{1:condition}, \"#{2:name}\")").withImports(["test"])
+    ]
+}
+
+method snippetsCliSnippets(): array<Snippet> {
+    var statement = [SNIPPETS_SCOPE_STATEMENT]
+    var cliModules = ["cli"]
+    return [
+        Snippet("cliopt", ["cliopt"], "Read a command line option", statement,
+            "var #{1:parsed} = cli.parse(args())\nvar #{2:port} = cli.option(#1, \"#{3:port}\", \"#{4:8080}\")").withImports(cliModules),
+        Snippet("cliflag", ["cliflag"], "Read a command line flag", statement,
+            "var #{1:verbose} = cli.flag(#{2:parsed}, \"#{3:verbose}\")").withImports(cliModules).withOverrides({2: "cli.parse(args())"})
+    ]
+}
+
+method snippetsHttpSnippets(): array<Snippet> {
+    var statement = [SNIPPETS_SCOPE_STATEMENT]
+    var httpModules = ["http"]
+    return [
+        Snippet("httpget", ["httpget", "get"], "HTTP GET returning the body", statement,
+            "var #{1:body} = http.get(\"#{2:https://example.com}\")").withImports(httpModules),
+        Snippet("httppost", ["httppost", "post"], "HTTP POST of a map or array as JSON", statement,
+            "var #{1:body} = http.post(\"#{2:https://example.com}\", #{3:{\"key\": \"value\"}})").withImports(httpModules),
+        Snippet("httpjson", ["httpjson", "getjson"], "HTTP GET parsed as JSON", statement,
+            "var #{1:data} = http.getJson(\"#{2:https://example.com/data.json}\")").withImports(httpModules),
+        Snippet("httpreq", ["httpreq", "http"], "HTTP request with status, body and headers", statement,
+            "var #{1:response} = http.request(\"#{2:GET}\", \"#{3:https://example.com}\", \"\", {})\nif (#1[\"ok\"]) {\n\t#0\n}").withImports(httpModules)
+    ]
+}
+
+method snippetsJsonSnippets(): array<Snippet> {
+    var statement = [SNIPPETS_SCOPE_STATEMENT]
+    var jsonModules = ["json"]
+    var encoded = {1: "encoded", 2: "names"}
+    var tryNote = "Parse JSON text without aborting (tryParse gives nil on invalid input; test it with typeOf)"
+    return [
+        Snippet("jsonparse", ["jsonparse", "jparse"], "Parse JSON text (aborts on invalid input)", statement,
+            "var #{1:data} = json.parse(#{2:text})").withImports(jsonModules),
+        Snippet("jsonstr", ["jsonstr", "jstringify"], "Serialize a value to JSON", statement,
+            "var #{1:text} = json.stringify(#{2:value})").withImports(jsonModules).withOverrides(encoded),
+        Snippet("jsonpretty", ["jsonpretty", "jpretty"], "Serialize a value to indented JSON", statement,
+            "var #{1:text} = json.pretty(#{2:value})").withImports(jsonModules).withOverrides(encoded),
+        Snippet("jsonload", ["jsonload", "jload"], "Load a JSON file", statement,
+            "var #{1:data} = json.load(\"#{2:data.json}\")").withImports(jsonModules),
+        Snippet("jsonsave", ["jsonsave", "jsave"], "Save a value as a JSON file", statement,
+            "json.save(#{1:value}, \"#{2:out}\", \"#{3:data.json}\")").withImports(jsonModules).withOverrides({1: "names"}),
+        Snippet("jsontry", ["jsontry", "jtry"], tryNote, statement,
+            "var #{1:data} = json.tryParse(#{2:text})\nif (typeOf(#1) == \"unknown\") {\n\t#0\n}").withImports(jsonModules)
+    ]
+}
+
+method snippetsSystemSnippets(): array<Snippet> {
+    var statement = [SNIPPETS_SCOPE_STATEMENT]
+    return [
+        Snippet("readfile", ["readfile", "rf"], "Read a whole file", statement,
+            "var #{1:content} = readFile(\"#{2:path}\")"),
+        Snippet("writefile", ["writefile", "wf"], "Write a whole file", statement,
+            "writeFile(\"#{1:path}\", #{2:text})").withOverrides({2: "\"t\""}),
+        Snippet("readlines", ["readlines", "rl"], "Loop over the lines of a file", statement,
+            "for (#{1:line} in strings.lines(readFile(\"#{2:path}\"))) {\n\t#0\n}").withImports(["strings"]),
+        Snippet("listdir", ["listdir", "ls"], "Loop over the entries of a directory", statement,
+            "for (#{1:entry} in os.listDir(\"#{2:.}\")) {\n\t#0\n}").withImports(["os"]),
+        Snippet("exec", ["exec", "shell"], "Run a shell command and get its exit code", statement,
+            "var #{1:code} = os.exec(\"#{2:command}\")").withImports(["os"]),
+        Snippet("stdin", ["stdin", "readline"], "Read a line from standard input", statement,
+            "var #{1:line} = io.readLine()").withImports(["io"])
+    ]
+}

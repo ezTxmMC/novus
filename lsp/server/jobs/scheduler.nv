@@ -1,0 +1,166 @@
+package jobs
+
+import base/maybe
+import base/model
+import base/platform
+import base/text
+import log
+import server/protocol
+import server/rpc
+import server/session
+
+// The sources that publish() owns; "novusc" is never touched by it.
+private final PRODUCER_SOURCES = ["novus", "pureline"]
+private final JOBS_QUIET_MILLIS = 150
+private final JOBS_REVALIDATE_MILLIS = 1000
+
+// Debounced own diagnostics, cross-file revalidation by project revision; main thread only.
+define class DiagnosticScheduler based EnvelopeListener {
+    Session session
+    MessageWriter writer
+    WireEncoder encoder
+    array<DiagnosticProducer> producers
+    map<string, integer> projectRevisions
+    bool synchronous
+    map<string, integer> dirty
+    JobsPublisher publisher
+    JobsProjectWatch watch
+    integer lastRevalidated
+    bool following
+
+    construct(Session session, MessageWriter writer, WireEncoder encoder, array<DiagnosticProducer> producers) {
+        this.session = session
+        this.writer = writer
+        this.encoder = encoder
+        this.producers = producers
+        this.projectRevisions = {}
+        this.synchronous = false
+        this.dirty = {}
+        this.publisher = JobsPublisher(session, writer, encoder)
+        this.watch = JobsProjectWatch(session, this.projectRevisions)
+        this.lastRevalidated = 0
+        this.following = false
+    }
+
+    // Test mode publishes at once; otherwise the tick publishes after JOBS_QUIET_MILLIS without another change.
+    method markDirty(string uri) {
+        this.markOne(uri)
+        if (this.synchronous) {
+            this.followProjects()
+        }
+    }
+
+    // Test mode publishes every document first and looks at the projects once, so no document is sent twice.
+    method markAllDirty() {
+        for (uri in this.session.documents.uris()) {
+            this.markOne(uri)
+        }
+        if (this.synchronous) {
+            this.followProjects()
+        }
+    }
+
+    method markOne(string uri) {
+        if (this.synchronous) {
+            this.publish(uri)
+            return
+        }
+        this.dirty[uri] = nowMillis()
+    }
+
+    method forget(string uri) {
+        this.dirty.remove(uri)
+        this.watch.forget(uri)
+    }
+
+    method flushAll() {
+        for (uri in this.dirty.keys()) {
+            this.publish(uri)
+        }
+    }
+
+    // The producers decide "novus" and "pureline"; "novusc" stays as the check coordinator left it.
+    method publish(string uri) {
+        this.dirty.remove(uri)
+        var document = this.session.documentFor(uri)
+        if (isNone(document)) {
+            this.publisher.send(uri)
+            return
+        }
+        this.replaceProducedSources(document)
+        this.watch.note(document)
+        this.publisher.send(uri)
+    }
+
+    // Re-sends what the store holds without running a producer (a check result changed it).
+    method publishStored(string uri) {
+        this.publisher.send(uri)
+    }
+
+    method onEnvelope(Envelope envelope) {
+        if (envelope.kind == ENVELOPE_EOF) {
+            this.flushAll()
+            return
+        }
+        if (envelope.kind == ENVELOPE_TICK) {
+            this.onTick(jobsTickTime(envelope))
+        }
+    }
+
+    method onTick(integer now) {
+        this.publishDue(now)
+        this.revalidateOnce(now)
+        this.followProjects()
+    }
+
+    method publishDue(integer now) {
+        for (uri in this.dirty.keys()) {
+            if (now - this.dirty[uri] >= JOBS_QUIET_MILLIS) {
+                this.publish(uri)
+            }
+        }
+    }
+
+    method revalidateOnce(integer now) {
+        if (now - this.lastRevalidated < JOBS_REVALIDATE_MILLIS) {
+            return
+        }
+        this.lastRevalidated = now
+        this.session.workspace.revalidate(now)
+    }
+
+    method replaceProducedSources(Document document) {
+        var groups = {}
+        for (producer in this.producers) {
+            this.collect(producer, document, groups)
+        }
+        for (source in PRODUCER_SOURCES) {
+            this.session.diagnostics.replace(document.uri, source, groups.get(source, []))
+        }
+    }
+
+    method collect(DiagnosticProducer producer, Document document, map<string, array<Diagnostic>> groups) {
+        var outcome = runGuarded(JobsProduceWork(producer, document))
+        if (outcome.failed) {
+            log.warn("jobs: a diagnostic producer failed for " + document.uri + ": " + outcome.message)
+            return
+        }
+        for (diagnostic in outcome.value) {
+            if (PRODUCER_SOURCES.contains(diagnostic.source)) {
+                jobsGroupAdd(groups, diagnostic)
+            }
+        }
+    }
+
+    // Documents whose project was rebuilt (or invalidated) since they were published are published again.
+    method followProjects() {
+        if (this.following) {
+            return
+        }
+        this.following = true
+        for (uri in this.watch.staleDocuments(this.dirty)) {
+            this.markDirty(uri)
+        }
+        this.following = false
+    }
+}

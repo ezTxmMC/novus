@@ -1,0 +1,54 @@
+package modules
+
+import base/platform
+import projects/manifest
+
+private final MODULES_CACHE_VARIABLE = "NOVUS_DEPS"
+private final MODULES_CACHE_BELOW_HOME = ".novus/deps"
+private final MODULES_SCHEME_MARK = "://"
+private final MODULES_SLASH = "/"
+private final MODULES_VERSION_MARK = "@"
+private final MODULES_MANIFEST_NAME = "project.nv"
+private final MODULES_LIBRARY_ENTRY = "lib.nv"
+private final MODULES_MAIN_ENTRY = "main.nv"
+
+// Where novusc keeps fetched modules: $NOVUS_DEPS, else ~/.novus/deps.
+method dependencyCacheDirectory(): string {
+    var configured = environmentValue(MODULES_CACHE_VARIABLE, "")
+    if (configured != "") {
+        return configured
+    }
+    return manifestJoinPath(homeDirectory(), MODULES_CACHE_BELOW_HOME)
+}
+
+// The cache folder name of a module: "https://host/x" gives "host/x", plain module paths stay as they are.
+method moduleKeyOf(string module): string {
+    var key = module
+    var scheme = key.indexOf(MODULES_SCHEME_MARK)
+    if (scheme >= 0) {
+        key = key.substring(scheme + MODULES_SCHEME_MARK.length(), key.length())
+    }
+    while (key.startsWith(MODULES_SLASH)) {
+        key = key.substring(1, key.length())
+    }
+    return key
+}
+
+method dependencyDirectoryOf(string cacheDir, string module, string version): string {
+    return manifestJoinPath(cacheDir, moduleKeyOf(module) + MODULES_VERSION_MARK + version)
+}
+
+// The file `import "<module>"` loads: the manifest's lib (else main), else lib.nv, else main.nv. Like novusc, the
+// answer is a path even when that file does not exist.
+method moduleEntryFile(TextSource source, string dir): string {
+    var manifestPath = manifestJoinPath(dir, MODULES_MANIFEST_NAME)
+    if (source.exists(manifestPath) && source.isDirectory(manifestPath) == false) {
+        var manifest = parseManifestText(manifestPath, source.textOf(manifestPath))
+        return manifestJoinPath(dir, manifest.entryFile())
+    }
+    var libraryPath = manifestJoinPath(dir, MODULES_LIBRARY_ENTRY)
+    if (source.exists(libraryPath)) {
+        return libraryPath
+    }
+    return manifestJoinPath(dir, MODULES_MAIN_ENTRY)
+}

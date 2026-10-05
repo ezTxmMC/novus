@@ -212,6 +212,7 @@ static size_t nv_gc_live = 0;     /* bytes in allocated cells after the last swe
 static size_t nv_gc_mapped = 0;   /* bytes of regions in use or spare */
 static size_t nv_gc_mapped_peak = 0;
 static long long nv_gc_count = 0;
+static volatile long long nv_gc_epoch = 0; /* bumped at the start of every collection, while the world is stopped: what was cached about the heap before it may be gone */
 static long long nv_gc_pause_total_us = 0;
 static long long nv_gc_pause_max_us = 0;
 
@@ -241,9 +242,26 @@ static int nv_gc_root_cap = 0;
 static int nv_gc_vt_bounds(void *vt, char **lo, char **hi);
 static void nv_gc_scan_fibers(void);
 
+static void nv_gc_print_stats(void);
+
+/* Ends the process. exit() would lock every open stream to flush it, and
+ * stdin is locked for as long as another thread is blocked reading it - a
+ * program whose reader thread waits for input could then never terminate.
+ * So the two output streams are flushed by hand, which is all a program
+ * relies on (files are closed by their writers), and the process ends
+ * without exit handlers. */
+static void nv_terminate(int code) {
+    if (nv_gc_stats_wanted) {
+        nv_gc_print_stats();
+    }
+    fflush(stdout);
+    fflush(stderr);
+    _exit(code);
+}
+
 static void nv_gc_fatal(const char *what) {
     fprintf(stderr, "error: %s\n", what);
-    exit(1);
+    nv_terminate(1);
 }
 
 static long long nv_gc_now_us(void) {
@@ -995,6 +1013,7 @@ static void nv_gc_collect_locked(void) {
     t0 = nv_gc_now_us();
     NV_MUTEX_LOCK(&nv_gc_thread_lock);
     nv_gc_stop_world(self);
+    nv_gc_epoch++;
     nv_gc_mark_roots(self);
     nv_gc_drain();
     nv_gc_sweep();
@@ -1130,7 +1149,6 @@ static void nv_gc_init(char *top) {
     env = getenv("NOVUS_GC_STATS"); /* 1: a summary at exit, 2: a line per collection, 3: survivors per class */
     if (env && env[0] && strcmp(env, "0") != 0) {
         nv_gc_stats_wanted = atoi(env) > 1 ? atoi(env) : 1;
-        atexit(nv_gc_print_stats);
     }
     nv_gc_threshold = nv_gc_min_bytes;
     nv_gc_signals_init();

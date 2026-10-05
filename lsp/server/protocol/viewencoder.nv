@@ -1,0 +1,75 @@
+package protocol
+
+import base/model
+import base/text
+
+// Encoding of hover, signature help, folding ranges, highlights and document links.
+private final PROTOCOL_MARKUP_MARKDOWN = "markdown"
+
+// Documentation is a markdown object only for clients that render markdown, else the same text as a string.
+method protocolMarkup(ClientInfo client, string documentation): object {
+    var clipped = protocolClip(documentation)
+    if (client.markdownDocumentation) {
+        return {"kind": PROTOCOL_MARKUP_MARKDOWN, "value": clipped}
+    }
+    return clipped
+}
+
+define class ViewEncoder {
+    PositionCodec codec
+    ClientInfo client
+
+    construct(PositionCodec codec, ClientInfo client) {
+        this.codec = codec
+        this.client = client
+    }
+
+    method hover(LineIndex lines, HoverInfo info): map<string, object> {
+        var encoded = {"contents": protocolMarkup(this.client, info.markdown)}
+        if (info.span.isEmpty() == false) {
+            encoded["range"] = encodeRange(this.codec, lines, info.span)
+        }
+        return encoded
+    }
+
+    method signatureHelp(SignatureHelp help): map<string, object> {
+        var signatures = []
+        for (signature in help.signatures) {
+            signatures.append(this.signature(signature))
+        }
+        return {"signatures": signatures, "activeSignature": help.activeSignature, "activeParameter": help.activeParameter}
+    }
+
+    method signature(SignatureInfo signature): map<string, object> {
+        var parameters = []
+        for (parameter in signature.parameters) {
+            parameters.append({"label": protocolClip(parameter)})
+        }
+        var encoded = {"label": protocolClip(signature.label), "parameters": parameters}
+        if (signature.documentation != "") {
+            encoded["documentation"] = protocolMarkup(this.client, signature.documentation)
+        }
+        return encoded
+    }
+
+    // kind is omitted when it is empty (no FoldingRangeKind).
+    method foldingRange(FoldingEntry entry): map<string, object> {
+        var encoded = {"startLine": entry.startLine, "endLine": entry.endLine}
+        if (entry.kind != "") {
+            encoded["kind"] = entry.kind
+        }
+        return encoded
+    }
+
+    method highlight(LineIndex lines, HighlightEntry entry): map<string, object> {
+        return {"range": encodeRange(this.codec, lines, entry.span), "kind": entry.kind}
+    }
+
+    method documentLink(LineIndex lines, DocumentLink link): map<string, object> {
+        var encoded = {"range": encodeRange(this.codec, lines, link.span)}
+        if (link.targetPath != "") {
+            encoded["target"] = filePathToUri(link.targetPath)
+        }
+        return encoded
+    }
+}

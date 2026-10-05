@@ -1,0 +1,49 @@
+package main
+
+import "novus/lsp/base/model"
+import "novus/lsp/base/platform"
+import "novus/lsp/base/text"
+import "novus/lsp/syntax/parsing"
+import "novus/lsp/services/pureline"
+
+private final CORPUS_ROOT = "../../.."
+private final CORPUS_MAX_DEPTH = 30
+private final CORPUS_STRIDE = 3
+
+// Every third .nv file of the repository, truncated and with a NUL byte inserted, goes through the editor parse and all rules:
+// the linter must neither abort nor report a span outside the text.
+method corpusLint(PurelineLinter linter, string filePath, string source, TextSource files): integer {
+    var document = documentFor(filePath, source)
+    var syntax = parseSourceText(document.filePath, source, editorParseOptions())
+    var outside = 0
+    for (diagnostic in linter.lint(document, syntax, files)) {
+        if (diagnostic.span.start < 0 || diagnostic.span.end > source.length() || diagnostic.span.end < diagnostic.span.start) {
+            println("SPAN OUTSIDE THE TEXT: " + filePath + " " + diagnostic.code)
+            outside = outside + 1
+        }
+    }
+    return outside
+}
+
+method runCorpusCases() {
+    println("--- corpus")
+    var linter = PurelineLinter(PurelineSettings())
+    var disk = DiskTextSource()
+    var outside = 0
+    var linted = 0
+    var index = 0
+    for (file in walkSourceFiles(disk, CORPUS_ROOT, [".nv"], CORPUS_MAX_DEPTH)) {
+        index = index + 1
+        if (index % CORPUS_STRIDE != 0 || textBaseName(file) == "project.nv") {
+            continue
+        }
+        var source = readTextFile(file)
+        var cut = source.length() * 2 / 3
+        outside = outside + corpusLint(linter, file, source, disk)
+        outside = outside + corpusLint(linter, file, source.substring(0, cut), disk)
+        outside = outside + corpusLint(linter, file, source.substring(0, cut) + chr(0) + source.substring(cut, source.length()), disk)
+        linted = linted + 1
+    }
+    println("every sampled file was linted without a runtime error and without a span outside the text: " + (outside == 0))
+    println("the sample is not empty: " + (linted > 50))
+}

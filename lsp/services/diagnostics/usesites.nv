@@ -1,0 +1,174 @@
+package diagnostics
+
+import base/maybe
+import projects/workspace
+import syntax/lexing
+import syntax/outline
+
+private final DIAGNOSTICS_BRACE_DISTANCE = 2
+
+// Words that start a statement or an operator and are plain identifiers at token level (NG37, grammar section 1.2).
+private final DIAGNOSTICS_OPERATOR_WORDS = { "sync": true, "await": true, "thread": true, "virtual": true, "async": true }
+
+// Words of other languages: Novus has neither, and the rule names them (5.9).
+private final DIAGNOSTICS_FOREIGN_WORDS = { "null": true, "new": true }
+
+// A variable use reads best in a clean operand position; every other position (a declaration, a type, an object literal
+// key, a generic argument) is left alone, because the rules promise no false positives (5.9, V126).
+private final DIAGNOSTICS_NAME_BEFORE = { "(": true, ",": true, "=": true, "[": true, "!": true, "+": true, "-": true, "*": true,
+    "/": true, "%": true, "==": true, "!=": true, "<=": true, ">=": true, "&&": true, "||": true }
+private final DIAGNOSTICS_NAME_BEFORE_WORDS = { "return": true, "println": true, "print": true, "eprintln": true, "in": true }
+private final DIAGNOSTICS_NAME_AFTER = { ")": true, ",": true, "]": true, "[": true, "+": true, "-": true, "*": true, "/": true,
+    "%": true, "==": true, "!=": true, "<=": true, ">=": true, "&&": true, "||": true, "}": true, ";": true }
+
+// Reads the uses of one file from its editor tokens. A body is the only place where uses are looked at: globals hold
+// literals, and an interpolation inside a string is not tokenised.
+define class DiagnosticsUseScanner {
+    array<Token> tokens
+
+    construct(array<Token> tokens) {
+        this.tokens = tokens
+    }
+
+    method usesOfFile(SourceFile syntax): array<DiagnosticsUse> {
+        var uses = []
+        for (decl in syntax.decls) {
+            if (decl.kind == DeclKind.Method && decl.bodySpan.start >= 0) {
+                this.collect(decl, nothing(), uses)
+            }
+            for (member in decl.members) {
+                if (member.isCallable() && member.bodySpan.start >= 0) {
+                    this.collect(member, decl, uses)
+                }
+            }
+        }
+        return uses
+    }
+
+    method collect(Decl callable, Decl owner, array<DiagnosticsUse> uses) {
+        var index = this.firstTokenAtOrAfter(callable.bodySpan.start)
+        while (index < this.tokens.length() && this.tokens[index].start < callable.bodySpan.end) {
+            var use = this.useAt(index, callable)
+            if (isSome(use)) {
+                use.owner = owner
+                uses.append(use)
+            }
+            index = index + 1
+        }
+    }
+
+    method firstTokenAtOrAfter(integer offset): integer {
+        var low = 0
+        var high = this.tokens.length()
+        while (low < high) {
+            var middle = (low + high) / 2
+            if (this.tokens[middle].start < offset) {
+                low = middle + 1
+            }
+            if (this.tokens[middle].start >= offset) {
+                high = middle
+            }
+        }
+        return low
+    }
+
+    method useAt(integer index, Decl callable): DiagnosticsUse {
+        var token = this.tokens[index]
+        if (token.kind != TokenKind.Ident || index == 0 || index + 1 >= this.tokens.length()) {
+            return nothing()
+        }
+        var before = this.tokens[index - 1]
+        var after = this.tokens[index + 1]
+        if (before.isPunct(".") || before.isPunct("@") || DIAGNOSTICS_OPERATOR_WORDS.has(token.text)) {
+            return nothing()
+        }
+        if (DIAGNOSTICS_FOREIGN_WORDS.has(token.text) && before.isKeyword("var") == false && after.isPunct("=") == false) {
+            return DiagnosticsUse(DIAGNOSTICS_USE_NAME, token, index, DIAGNOSTICS_NO_ARITY, callable)
+        }
+        if (after.isPunct("=") && this.startsStatement(index)) {
+            return DiagnosticsUse(DIAGNOSTICS_USE_NAME, token, index, DIAGNOSTICS_NO_ARITY, callable)
+        }
+        if (after.isPunct("(")) {
+            return DiagnosticsUse(DIAGNOSTICS_USE_CALL, token, index, this.argumentCount(index + 1), callable)
+        }
+        if (after.isPunct(".")) {
+            return DiagnosticsUse(DIAGNOSTICS_USE_QUALIFIER, token, index, DIAGNOSTICS_NO_ARITY, callable)
+        }
+        if (this.isOperandBefore(before) && this.isOperandAfter(after)) {
+            return DiagnosticsUse(DIAGNOSTICS_USE_NAME, token, index, DIAGNOSTICS_NO_ARITY, callable)
+        }
+        return nothing()
+    }
+
+    // The target of an assignment: the identifier begins a statement, so it is no typed declaration (`Type name =`), no key of
+    // an object literal (`Point{x = 0}`) and no value in the middle of an expression.
+    method startsStatement(integer index): bool {
+        var before = this.tokens[index - 1]
+        if (before.isPunct("}") || before.isPunct(";")) {
+            return true
+        }
+        if (before.isPunct("{")) {
+            return this.opensBlock(index)
+        }
+        if (this.tokens[index].firstOnLine == false) {
+            return false
+        }
+        return before.isPunct(")") || before.isPunct("]") || before.kind == TokenKind.Integer || before.kind == TokenKind.Float || before.kind == TokenKind.String
+    }
+
+    // The word before the `{` tells a block (`sync (x) {`, a bare `{`) from an object literal (`Point{x = 0}`).
+    method opensBlock(integer index): bool {
+        var beforeBrace = index - DIAGNOSTICS_BRACE_DISTANCE
+        return beforeBrace < 0 || this.tokens[beforeBrace].kind != TokenKind.Ident || this.tokens[beforeBrace].text == "sync"
+    }
+
+    method isOperandBefore(Token before): bool {
+        if (before.kind == TokenKind.Punct) {
+            return DIAGNOSTICS_NAME_BEFORE.has(before.value)
+        }
+        return before.kind == TokenKind.Keyword && DIAGNOSTICS_NAME_BEFORE_WORDS.has(before.text)
+    }
+
+    method isOperandAfter(Token after): bool {
+        return after.kind == TokenKind.Punct && DIAGNOSTICS_NAME_AFTER.has(after.value)
+    }
+
+    // The arguments of the call whose `(` is at `open`: 0 for `()`, else the depth-0 commas plus one; -1 when the list never closes.
+    method argumentCount(integer open): integer {
+        var depth = 0
+        var commas = 0
+        var index = open
+        while (index < this.tokens.length()) {
+            var token = this.tokens[index]
+            if (token.kind == TokenKind.Punct && this.isOpener(token.value)) {
+                depth = depth + 1
+            }
+            if (token.kind == TokenKind.Punct && this.isCloser(token.value)) {
+                depth = depth - 1
+                if (depth == 0) {
+                    return this.countOf(open, index, commas)
+                }
+            }
+            if (depth == 1 && token.isPunct(",")) {
+                commas = commas + 1
+            }
+            index = index + 1
+        }
+        return DIAGNOSTICS_NO_ARITY
+    }
+
+    method countOf(integer open, integer close, integer commas): integer {
+        if (close == open + 1) {
+            return 0
+        }
+        return commas + 1
+    }
+
+    method isOpener(string punct): bool {
+        return punct == "(" || punct == "[" || punct == "{"
+    }
+
+    method isCloser(string punct): bool {
+        return punct == ")" || punct == "]" || punct == "}"
+    }
+}

@@ -1,0 +1,101 @@
+package lexing
+
+import base/maybe
+import base/text
+
+define class LexIssue {
+    Span span
+    string code
+    string message
+    bool warning
+
+    construct(Span span, string code, string message, bool warning) {
+        this.span = span
+        this.code = code
+        this.message = message
+        this.warning = warning
+    }
+}
+
+define class LexResult {
+    array<Token> tokens
+    array<Token> comments
+    array<LexIssue> issues
+
+    construct(array<Token> tokens, array<Token> comments, array<LexIssue> issues) {
+        this.tokens = tokens
+        this.comments = comments
+        this.issues = issues
+    }
+
+    // The token containing the offset, else the next one; the EndOfFile token when there is none.
+    method indexAt(integer offset): integer {
+        var low = 0
+        var high = this.tokens.length()
+        while (low < high) {
+            var middle = (low + high) / 2
+            if (this.tokens[middle].end > offset) {
+                high = middle
+                continue
+            }
+            low = middle + 1
+        }
+        return this.clampToLast(low)
+    }
+
+    method clampToLast(integer index): integer {
+        if (index < this.tokens.length()) {
+            return index
+        }
+        if (this.tokens.length() == 0) {
+            return 0
+        }
+        return this.tokens.length() - 1
+    }
+
+    // The last token that starts before the offset, -1 when there is none.
+    method indexBefore(integer offset): integer {
+        return lexingFirstStartAtOrAfter(this.tokens, offset) - 1
+    }
+
+    // The comment that ends last at or before the offset, when only whitespace separates it from the offset.
+    method commentEndingBefore(integer offset): Token {
+        var low = 0
+        var high = this.comments.length()
+        while (low < high) {
+            var middle = (low + high) / 2
+            if (this.comments[middle].end > offset) {
+                high = middle
+                continue
+            }
+            low = middle + 1
+        }
+        if (low == 0) {
+            return nothing()
+        }
+        return this.commentIfOnlyBlanksFollow(this.comments[low - 1], offset)
+    }
+
+    method commentIfOnlyBlanksFollow(Token comment, integer offset): Token {
+        var next = lexingFirstStartAtOrAfter(this.tokens, comment.end)
+        if (next < this.tokens.length() && this.tokens[next].start < offset) {
+            return nothing()
+        }
+        return comment
+    }
+}
+
+// Index of the first token whose start is >= offset (tokens are ascending), the token count when none.
+method lexingFirstStartAtOrAfter(array<Token> tokens, integer offset): integer {
+    var low = 0
+    var high = tokens.length()
+    while (low < high) {
+        var middle = (low + high) / 2
+        if (tokens[middle].start >= offset) {
+            high = middle
+            continue
+        }
+        low = middle + 1
+    }
+    return low
+}

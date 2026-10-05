@@ -1,0 +1,124 @@
+package main
+
+import "novus/lsp/base/maybe"
+import "novus/lsp/base/model"
+import "novus/lsp/base/platform"
+import "novus/lsp/base/text"
+import "novus/lsp/features/actions"
+import "novus/lsp/projects/stdlib"
+import "novus/lsp/projects/workspace"
+import "novus/lsp/services/diagnostics"
+
+// A workspace over files in memory (absolute roots, NG35), the diagnostics of the package under it and the engine under test.
+define class AcWorld {
+    FileCache cache
+    Workspace space
+    Settings settings
+    OwnDiagnostics own
+    ManifestDiagnostics manifest
+    ActionEngine engine
+
+    construct(map<string, string> files) {
+        this.cache = FileCache(MemoryTextSource(files))
+        this.space = Workspace(this.cache, standardLibrary())
+        this.settings = Settings()
+        this.own = OwnDiagnostics(this.space, this.settings)
+        this.manifest = ManifestDiagnostics(this.space)
+        this.engine = ActionEngine(this.settings)
+    }
+
+    method document(string filePath): Document {
+        return Document(filePathToUri(filePath), "novus", 1, this.cache.textOf(filePath))
+    }
+
+    // The diagnostics that the server would publish for the file: the own layer, or the manifest layer for a project.nv.
+    method diagnosticsOf(Document document): array<Diagnostic> {
+        if (document.fileKind() == "manifest") {
+            return this.manifest.produce(document)
+        }
+        return this.own.produce(document)
+    }
+
+    // The actions for the whole file, with every diagnostic of the file in the request.
+    method actionsFor(string filePath): array<CodeActionItem> {
+        var document = this.document(filePath)
+        var context = this.space.contextFor(document)
+        var everything = Span(0, document.text.length())
+        return this.engine.actionsFor(context, everything, this.diagnosticsOf(document))
+    }
+
+    method actionsWith(Document document, Span range, array<Diagnostic> diagnostics): array<CodeActionItem> {
+        var context = this.space.contextFor(document)
+        return this.engine.actionsFor(context, range, diagnostics)
+    }
+}
+
+// One action as the test reads it: title, kind, flags, the command, and the text that its edits make of the file.
+method acDescribe(Document document, CodeActionItem item): array<string> {
+    var lines = ["action '" + item.title + "' kind=" + item.kind + " preferred=" + item.preferred + " diagnostics=" + item.diagnostics.length()]
+    if (item.command != "") {
+        lines.append("  command " + item.command + " " + item.commandArguments.join(","))
+    }
+    for (fileEdit in item.edits) {
+        lines.append("  edits " + fileEdit.filePath + ": " + fileEdit.edits.length())
+        for (edit in fileEdit.edits) {
+            lines.append("  edit " + edit.span.start + "-" + edit.span.end + " -> " + acVisible(edit.newText))
+        }
+        lines.append("  result:")
+        for (line in acApply(document.text, fileEdit.edits).split("\n")) {
+            lines.append("    | " + acVisible(line))
+        }
+    }
+    return lines
+}
+
+// The text after the edits, applied from the back so that no offset moves.
+method acApply(string text, array<TextEdit> edits): string {
+    var result = text
+    var order = {}
+    for (edit in edits) {
+        order[acPad(edit.span.start) + acPad(order.length())] = edit
+    }
+    var keys = order.keys()
+    var index = keys.length() - 1
+    while (index >= 0) {
+        var edit = order[keys[index]]
+        result = result.substring(0, edit.span.start) + edit.newText + result.substring(edit.span.end, result.length())
+        index = index - 1
+    }
+    return result
+}
+
+method acPad(integer number): string {
+    var digits = "" + number
+    while (digits.length() < 8) {
+        digits = "0" + digits
+    }
+    return digits
+}
+
+method acVisible(string text): string {
+    return text.replace("\r", "<CR>").replace("\n", "<LF>")
+}
+
+method acShow(string label, Document document, array<CodeActionItem> items) {
+    println(label)
+    if (items.length() == 0) {
+        println("  (none)")
+    }
+    for (item in items) {
+        for (line in acDescribe(document, item)) {
+            println("  " + line)
+        }
+    }
+}
+
+method acCheck(string label, string actual, string expected) {
+    if (actual == expected) {
+        println("ok   " + label)
+        return
+    }
+    println("FAIL " + label)
+    println("  expected: " + expected)
+    println("  actual:   " + actual)
+}

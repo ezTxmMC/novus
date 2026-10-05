@@ -1,0 +1,286 @@
+package main
+
+// The programs of the rule cases. Every fixture is a complete Novus program under /proj; `expected` is what the real
+// compiler does with it: `run:a|b` (it runs and prints the lines a and b), `error:text` (it rejects it with a message
+// that contains text) or `ok`. verify_compiler.sh dumps every fixture to disk and compares with build/novusc.
+// `%main%` stands for the words `method main` at the start of a line: the corpus test would take this file for a
+// program of its own otherwise (it looks for that text at the start of a line, strings included).
+private final SEM_MAIN_MARK = "%main%"
+
+define class SemFixture {
+    string name
+    map<string, string> files
+    string expected
+
+    construct(string name, map<string, string> files, string expected) {
+        this.name = name
+        this.files = {}
+        for (filePath in files.keys()) {
+            this.files[filePath] = files[filePath].replace(SEM_MAIN_MARK, "method main")
+        }
+        this.expected = expected
+    }
+}
+
+method semManifest(): string {
+    return "project \"p\"\nmain \"main.nv\"\n"
+}
+
+method fixtureOwnPackage(): SemFixture {
+    return SemFixture("own-package-wins", {
+        "/proj/project.nv": semManifest(),
+        "/proj/main.nv": "import geo
+
+method hello(): string {
+    return \"root\"
+}
+
+%main%() {
+    println(geo.run())
+    println(hello())
+}
+",
+        "/proj/geo/a.nv": "package geo
+
+method hello(): string {
+    return \"pkg\"
+}
+
+method run(): string {
+    return hello()
+}
+"
+    }, "run:pkg|root")
+}
+
+method fixtureRootWins(): SemFixture {
+    return SemFixture("root-wins-over-package-function", {
+        "/proj/project.nv": semManifest(),
+        "/proj/main.nv": "import geo
+import util
+
+method area(float r): string {
+    return \"root\"
+}
+
+%main%() {
+    println(util.run())
+    println(geo.area(1.0))
+}
+",
+        "/proj/geo/a.nv": "package geo
+
+method area(float r): string {
+    return \"geo\"
+}
+",
+        "/proj/util/b.nv": "package util
+
+method run(): string {
+    return area(2.0)
+}
+"
+    }, "run:root|geo")
+}
+
+method fixtureUniquePackageFunction(): SemFixture {
+    return SemFixture("unique-package-function", {
+        "/proj/project.nv": semManifest(),
+        "/proj/main.nv": "import geo
+
+%main%() {
+    println(unique())
+}
+",
+        "/proj/geo/a.nv": "package geo
+
+method unique(): string {
+    return \"geo\"
+}
+"
+    }, "run:geo")
+}
+
+method ambiguousFiles(string body): map<string, string> {
+    return {
+        "/proj/project.nv": semManifest(),
+        "/proj/main.nv": "import geo
+import draw
+
+%main%() {
+" + body + "
+}
+",
+        "/proj/geo/a.nv": "package geo
+
+method shared(): string {
+    return \"geo\"
+}
+BOTH = \"geo\"
+",
+        "/proj/draw/b.nv": "package draw
+
+method shared(): string {
+    return \"draw\"
+}
+BOTH = \"draw\"
+"
+    }
+}
+
+method fixtureAmbiguousCall(): SemFixture {
+    return SemFixture("ambiguous-package-function", ambiguousFiles("    println(shared())"), "error:defined in more than one package")
+}
+
+method fixtureQualifiedCall(): SemFixture {
+    return SemFixture("qualified-resolves-ambiguity", ambiguousFiles("    println(geo.shared())
+    println(draw.shared())"), "run:geo|draw")
+}
+
+method fixtureAmbiguousGlobal(): SemFixture {
+    return SemFixture("ambiguous-package-global", ambiguousFiles("    println(BOTH)"), "error:defined in more than one package")
+}
+
+method fixtureClassMethodWins(): SemFixture {
+    return SemFixture("class-method-wins-over-package-function", {
+        "/proj/project.nv": semManifest(),
+        "/proj/main.nv": "import geo
+
+define class Tool {
+    method helper(): string {
+        return \"method\"
+    }
+
+    method run(): string {
+        return helper()
+    }
+}
+
+%main%() {
+    println(Tool().run())
+}
+",
+        "/proj/geo/a.nv": "package geo
+
+method helper(): string {
+    return \"pkg\"
+}
+"
+    }, "run:method")
+}
+
+method fixtureClassBeatsFunction(): SemFixture {
+    return SemFixture("class-beats-root-function", {
+        "/proj/project.nv": semManifest(),
+        "/proj/main.nv": "define class Thing {
+    integer v
+
+    construct(integer v) {
+        this.v = v
+    }
+}
+
+method Thing(integer v): string {
+    return \"function\"
+}
+
+%main%() {
+    println(typeOf(Thing(1)))
+}
+"
+    }, "run:Thing")
+}
+
+method fixtureBuiltins(): SemFixture {
+    return SemFixture("core-builtin-beats-user-function", {
+        "/proj/project.nv": semManifest(),
+        "/proj/main.nv": "method parseInt(string s): integer {
+    return 99
+}
+
+method env(string name): string {
+    return \"mine\"
+}
+
+%main%() {
+    println(parseInt(\"5\"))
+    println(env(\"HOME\"))
+}
+"
+    }, "run:5|mine")
+}
+
+method fixtureDuplicateClass(): SemFixture {
+    return SemFixture("duplicate-class-definition", {
+        "/proj/project.nv": semManifest(),
+        "/proj/main.nv": "import geo
+
+%main%() {
+    println(\"x\")
+}
+",
+        "/proj/geo/a.nv": "package geo
+
+define class Circle {
+    integer r
+}
+",
+        "/proj/geo/b.nv": "package geo
+
+define class Circle {
+    integer d
+}
+"
+    }, "error:duplicate definition of 'Circle'")
+}
+
+method fixtureVariables(): SemFixture {
+    return SemFixture("variables-in-loader-order", {
+        "/proj/project.nv": semManifest(),
+        "/proj/main.nv": "import geo
+
+LEVEL = \"root\"
+
+define class Box {
+    string LEVEL
+    string ONLY
+
+    construct() {
+        this.LEVEL = \"field\"
+        this.ONLY = \"field\"
+    }
+
+    method level(): string {
+        return LEVEL
+    }
+
+    method only(): string {
+        return ONLY
+    }
+}
+
+method shadow(): string {
+    var LEVEL = \"local\"
+    return LEVEL
+}
+
+%main%() {
+    var b = Box()
+    println(b.level())
+    println(b.only())
+    println(shadow())
+    println(ONLY)
+    println(geo.show())
+}
+",
+        "/proj/geo/a.nv": "package geo
+
+LEVEL = \"pkg\"
+ONLY = \"geo-only\"
+
+method show(): string {
+    return LEVEL
+}
+"
+    }, "run:root|field|local|geo-only|pkg")
+}

@@ -1,0 +1,189 @@
+package scanning
+
+import base/text
+import syntax/lexing
+import syntax/outline
+
+// The locals of one block while it is open.
+define class ScanningBlock {
+    map<string, bool> names
+    array<Local> locals
+
+    construct() {
+        this.names = {}
+        this.locals = []
+    }
+}
+
+// The stack of open blocks and the list of every local found so far.
+define class ScanningScopes {
+    array<ScanningBlock> blocks
+    array<Local> found
+
+    construct() {
+        this.blocks = []
+        this.found = []
+    }
+
+    method push() {
+        this.blocks.append(ScanningBlock())
+    }
+
+    // A local ends with the block that declared it; `closeEnd` is the end offset of the closing brace.
+    method pop(integer closeEnd) {
+        if (this.blocks.length() == 0) {
+            return
+        }
+        var block = this.blocks.pop()
+        for (local in block.locals) {
+            local.scope.end = closeEnd
+        }
+    }
+
+    // Declares a local in the innermost block; a name that block already has is an assignment and adds nothing.
+    method declare(string name, Span nameSpan, string typeText, string origin, Span initializer, integer declEnd): bool {
+        if (this.blocks.length() == 0) {
+            return false
+        }
+        var block = this.blocks[this.blocks.length() - 1]
+        if (block.names.has(name)) {
+            return false
+        }
+        var local = Local(name, nameSpan, origin, Span(declEnd, -1))
+        local.typeText = typeText
+        local.initializer = initializer
+        block.names[name] = true
+        block.locals.append(local)
+        this.found.append(local)
+        return true
+    }
+
+    method closeAll(integer closeEnd) {
+        while (this.blocks.length() > 0) {
+            this.pop(closeEnd)
+        }
+    }
+}
+
+// What one scan of a body found: the locals in declaration order and the statement-level problems.
+define class ScanningBodyReport {
+    array<Local> locals
+    array<ScanningProblem> problems
+
+    construct(array<Local> locals, array<ScanningProblem> problems) {
+        this.locals = locals
+        this.problems = problems
+    }
+}
+
+// Scans the body of a callable (parameters, `var`, typed declarations, loop variables) and checks its statements.
+method scanningReadBody(Decl callable, array<Token> tokens): ScanningBodyReport {
+    var body = callable.bodySpan
+    if (body.start < 0 || tokens.length() == 0) {
+        return ScanningBodyReport([], [])
+    }
+    var first = scanningFirstTokenAtOrAfter(tokens, body.start)
+    var last = scanningFirstTokenAtOrAfter(tokens, body.end)
+    var closed = scanningClosesBody(tokens, first, last)
+    var inner = scanningInnerEnd(last, closed)
+    var problems = []
+    scanningCompoundProblems(tokens, first, inner, problems)
+    var scopes = ScanningScopes()
+    scopes.push()
+    scanningDeclareParameters(scopes, callable)
+    var walker = ScanningWalker(ScanningCursor(tokens, inner), problems, scopes)
+    var scopeEnd = scanningScopeEnd(tokens, last, body, closed)
+    walker.unclosedEnd = scopeEnd
+    walker.pos = scanningInnerStart(tokens, first)
+    while (walker.cursor.has(walker.pos)) {
+        walker.statement()
+    }
+    scopes.closeAll(scopeEnd)
+    return ScanningBodyReport(scopes.found, problems)
+}
+
+method scanCallableLocals(Decl callable, array<Token> tokens): array<Local> {
+    return scanningReadBody(callable, tokens).locals
+}
+
+// The locals whose scope contains the offset; an inner declaration hides an outer one of the same name.
+method localsVisibleAt(Decl callable, integer offset): array<Local> {
+    var visible = []
+    var slotOfName = {}
+    for (local in callable.locals) {
+        if (local.scope.start > offset || offset >= local.scope.end) {
+            continue
+        }
+        if (slotOfName.has(local.name)) {
+            visible[slotOfName[local.name]] = local
+            continue
+        }
+        slotOfName[local.name] = visible.length()
+        visible.append(local)
+    }
+    return visible
+}
+
+// Index of the first token that starts at or after the offset (tokens are ascending).
+method scanningFirstTokenAtOrAfter(array<Token> tokens, integer offset): integer {
+    var low = 0
+    var high = tokens.length()
+    while (low < high) {
+        var middle = (low + high) / 2
+        if (tokens[middle].start >= offset) {
+            high = middle
+            continue
+        }
+        low = middle + 1
+    }
+    return low
+}
+
+// True when the last token before `last` is the `}` that closes the body's own `{` (the braces balance there).
+method scanningClosesBody(array<Token> tokens, integer first, integer last): bool {
+    if (last <= first + 1 || tokens[last - 1].isPunct("}") == false) {
+        return false
+    }
+    var depth = 0
+    var index = first
+    while (index < last) {
+        if (tokens[index].isPunct("{")) {
+            depth = depth + 1
+        }
+        if (tokens[index].isPunct("}")) {
+            depth = depth - 1
+        }
+        index = index + 1
+    }
+    return depth == 0
+}
+
+// Exclusive end of the statements: the closing brace of the body is not part of them.
+method scanningInnerEnd(integer last, bool closed): integer {
+    if (closed) {
+        return last - 1
+    }
+    return last
+}
+
+// Where the locals of the outermost block end. A body that was never closed runs to the end of the text, and the
+// locals stay visible one offset further, at the position of the cursor typing at the very end.
+method scanningScopeEnd(array<Token> tokens, integer last, Span body, bool closed): integer {
+    if (closed == false && last >= tokens.length() - 1) {
+        return body.end + 1
+    }
+    return body.end
+}
+
+method scanningInnerStart(array<Token> tokens, integer first): integer {
+    if (first < tokens.length() && tokens[first].isPunct("{")) {
+        return first + 1
+    }
+    return first
+}
+
+method scanningDeclareParameters(ScanningScopes scopes, Decl callable) {
+    for (param in callable.params) {
+        scopes.declare(param.name, param.nameSpan, param.typeText, "parameter", Span(-1, -1), callable.bodySpan.start)
+    }
+}

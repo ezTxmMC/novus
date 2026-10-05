@@ -1,0 +1,5 @@
+project "demo"
+version "0.1.0"
+main "main.nv"
+
+require "github.com/acme/geo" "v1.0.0"

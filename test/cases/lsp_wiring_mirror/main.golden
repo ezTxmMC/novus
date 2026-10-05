@@ -1,0 +1,16 @@
+--- before initialize: nothing
+
+--- a check worker fails
+Content-Length: 115
+
+{"jsonrpc":"2.0","method":"window/logMessage","params":{"message":"novus: the check worker failed: boom","type":1}}
+--- the same kind again: nothing
+
+--- another kind
+Content-Length: 119
+
+{"jsonrpc":"2.0","method":"window/logMessage","params":{"message":"novus: the fetch worker failed: no space","type":1}}
+--- other envelopes are ignored
+
+--- after shutdown: nothing
+

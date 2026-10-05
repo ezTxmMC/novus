@@ -1,0 +1,48 @@
+package main
+
+import "novus/lsp/base/maybe"
+import "novus/lsp/base/model"
+import "novus/lsp/base/text"
+import @support
+
+method runDefinitionCases() {
+    println("== duplicate-definition: the second class or enum of a name, with the first related")
+    var world = DgWorld({
+        "/p/project.nv": "project \"p\"\n",
+        "/p/main.nv": "import geo\n\ndefine class Box {\n}\n\ndefine enum Color {\n    Red, Green;\n}\n\nmethod main() {\n    return\n}\n",
+        "/p/geo/one.nv": "package geo\n\ndefine class Box {\n}\n\ndefine class Color {\n}\n\ndefine interface Shape {\n    area(): float\n}\n",
+        "/p/geo/two.nv": "package geo\n\ndefine interface Box {\n    area(): float\n}\n"
+    })
+    dgShow("main.nv", world.ownOf("/p/main.nv"))
+    dgShow("geo/one.nv", world.ownOf("/p/geo/one.nv"))
+    dgShow("geo/two.nv (an interface of the same name is not reported)", world.ownOf("/p/geo/two.nv"))
+    runInterfaceCases()
+    runCollisionCases()
+}
+
+method runInterfaceCases() {
+    println("== missing-interface-method: by name, through the base chain, abstract methods too")
+    var world = DgWorld({
+        "/p/project.nv": "project \"p\"\n",
+        "/p/main.nv": "define interface Shape {\n    area(): float\n    name(): string\n}\n\ndefine class Square based Shape {\n    method area(): float {\n        return 1.0\n    }\n}\n\ndefine class Named {\n    method name(): string {\n        return \"n\"\n    }\n}\n\ndefine class Circle based Named {\n}\n\ndefine abstract Base {\n    abstract method run()\n    method helper() {\n        return\n    }\n}\n\ndefine class Impl based Base {\n    method other() {\n        return\n    }\n}\n\ndefine class Good based Base {\n    method run() {\n        return\n    }\n}\n\ndefine abstract Open based Shape {\n}\n\nmethod main() {\n    return\n}\n"
+    })
+    dgShow("main.nv", world.ownOf("/p/main.nv"))
+    var chain = DgWorld({
+        "/p/project.nv": "project \"p\"\n",
+        "/p/main.nv": "define interface Shape {\n    area(): float\n}\n\ndefine class Base {\n    method area(): float {\n        return 1.0\n    }\n}\n\ndefine class Derived based Base {\n}\n\ndefine class Leaf based Shape {\n    method area(): float {\n        return 2.0\n    }\n}\n\nmethod main() {\n    return\n}\n"
+    })
+    dgShow("a method found in a base class counts; an unknown base is not judged", chain.ownOf("/p/main.nv"))
+}
+
+method runCollisionCases() {
+    println("== qualifier-collision: two folders with one last segment")
+    var world = DgWorld({
+        "/p/project.nv": "project \"p\"\n",
+        "/p/main.nv": "import a/shapes\nimport b/shapes\n\nmethod main() {\n    return\n}\n",
+        "/p/a/shapes/one.nv": "package shapes\n\nmethod first(): integer {\n    return 1\n}\n",
+        "/p/b/shapes/two.nv": "method second(): integer {\n    return 2\n}\n"
+    })
+    dgShow("a/shapes/one.nv", world.ownOf("/p/a/shapes/one.nv"))
+    dgShow("b/shapes/two.nv (no package line: the finding is at offset 0)", world.ownOf("/p/b/shapes/two.nv"))
+    dgShow("main.nv", world.ownOf("/p/main.nv"))
+}

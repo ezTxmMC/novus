@@ -1,0 +1,30 @@
+package main
+
+import strings
+import "novus/lsp/syntax/lexing"
+import "novus/lsp/syntax/scanning"
+
+private final PREVIEW_LENGTH = 24
+
+method stringToken(string text): Token {
+    return Token(TokenKind.String, text, 0, text.length(), 0, 0)
+}
+
+method checkTokenDescriptions() {
+    expectEqual("describe/short-token", "'while'", scanningDescribeToken(stringToken("while")))
+    expectEqual("describe/newline-is-escaped", "'a\\nb'", scanningDescribeToken(stringToken("a" + chr(10) + "b")))
+    expectEqual("describe/carriage-return-is-escaped", "'a\\rb'", scanningDescribeToken(stringToken("a" + chr(13) + "b")))
+    expectEqual("describe/exactly-the-preview-length-is-kept", "'" + strings.repeat("x", PREVIEW_LENGTH) + "'", scanningDescribeToken(stringToken(strings.repeat("x", PREVIEW_LENGTH))))
+    expectEqual("describe/longer-literal-is-cut", "'" + strings.repeat("x", PREVIEW_LENGTH) + "...'", scanningDescribeToken(stringToken(strings.repeat("x", PREVIEW_LENGTH + 5))))
+    var accents = scanningDescribeToken(stringToken(strings.repeat("é", PREVIEW_LENGTH)))
+    expectEqual("describe/cut-never-splits-a-multi-byte-character", "true", "" + (accents.endsWith("...'") && accents.length() <= PREVIEW_LENGTH + 5))
+    expectEqual("describe/continuation-bytes-only-still-terminate", "true", "" + scanningDescribeToken(stringToken(strings.repeat(chr(128), 40))).endsWith("...'"))
+}
+
+method checkDefineKinds() {
+    var kinds = lexText("define class\ndefine text\ndefine")
+    var cursor = ScanningCursor(kinds.tokens, kinds.tokens.length())
+    expectTrue("define/kind-word-follows", scanningIsDefineKind(cursor, 0))
+    expectTrue("define/other-name-is-a-local-type", scanningIsDefineKind(cursor, 2) == false)
+    expectTrue("define/alone-is-not-a-start", scanningIsDefineKind(cursor, 4) == false)
+}

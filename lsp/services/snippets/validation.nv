@@ -1,0 +1,193 @@
+package snippets
+
+// Reader of Novus Snippet Notation (DESIGN 7.2). It builds one tree that the validator and both
+// writers (notation.nv) consume, so the notation has exactly one parser.
+
+private final SNIPPETS_MAX_NESTING = 3
+private final SNIPPETS_MAX_NUMBER_DIGITS = 4
+private final SNIPPETS_MIN_CHOICE_OPTIONS = 2
+private final SNIPPETS_ESCAPE_WIDTH = 2
+private final SNIPPETS_OPEN_WIDTH = 2
+private final SNIPPETS_CHOICE_CLOSE_WIDTH = 2
+
+define class SnippetsReader {
+    string source
+    integer pos
+    string error
+
+    construct(string source) {
+        this.source = source
+        this.pos = 0
+        this.error = ""
+    }
+
+    method read(): array<SnippetsNode> {
+        return this.readSequence(0)
+    }
+
+    method reject(string message) {
+        if (this.error != "") {
+            return
+        }
+        this.error = message + " at offset " + this.pos
+    }
+
+    method peek(integer at): string {
+        if (at >= this.source.length()) {
+            return ""
+        }
+        return this.source.charAt(at)
+    }
+
+    // A "}" ends the placeholder it is read in, unless a "{" of the code itself is still open.
+    method readSequence(integer level): array<SnippetsNode> {
+        var nodes = []
+        var open = 0
+        var runStart = this.pos
+        while (this.pos < this.source.length() && this.error == "") {
+            var current = this.source.charAt(this.pos)
+            if (current == "#") {
+                this.flushText(nodes, runStart, this.pos)
+                this.readHash(nodes, level)
+                runStart = this.pos
+                continue
+            }
+            if (current == "$") {
+                this.reject("a literal '$' must be written #d")
+                break
+            }
+            if (current == "}" && level > 0 && open == 0) {
+                break
+            }
+            open = open + snippetsBraceDelta(current, level)
+            this.pos = this.pos + 1
+        }
+        this.flushText(nodes, runStart, this.pos)
+        return nodes
+    }
+
+    method flushText(array<SnippetsNode> nodes, integer from, integer to) {
+        if (to > from) {
+            nodes.append(SnippetsNode(SNIPPETS_NODE_TEXT, this.source.substring(from, to), 0))
+        }
+    }
+
+    method readHash(array<SnippetsNode> nodes, integer level) {
+        var next = this.peek(this.pos + 1)
+        if (next == "#" || next == "d") {
+            var literal = "#"
+            if (next == "d") {
+                literal = "$"
+            }
+            nodes.append(SnippetsNode(SNIPPETS_NODE_TEXT, literal, 0))
+            this.pos = this.pos + SNIPPETS_ESCAPE_WIDTH
+            return
+        }
+        if (snippetsIsDigit(next)) {
+            this.pos = this.pos + 1
+            nodes.append(SnippetsNode(SNIPPETS_NODE_STOP, "", this.readNumber()))
+            return
+        }
+        if (next == "{") {
+            this.readPlaceholder(nodes, level)
+            return
+        }
+        this.reject(snippetsUnknownEscape(next))
+    }
+
+    // The number at the current position, or -1 (and an error) when there is none or it is too long.
+    method readNumber(): integer {
+        var start = this.pos
+        while (snippetsIsDigit(this.peek(this.pos))) {
+            this.pos = this.pos + 1
+        }
+        var digits = this.pos - start
+        if (digits == 0 || digits > SNIPPETS_MAX_NUMBER_DIGITS) {
+            this.reject("a tabstop needs a number of 1 to " + SNIPPETS_MAX_NUMBER_DIGITS + " digits")
+            return -1
+        }
+        return parseInt(this.source.substring(start, this.pos))
+    }
+
+    method readPlaceholder(array<SnippetsNode> nodes, integer level) {
+        if (level >= SNIPPETS_MAX_NESTING) {
+            this.reject("placeholders may not be nested deeper than " + SNIPPETS_MAX_NESTING)
+            return
+        }
+        this.pos = this.pos + SNIPPETS_OPEN_WIDTH
+        var number = this.readNumber()
+        var mark = this.peek(this.pos)
+        if (this.error != "") {
+            return
+        }
+        if (mark == "}") {
+            this.pos = this.pos + 1
+            nodes.append(SnippetsNode(SNIPPETS_NODE_STOP, "", number))
+            return
+        }
+        if (number == 0 && (mark == ":" || mark == "|")) {
+            this.reject("tabstop 0 is the final cursor and has no default")
+            return
+        }
+        if (mark == ":") {
+            this.readDefault(nodes, level, number)
+            return
+        }
+        if (mark == "|") {
+            this.readChoice(nodes, number)
+            return
+        }
+        this.reject("expected ':', '|' or '}' after the tabstop number")
+    }
+
+    method readDefault(array<SnippetsNode> nodes, integer level, integer number) {
+        this.pos = this.pos + 1
+        var placeholder = SnippetsNode(SNIPPETS_NODE_PLACEHOLDER, "", number)
+        placeholder.children = this.readSequence(level + 1)
+        if (this.error != "") {
+            return
+        }
+        if (this.peek(this.pos) != "}") {
+            this.reject("unterminated placeholder")
+            return
+        }
+        this.pos = this.pos + 1
+        nodes.append(placeholder)
+    }
+
+    // A literal comma in an option is written "\\,"; the closing mark is the first "|}".
+    method readChoice(array<SnippetsNode> nodes, integer number) {
+        var close = this.source.indexOf("|}", this.pos)
+        if (close < 0) {
+            this.reject("unterminated choice")
+            return
+        }
+        var options = snippetsSplitOptions(this.source.substring(this.pos + 1, close))
+        this.pos = close + SNIPPETS_CHOICE_CLOSE_WIDTH
+        if (options.length() == 0) {
+            this.reject("only '\\,' may be escaped in a choice")
+            return
+        }
+        if (options.length() < SNIPPETS_MIN_CHOICE_OPTIONS) {
+            this.reject("a choice needs at least " + SNIPPETS_MIN_CHOICE_OPTIONS + " options")
+            return
+        }
+        var choice = SnippetsNode(SNIPPETS_NODE_CHOICE, "", number)
+        choice.options = options
+        nodes.append(choice)
+    }
+}
+
+method snippetsBraceDelta(string character, integer level): integer {
+    if (level == 0 || (character != "{" && character != "}")) {
+        return 0
+    }
+    if (character == "{") {
+        return 1
+    }
+    return -1
+}
+
+method snippetsIsDigit(string character): bool {
+    return character >= "0" && character <= "9" && character.length() == 1
+}

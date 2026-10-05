@@ -1,0 +1,94 @@
+package workspace
+
+import base/platform
+import projects/manifest
+
+private final WORKSPACE_SCAN_DEPTH = 12
+private final WORKSPACE_SCAN_FILE_LIMIT = 20000
+private final WORKSPACE_SCAN_EXTENSIONS = [".nv", ".nvh"]
+private final WORKSPACE_COMPONENT_EXTENSION = ".nvh"
+private final WORKSPACE_MANIFEST_NAME = "project.nv"
+private final WORKSPACE_SLASH = "/"
+
+// What the project folder holds on disk, whether or not a file imports it (all paths are full and normalised, the
+// way the closure spells them). `packageFolders`: every folder below the root with at least one direct `.nv` or `.nvh`
+// file, sorted: an `import a/b` candidate. `rootFiles`: the sources directly in the root: `import @name`
+// candidates. `nvhFiles`: every `.nvh` component of the tree. Manifests are never listed.
+define class ProjectScan {
+    array<string> packageFolders
+    array<string> rootFiles
+    array<string> nvhFiles
+
+    construct(array<string> packageFolders, array<string> rootFiles, array<string> nvhFiles) {
+        this.packageFolders = packageFolders
+        this.rootFiles = rootFiles
+        this.nvhFiles = nvhFiles
+    }
+
+    // Additive: whether the scan knows the file (a package folder holds it, or it is a root file).
+    method knows(string filePath): bool {
+        if (this.rootFiles.contains(filePath)) {
+            return true
+        }
+        return this.packageFolders.contains(manifestDirectoryOf(filePath))
+    }
+}
+
+// The scan of a project root with the walker's skip rules (dot folders, `build`, `dist`, `out`, `node_modules`,
+// linked folders, files above 2 MiB), at most 12 levels deep. A layout without a root (a scratch buffer) has nothing.
+method scanProject(TextSource source, ProjectLayout layout): ProjectScan {
+    return WorkspaceScanner(source, layout).scan()
+}
+
+define class WorkspaceScanner {
+    TextSource source
+    ProjectLayout layout
+
+    construct(TextSource source, ProjectLayout layout) {
+        this.source = source
+        this.layout = layout
+    }
+
+    method scan(): ProjectScan {
+        var root = manifestNormalizePath(this.layout.root)
+        if (root == "" || this.source.isDirectory(root) == false) {
+            return ProjectScan([], [], [])
+        }
+        var paths = walkSourceFiles(this.source, root, WORKSPACE_SCAN_EXTENSIONS, WORKSPACE_SCAN_DEPTH)
+        return this.classify(root, paths)
+    }
+
+    method classify(string root, array<string> paths): ProjectScan {
+        var folders = {}
+        var rootFiles = []
+        var components = []
+        var seen = 0
+        for (filePath in paths) {
+            if (seen >= WORKSPACE_SCAN_FILE_LIMIT) {
+                break
+            }
+            seen = seen + 1
+            if (this.isManifest(filePath)) {
+                continue
+            }
+            if (filePath.endsWith(WORKSPACE_COMPONENT_EXTENSION)) {
+                components.append(filePath)
+            }
+            this.place(root, filePath, folders, rootFiles)
+        }
+        return ProjectScan(folders.keys(), rootFiles, components)
+    }
+
+    method place(string root, string filePath, map<string, bool> folders, array<string> rootFiles) {
+        var folder = manifestDirectoryOf(filePath)
+        if (folder == root) {
+            rootFiles.append(filePath)
+            return
+        }
+        folders[folder] = true
+    }
+
+    method isManifest(string filePath): bool {
+        return filePath == WORKSPACE_MANIFEST_NAME || filePath.endsWith(WORKSPACE_SLASH + WORKSPACE_MANIFEST_NAME)
+    }
+}

@@ -1,0 +1,21 @@
+package main
+
+// An enum constant built from a global that is itself built from a constant
+// of that enum.
+
+define enum Level {
+    LOW(BASE),
+    HIGH(BASE * 2);
+
+    private final integer value: get
+
+    private construct(integer value) {
+        this.value = value
+    }
+}
+
+final BASE = Level.LOW.value()
+
+method main {
+    println BASE
+}

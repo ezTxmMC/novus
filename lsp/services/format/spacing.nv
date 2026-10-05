@@ -1,0 +1,171 @@
+package format
+
+import syntax/lexing
+
+// The space or no space between two neighbouring tokens of one line. Decisions that depend on more than the pair
+// (generic brackets, unary operators, import paths) are read from FormatRoles. Operators are never dropped or joined:
+// a gap that would let two tokens lex as one token is a single space.
+private final FORMAT_NO_GAP = ""
+private final FORMAT_ONE_SPACE = " "
+private final FORMAT_HUG_BEFORE = { ",": true, ";": true, ")": true, "]": true, ".": true, ":": true }
+private final FORMAT_HUG_AFTER = { "(": true, "[": true, ".": true, "@": true, "!": true }
+private final FORMAT_SPACED_CALL_WORDS = { "sync": true, "await": true }
+private final FORMAT_PRINT_WORDS = { "println": true, "print": true, "eprintln": true }
+private final FORMAT_PAIR_TOKEN_COUNT = 3
+private final FORMAT_JOINABLE_PAIRS = { "==": true, "!=": true, "<=": true, ">=": true, "&&": true, "||": true, "=>": true, "=<": true,
+    "<<": true, ">>": true, "//": true, "/*": true, "++": true, "--": true, "+=": true, "-=": true }
+
+define class SpacingRules {
+    array<Token> tokens
+    FormatRoles roles
+    FormatBraceSpacing braces
+
+    construct() {
+        this.tokens = []
+        this.roles = FormatRoles([])
+        this.braces = FormatBraceSpacing(this.roles)
+    }
+
+    // Reads the context of a whole token list; gapAt then answers for any index of it.
+    method prepare(array<Token> codeTokens) {
+        this.tokens = codeTokens
+        this.roles = FormatRoles(codeTokens)
+        this.braces = FormatBraceSpacing(this.roles)
+    }
+
+    // Context-free form of the contract: the pair is read as a two token file.
+    method gapBetween(Token left, Token right): string {
+        this.prepare([left, right])
+        return this.gapAt(1)
+    }
+
+    // The gap in front of tokens[index]; "" or one space.
+    method gapAt(integer index): string {
+        if (index <= 0 || index >= this.tokens.length()) {
+            return FORMAT_NO_GAP
+        }
+        var left = this.tokens[index - 1]
+        var right = this.tokens[index]
+        var gap = this.decide(left, right, index)
+        if (gap == FORMAT_NO_GAP && formatWouldJoin(left, right)) {
+            return FORMAT_ONE_SPACE
+        }
+        return gap
+    }
+
+    method decide(Token left, Token right, integer index): string {
+        if (left.kind == TokenKind.Unknown || right.kind == TokenKind.Unknown) {
+            return FORMAT_ONE_SPACE
+        }
+        if (this.roles.imports[index] && this.isBrace(left) == false && this.isBrace(right) == false) {
+            return this.importGap(left)
+        }
+        var braced = this.braces.gapAt(left, right, index)
+        if (braced != FORMAT_NO_OPINION) {
+            return braced
+        }
+        if (this.hugs(left, right, index)) {
+            return FORMAT_NO_GAP
+        }
+        return FORMAT_ONE_SPACE
+    }
+
+    // Braces on an import line are not part of a path; their padding is left to the brace rules, which read the author's text.
+    method isBrace(Token token): bool {
+        return token.kind == TokenKind.Punct && (token.text == "{" || token.text == "}")
+    }
+
+    method importGap(Token left): string {
+        if (left.isKeyword("import")) {
+            return FORMAT_ONE_SPACE
+        }
+        return FORMAT_NO_GAP
+    }
+
+    method hugs(Token left, Token right, integer index): bool {
+        if (right.kind == TokenKind.Punct && right.text == "." && left.kind == TokenKind.Integer) {
+            return false
+        }
+        if (this.hugsPunctuation(left, right, index)) {
+            return true
+        }
+        if (this.roles.isGenericOpen(index - 1) || this.roles.hasGenericRole(index)) {
+            return true
+        }
+        return this.hugsBracket(left, right, index)
+    }
+
+    method hugsPunctuation(Token left, Token right, integer index): bool {
+        if (right.kind == TokenKind.Punct && FORMAT_HUG_BEFORE.has(right.text)) {
+            return true
+        }
+        if (left.kind == TokenKind.Punct && FORMAT_HUG_AFTER.has(left.text)) {
+            return true
+        }
+        return this.roles.unaries[index - 1]
+    }
+
+    // `f(x)` and `a[i]` have no space in front of the bracket, `if (x)` and `return [1]` have; `{}` is empty braces.
+    method hugsBracket(Token left, Token right, integer index): bool {
+        if (right.kind != TokenKind.Punct) {
+            return false
+        }
+        if (right.text == "(") {
+            return this.hugsParen(left, index)
+        }
+        if (right.text == "[") {
+            return this.hugsIndex(left)
+        }
+        return false
+    }
+
+    method hugsParen(Token left, integer index): bool {
+        if (left.kind == TokenKind.Ident) {
+            return FORMAT_SPACED_CALL_WORDS.has(left.text) == false
+        }
+        if (left.kind == TokenKind.Keyword) {
+            return FORMAT_PRINT_WORDS.has(left.text) && this.roles.isPadded(index) == false
+        }
+        return left.kind == TokenKind.Punct && (left.text == ")" || left.text == "]")
+    }
+
+    method hugsIndex(Token left): bool {
+        if (left.kind == TokenKind.Ident || left.kind == TokenKind.String) {
+            return true
+        }
+        if (left.kind == TokenKind.Integer || left.kind == TokenKind.Float) {
+            return true
+        }
+        return left.kind == TokenKind.Punct && (left.text == ")" || left.text == "]")
+    }
+}
+
+// True when the two tokens written without a gap would be read differently: two words or numbers run together, or
+// the last character of the left token and the first of the right one form an operator or a comment opener.
+method formatWouldJoin(Token left, Token right): bool {
+    if (formatIsWordLike(left) && formatIsWordLike(right)) {
+        return true
+    }
+    if (left.kind != TokenKind.Punct || right.kind != TokenKind.Punct) {
+        return false
+    }
+    var pair = left.text.charAt(left.text.length() - 1) + right.text.charAt(0)
+    if (FORMAT_JOINABLE_PAIRS.has(pair) == false) {
+        return false
+    }
+    return formatLexesAsOne(left, right)
+}
+
+// `>>` followed by `>` reads as the same two tokens when written together (`>>>`), `>` followed by `>>` does not.
+method formatLexesAsOne(Token left, Token right): bool {
+    var tokens = lexText(left.text + right.text).tokens
+    var same = tokens.length() == FORMAT_PAIR_TOKEN_COUNT && tokens[0].text == left.text && tokens[1].text == right.text
+    return same == false
+}
+
+method formatIsWordLike(Token token): bool {
+    if (token.kind == TokenKind.Ident || token.kind == TokenKind.Keyword) {
+        return true
+    }
+    return token.kind == TokenKind.Integer || token.kind == TokenKind.Float
+}

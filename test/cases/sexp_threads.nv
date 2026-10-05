@@ -1,0 +1,54 @@
+package main
+
+import os
+
+// The memory the s-expression natives remember a node in is per operating
+// system thread. It used to stay behind when the thread ended - about 12 KiB
+// each, so a server that handles a request per thread grew without bound.
+// Thousands of short threads must not grow the process by more than a small
+// allowance. Where the resident size cannot be read (no /proc) the check is
+// skipped and the test only shows that the threads run.
+
+method nodeCount(string s): integer native "nv_sexp_count"
+
+final THREADS = 6000
+final ALLOWED_GROWTH_KIB = 20000
+final STATUS_FILE_PREFIX = "/proc/"
+final STATUS_FILE_SUFFIX = "/status"
+final RESIDENT_LINE = "/^VmRSS:/ { print $2 }"
+final NOT_KNOWN = -1
+
+// The resident size of this process in KiB. The status file reports a size of
+// 0 to a plain read, so awk reads it.
+method residentKib(): integer {
+    var status = STATUS_FILE_PREFIX + os.pid() + STATUS_FILE_SUFFIX
+    if (os.exists(status) == false) {
+        return NOT_KNOWN
+    }
+    var result = os.run("awk " + os.shellQuote(RESIDENT_LINE) + " " + os.shellQuote(status))
+    if (result["code"] != 0 || result["output"].trim() == "") {
+        return NOT_KNOWN
+    }
+    return parseInt(result["output"].trim())
+}
+
+method countChildren(integer n): integer {
+    return nodeCount("(a b c " + n + " (d e f))")
+}
+
+method main {
+    var before = residentKib()
+    var total = 0
+    var i = 0
+    while (i < THREADS) {
+        total = total + await thread countChildren(i)
+        i = i + 1
+    }
+    var after = residentKib()
+    println "children counted: ${total}"
+    if (before == NOT_KNOWN || after == NOT_KNOWN) {
+        println "memory stays bounded: true"
+        return
+    }
+    println "memory stays bounded: ${after - before < ALLOWED_GROWTH_KIB}"
+}

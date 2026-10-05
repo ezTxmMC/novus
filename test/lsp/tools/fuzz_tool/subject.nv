@@ -1,0 +1,61 @@
+package main
+
+import unicode
+import "novus/lsp/base/maybe"
+import "novus/lsp/base/text"
+import "novus/lsp/projects/manifest"
+import "novus/lsp/syntax/lexing"
+import "novus/lsp/syntax/markup"
+import "novus/lsp/syntax/outline"
+import "novus/lsp/syntax/parsing"
+
+// What the checks look at: one text of the corpus (or a mutation of it) after the lexer and the parser of its file kind ran.
+define class FuzzToolSubject {
+    string filePath
+    string source
+    LexResult lexed
+    SourceFile parsed
+    array<Span> issueSpans
+    bool validUtf8
+
+    construct(string filePath, string source) {
+        this.filePath = filePath
+        this.source = source
+        this.lexed = lexText(source)
+        this.issueSpans = []
+        this.validUtf8 = unicode.isValidUtf8(source)
+        this.parse()
+    }
+
+    // The same dispatch by file kind as the corpus tool (DESIGN 6.3).
+    method parse() {
+        var kind = fileKindOf(this.filePath)
+        if (kind == FILE_KIND_MANIFEST) {
+            this.collectManifestSpans()
+            return
+        }
+        if (kind == FILE_KIND_NVH) {
+            this.parsed = parseComponentText(this.filePath, this.source, editorParseOptions())
+        }
+        if (kind == FILE_KIND_NV) {
+            this.parsed = parseSourceText(this.filePath, this.source, editorParseOptions())
+        }
+        this.collectSourceSpans()
+    }
+
+    method collectManifestSpans() {
+        for (issue in parseManifestText(this.filePath, this.source).issues) {
+            this.issueSpans.append(issue.span)
+        }
+    }
+
+    method collectSourceSpans() {
+        for (issue in this.parsed.issues) {
+            this.issueSpans.append(issue.span)
+        }
+    }
+
+    method hasSource(): bool {
+        return isSome(this.parsed)
+    }
+}

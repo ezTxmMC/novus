@@ -1,0 +1,13 @@
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"rootUri":"@ROOTURI@","capabilities":{"textDocument":{"documentSymbol":{"hierarchicalDocumentSymbolSupport":true}}}}}
+{"jsonrpc":"2.0","method":"initialized","params":{}}
+{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"@ROOTURI@/pages/Home.nvh","languageId":"novus","version":1,"text":"<?nv\nprop string title\n\nmethod heading(): string {\n    return title\n}\n?>\n<h1>{heading()}</h1>\n<Button label=\"ok\"/>\n<Missing/>\n"}}}
+{"jsonrpc":"2.0","id":2,"method":"textDocument/definition","params":{"textDocument":{"uri":"@ROOTURI@/pages/Home.nvh"},"position":{"line":8,"character":2}}}
+{"jsonrpc":"2.0","id":3,"method":"textDocument/definition","params":{"textDocument":{"uri":"@ROOTURI@/pages/Home.nvh"},"position":{"line":9,"character":2}}}
+{"jsonrpc":"2.0","id":4,"method":"textDocument/definition","params":{"textDocument":{"uri":"@ROOTURI@/pages/Home.nvh"},"position":{"line":4,"character":12}}}
+{"jsonrpc":"2.0","id":5,"method":"textDocument/references","params":{"textDocument":{"uri":"@ROOTURI@/pages/Home.nvh"},"position":{"line":1,"character":13},"context":{"includeDeclaration":true}}}
+{"jsonrpc":"2.0","id":6,"method":"textDocument/hover","params":{"textDocument":{"uri":"@ROOTURI@/pages/Home.nvh"},"position":{"line":3,"character":8}}}
+{"jsonrpc":"2.0","id":7,"method":"textDocument/definition","params":{"textDocument":{"uri":"@ROOTURI@/pages/Home.nvh"},"position":{"line":7,"character":6}}}
+{"jsonrpc":"2.0","id":8,"method":"textDocument/documentSymbol","params":{"textDocument":{"uri":"@ROOTURI@/pages/Home.nvh"}}}
+{"jsonrpc":"2.0","id":9,"method":"textDocument/foldingRange","params":{"textDocument":{"uri":"@ROOTURI@/pages/Home.nvh"}}}
+{"jsonrpc":"2.0","id":99,"method":"shutdown"}
+{"jsonrpc":"2.0","method":"exit"}

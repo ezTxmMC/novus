@@ -1,0 +1,169 @@
+== span
+length: 3
+isEmpty: false
+empty isEmpty: true
+reversed length: 0
+contains 2/4/5: true/true/false
+touches 1/2/5/6: false/true/true/false
+overlaps [4,8): true
+overlaps [5,8): false
+overlaps [0,2): false
+overlaps [3,4): true
+empty inside overlaps: true
+empty empty overlaps: false
+== lineindex
+lineCount: 5
+starts: 0,3,7,10,12
+lineEnd 0/1/2/3/4: 2/5/9/10/16
+lineOf 0/2/3/4/7/9/16/17/99: 0/0/1/1/2/2/4/4/4
+byteColumn 0/2/5/12: 0/2/2/0
+lineText 0: [ab]
+lineText 1: [cd]
+lineText 3: []
+lineText 4: [last]
+lineStart clamp -1/99: 0/12
+empty lineCount: 1
+empty lineEnd 0: 0
+trailing lineCount: 2
+trailing lineText 1: []
+lone CR lineCount: 1
+== encodings: emoji (4 bytes, 2 units)
+utf-16 offsetOf: 0:0=0 0:1=1 0:2=1 0:3=5 0:4=6 0:99=6
+utf-8  offsetOf: 0:0=0 0:1=1 0:3=1 0:5=5 0:6=6 0:99=6
+utf-16 positionOf: 0=0:0 1=0:1 2=0:1 3=0:1 4=0:1 5=0:3 6=0:4 99=0:4
+utf-8  positionOf: 0=0:0 1=0:1 2=0:1 3=0:1 4=0:1 5=0:5 6=0:6 99=0:6
+== encodings: CJK (3 bytes, 1 unit) and combining marks
+cjk utf-16 offsetOf: 0:0=0 0:1=3 0:2=6 0:3=7 0:4=7
+cjk utf-16 positionOf: 0=0:0 1=0:0 3=0:1 4=0:1 6=0:2 7=0:3
+cjk utf-8 positionOf: 0=0:0 1=0:0 3=0:3 4=0:3 6=0:6 7=0:7
+combining utf-16 offsetOf: 0:0=0 0:1=1 0:2=3 0:3=4 0:4=4
+combining utf-16 positionOf: 0=0:0 1=0:1 2=0:1 3=0:2 4=0:3
+combining utf-8 positionOf: 0=0:0 1=0:1 2=0:1 3=0:3 4=0:4
+== encodings: invalid byte
+utf-16 offsetOf: 0:0=0 0:1=1 0:2=2 0:3=3 0:4=3
+utf-16 positionOf: 0=0:0 1=0:1 2=0:2 3=0:3
+utf-8 positionOf: 0=0:0 1=0:1 2=0:2 3=0:3
+== encodings: CRLF, past the end of a line and of the document
+crlf utf-16 offsetOf: 0:2=2 0:3=2 0:99=2 1:0=4 1:2=8 1:3=9 1:99=9 2:0=11 2:5=11
+crlf utf-16 positionOf: 0=0:0 2=0:2 3=0:2 4=1:0 5=1:0 6=1:0 7=1:0 9=1:3 10=1:3 11=2:0 12=2:0 99=2:0
+crlf utf-8 positionOf: 0=0:0 2=0:2 3=0:2 4=1:0 5=1:0 6=1:0 7=1:0 9=1:5 10=1:5 11=2:0 12=2:0 99=2:0
+plain past end of doc: 1:99=5 2:0=5 7:0=5 7:99=5
+closed past end of doc: 2:0=6 3:0=6 9:4=6
+negative: -1:0=0 -3:-4=0 1:-2=3
+positionOf clamps: -5=0:0 99=1:2
+utf-8 past end of line: 0:99=2 1:1=4 1:99=5
+== codec spans and ranges
+spanOf emoji: [1,5)
+spanOf reversed: [1,5)
+spanOf across lines: [5,9)
+rangeOf start: 0:1
+rangeOf end: 0:3
+empty span gives empty range: true
+negotiate utf-8 offered: utf-8
+negotiate utf-16 only: utf-16
+negotiate utf-32 only: utf-16
+negotiate none: utf-16
+== didChange: a batch whose second range lies on a line created by the first
+utf-16 text: x😀|new😀-taily
+utf-16 version: 2
+utf-16 lineCount: 2
+lines follow text: true
+hash follows text: true
+hash changed: true
+utf-8 equals utf-16 result: true
+== didChange: variants
+replace across lines: oXwo|three
+whole text: fresh|text
+version: 3
+insert past end: fresh|text!
+delete everything: [] lines 1
+no changes keeps text: [] v6 same hash true
+equal text equal hash: true
+replaceText: different v7 lines 1 hash true
+== documents and store
+scratch filePath: []
+scratch fileKind: nv
+disk filePath: /work/proj/main.nv
+kinds: nv/manifest/nvh
+uris: file:///work/proj/main.nv file:///work/proj/page.nvh file:///work/proj/project.nv untitled:Untitled-1
+has scratch: true
+find scratch: var x = 1
+find missing is none: unknown
+findByPath disk: 3
+findByPath empty is none: unknown
+findByPath unknown is none: unknown
+closed: false
+uris after close: file:///work/proj/page.nvh file:///work/proj/project.nv untitled:Untitled-1
+fileKindOf: manifest manifest manifest nv nvh nv nv nvh
+== utf8
+boundaries: 0:true 1:true 2:false 3:false 4:false 5:true 6:true 7:true
+isCharBoundary negative: true
+truncate lengths: -1=0 0=0 1=1 2=1 3=1 4=1 5=5 6=6 7=6
+truncate keeps short text: abc
+truncate ascii: abc
+truncate valid: true
+truncate cjk 4: 3
+stray continuation bytes: 3 true
+invalid lead: true
+== uri
+unix: /home/user/a b/main.nv
+localhost: /home/user/x.nv
+single slash: /home/user/x.nv
+upper scheme: /home/x.nv
+drive encoded colon: c:/Users/me/x.nv
+drive plain colon: C:/Users/me/x.nv
+unc: //server/share/dir/x.nv
+query and fragment: /home/x.nv
+utf-8 bytes: /home/é.nv
+invalid escapes stay: /home/%zz%4.nv
+nul escape stays: /home/a%00b.nv
+untitled: []
+notebook: []
+git: []
+empty: []
+short: []
+no path: []
+relative: []
+no slash after authority: []
+== uri encoding
+unix path: file:///home/user/a%20b/main.nv
+non ascii: file:///home/%C3%A9.nv
+special: file:///a/b%23c%3Fd%25e%2Bf%40g.nv
+empty: []
+drive backslash: file:///C:/Users/me/x.nv
+drive slash: file:///c:/Users/me/x.nv
+windows unc: file://server/share/x.nv
+relative: file:///rel/x.nv
+posix backslash: file:///a/b%5Cc.nv
+round trips: true true true true true true
+percentDecode: a b/c/d%
+percentDecode plus: a+b
+percentEncodePath: a%20b/c:d~e-f_g.h%C3%A9
+percentEncodePath empty: []
+== limits
+MAX_NESTING_DEPTH: 200
+MAX_FRAME_BYTES: 67108864
+== regression: a line past the end is the end of the text
+no trailing newline: 1:0=3 2:0=5 3:7=5 99:0=5
+trailing newline: 2:0=6 3:0=6 99:4=6
+whole-document span: 0-5
+whole-document replace: [x]
+negative line stays the first: -1:1=1 -9:0=0
+== regression: NUL byte in a text
+lineCount: 2
+starts: 0,4
+lineText 0 length: 3
+lineText 1: c
+offset 1:1: 5
+positions: 0=0:0 2=0:2 3=0:3 4=1:0 5=1:1
+nul first and last line: 3 3
+texts with the same prefix differ: true
+same text same hash: true
+replaceText follows: true
+without NUL it is fnv1a: true
+textHashOf empty: true
+NUL is not uri safe: false
+percentEncodePath NUL: a%00b
+negative code: false
+slash stays: true
+decoded %00 stays encoded: 6

@@ -1,0 +1,9 @@
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"rootUri":"@ROOTURI@","capabilities":{},"initializationOptions":{"novus":{"diagnostics":{"own":false}}}}}
+{"jsonrpc":"2.0","method":"initialized","params":{}}
+{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"@ROOTURI@/main.nv","languageId":"novus","version":1,"text":"package main\n\nimport geo\n\nmethod main() {\n    var count = 3\n    fore\n    println(count)\n    var shape = Shape(\"a\", 1.0)\n    println(shape.area())\n}\n"}}}
+{"jsonrpc":"2.0","id":2,"method":"textDocument/completion","params":{"textDocument":{"uri":"@ROOTURI@/main.nv"},"position":{"line":6,"character":8},"context":{"triggerKind":1}}}
+{"jsonrpc":"2.0","id":3,"method":"textDocument/completion","params":{"textDocument":{"uri":"@ROOTURI@/main.nv"},"position":{"line":7,"character":7},"context":{"triggerKind":1}}}
+{"jsonrpc":"2.0","id":4,"method":"textDocument/completion","params":{"textDocument":{"uri":"@ROOTURI@/main.nv"},"position":{"line":8,"character":18},"context":{"triggerKind":1}}}
+{"jsonrpc":"2.0","id":5,"method":"textDocument/completion","params":{"textDocument":{"uri":"@ROOTURI@/main.nv"},"position":{"line":9,"character":20},"context":{"triggerKind":1}}}
+{"jsonrpc":"2.0","id":99,"method":"shutdown"}
+{"jsonrpc":"2.0","method":"exit"}

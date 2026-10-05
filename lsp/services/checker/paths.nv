@@ -1,0 +1,99 @@
+package checker
+
+import strings
+
+// Path text helpers of the checker. Paths are compared with forward slashes only.
+private final CHECKER_SLASH = "/"
+private final CHECKER_BACKSLASH = "\\"
+private final CHECKER_DRIVE_COLON_INDEX = 1
+private final CHECKER_DRIVE_MINIMUM_LENGTH = 3
+private final CHECKER_CURRENT_SEGMENT = "."
+private final CHECKER_PARENT_SEGMENT = ".."
+
+// Forward slashes and no trailing slash; the filesystem root stays "/".
+method checkerNormalize(string anyPath): string {
+    var normalized = anyPath.replace(CHECKER_BACKSLASH, CHECKER_SLASH)
+    while (normalized.length() > 1 && normalized.endsWith(CHECKER_SLASH)) {
+        normalized = normalized.substring(0, normalized.length() - 1)
+    }
+    return normalized
+}
+
+method checkerIsAbsolute(string anyPath): bool {
+    var normalized = checkerNormalize(anyPath)
+    if (normalized.startsWith(CHECKER_SLASH)) {
+        return true
+    }
+    return normalized.length() >= CHECKER_DRIVE_MINIMUM_LENGTH && normalized.charAt(CHECKER_DRIVE_COLON_INDEX) == ":"
+}
+
+// Resolves "." and ".." segments so a path cannot climb out of the directory it is tested against. A ".." that has nothing
+// to climb over is kept, which makes the result fail every prefix test of an absolute root.
+method checkerCollapse(string anyPath): string {
+    var normalized = checkerNormalize(anyPath)
+    var kept = []
+    for (segment in normalized.split(CHECKER_SLASH)) {
+        checkerCollapseSegment(kept, segment)
+    }
+    var joined = kept.join(CHECKER_SLASH)
+    if (normalized.startsWith(CHECKER_SLASH) && joined.startsWith(CHECKER_SLASH) == false) {
+        return CHECKER_SLASH + joined
+    }
+    return joined
+}
+
+method checkerCollapseSegment(array<string> kept, string segment) {
+    if (segment == CHECKER_CURRENT_SEGMENT || (segment == "" && kept.length() > 0)) {
+        return
+    }
+    var canClimb = kept.length() > 0 && kept[kept.length() - 1] != CHECKER_PARENT_SEGMENT && kept[kept.length() - 1] != ""
+    if (segment == CHECKER_PARENT_SEGMENT && canClimb) {
+        kept.pop()
+        return
+    }
+    kept.append(segment)
+}
+
+// The part of target below root without a leading slash; "" when target is root itself, lies elsewhere or still climbs out.
+method checkerRelativeBelow(string root, string target): string {
+    var rootPath = checkerCollapse(root)
+    var targetPath = checkerCollapse(target)
+    if (rootPath == "") {
+        return ""
+    }
+    var prefix = rootPath
+    if (prefix.endsWith(CHECKER_SLASH) == false) {
+        prefix = prefix + CHECKER_SLASH
+    }
+    if (targetPath.startsWith(prefix) == false) {
+        return ""
+    }
+    var below = targetPath.substring(prefix.length(), targetPath.length())
+    if (checkerClimbs(below)) {
+        return ""
+    }
+    return below
+}
+
+method checkerClimbs(string relativePath): bool {
+    for (segment in relativePath.split(CHECKER_SLASH)) {
+        if (segment == CHECKER_PARENT_SEGMENT) {
+            return true
+        }
+    }
+    return false
+}
+
+// The directory part of a slash path; "" when there is no slash.
+method checkerParentOf(string anyPath): string {
+    var normalized = checkerNormalize(anyPath)
+    var slash = strings.lastIndexOf(normalized, CHECKER_SLASH)
+    if (slash <= 0) {
+        return ""
+    }
+    return normalized.substring(0, slash)
+}
+
+method checkerSamePath(string left, string right): bool {
+    return checkerNormalize(left) == checkerNormalize(right)
+}

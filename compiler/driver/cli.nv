@@ -2,7 +2,7 @@ package driver
 
 // Command line: usage text and option parsing.
 
-private final VERSION = "0.1.0-pre.alpha.6"
+private final VERSION = "0.1.0-pre.alpha.8"
 
 method printUsage() {
     println "novusc ${VERSION} - the Novus compiler"
@@ -11,16 +11,21 @@ method printUsage() {
     println "  novusc run [file.nv] [args...]     compile and run (a .nvh page is served on :8080)"
     println "  novusc build [file.nv] [options]   compile to a native executable"
     println "  novusc emit [file.nv] [-o out.c]   write the generated C"
-    println "  novusc check [file.nv]             parse and analyze only"
+    println "  novusc check [file.nv] [--offline] parse and analyze only (no C compiler needed)"
     println "  novusc nvh <file.nvh>              show the Novus code a .nvh component compiles to"
     println "  novusc init [module-path]          create project.nv + main.nv here"
     println "  novusc deps                        fetch the dependencies of project.nv"
     println "  novusc deps add <module> [version] add a dependency (git tag/branch/commit)"
     println "  novusc deps update                 re-fetch all dependencies"
+    println "  novusc cache [dir | clear]         the cache of compiled programs"
     println "  novusc version"
     println ""
     println "Without a file the commands use the project.nv of the current directory."
-    println "Dependencies are cached in $NOVUS_DEPS (default ~/.novus/deps)."
+    println "Dependencies are cached in $NOVUS_DEPS (default ~/.novus/deps); --offline"
+    println "(check, build, emit) reports one that is missing instead of fetching it."
+    println "'run' keeps the programs it compiled in $NOVUS_CACHE (default ~/.cache/novus,"
+    println "'off' disables it, $NOVUS_CACHE_LIMIT caps it, default 256M) and optimizes with"
+    println "-O1 ($NOVUS_RUN_OPT=0|1|2|3|s); 'build' uses -O2."
     println ""
     println "build options:"
     println "  -o <path>         output path (default: source file stem)"
@@ -28,7 +33,23 @@ method printUsage() {
     println "  --cflags <flags>  extra C compiler flags (also $NOVUS_CFLAGS)"
     println "  --target <triple> cross compile via 'zig cc -target <triple>'"
     println "  --keep-c          keep the generated .c file"
+    println "  --cache           take the executable from the 'run' cache (not with --keep-c, --no-runtime)"
+    println "  --offline         do not fetch missing dependencies"
     println "  --no-runtime      #include \"novus_rt.h\" instead of embedding it"
+}
+
+// Whether `name` is among the arguments from `from` on. `check` looks only
+// for --offline and ignores anything else, as it always did: editors and
+// scripts call it with options of their own.
+method hasSwitch(array<string> arguments, integer from, string name): bool {
+    var i = from
+    while (i < arguments.length()) {
+        if (arguments[i] == name) {
+            return true
+        }
+        i = i + 1
+    }
+    return false
 }
 
 // Parses "--flag value" / "-o value" / "--switch" pairs into a map.
@@ -46,7 +67,7 @@ method optionsFrom(array<string> arguments, integer from): map<string, string> {
             i = i + 2
             continue
         }
-        if (a == "--keep-c" || a == "--no-runtime") {
+        if (a == "--keep-c" || a == "--no-runtime" || a == "--cache" || a == "--offline") {
             options[a] = "true"
             i = i + 1
             continue

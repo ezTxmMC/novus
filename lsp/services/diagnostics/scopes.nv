@@ -1,0 +1,169 @@
+package diagnostics
+
+import base/maybe
+import projects/workspace
+import semantics/semantic
+import syntax/lexing
+import syntax/outline
+
+private final DIAGNOSTICS_USE_CALL = "call"
+private final DIAGNOSTICS_USE_NAME = "name"
+private final DIAGNOSTICS_USE_QUALIFIER = "qualifier"
+private final DIAGNOSTICS_NO_ARITY = -1
+
+// One identifier of a callable body that names something: a call `name(...)`, a variable `name` or the head of `name.x`.
+define class DiagnosticsUse {
+    string kind
+    Token token
+    integer index
+    integer arity
+    Decl callable
+    Decl owner
+
+    construct(string kind, Token token, integer index, integer arity, Decl callable) {
+        this.kind = kind
+        this.token = token
+        this.index = index
+        this.arity = arity
+        this.callable = callable
+        this.owner = nothing()
+    }
+
+    method isCall(): bool {
+        return this.kind == DIAGNOSTICS_USE_CALL
+    }
+
+    method isName(): bool {
+        return this.kind == DIAGNOSTICS_USE_NAME
+    }
+
+    method isQualifier(): bool {
+        return this.kind == DIAGNOSTICS_USE_QUALIFIER
+    }
+}
+
+// The locals of one callable that are visible at an offset (the rule of `localsVisibleAt`: an inner declaration hides an
+// outer one). The uses of a body arrive in text order, so a cursor over the locals sorted by the start of their scope
+// keeps the visible set up to date; it changes only where a scope opens or closes, so a body is read in one pass.
+define class DiagnosticsCallableLocals {
+    array<Local> ordered
+    integer cursor
+    array<Local> active
+    integer earliestEnd
+    array<Local> visible
+    map<string, integer> slotOfName
+    integer lastOffset
+
+    construct(array<Local> locals) {
+        this.ordered = []
+        for (local in locals) {
+            this.insert(local)
+        }
+        this.restart()
+    }
+
+    method restart() {
+        this.cursor = 0
+        this.active = []
+        this.earliestEnd = 0
+        this.visible = []
+        this.slotOfName = {}
+        this.lastOffset = 0
+    }
+
+    // Stable insertion by the start of the scope: the scan yields the locals in text order, so this is one pass.
+    method insert(Local local) {
+        var index = this.ordered.length()
+        this.ordered.append(local)
+        while (index > 0 && this.ordered[index - 1].scope.start > local.scope.start) {
+            this.ordered[index] = this.ordered[index - 1]
+            index = index - 1
+        }
+        this.ordered[index] = local
+    }
+
+    method visibleAt(integer offset): array<Local> {
+        if (offset < this.lastOffset) {
+            this.restart()
+        }
+        this.lastOffset = offset
+        while (this.cursor < this.ordered.length() && this.ordered[this.cursor].scope.start <= offset) {
+            this.open(this.ordered[this.cursor])
+            this.cursor = this.cursor + 1
+        }
+        this.dropEnded(offset)
+        return this.visible
+    }
+
+    method open(Local local) {
+        if (this.active.length() == 0 || local.scope.end < this.earliestEnd) {
+            this.earliestEnd = local.scope.end
+        }
+        this.active.append(local)
+        this.show(local)
+    }
+
+    method show(Local local) {
+        if (this.slotOfName.has(local.name)) {
+            this.visible[this.slotOfName[local.name]] = local
+            return
+        }
+        this.slotOfName[local.name] = this.visible.length()
+        this.visible.append(local)
+    }
+
+    // Only a scope that ends at or before the offset costs a rebuild; an end is looked at again when the earliest one passes.
+    method dropEnded(integer offset) {
+        if (this.active.length() == 0 || offset < this.earliestEnd) {
+            return
+        }
+        var kept = []
+        for (local in this.active) {
+            if (offset < local.scope.end) {
+                kept.append(local)
+            }
+        }
+        this.active = []
+        this.visible = []
+        this.slotOfName = {}
+        for (local in kept) {
+            this.open(local)
+        }
+    }
+}
+
+// The scope of a use without the walks of `Resolver.scopeAt`: the owner type and the callable are known from the scanner and
+// the locals come from one cursor per callable, so a file of thousands of callables and uses is read in linear time. An
+// editor parse has scanned the locals already; only a callable that has parameters but no locals asks the resolver once.
+define class DiagnosticsScopes {
+    FileContext context
+    map<string, DiagnosticsCallableLocals> perCallable
+
+    construct(FileContext context) {
+        this.context = context
+        this.perCallable = {}
+    }
+
+    method scopeFor(DiagnosticsUse use): Scope {
+        var scope = Scope(this.context.closureFile, use.token.start)
+        scope.enclosingType = use.owner
+        scope.enclosingCallable = use.callable
+        scope.locals = this.localsOf(use.callable).visibleAt(use.token.start)
+        return scope
+    }
+
+    method localsOf(Decl callable): DiagnosticsCallableLocals {
+        var key = "" + callable.fullSpan.start
+        if (this.perCallable.has(key) == false) {
+            this.perCallable[key] = DiagnosticsCallableLocals(this.scannedLocals(callable))
+        }
+        return this.perCallable[key]
+    }
+
+    method scannedLocals(Decl callable): array<Local> {
+        if (callable.locals.length() == 0 && callable.params.length() > 0) {
+            this.context.resolver().scopeAt(this.context.closureFile, callable.bodySpan.start)
+        }
+        return callable.locals
+    }
+}

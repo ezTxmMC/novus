@@ -1,0 +1,60 @@
+package main
+
+import "novus/lsp/base/maybe"
+import "novus/lsp/base/model"
+import "novus/lsp/base/text"
+import @support
+
+method runOrganizeCases() {
+    println("== Organize imports: std first, a blank line, then the project, sorted, no repeats")
+    var messy = AcWorld({
+        "/p/project.nv": "project \"p\"\nrequire \"github.com/x/dep\" \"v1\"\nreplace \"github.com/x/dep\" \"../dep\"\n",
+        "/p/main.nv": "package main\n\nimport zeta\nimport strings\nimport @zeta/second\nimport \"github.com/x/dep\"\nimport json\nimport alpha\nimport strings\nimport arrays\n\nmethod main() {\n    println(strings.repeat(json.stringify(1), 2))\n}\n",
+        "/p/zeta/first.nv": "package zeta\n\nmethod one(): integer {\n    return 1\n}\n",
+        "/p/zeta/second.nv": "package zeta\n\nmethod two(): integer {\n    return 2\n}\n",
+        "/p/alpha/a.nv": "package alpha\n\nmethod three(): integer {\n    return 3\n}\n",
+        "/dep/lib.nv": "method depHelper() {\n    return\n}\n"
+    })
+    acShow("a mixed block", messy.document("/p/main.nv"), organizeOnly(messy.actionsFor("/p/main.nv")))
+    var crlf = AcWorld({
+        "/p/project.nv": "project \"p\"\n",
+        "/p/main.nv": "import strings\r\nimport arrays\r\n\r\nmethod main() {\r\n    println(strings.repeat(\"a\", 2))\r\n    println(arrays.sort([2, 1]))\r\n}\r\n"
+    })
+    acShow("CRLF is kept", crlf.document("/p/main.nv"), organizeOnly(crlf.actionsFor("/p/main.nv")))
+    runNothingToOrganize()
+}
+
+method runNothingToOrganize() {
+    println("== Organize imports: offered only when it changes something")
+    var sorted = AcWorld({
+        "/p/project.nv": "project \"p\"\n",
+        "/p/main.nv": "import arrays\nimport strings\n\nimport geo\n\nmethod main() {\n    println(strings.repeat(\"a\", 2))\n    println(arrays.sort([geo.one()]))\n}\n",
+        "/p/geo/g.nv": "package geo\n\nmethod one(): integer {\n    return 1\n}\n"
+    })
+    acShow("already organized", sorted.document("/p/main.nv"), organizeOnly(sorted.actionsFor("/p/main.nv")))
+    var none = AcWorld({
+        "/p/project.nv": "project \"p\"\n",
+        "/p/main.nv": "method main() {\n    return\n}\n"
+    })
+    acShow("no imports", none.document("/p/main.nv"), organizeOnly(none.actionsFor("/p/main.nv")))
+    var comment = AcWorld({
+        "/p/project.nv": "project \"p\"\n",
+        "/p/main.nv": "import strings\n// the arrays are for sorting\nimport arrays\n\nmethod main() {\n    println(strings.repeat(\"a\", 2))\n    println(arrays.sort([2, 1]))\n}\n"
+    })
+    acShow("a comment between the imports is not rewritten", comment.document("/p/main.nv"), organizeOnly(comment.actionsFor("/p/main.nv")))
+    var single = AcWorld({
+        "/p/project.nv": "project \"p\"\n",
+        "/p/main.nv": "import strings\nimport strings\n\nmethod main() {\n    println(strings.repeat(\"a\", 2))\n}\n"
+    })
+    acShow("a repeated line goes", single.document("/p/main.nv"), organizeOnly(single.actionsFor("/p/main.nv")))
+}
+
+method organizeOnly(array<CodeActionItem> items): array<CodeActionItem> {
+    var kept = []
+    for (item in items) {
+        if (item.kind == "source.organizeImports") {
+            kept.append(item)
+        }
+    }
+    return kept
+}

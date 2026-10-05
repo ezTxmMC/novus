@@ -1,0 +1,14 @@
+novus-lsp 0.1.0
+version exit code: 0
+usage: novus-lsp [--stdio] [--clientProcessId=<pid>] [--version] [--help]
+
+The Novus language server: LSP 3.17 over stdin and stdout.
+  --stdio                  accepted and ignored (stdio is the only transport)
+  --clientProcessId=<pid>  accepted and ignored
+  --version                print the version and exit
+  --help                   print this text and exit
+
+environment: NOVUS_LSP_LOG=debug|info|warn|error (default warn, written to stderr)
+help exit code: 0
+novus-lsp 0.1.0
+version wins over other arguments: 0

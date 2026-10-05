@@ -1,0 +1,6 @@
+# Files that build/novusc check rejects with a syntax-class message (expected, unexpected, unterminated).
+# Moved here from the Wave-1 seed of the syntax tool (the seed file is gone). One repository-relative path per line; every listed file must yield at least one own syntax issue.
+# The semantic fixtures test/cases/errors_compile.nv, packages_errors and nvh_errors are NOT listed: the compiler
+# rejects them for unknown names, and a syntax parser correctly reports nothing for them (see DESIGN-NOTES.md).
+vscode-novus/test/fixtures/errors.nv
+vscode-novus/test/fixtures/features.nv

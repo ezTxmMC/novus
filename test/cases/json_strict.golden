@@ -1,0 +1,27 @@
+space tab cr lf: isValid true, tryParse array
+form feed before: isValid false, tryParse unknown
+form feed after: isValid false, tryParse unknown
+form feed inside: isValid false, tryParse unknown
+vertical tab before: isValid false, tryParse unknown
+vertical tab inside: isValid false, tryParse unknown
+no-break space: isValid false, tryParse unknown
+ideographic space: isValid false, tryParse unknown
+value, NUL, garbage: isValid false, tryParse unknown
+value, NUL: isValid false, tryParse unknown
+NUL, value: isValid false, tryParse unknown
+object, NUL, garbage: isValid false, tryParse unknown
+NUL inside an array: isValid false, tryParse unknown
+NUL inside a string: isValid false, tryParse unknown
+escaped NUL in a key: json parse error at position 11: object key contains a NUL byte
+escaped NUL as the whole key: json parse error at position 9: object key contains a NUL byte
+raw NUL in a key: json parse error at position 3: NUL byte in string
+NUL in a value: parsed
+value keeps its NUL: 3
+leading zero: isValid false, tryParse array
+trailing dot: isValid false, tryParse array
+bare minus: isValid false, tryParse array
+empty exponent: isValid false, tryParse array
+unknown escape: isValid false, tryParse string
+raw tab in a string: isValid false, tryParse string
+[1, 1.000000, 0, 1.000000]
+q

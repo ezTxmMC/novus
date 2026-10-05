@@ -1,0 +1,190 @@
+package main
+
+import "novus/lsp/base/model"
+import "novus/lsp/base/platform"
+import "novus/lsp/base/text"
+import "novus/lsp/features/semtok"
+import "novus/lsp/projects/stdlib"
+import "novus/lsp/projects/workspace"
+import arrays
+
+// A workspace in memory: the files of a program under the absolute root /p, opened like the editor opens them.
+define class StWorld {
+    FileCache cache
+    Workspace space
+    SemanticTokenEngine engine
+
+    construct(map<string, string> files) {
+        this.cache = FileCache(MemoryTextSource(files))
+        this.space = Workspace(this.cache, standardLibrary())
+        this.engine = SemanticTokenEngine()
+    }
+
+    method open(string filePath, string content): FileContext {
+        return this.space.contextFor(Document(filePathToUri(filePath), "novus", 1, content))
+    }
+
+    // The spans of the whole document.
+    method spans(string filePath, string content): array<SemanticSpan> {
+        var context = this.open(filePath, content)
+        return this.engine.spansFor(context, Span(0, content.length()))
+    }
+}
+
+method stProject(string source): map<string, string> {
+    return {
+        "/p/project.nv": "project \"p\"\nmain \"main.nv\"\n",
+        "/p/main.nv": source
+    }
+}
+
+// The classification of one document as lines `line:column text type modifiers`, in source order.
+method stRender(string content, array<SemanticSpan> spans): string {
+    var lines = LineIndex(content)
+    var keys = []
+    var byKey = {}
+    var order = 0
+    for (span in spans) {
+        var key = span.span.start * 1000 + order
+        keys.append(key)
+        byKey["" + key] = span
+        order = order + 1
+    }
+    var out = []
+    for (key in arrays.sort(keys)) {
+        out.append(stRenderSpan(content, lines, byKey["" + key]))
+    }
+    return out.join("\n")
+}
+
+method stRenderSpan(string content, LineIndex lines, SemanticSpan span): string {
+    var line = lines.lineOf(span.span.start)
+    var column = lines.byteColumn(span.span.start)
+    var text = content.substring(span.span.start, span.span.end).replace("\n", "\\n")
+    return "" + (line + 1) + ":" + column + " " + text + " " + stTypeName(span.tokenType) + stModifierNames(span.modifiers)
+}
+
+method stTypeName(integer tokenType): string {
+    var names = semanticTokenTypes()
+    if (tokenType < 0 || tokenType >= names.length()) {
+        return "?" + tokenType
+    }
+    return names[tokenType]
+}
+
+method stModifierNames(integer modifiers): string {
+    var names = semanticTokenModifiers()
+    var found = ""
+    var i = 0
+    while (i < names.length()) {
+        if (((modifiers >> i) & 1) == 1) {
+            found = found + " +" + names[i]
+        }
+        i = i + 1
+    }
+    return found
+}
+
+method stCheck(string label, string actual, string expected) {
+    if (actual == expected) {
+        println("ok   " + label)
+        return
+    }
+    println("FAIL " + label)
+    println("--- got")
+    println(actual)
+    println("--- expected")
+    println(expected)
+}
+
+// The classification at the `occurrence`-th (1-based) place where `needle` starts: `type modifiers`, or `none`.
+method stAt(string source, array<SemanticSpan> spans, string needle, integer occurrence): string {
+    var offset = stOffsetOf(source, needle, occurrence)
+    for (span in spans) {
+        if (span.span.start == offset) {
+            return stTypeName(span.tokenType) + stModifierNames(span.modifiers)
+        }
+    }
+    return "none"
+}
+
+method stOffsetOf(string source, string needle, integer occurrence): integer {
+    var found = -1
+    var from = 0
+    var seen = 0
+    while (seen < occurrence) {
+        found = source.indexOf(needle, from)
+        if (found < 0) {
+            return -1
+        }
+        from = found + 1
+        seen = seen + 1
+    }
+    return found
+}
+
+// One line per probe: the fragment of the source that holds the word, then `word: classification`. The fragment is
+// found from the start of the source, so it must be unique enough to name the place.
+method stProbe(string source, array<SemanticSpan> spans, string fragment, string word) {
+    var offset = source.indexOf(fragment, 0)
+    if (offset < 0) {
+        println("FAIL no fragment " + fragment)
+        return
+    }
+    var found = stAtOffset(spans, offset + fragment.indexOf(word, 0))
+    println(fragment.replace("\n", "\\n") + " -> " + word + ": " + found)
+}
+
+method stAtOffset(array<SemanticSpan> spans, integer offset): string {
+    for (span in spans) {
+        if (span.span.start == offset) {
+            return stTypeName(span.tokenType) + stModifierNames(span.modifiers)
+        }
+    }
+    return "none"
+}
+
+// A program is shown as the numbered lines of its source followed by what is classified.
+method stShow(string title, string source, array<SemanticSpan> spans) {
+    println("== " + title)
+    println(stRender(source, spans))
+}
+
+// A source text from its lines (the last line ends with a newline too).
+method stLines(array<string> lines): string {
+    return lines.join("\n") + "\n"
+}
+
+method stGeoProject(string source): map<string, string> {
+    return {
+        "/p/project.nv": "project \"p\"\nmain \"main.nv\"\n",
+        "/p/main.nv": source,
+        "/p/geo/shape.nv": stLines([
+            "package geo",
+            "",
+            "private final SIDES = 4",
+            "",
+            "define class Shape {",
+            "    string name",
+            "    integer sides: get, set",
+            "",
+            "    method corners(): integer {",
+            "        return this.sides",
+            "    }",
+            "",
+            "    @Deprecated{text=\"use corners\", since=\"1\"}",
+            "    method count(): integer {",
+            "        return this.sides",
+            "    }",
+            "}",
+            "",
+            "method describe(Shape shape): string {",
+            "    return shape.name",
+            "}",
+            "",
+            "method describe(Shape shape, string prefix): string {",
+            "    return prefix + shape.name",
+            "}"
+        ])
+    }
+}

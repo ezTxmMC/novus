@@ -1,0 +1,55 @@
+bytes 8
+utf16 5
+chars 4
+empty 0 0
+byteToUtf16(-5) = 0
+byteToUtf16(0) = 0
+byteToUtf16(1) = 1
+byteToUtf16(2) = 1
+byteToUtf16(3) = 2
+byteToUtf16(4) = 2
+byteToUtf16(5) = 2
+byteToUtf16(6) = 2
+byteToUtf16(7) = 4
+byteToUtf16(8) = 5
+byteToUtf16(9) = 5
+byteToUtf16(100) = 5
+utf16ToByte(-5) = 0
+utf16ToByte(0) = 0
+utf16ToByte(1) = 1
+utf16ToByte(2) = 3
+utf16ToByte(3) = 3
+utf16ToByte(4) = 7
+utf16ToByte(5) = 8
+utf16ToByte(6) = 8
+utf16ToByte(100) = 8
+codePointAt(-1) = -1
+codePointAt(0) = 97
+codePointAt(1) = 233
+codePointAt(2) = 233
+codePointAt(3) = 128512
+codePointAt(5) = 128512
+codePointAt(6) = 128512
+codePointAt(7) = 98
+codePointAt(8) = -1
+codePointAt(0) = 65533
+codePointAt(0) = -1
+fromCodePoint(0) = 1 bytes, back 0
+fromCodePoint(65) = 1 bytes, back 65
+fromCodePoint(233) = 2 bytes, back 233
+fromCodePoint(8364) = 3 bytes, back 8364
+fromCodePoint(128512) = 4 bytes, back 128512
+fromCodePoint(1114111) = 4 bytes, back 1114111
+fromCodePoint(-1) is U+FFFD: true
+fromCodePoint(55296) is U+FFFD: true
+fromCodePoint(57343) is U+FFFD: true
+fromCodePoint(1114112) is U+FFFD: true
+valid true true true
+valid nul true
+invalid 0xFF false
+invalid stray false
+invalid truncated false
+invalid overlong false
+invalid surrogate false
+malformed chars 4
+round trip failures 0, mid pair 1

@@ -1,0 +1,38 @@
+package main
+
+import "novus/lsp/base/maybe"
+import "novus/lsp/base/model"
+import "novus/lsp/base/text"
+import @support
+
+method runProjectActionCases() {
+    println("== project.nv: Fetch dependencies and the small manifest fixes")
+    var world = AcWorld({
+        "/p/project.nv": "project \"p\"\nrequire \"github.com/x/gone\" \"v1\"\nrequire \"github.com/x/gone\" \"v2\"\nrequire \"github.com/x/other\" \"v1\"\nreplace \"github.com/z/free\" \"../free\"\n",
+        "/p/main.nv": "method main() {\n    return\n}\n"
+    })
+    acShow("project.nv", world.document("/p/project.nv"), world.actionsFor("/p/project.nv"))
+    println("== a source file gets no manifest action and a manifest gets no import action")
+    acShow("main.nv", world.document("/p/main.nv"), world.actionsFor("/p/main.nv"))
+    var document = world.document("/p/project.nv")
+    var forged = Diagnostic(Span(0, 7), Severity.Warning, "novus", "duplicate-require", "forged")
+    acShow("a duplicate-require diagnostic over other text", document, world.actionsWith(document, Span(0, 40), [forged]))
+    runReplaceRequireCases()
+}
+
+// The module of the added `require` is read from the directive, whatever the diagnostic carries, in the file's line ending.
+method runReplaceRequireCases() {
+    println("== replace-without-require: the module comes from the directive, the line ending from the file")
+    var world = AcWorld({
+        "/p/project.nv": "project \"p\"\r\nreplace \"a/b\" \"../x\"\r\n",
+        "/p/main.nv": "method main() {\n    return\n}\n"
+    })
+    acShow("the genuine diagnostic, a CRLF manifest", world.document("/p/project.nv"), world.actionsFor("/p/project.nv"))
+    var document = world.document("/p/project.nv")
+    var line = Span(document.text.indexOf("replace"), document.text.length() - 2)
+    var forged = Diagnostic(line, Severity.Warning, "novus", "replace-without-require", "forged")
+    forged.data = "evil\"\nrequire \"other"
+    acShow("a forged data field is ignored", document, world.actionsWith(document, line, [forged]))
+    var loose = Diagnostic(Span(0, document.text.length()), Severity.Warning, "novus", "replace-without-require", "forged")
+    acShow("a span that does not start at a replace directive", document, world.actionsWith(document, loose.span, [loose]))
+}

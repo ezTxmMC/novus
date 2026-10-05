@@ -1,0 +1,134 @@
+package manifest
+
+import base/text
+import syntax/lexing
+
+private final MANIFEST_KEYS = ["project", "version", "main", "lib", "output", "novus", "require", "replace"]
+
+// Every setting novusc knows, in the order of its error message.
+method manifestKeys(): array<string> {
+    return MANIFEST_KEYS
+}
+
+// Tolerant reader of project.nv: whatever the text, it gives the directives it could read and one issue per
+// problem novusc would abort on. It never exits and never raises.
+method parseManifestText(string filePath, string text): ManifestFile {
+    var file = ManifestFile(filePath)
+    var lexed = lexText(text)
+    var reader = ManifestReader(file, manifestSignificantTokens(lexed))
+    reader.run()
+    return file
+}
+
+// The compiler's lexer skips the bytes it does not know without a word, so they are no tokens here either.
+method manifestSignificantTokens(LexResult lexed): array<Token> {
+    var kept = []
+    for (token in lexed.tokens) {
+        if (token.kind != TokenKind.Unknown) {
+            kept.append(token)
+        }
+    }
+    return kept
+}
+
+// One directive per line: the first token names the setting, the other tokens of that line are its values.
+define class ManifestReader {
+    ManifestFile file
+    array<Token> tokens
+    integer position
+    integer rejected
+    ManifestSettings settings
+
+    construct(ManifestFile file, array<Token> tokens) {
+        this.file = file
+        this.tokens = tokens
+        this.position = 0
+        this.rejected = 0
+        this.settings = ManifestSettings(file)
+    }
+
+    method run() {
+        while (this.atEnd() == false) {
+            this.readDirective()
+        }
+    }
+
+    method atEnd(): bool {
+        return this.position >= this.tokens.length() || this.tokens[this.position].isEnd()
+    }
+
+    method readDirective() {
+        var key = this.tokens[this.position]
+        this.position = this.position + 1
+        if (key.kind != TokenKind.Ident) {
+            this.reportNotASetting(key)
+            this.skipRestOfLine(key.line)
+            return
+        }
+        var directive = this.readValues(key)
+        this.file.directives.append(directive)
+        if (this.rejected == 0) {
+            this.settings.apply(directive, this.spanOf(directive))
+        }
+    }
+
+    method reportNotASetting(Token token) {
+        this.file.issues.append(ManifestIssue(token.span(), token.line, manifestNotASettingMessage(this.foundText(token))))
+    }
+
+    // novusc names a string by its value, without the quotes.
+    method foundText(Token token): string {
+        if (token.kind == TokenKind.String) {
+            return token.value
+        }
+        return token.text
+    }
+
+    method skipRestOfLine(integer line) {
+        while (this.atEnd() == false && this.tokens[this.position].line == line) {
+            this.position = this.position + 1
+        }
+    }
+
+    // Values that are not string literals are reported and left out; the directive is then not applied.
+    method readValues(Token key): ManifestDirective {
+        var values = []
+        var spans = []
+        this.rejected = 0
+        while (this.atEnd() == false && this.tokens[this.position].line == key.line) {
+            var token = this.tokens[this.position]
+            this.position = this.position + 1
+            this.readValue(token, values, spans)
+        }
+        return ManifestDirective(key.text, values, key.span(), spans, key.line)
+    }
+
+    method readValue(Token token, array<string> values, array<Span> spans) {
+        if (token.kind != TokenKind.String) {
+            this.reject(token)
+            return
+        }
+        if (token.terminated == false) {
+            this.file.issues.append(ManifestIssue(token.span(), token.line, manifestUnterminatedMessage()))
+        }
+        values.append(token.value)
+        spans.append(token.span())
+    }
+
+    // novusc stops at the first bad value, so the rest of that line is not reported again.
+    method reject(Token token) {
+        this.rejected = this.rejected + 1
+        if (this.rejected > 1) {
+            return
+        }
+        this.file.issues.append(ManifestIssue(token.span(), token.line, manifestUnquotedMessage(token.text)))
+    }
+
+    method spanOf(ManifestDirective directive): Span {
+        var end = directive.keySpan.end
+        for (valueSpan in directive.valueSpans) {
+            end = valueSpan.end
+        }
+        return Span(directive.keySpan.start, end)
+    }
+}

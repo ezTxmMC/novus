@@ -1,0 +1,152 @@
+package snippets
+
+// A catalogue entry (DESIGN 6.16, 7.1): where it is offered, what it inserts (Novus Snippet
+// Notation, 7.2) and how the verification harness has to wrap it (7.5).
+
+private final SNIPPETS_SCOPE_TOPLEVEL = "toplevel"
+private final SNIPPETS_SCOPE_CLASS = "class"
+private final SNIPPETS_SCOPE_STATEMENT = "statement"
+private final SNIPPETS_SCOPE_EXPRESSION = "expression"
+private final SNIPPETS_SCOPE_MANIFEST = "manifest"
+private final SNIPPETS_SCOPE_NVH = "nvh"
+private final SNIPPETS_SCOPE_NVH_BLOCK = "nvh_block"
+private final SNIPPETS_SCOPE_NVH_TEMPLATE = "nvh_template"
+private final SNIPPETS_SCOPE_NVH_TAG = "nvh_tag"
+
+private final SNIPPETS_VERIFY_FILE = "file"
+private final SNIPPETS_VERIFY_TOPLEVEL = "toplevel"
+private final SNIPPETS_VERIFY_TOPLEVEL_RAW = "toplevel_raw"
+private final SNIPPETS_VERIFY_TOPLEVEL_OR_MEMBER = "toplevel_or_member"
+private final SNIPPETS_VERIFY_ANNOTATION = "annotation"
+private final SNIPPETS_VERIFY_MEMBER = "member"
+private final SNIPPETS_VERIFY_MEMBER_ABSTRACT = "member_abstract"
+private final SNIPPETS_VERIFY_STATEMENT = "statement"
+private final SNIPPETS_VERIFY_AFTER_IF = "after_if"
+private final SNIPPETS_VERIFY_EXPRESSION = "expression"
+private final SNIPPETS_VERIFY_MANIFEST = "manifest"
+private final SNIPPETS_VERIFY_NVH = "nvh"
+private final SNIPPETS_VERIFY_NVH_BLOCK = "nvh_block"
+private final SNIPPETS_VERIFY_NVH_ELEMENT = "nvh_element"
+private final SNIPPETS_VERIFY_NVH_ATTR = "nvh_attr"
+
+// The keys and values of Snippet.fixtures; the verification wrappers read them, so a name that is
+// misspelled is an unknown variable for the compiler instead of a silently ignored fixture.
+private final SNIPPETS_FIXTURE_KEY = "fixture"
+private final SNIPPETS_PRELUDE_KEY = "prelude"
+private final SNIPPETS_FIELDS_KEY = "fields"
+private final SNIPPETS_PRELUDE_BASE = "base"
+private final SNIPPETS_PRELUDE_SHAPE = "shape"
+private final SNIPPETS_FIXTURE_REQUIRE = "require"
+private final SNIPPETS_FIXTURE_REPLACE = "replace"
+private final SNIPPETS_FIXTURE_GEO_CIRCLE = "geo_circle"
+private final SNIPPETS_FIXTURE_GEO_SHAPES = "geo_shapes"
+private final SNIPPETS_FIXTURE_MODULE = "module"
+
+// Entries of one catalogue are built from shared lists (one scope list for every statement
+// snippet); every Snippet owns copies, so a consumer that edits one entry never changes a sibling.
+define class Snippet {
+    string id
+    array<string> prefixes
+    string description
+    array<string> scopes
+    string body
+    array<string> imports
+    string verify
+    map<integer, string> overrides
+    map<string, string> fixtures
+
+    construct(string id, array<string> prefixes, string description, array<string> scopes, string body) {
+        this.id = id
+        this.prefixes = snippetsCopyList(prefixes)
+        this.description = description
+        this.scopes = snippetsCopyList(scopes)
+        this.body = body
+        this.imports = []
+        this.verify = SNIPPETS_VERIFY_STATEMENT
+        this.overrides = {}
+        this.fixtures = {}
+    }
+
+    method withImports(array<string> modules): Snippet {
+        this.imports = snippetsCopyList(modules)
+        return this
+    }
+
+    method withVerify(string mode): Snippet {
+        this.verify = mode
+        return this
+    }
+
+    method withOverrides(map<integer, string> values): Snippet {
+        this.overrides = snippetsCopyMap(values)
+        return this
+    }
+
+    method withFixtures(map<string, string> values): Snippet {
+        this.fixtures = snippetsCopyMap(values)
+        return this
+    }
+}
+
+define class SnippetCatalogue {
+    array<Snippet> all
+
+    construct(array<Snippet> all) {
+        this.all = all
+    }
+
+    method forScope(string scope): array<Snippet> {
+        var offered = []
+        for (snippet in this.all) {
+            if (snippet.scopes.contains(scope)) {
+                offered.append(snippet)
+            }
+        }
+        return offered
+    }
+
+    method byId(string id): Snippet {
+        for (snippet in this.all) {
+            if (snippet.id == id) {
+                return snippet
+            }
+        }
+        return
+    }
+}
+
+// The order of the groups breaks ties in completion and fixes the order of the export.
+method loadSnippetCatalogue(): SnippetCatalogue {
+    var groups = [toplevelSnippets(), typeSnippets(), memberSnippets(), basicSnippets()]
+    groups.append(flowSnippets())
+    groups.append(librarySnippets())
+    groups.append(manifestSnippets())
+    groups.append(componentSnippets())
+    return SnippetCatalogue(snippetsConcat(groups))
+}
+
+method snippetsConcat(array<array<Snippet>> groups): array<Snippet> {
+    var merged = []
+    for (group in groups) {
+        for (snippet in group) {
+            merged.append(snippet)
+        }
+    }
+    return merged
+}
+
+method snippetsCopyList(array<string> items): array<string> {
+    var copy = []
+    for (item in items) {
+        copy.append(item)
+    }
+    return copy
+}
+
+method snippetsCopyMap(map<object, string> entries): map<object, string> {
+    var copy = {}
+    for (key in entries) {
+        copy[key] = entries[key]
+    }
+    return copy
+}

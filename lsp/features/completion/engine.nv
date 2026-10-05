@@ -1,0 +1,178 @@
+package completion
+
+import arrays
+import base/maybe
+import base/model
+import features/candidates
+import projects/closure
+import projects/workspace
+import semantics/semantic
+import syntax/outline
+
+private final COMPLETION_STD_PREFIX = "std:"
+private final COMPLETION_KEY_SEPARATOR = "|"
+private final COMPLETION_KEY_PARTS = 4
+private final COMPLETION_MODULE_KIND = "Module"
+
+// Orchestrates detection, the source plan, ranking and the result cap (8.1).
+define class CompletionEngine {
+    SourcePlan plan
+    Settings settings
+    ContextDetector detector
+
+    construct(SymbolSources symbols, ModuleSources modules, LexicalSources lexical, Settings settings) {
+        this.plan = SourcePlan(symbols, modules, lexical)
+        this.settings = settings
+        this.detector = ContextDetector()
+    }
+
+    // The contexts are derived from the tokens alone, so the trigger character needs no special treatment.
+    method complete(FileContext context, integer offset, string triggerCharacter): CompletionList {
+        var request = this.detector.detect(context, offset)
+        if (request.suppressed) {
+            return CompletionList(false, [])
+        }
+        var items = this.plan.itemsFor(context, request)
+        for (item in items) {
+            if (item.hasReplaceSpan() == false) {
+                item.replaceSpan = request.replaceSpan
+            }
+        }
+        return this.capped(rankItems(items, request.prefix))
+    }
+
+    // The client asks again as the user types when something was cut (`isIncomplete`).
+    method capped(array<CompletionItem> ranked): CompletionList {
+        var limit = this.settings.completionMaxItems
+        if (limit <= 0 || ranked.length() <= limit) {
+            return CompletionList(false, ranked)
+        }
+        return CompletionList(true, arrays.slice(ranked, 0, limit))
+    }
+
+    // Fills `documentation` (and an empty `detail`) of an item of the std library or a dependency from its `resolveKey`.
+    method resolve(FileContext context, CompletionItem item): CompletionItem {
+        var key = completionParseKey(item.resolveKey)
+        if (key.valid == false) {
+            return item
+        }
+        if (key.kind == COMPLETION_MODULE_KIND) {
+            item.documentation = this.moduleDocumentation(key.filePath)
+            return item
+        }
+        var decl = this.declOf(context, key)
+        if (isNone(decl)) {
+            return item
+        }
+        var symbol = Symbol(decl, ClosureFile(key.filePath, FileOrigin.Standard, "", "", this.syntaxOf(context, key.filePath)), "", "")
+        item.documentation = symbolDocumentation(symbol)
+        if (item.detail == "") {
+            item.detail = symbolDetail(symbol)
+        }
+        return item
+    }
+
+    method moduleDocumentation(string stdKey): string {
+        var name = stdModuleOfKey(stdKey)
+        var library = this.plan.symbols.workspace.library
+        if (library.has(name) == false) {
+            return ""
+        }
+        var summary = library.module(name).summary
+        if (summary == "") {
+            return "Standard library module `" + name + "`."
+        }
+        return "**" + name + "**\n\n" + summary
+    }
+
+    method declOf(FileContext context, CompletionKey key): Decl {
+        var syntax = this.syntaxOf(context, key.filePath)
+        if (isNone(syntax)) {
+            return nothing()
+        }
+        return completionFindDecl(syntax.decls, key.nameStart)
+    }
+
+    // The parse of the declaring file: a std module, a file of the closure, else a file of an unloaded dependency.
+    method syntaxOf(FileContext context, string filePath): SourceFile {
+        var workspace = this.plan.symbols.workspace
+        if (filePath.startsWith(COMPLETION_STD_PREFIX)) {
+            var module = workspace.library.module(stdModuleOfKey(filePath))
+            if (isNone(module)) {
+                return nothing()
+            }
+            return module.syntax
+        }
+        var known = context.project.closure.fileAt(filePath)
+        if (isSome(known)) {
+            return known.syntax
+        }
+        return workspace.files.syntaxOf(filePath)
+    }
+}
+
+// The four parts of a `resolveKey` (8.1 step 4), split from the right because the uri may hold the separator.
+define class CompletionKey {
+    bool valid
+    string uri
+    string kind
+    string filePath
+    integer nameStart
+
+    construct(string text) {
+        var parts = text.split(COMPLETION_KEY_SEPARATOR)
+        this.valid = parts.length() >= COMPLETION_KEY_PARTS
+        this.uri = ""
+        this.kind = ""
+        this.filePath = ""
+        this.nameStart = 0
+        if (this.valid) {
+            this.fill(parts)
+        }
+    }
+
+    method fill(array<string> parts) {
+        var last = parts.length() - 1
+        this.nameStart = parseInt(parts[last])
+        this.filePath = parts[last - 1]
+        this.kind = parts[last - 2]
+        this.uri = arrays.slice(parts, 0, last - 2).join(COMPLETION_KEY_SEPARATOR)
+    }
+}
+
+method completionParseKey(string text): CompletionKey {
+    return CompletionKey(text)
+}
+
+// The uri of the requesting document, which `CompletionResolveHandler` needs to find the context; `""` for a bad key.
+method completionUriOfKey(string resolveKey): string {
+    return CompletionKey(resolveKey).uri
+}
+
+// The declaration whose name starts at the offset, top level or member.
+method completionFindDecl(array<Decl> decls, integer nameStart): Decl {
+    for (decl in decls) {
+        if (decl.nameSpan.start == nameStart) {
+            return decl
+        }
+        var member = completionFindDecl(decl.members, nameStart)
+        if (isSome(member)) {
+            return member
+        }
+    }
+    return nothing()
+}
+
+// The plain-text fallback for clients without snippet support: the items with `isSnippet` carry their text without
+// tabstops (V127); every other field stays as it is.
+method completionWithoutSnippets(CompletionList list): CompletionList {
+    var items = []
+    for (item in list.items) {
+        if (item.isSnippet) {
+            item.insertText = CompletionPlainText(item.insertText).render()
+            item.isSnippet = false
+        }
+        items.append(item)
+    }
+    return CompletionList(list.isIncomplete, items)
+}

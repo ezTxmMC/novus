@@ -1,0 +1,37 @@
+base/json: [rule 4] folder is named like the std module or compiler package 'json'
+crowded/many: [rule 1] 11 source files in one folder (limit 10)
+base/alpha/alpha.nv:14: [rule 3] type AlphaThing is already defined at base/alpha/alpha.nv:7
+base/alpha/alpha.nv:17: [rule 13] contract name BetaPublic belongs to package beta, not alpha
+base/alpha/alpha.nv:20: [rule 3] type TomlLike collides with the std classes by its prefix
+base/alpha/alpha.nv:20: [rule 3] internal type TomlLike lacks the package prefix Alpha
+base/alpha/alpha.nv:23: [rule 3] internal constant UNPREFIXED_LIMIT lacks the package prefix ALPHA_
+base/alpha/alpha.nv:26: [rule 3] internal method unprefixed lacks the package prefix alpha
+base/alpha/alpha.nv:30: [rule 7] parameter "os" is named like the imported std module os
+base/alpha/alpha.nv:30: [rule 9] parameter "x" is a one-letter name (only i j k are allowed)
+base/alpha/alpha.nv:31: [rule 9] variable "y" is a one-letter name (only i j k are allowed)
+base/alpha/alpha.nv:32: [rule 7] variable "math" is named like the imported std module math
+base/alpha/alpha.nv:36: [rule 9] loop variable "w" is a one-letter name (only i j k are allowed)
+base/alpha/alpha.nv:41: [rule 8] else is not allowed (guard clauses instead; exemption: // pureline:allow-else <reason>)
+base/alpha/alpha.nv:51: [rule 6] stdout is written here; only MessageWriter and platform.stdio may do that
+base/alpha/alpha.nv:52: [rule 6] stdout is written here; only MessageWriter and platform.stdio may do that
+base/alpha/alpha.nv:53: [rule 6] stdout is written here; only MessageWriter and platform.stdio may do that
+base/alpha/alpha.nv:54: [rule 6] stdout is written here; only MessageWriter and platform.stdio may do that
+base/alpha/alpha.nv:55: [rule 6] stdout is written here; only MessageWriter and platform.stdio may do that
+base/alpha/alpha.nv:62: [rule 10] call to alphaHelper() inside a sync body (only stdoutWriteFrame, has, get, remove and length are allowed)
+base/alpha/alpha.nv:82: [rule 9] parameter "z" is a one-letter name (only i j k are allowed)
+base/alpha/alpha.nv:83: [rule 9] variable "q" is a one-letter name (only i j k are allowed)
+main.nv:4: [rule 5] lsp/main.nv may import only server/wiring, not server/beta
+server/beta/beta.nv:1: [rule 12] package declaration "wrong" does not name the folder (beta)
+server/beta/beta.nv:5: [rule 5] package beta imports json, which is not a declared dependency in packages.txt
+server/beta/beta.nv:6: [rule 5] package beta imports wiring, which is not a declared dependency in packages.txt
+server/beta/beta.nv:7: [rule 5] the import "novus/compiler/std" is allowed only in projects/stdlib
+server/beta/beta.nv:8: [rule 5] unknown string import "other/thing"
+server/beta/beta.nv:9: [rule 5] import nowhere/package names neither a std module nor a package of packages.txt
+server/wiring/function.nv:56: warning: function wiringLongFunction has 54 lines (review above 30, split above 50)
+server/wiring/long.nv:3: [rule 2] class WiringLong has 201 lines (limit 200)
+server/wiring/long.nv:203: [rule 2] file has 203 lines (limit 200)
+base/alpha/alpha.nv:68: [rule 11] thread target alphaUnguarded does not start with runGuarded
+base/alpha/alpha.nv:70: [rule 11] thread target alphaUnknown is not a free method of lsp/
+contract_names.txt: [rule 13] BetaPublic is defined in package alpha, the contract says beta
+contract_names.txt: [rule 13] alphaMissing (package alpha) is not defined in lsp/
+lsp_lint: FAILED

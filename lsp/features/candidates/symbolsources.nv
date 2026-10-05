@@ -1,0 +1,197 @@
+package candidates
+
+import base/maybe
+import base/model
+import projects/closure
+import projects/workspace
+import semantics/semantic
+import syntax/outline
+
+private final CANDIDATES_THIS_WORD = "this"
+private final CANDIDATES_QUALIFIER_DOT = "."
+// Items of unloaded files that match the prefix: past this many, nobody scrolls on, and the cost of a request stays bounded.
+private final CANDIDATES_UNLOADED_ITEM_LIMIT = 4000
+
+// Locals, members, project symbols and dependency symbols; owns the one DependencyIndex.
+define class SymbolSources {
+    Workspace workspace
+    Settings settings
+    MemberSources memberSources
+    DependencyIndex dependencies
+    map<string, ClosureFile> unloadedMemo
+
+    construct(Workspace workspace, Settings settings) {
+        this.workspace = workspace
+        this.settings = settings
+        this.memberSources = MemberSources(workspace)
+        this.dependencies = DependencyIndex()
+        this.unloadedMemo = {}
+    }
+
+    // The parameters and locals visible at the cursor, and `this` inside a class.
+    method locals(FileContext context, CompletionContext request): array<CompletionItem> {
+        if (candidatesIsValueContext(request.kind) == false || isNone(context.closureFile)) {
+            return []
+        }
+        var scope = context.resolver().scopeAt(context.closureFile, request.replaceSpan.start)
+        var items = []
+        var seen = {}
+        for (local in scope.locals) {
+            if (seen.has(local.name) == false && candidatesIsBeingDeclared(context.document.text, local, request.replaceSpan.start) == false) {
+                seen[local.name] = true
+                items.append(candidatesLocalItem(context, scope, local))
+            }
+        }
+        if (isSome(scope.enclosingType) && isSome(scope.enclosingCallable)) {
+            items.append(candidatesItem(CANDIDATES_THIS_WORD, CompletionKind.Variable, "this: " + scope.enclosingType.name, CANDIDATES_BUCKET_LOCAL))
+        }
+        return items
+    }
+
+    method members(FileContext context, CompletionContext request): array<CompletionItem> {
+        if (request.kind == CANDIDATES_KIND_MEMBER) {
+            return this.memberSources.afterDot(context, request)
+        }
+        if (candidatesIsValueContext(request.kind)) {
+            return this.memberSources.bare(context, request)
+        }
+        return []
+    }
+
+    method projectSymbols(FileContext context, CompletionContext request): array<CompletionItem> {
+        return this.symbolsOf(context, request, FileOrigin.Project)
+    }
+
+    method dependencySymbols(FileContext context, CompletionContext request): array<CompletionItem> {
+        return this.symbolsOf(context, request, FileOrigin.Dependency)
+    }
+
+    method symbolsOf(FileContext context, CompletionContext request, FileOrigin origin): array<CompletionItem> {
+        if (candidatesWantsSymbols(request.kind) == false || isNone(context.closureFile)) {
+            return []
+        }
+        var items = CandidatesSymbolItems(context, request, this.settings)
+        for (symbol in candidatesLoadedSymbols(context, origin)) {
+            items.add(symbol, true)
+        }
+        var unloaded = CandidatesUnloaded(context, this.workspace, this.dependencies, this.unloadedMemo)
+        var files = unloaded.projectFiles()
+        if (origin == FileOrigin.Dependency) {
+            files = unloaded.dependencyFiles()
+        }
+        var loadedCount = items.result.length()
+        for (file in files) {
+            if (items.result.length() - loadedCount >= CANDIDATES_UNLOADED_ITEM_LIMIT) {
+                break
+            }
+            for (symbol in candidatesDeclaredSymbols(file)) {
+                items.add(symbol, false)
+            }
+        }
+        return items.result
+    }
+}
+
+// Turns symbols into items for one request: the kinds that fit the context, qualified names where a bare name would
+// not resolve, and the import edit of a file that the current file does not reach (8.6).
+define class CandidatesSymbolItems {
+    FileContext context
+    CompletionContext request
+    Settings settings
+    CandidatesImports imports
+    array<CompletionItem> result
+
+    construct(FileContext context, CompletionContext request, Settings settings) {
+        this.context = context
+        this.request = request
+        this.settings = settings
+        this.imports = CandidatesImports(context, CANDIDATES_NO_OFFSET)
+        this.result = []
+    }
+
+    // A name that cannot match the prefix is skipped before its item (detail, documentation, edit) is built.
+    method add(Symbol symbol, bool loaded) {
+        this.addConstants(symbol, loaded)
+        if (matchQuality(symbol.decl.name, this.request.prefix) == CANDIDATES_QUALITY_NONE || this.isWanted(symbol.decl) == false) {
+            return
+        }
+        if (loaded == false && candidatesIsWithheld(this.context.index(), symbol)) {
+            return
+        }
+        var bucket = candidatesBucketOf(symbol.origin())
+        if (loaded == false) {
+            bucket = CANDIDATES_BUCKET_IMPORT
+        }
+        var item = candidatesSymbolItem(symbol, this.context.document.uri, bucket, candidatesModeFor(this.request.kind))
+        this.qualify(item, symbol, loaded)
+        this.addImport(item, symbol, loaded)
+        this.result.append(item)
+        if (candidatesIsValueContext(this.request.kind) && symbol.decl.kind == DeclKind.Class) {
+            this.result.append(candidatesLiteralItem(item, symbol.decl))
+        }
+    }
+
+    // The constants of a loaded enum, once something is typed: `Red` offers `Color.Red`.
+    method addConstants(Symbol symbol, bool loaded) {
+        if (loaded == false || symbol.decl.kind != DeclKind.Enum || this.request.prefix == "" || candidatesIsValueContext(this.request.kind) == false) {
+            return
+        }
+        for (constant in this.context.resolver().constantsOf(symbol.decl.name)) {
+            if (matchQuality(constant.decl.name, this.request.prefix) != CANDIDATES_QUALITY_NONE) {
+                var item = candidatesConstantItem(symbol, constant, candidatesBucketOf(symbol.origin()))
+                this.addImport(item, symbol, true)
+                this.result.append(item)
+            }
+        }
+    }
+
+    method isWanted(Decl decl): bool {
+        var kind = this.request.kind
+        if (decl.isCallable() && decl.name == CANDIDATES_MAIN_METHOD) {
+            return false
+        }
+        if (kind == CANDIDATES_KIND_ANNOTATION) {
+            return decl.kind == DeclKind.Annotation
+        }
+        if (kind == CANDIDATES_KIND_BASED) {
+            return (decl.kind == DeclKind.Class || decl.kind == DeclKind.AbstractClass || decl.kind == DeclKind.Interface) && decl.name != this.request.typeName
+        }
+        if (kind == CANDIDATES_KIND_TYPE || kind == CANDIDATES_KIND_CLASS_MEMBER) {
+            return decl.isType() && decl.kind != DeclKind.Annotation
+        }
+        return decl.isCallable() || decl.kind == DeclKind.Global || decl.kind == DeclKind.Class || decl.kind == DeclKind.Enum
+    }
+
+    // A function or global of another package is written `geo.describe` when the bare name would not resolve to it.
+    method qualify(CompletionItem item, Symbol symbol, bool loaded) {
+        var ownQualifier = this.context.closureFile.qualifier
+        if (symbol.decl.isType() || symbol.qualifier == "" || symbol.qualifier == ownQualifier) {
+            return
+        }
+        if (loaded && candidatesIsBareReachable(this.context.index(), symbol)) {
+            return
+        }
+        var qualified = symbol.qualifier + CANDIDATES_QUALIFIER_DOT + symbol.decl.name
+        if (loaded) {
+            item.detail = "qualified: " + symbol.decl.name + " exists in several packages"
+        }
+        item.filterText = symbol.decl.name
+        item.label = qualified
+        item.insertText = qualified
+        if (symbol.decl.isCallable()) {
+            candidatesApplyCall(item, symbol.decl.arity(), qualified)
+        }
+    }
+
+    method addImport(CompletionItem item, Symbol symbol, bool loaded) {
+        if (loaded && (this.settings.explicitImports == false || this.imports.reaches(symbol.file))) {
+            return
+        }
+        var line = importLineFor(this.imports.targetOf(symbol.file))
+        var edit = importEditFor(this.context.syntax, this.context.document.text, line, false)
+        if (isSome(edit)) {
+            item.additionalEdits = [edit]
+            item.detail = line
+        }
+    }
+}

@@ -1,0 +1,137 @@
+alpha,beta,,gamma;alpha,
+0
+18
+-1
+0
+0
+4
+29
+-1
+-1
+24
+-1
+10
+true
+true
+false
+true
+true
+true
+false
+true
+true
+true
+false
+0
+18
+-1
+0
+0
+4
+24
+-1
+-1
+-1
+-1
+10
+true
+true
+false
+true
+true
+true
+false
+false
+true
+true
+false
+5: alpha|beta||gamma;alpha|delta
+2: alpha,beta|gamma;alpha,delta
+2: alpha,beta,,gamma|delta
+3: |,beta,,gamma;|,delta
+1
+2: |
+1: 
+2: |
+3: a|,|b
+2: |a
+5: alpha|beta||gamma;alpha|
+2: alpha,beta|gamma;alpha,
+2: alpha,beta,,gamma|
+3: |,beta,,gamma;|,
+1
+2: |
+1: 
+2: |
+3: a|,|b
+2: |a
+A,beta,,gamma;A,delta
+lph,bet,,gmm;lph,delt
+alpha,beta,,gamma;alpha,delta
+alpha,beta,,gamma;alpha,delta
+alpha, beta, , gamma;alpha, delta
+alpha,beta,,gamma;alpha,delta
+bb
+abcbcabcbc
+whole
+A,beta,,gamma;A,
+lph,bet,,gmm;lph,
+alpha,beta,,gamma;alpha,
+alpha,beta,,gamma;alpha,
+alpha, beta, , gamma;alpha, 
+alpha,beta,,gamma;alpha,
+bb
+abcbcabcbc
+whole
+[padded]
+[x]
+[]
+[]
+[x]
+[x]
+[no pad]
+[inner text]
+10
+4: the|quick|brown|fox
+0: 
+0: 
+1: one
+3: one|two|three
+true
+false
+true
+true
+false
+false
+true
+true
+false
+true
+true
+true
+false
+true
+true
+true
+true
+true
+false
+true
+true
+3673995259836664009
+3159546800138910499
+2154578219944064185
+0
+3904355907
+222957957
+2154578219944064185
+222957957
+4133594319695372926
+7: |Apple|apple|applesauce|fig|fig2|pear
+3: banana|kiwi|mango
+abc
+a, b, c
+a,,b,,c
+1-2-3
+
+x

@@ -22,7 +22,8 @@ echo "embedding std/*.nv into compiler/std/stdlib.nv"
 mv "$WORK/stdlib.nv" compiler/std/stdlib.nv
 
 echo "stage A: current sources compiled by $NOVUSC"
-"$NOVUSC" build compiler/main.nv -o "$WORK/novuscA" > /dev/null
+# stage A only emits C, so -O1 (half the C compiler time); B is what is installed
+NOVUS_CFLAGS="-O1 ${NOVUS_CFLAGS:-}" "$NOVUSC" build compiler/main.nv -o "$WORK/novuscA" > /dev/null
 echo "stage B: compiled by stage A"
 "$WORK/novuscA" emit compiler/main.nv -o "$WORK/B.c" > /dev/null
 "$WORK/novuscA" build compiler/main.nv -o "$WORK/novuscB" > /dev/null

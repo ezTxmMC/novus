@@ -1,0 +1,55 @@
+package main
+
+import "novus/lsp/base/platform"
+
+private final SYNTAX_TOOL_SUMMARY_PREFIX = "summary "
+
+// The counters that the corpus script compares with the committed golden (DESIGN 9.5-4 (c)): one line `summary <key> <n>` each.
+define class SyntaxToolTally {
+    map<string, integer> counts
+
+    construct() {
+        this.counts = {}
+    }
+
+    // A counter that stays at zero must still show up in the summary, or the golden could not notice it appearing.
+    method declare(array<string> keys) {
+        for (key in keys) {
+            this.add(key, 0)
+        }
+    }
+
+    method add(string key, integer amount) {
+        this.counts[key] = this.valueOf(key) + amount
+    }
+
+    method valueOf(string key): integer {
+        return this.counts.get(key, 0)
+    }
+
+    method printSummary() {
+        for (key in this.counts.keys()) {
+            println(SYNTAX_TOOL_SUMMARY_PREFIX + key + " " + this.counts[key])
+        }
+    }
+}
+
+method syntaxToolExitCode(integer problems): integer {
+    if (problems == 0) {
+        return 0
+    }
+    return 1
+}
+
+// One repository-relative path per line; blank lines and lines starting with `#` are ignored.
+method syntaxToolLoadNames(string listFile): map<string, bool> {
+    var names = {}
+    var listed = readTextFile(listFile)
+    for (line in listed.split("\n")) {
+        var name = line.trim()
+        if (name != "" && name.startsWith("#") == false) {
+            names[name] = true
+        }
+    }
+    return names
+}

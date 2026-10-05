@@ -1,0 +1,47 @@
+package pureline
+
+import base/model
+import base/platform
+import base/text
+import syntax/outline
+
+// PL-FN-001: the body of a method or constructor in lines. Above functionReviewLines it is a hint to review, above
+// functionMaxLines a warning. A body that is never closed is skipped: its length is not final while the user types (V82).
+private final PURELINE_CODE_FUNCTION = "PL-FN-001"
+
+define class PurelineFunctionRule based PurelineRule {
+    PurelineSettings settings
+
+    construct(PurelineSettings settings) {
+        this.settings = settings
+    }
+
+    method check(Document document, SourceFile syntax, TextSource files): array<Diagnostic> {
+        var found = []
+        for (decl in syntax.decls) {
+            this.inspect(document, syntax, decl, found)
+            for (member in decl.members) {
+                this.inspect(document, syntax, member, found)
+            }
+        }
+        return found
+    }
+
+    method inspect(Document document, SourceFile syntax, Decl decl, array<Diagnostic> found) {
+        if (decl.isCallable() == false || decl.bodySpan.start < 0 || syntax.isUnterminated(decl)) {
+            return
+        }
+        var lines = purelineLinesOf(document.lines, decl.bodySpan)
+        if (lines > this.settings.functionMaxLines) {
+            found.append(purelineDiagnostic(decl.nameSpan, Severity.Warning, PURELINE_CODE_FUNCTION, this.describe(decl, lines, "usually split it")))
+            return
+        }
+        if (lines > this.settings.functionReviewLines) {
+            found.append(purelineDiagnostic(decl.nameSpan, Severity.Hint, PURELINE_CODE_FUNCTION, this.describe(decl, lines, "review whether it does one thing")))
+        }
+    }
+
+    method describe(Decl decl, integer lines, string advice): string {
+        return decl.name + " has " + lines + " lines: " + advice + "."
+    }
+}

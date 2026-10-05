@@ -1,0 +1,156 @@
+package jobs
+
+import base/maybe
+import server/session
+
+private final JOBS_MAX_WORKERS = 2
+private final JOBS_IDLE_MODE = "onType"
+
+// What the check coordinator remembers between calls: who runs, who waits, and which project a request id belongs to.
+define class JobsCheckState {
+    map<string, integer> running
+    map<string, JobsPending> pending
+    map<string, string> requestKeys
+    integer workers
+    integer lastRequestId
+    bool warnedMissing
+
+    construct() {
+        this.running = {}
+        this.pending = {}
+        this.requestKeys = {}
+        this.workers = 0
+        this.lastRequestId = 0
+        this.warnedMissing = false
+    }
+
+    method nextRequestId(): integer {
+        this.lastRequestId = this.lastRequestId + 1
+        return this.lastRequestId
+    }
+
+    method isRunning(string key): bool {
+        return this.running.has(key)
+    }
+
+    method isFull(): bool {
+        return this.workers >= JOBS_MAX_WORKERS
+    }
+
+    method begin(string key, integer requestId) {
+        this.running[key] = requestId
+        this.requestKeys[jobsRequestKey(requestId)] = key
+        this.workers = this.workers + 1
+    }
+
+    // The project key of the request, "" when the id is unknown (a result that arrives twice).
+    method finish(integer requestId): string {
+        var idKey = jobsRequestKey(requestId)
+        if (this.requestKeys.has(idKey) == false) {
+            return ""
+        }
+        var key = this.requestKeys[idKey]
+        this.requestKeys.remove(idKey)
+        this.running.remove(key)
+        this.workers = this.workers - 1
+        return key
+    }
+
+    method rememberPending(string key, string uri, string reason) {
+        this.pending[key] = JobsPending(uri, reason)
+    }
+
+    // The projects whose request waits although nothing runs for them: the ones that found both slots taken.
+    method waitingKeys(): array<string> {
+        var waiting = []
+        for (key in this.pending.keys()) {
+            if (this.running.has(key) == false) {
+                waiting.push(key)
+            }
+        }
+        return waiting
+    }
+
+    method takePending(string key): JobsPending {
+        if (this.pending.has(key) == false) {
+            return nothing()
+        }
+        var found = this.pending[key]
+        this.pending.remove(key)
+        return found
+    }
+}
+
+define class JobsPending {
+    string uri
+    string reason
+
+    construct(string uri, string reason) {
+        this.uri = uri
+        this.reason = reason
+    }
+}
+
+method jobsRequestKey(integer requestId): string {
+    return "" + requestId
+}
+
+// Mode "onType" checks a document again after idleMillis without an edit; the tick finds the quiet documents.
+define class JobsIdleTimer {
+    Session session
+    map<string, integer> versions
+    map<string, integer> changedAt
+
+    construct(Session session) {
+        this.session = session
+        this.versions = {}
+        this.changedAt = {}
+    }
+
+    method collectDue(integer now): array<string> {
+        var due = []
+        if (this.session.settings.check.mode != JOBS_IDLE_MODE) {
+            this.versions = {}
+            this.changedAt = {}
+            return due
+        }
+        this.forgetClosed()
+        for (uri in this.session.documents.uris()) {
+            if (this.isDue(uri, now)) {
+                due.push(uri)
+            }
+        }
+        return due
+    }
+
+    // The first sight of a document records its version only: opening it already requested a check.
+    method isDue(string uri, integer now): bool {
+        var version = this.session.documentFor(uri).version
+        if (this.versions.has(uri) == false) {
+            this.versions[uri] = version
+            return false
+        }
+        if (this.versions[uri] != version) {
+            this.versions[uri] = version
+            this.changedAt[uri] = now
+            return false
+        }
+        if (this.changedAt.has(uri) == false) {
+            return false
+        }
+        if (now - this.changedAt[uri] < this.session.settings.check.idleMillis) {
+            return false
+        }
+        this.changedAt.remove(uri)
+        return true
+    }
+
+    method forgetClosed() {
+        for (uri in this.versions.keys()) {
+            if (this.session.documents.has(uri) == false) {
+                this.versions.remove(uri)
+                this.changedAt.remove(uri)
+            }
+        }
+    }
+}

@@ -1,0 +1,17 @@
+package wrong
+
+import base/alpha
+import base/maybe
+import base/json
+import server/wiring
+import "novus/compiler/std"
+import "other/thing"
+import nowhere/package
+import math
+
+define class BetaRoot {
+}
+
+method betaRun() {
+    return
+}

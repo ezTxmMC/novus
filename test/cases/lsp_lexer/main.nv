@@ -1,0 +1,39 @@
+package main
+
+import @check
+import @comments
+import @linear
+import @positions
+import @queries
+import @robust
+import @render
+import @strings
+import @tokens
+
+method main(): integer {
+    checkKeywords()
+    checkWordsAndLiterals()
+    checkOperators()
+    checkUnknownBytes()
+    checkTokenMethods()
+    checkEscapes()
+    checkMultiLine()
+    checkInterpolation()
+    checkComments()
+    checkUnterminated()
+    checkUnterminatedStrings()
+    checkPositions()
+    checkCrlf()
+    checkIndexQueries()
+    checkCommentQuery()
+    checkRanges()
+    checkTruncations()
+    checkSpecificTruncations()
+    checkLargeAndOdd()
+    checkNulBytes()
+    checkInterpolationDifferential()
+    checkInterpolationShapes()
+    checkQuadraticInputs()
+    checkNulSearchCost()
+    return finishChecks()
+}

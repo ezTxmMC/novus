@@ -3,7 +3,27 @@ package io
 // Standard input and output.
 
 method readLine(): string native "nv_read_line"
-method readAll(): string native "nv_read_all"          // everything from stdin
+method readAll(): string native "nv_read_all"          // everything from stdin; on Windows the bytes as they are (CRLF stays CRLF)
+
+// Exactly count bytes from stdin, NUL safe and without waiting for a newline
+// (the framing of a protocol such as LSP: a header, then a body of known size).
+// It blocks until count bytes arrived and returns fewer only at end of input;
+// a count of 0 or less returns "". More than 1 GiB is an error (catchable with
+// tryRun); the buffer grows with what actually arrives, so a count that
+// promises more than the sender delivers costs only what was delivered. It
+// shares the buffer of readLine, so both can be mixed freely.
+//
+// Blocking reads (readBytes, readLine, readAll, eof) block the whole carrier
+// thread of a `virtual` thread, and with it every other virtual thread that
+// runs on that carrier. Run a reader loop on an operating system thread
+// (`thread reader()`), not on a virtual one.
+method readBytes(integer count): string native "nv_read_bytes"
+
+// Whether stdin has reached its end. It looks at the next byte and puts it
+// back, so it waits while the input is open but idle - as the next read would
+// (and blocks a virtual thread's carrier the same way: see readBytes).
+method eof(): bool native "nv_io_eof"
+
 method write(string text) native "nv_io_write"          // stdout without newline
 method writeErr(string text) native "nv_io_write_err"   // stderr without newline
 method flush() native "nv_io_flush"

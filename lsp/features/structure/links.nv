@@ -1,0 +1,53 @@
+package structure
+
+import base/maybe
+import base/model
+import projects/closure
+import projects/workspace
+import syntax/outline
+
+// Document links for the import statements of a file: the target text of an import links to the module (a std import
+// to its logical key `std:<module>`, converted by the handler), the first file of a package folder, the file or the
+// entry of a dependency. An import that leads nowhere has no link.
+define class LinkBuilder {
+    construct() {
+    }
+
+    method links(FileContext context): array<DocumentLink> {
+        if (isNone(context.closureFile)) {
+            return []
+        }
+        var links = []
+        for (declaration in context.syntax.imports) {
+            var target = this.targetOf(context, declaration)
+            if (target != "") {
+                links.append(DocumentLink(declaration.targetSpan, target))
+            }
+        }
+        return links
+    }
+
+    method targetOf(FileContext context, ImportDecl declaration): string {
+        var resolution = context.lookupImport(declaration)
+        if (resolution.found == false) {
+            return ""
+        }
+        if (resolution.isStandard()) {
+            return stdFileKey(resolution.target)
+        }
+        if (resolution.isFile()) {
+            return resolution.target
+        }
+        return this.firstFileOf(context.project.closure, resolution.target)
+    }
+
+    method firstFileOf(ProgramClosure closure, string folder): string {
+        var prefix = folder + "/"
+        for (file in closure.files) {
+            if (file.filePath.startsWith(prefix) && file.filePath.substring(prefix.length(), file.filePath.length()).contains("/") == false) {
+                return file.filePath
+            }
+        }
+        return ""
+    }
+}

@@ -1,0 +1,67 @@
+package semtok
+
+import base/model
+import base/text
+
+// The token types and modifiers advertised in initialize; the index of a name is the number that SemanticSpan carries.
+// The first thirteen types keep the order of the TypeScript server, so a client theme that was tuned to it still works.
+private final SEMTOK_TYPE_NAMES = ["namespace", "type", "class", "enum", "interface", "parameter", "variable", "property",
+    "enumMember", "function", "method", "decorator", "keyword", "comment", "string", "number", "operator", "modifier"]
+
+private final SEMTOK_MODIFIER_NAMES = ["declaration", "readonly", "abstract", "deprecated", "defaultLibrary", "modification",
+    "async", "documentation"]
+
+private final SEMTOK_TYPE_NAMESPACE = 0
+private final SEMTOK_TYPE_TYPE = 1
+private final SEMTOK_TYPE_CLASS = 2
+private final SEMTOK_TYPE_ENUM = 3
+private final SEMTOK_TYPE_INTERFACE = 4
+private final SEMTOK_TYPE_PARAMETER = 5
+private final SEMTOK_TYPE_VARIABLE = 6
+private final SEMTOK_TYPE_PROPERTY = 7
+private final SEMTOK_TYPE_ENUM_MEMBER = 8
+private final SEMTOK_TYPE_FUNCTION = 9
+private final SEMTOK_TYPE_METHOD = 10
+private final SEMTOK_TYPE_DECORATOR = 11
+private final SEMTOK_TYPE_KEYWORD = 12
+private final SEMTOK_TYPE_COMMENT = 13
+private final SEMTOK_TYPE_STRING = 14
+private final SEMTOK_TYPE_NUMBER = 15
+private final SEMTOK_TYPE_OPERATOR = 16
+private final SEMTOK_TYPE_MODIFIER = 17
+
+// A modifier is one bit of SemanticSpan.modifiers: the bit number is its index in the legend.
+private final SEMTOK_MOD_NONE = 0
+private final SEMTOK_MOD_DECLARATION = 1
+private final SEMTOK_MOD_READONLY = 2
+private final SEMTOK_MOD_ABSTRACT = 4
+private final SEMTOK_MOD_DEPRECATED = 8
+private final SEMTOK_MOD_DEFAULT_LIBRARY = 16
+private final SEMTOK_MOD_MODIFICATION = 32
+private final SEMTOK_MOD_ASYNC = 64
+private final SEMTOK_MOD_DOCUMENTATION = 128
+
+method semanticTokenTypes(): array<string> {
+    return semtokCopyOf(SEMTOK_TYPE_NAMES)
+}
+
+method semanticTokenModifiers(): array<string> {
+    return semtokCopyOf(SEMTOK_MODIFIER_NAMES)
+}
+
+method semtokCopyOf(array<string> names): array<string> {
+    var copy = []
+    for (name in names) {
+        copy.append(name)
+    }
+    return copy
+}
+
+// A span that classifies nothing: the encoder drops empty spans.
+method semtokNoSpan(integer at): SemanticSpan {
+    return SemanticSpan(Span(at, at), SEMTOK_TYPE_KEYWORD, SEMTOK_MOD_NONE)
+}
+
+method semtokIsNone(SemanticSpan span): bool {
+    return span.span.end <= span.span.start
+}

@@ -1,0 +1,16 @@
+package main
+
+import @store_cases
+import @settings_cases
+import @merge_cases
+import @session_cases
+
+// lsp/server/session: the diagnostic store (merge per source, urisOf), the settings reader (every key of
+// 5.11, wrong types and bounds, the two spellings of the novusc path) and the Session state holder.
+method main() {
+    runStoreCases()
+    runSettingsCases()
+    runTextLimitCases()
+    runMergeCases()
+    runSessionCases()
+}

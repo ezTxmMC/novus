@@ -1,0 +1,95 @@
+package main
+
+// Operands that call methods of known kind are computed unboxed, and still run
+// left to right: into temporaries when a neighbour has an effect.
+import math
+
+method a(): float {
+    println("a")
+    return 1.5
+}
+method b(): float {
+    println("b")
+    return 2.5
+}
+method c(): float {
+    println("c")
+    return 3.5
+}
+method i1(): integer {
+    println("i1")
+    return 2
+}
+method i2(): integer {
+    println("i2")
+    return 3
+}
+method i3(): integer {
+    println("i3")
+    return 4
+}
+method two(float x, float y): float {
+    return x - y
+}
+method twoi(integer x, integer y): integer {
+    return x - y
+}
+method mix(integer x, float y, integer z): float {
+    return x - y * z
+}
+
+define class K {
+    private float f: get, set
+    private integer n: get, set
+    construct() {
+        this.f = 1.0
+        this.n = 5
+    }
+    method bump(): float {
+        this.f = this.f + 1.0
+        println("bump")
+        return this.f
+    }
+    method calc(): float {
+        return this.f * bump() - this.f
+    }
+    method calci(): integer {
+        return n * next() - n
+    }
+    method next(): integer {
+        n = n + 1
+        println("next")
+        return n
+    }
+}
+
+method main {
+    println(a() - b() * c())
+    println(two(a(), b()))
+    println(twoi(i1(), i2()) - i3())
+    println(mix(i1(), a(), i2()))
+    println(math.pow(a(), b()))
+    println(math.atan2(b(), a()))
+    println(i1() - i2() - i3())
+    println(i1() * i2() + i3())
+    println(a() < b())
+    if (i1() < i2() && a() > b()) {
+        println("then")
+    }
+    var x = a() - b()
+    var y = i1() / i2()
+    println(x)
+    println(y)
+    var k = K()
+    println(k.calc())
+    println(k.calci())
+    var arr = [1.0, 2.0, 3.0]
+    println(arr[i1() - 1] - arr[i2() - 2] * a())
+    println(a() / (b() % c()))
+    println(a() - arr[i1()] + b())
+    println(i1() << i2())
+    println(-a() - b())
+    println(i1() % i2() * i3())
+    println(two(a() - b(), c() - a()))
+    println(twoi(i1() - i2(), i2() * i3()))
+}

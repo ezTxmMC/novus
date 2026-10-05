@@ -1,0 +1,20 @@
+package main
+
+import io
+import thread
+
+// exit() while another OS thread is blocked reading stdin. stdin never
+// delivers anything (exit_open_stdin.stdin.open), so the reader stays blocked
+// for good: the process must end anyway, with its output flushed.
+
+method readerLoop(): string {
+    return io.readLine()
+}
+
+method main {
+    var reader = thread readerLoop()
+    thread.sleep(100)
+    print "unterminated stdout line, "
+    eprintln "stderr too"
+    exit(0)
+}

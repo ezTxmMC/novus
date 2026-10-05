@@ -1,0 +1,159 @@
+package structure
+
+import base/maybe
+import base/model
+import base/text
+import projects/closure
+import projects/workspace
+import syntax/outline
+
+private final STRUCTURE_MANIFEST_NAME = "project.nv"
+private final STRUCTURE_SOURCE_EXTENSIONS = [".nv", ".nvh"]
+
+// The package of a scanned file that no import reaches: the last segment of its folder when the scan lists it.
+method structureQualifierOf(ProjectModel project, string filePath): string {
+    var cut = filePath.length()
+    while (cut > 0 && filePath.charAt(cut - 1) != "/") {
+        cut = cut - 1
+    }
+    var folder = filePath.substring(0, cut - 1)
+    if (project.scan.packageFolders.contains(folder) == false) {
+        return ""
+    }
+    var start = folder.length()
+    while (start > 0 && folder.charAt(start - 1) != "/") {
+        start = start - 1
+    }
+    return folder.substring(start, folder.length())
+}
+
+// A source file as the search sees it: its path, its package and its declarations.
+define class StructureFile {
+    string filePath
+    string qualifier
+    array<Decl> decls
+
+    construct(string filePath, string qualifier, array<Decl> decls) {
+        this.filePath = filePath
+        this.qualifier = qualifier
+        this.decls = decls
+    }
+}
+
+// Workspace symbols over the files of every project (the closure's project and dependency files, then the scanned
+// files that no import reaches) and never over std modules. A scratch buffer belongs to no project.
+define class SymbolSearch {
+    Workspace workspace
+
+    construct(Workspace workspace) {
+        this.workspace = workspace
+    }
+
+    method search(string query, integer limit): array<WorkspaceSymbolEntry> {
+        return this.search(query, limit, NeverCancelled())
+    }
+
+    method search(string query, integer limit, CancelCheck cancel): array<WorkspaceSymbolEntry> {
+        var needle = query.trim().toLower()
+        var hits = StructureHits()
+        var visited = 0
+        for (project in this.projects()) {
+            for (file in this.filesOf(project)) {
+                if (visited % CANCEL_POLL_INTERVAL == 0 && cancel.isCancelled()) {
+                    return hits.ranked(limit)
+                }
+                visited = visited + 1
+                this.addDeclarations(hits, needle, file, file.decls, 0)
+            }
+        }
+        return hits.ranked(limit)
+    }
+
+    // The projects of the open files and those of the workspace folders that no file has opened yet.
+    // contract-note: `projectFor` builds and caches the model of a folder, a cache fill on the main thread that 9.9 allows
+    // (Amendment 7, V141: the caches `contextFor` fills are the only state that a request changes).
+    method projects(): array<ProjectModel> {
+        for (folder in this.workspace.folders) {
+            var manifest = folder + "/" + STRUCTURE_MANIFEST_NAME
+            if (this.workspace.files.exists(manifest)) {
+                this.workspace.projectFor(manifest)
+            }
+        }
+        return this.workspace.allProjects()
+    }
+
+    // The closure files of the project that are the user's, then the source files of the scan that the closure lacks.
+    method filesOf(ProjectModel project): array<StructureFile> {
+        var files = []
+        for (file in project.closure.files) {
+            if (file.origin != FileOrigin.Standard && file.filePath != "") {
+                files.append(StructureFile(file.filePath, file.qualifier, file.syntax.decls))
+            }
+        }
+        for (filePath in this.unloadedPaths(project)) {
+            files.append(StructureFile(filePath, structureQualifierOf(project, filePath), this.workspace.files.syntaxOf(filePath).decls))
+        }
+        return files
+    }
+
+    // contract-note: `ProjectModel.scanFor` wants the time and `structure` has no clock (it declares no `platform`): the
+    // scan that is already stored is used, and a missing one is made with time 0 (accepted in Amendment 7, V141).
+    method unloadedPaths(ProjectModel project): array<string> {
+        var scan = project.scan
+        if (isNone(scan)) {
+            scan = project.scanFor(this.workspace.files, 0)
+        }
+        var paths = []
+        var candidates = []
+        for (filePath in scan.rootFiles) {
+            candidates.append(filePath)
+        }
+        for (filePath in scan.nvhFiles) {
+            candidates.append(filePath)
+        }
+        for (folder in scan.packageFolders) {
+            for (name in this.workspace.files.entriesOf(folder)) {
+                candidates.append(folder + "/" + name)
+            }
+        }
+        for (filePath in candidates) {
+            if (this.isUnloadedSource(project, filePath) && paths.contains(filePath) == false) {
+                paths.append(filePath)
+            }
+        }
+        return paths
+    }
+
+    method isUnloadedSource(ProjectModel project, string filePath): bool {
+        if (project.closure.has(filePath) || filePath.endsWith("/" + STRUCTURE_MANIFEST_NAME)) {
+            return false
+        }
+        for (extension in STRUCTURE_SOURCE_EXTENSIONS) {
+            if (filePath.endsWith(extension)) {
+                return true
+            }
+        }
+        return false
+    }
+
+    method addDeclarations(StructureHits hits, string needle, StructureFile file, array<Decl> decls, integer depth) {
+        if (depth >= MAX_NESTING_DEPTH) {
+            return
+        }
+        for (decl in decls) {
+            var score = structureMatchScore(decl.name, needle)
+            if (decl.name != "" && score != STRUCTURE_NO_MATCH) {
+                hits.add(this.entryOf(file, decl), score)
+            }
+            this.addDeclarations(hits, needle, file, decl.members, depth + 1)
+        }
+    }
+
+    method entryOf(StructureFile file, Decl decl): WorkspaceSymbolEntry {
+        var container = file.qualifier
+        if (decl.container != "") {
+            container = decl.container
+        }
+        return WorkspaceSymbolEntry(decl.name, structureKindOf(decl), container, Location(file.filePath, structureNameSpanOf(decl)))
+    }
+}

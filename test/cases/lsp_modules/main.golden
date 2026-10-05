@@ -1,0 +1,58 @@
+== naming
+  key github.com/user/lib
+  key host.example/x/y
+  key tmp/lib
+  key a/b
+  key []
+  dir /cache/github.com/user/lib@v1.2.0
+  dir /cache/h/x@latest
+== statuses and entry files
+  github.com/u/ready @ v1 Ready dir=/cache/github.com/u/ready@v1 entry=[/cache/github.com/u/ready@v1/main.nv] declaredIn=/proj/project.nv direct=true replaced=false
+  github.com/u/withlib @ v2 Ready dir=/cache/github.com/u/withlib@v2 entry=[/cache/github.com/u/withlib@v2/lib.nv] declaredIn=/proj/project.nv direct=true replaced=false
+  github.com/u/manifest @ latest Ready dir=/cache/github.com/u/manifest@latest entry=[/cache/github.com/u/manifest@latest/src/entry.nv] declaredIn=/proj/project.nv direct=true replaced=false
+  github.com/u/mainonly @ v3 Ready dir=/cache/github.com/u/mainonly@v3 entry=[/cache/github.com/u/mainonly@v3/cmd/start.nv] declaredIn=/proj/project.nv direct=true replaced=false
+  github.com/u/bare @ v1 Ready dir=/cache/github.com/u/bare@v1 entry=[/cache/github.com/u/bare@v1/main.nv] declaredIn=/proj/project.nv direct=true replaced=false
+  github.com/u/absent @ v9 NotFetched dir=/cache/github.com/u/absent@v9 entry=[] declaredIn=/proj/project.nv direct=true replaced=false
+  https://other.example/p/q @ v1 NotFetched dir=/cache/other.example/p/q@v1 entry=[] declaredIn=/proj/project.nv direct=true replaced=false
+  not ready: [github.com/u/absent, https://other.example/p/q] ready: [github.com/u/ready, github.com/u/withlib, github.com/u/manifest, github.com/u/mainonly, github.com/u/bare]
+== replace is relative to the manifest and may be missing
+  a/lib @ v1 Ready dir=/lib entry=[/lib/lib.nv] declaredIn=/proj/project.nv direct=true replaced=true
+  a/local @ latest Ready dir=/proj/local entry=[/proj/local/main.nv] declaredIn=/proj/project.nv direct=true replaced=true
+  a/gone @ latest ReplaceMissing dir=/gone entry=[] declaredIn=/proj/project.nv direct=true replaced=true
+  a/abs @ latest ReplaceMissing dir=/proj/abs entry=[] declaredIn=/proj/project.nv direct=true replaced=true
+  not ready: [a/gone, a/abs] ready: [a/lib, a/local]
+== transitive: first seen wins, the root replace does not reach nested requires
+  m/b @ v1 Ready dir=/cache/m/b@v1 entry=[/cache/m/b@v1/main.nv] declaredIn=/proj/project.nv direct=true replaced=false
+  m/x @ v2 Ready dir=/cache/m/x@v2 entry=[/cache/m/x@v2/lib.nv] declaredIn=/cache/m/b@v1/project.nv direct=true replaced=false
+  m/c @ v1 Ready dir=/cache/m/c-local entry=[/cache/m/c-local/lib.nv] declaredIn=/cache/m/b@v1/project.nv direct=false replaced=true
+  not ready: [] ready: [m/b, m/x, m/c]
+== direct means the root manifest requires it, although a nested version won
+  m/a @ v1 Ready dir=/cache/m/a@v1 entry=[/cache/m/a@v1/main.nv] declaredIn=/proj/project.nv direct=true replaced=false
+  m/b @ v1 Ready dir=/cache/m/b@v1 entry=[/cache/m/b@v1/lib.nv] declaredIn=/cache/m/a@v1/project.nv direct=true replaced=false
+  m/deep @ v1 Ready dir=/cache/m/deep@v1 entry=[/cache/m/deep@v1/lib.nv] declaredIn=/cache/m/a@v1/project.nv direct=false replaced=false
+  not ready: [] ready: [m/a, m/b, m/deep]
+== a cycle ends
+  m/a @ v1 Ready dir=/cache/m/a@v1 entry=[/cache/m/a@v1/main.nv] declaredIn=/proj/project.nv direct=true replaced=false
+  m/b @ v1 Ready dir=/cache/m/b@v1 entry=[/cache/m/b@v1/main.nv] declaredIn=/cache/m/a@v1/project.nv direct=false replaced=false
+  not ready: [] ready: [m/a, m/b]
+== no requires
+  not ready: [] ready: []
+== lookup
+  has lib true has other false
+  find github.com/u/lib -> github.com/u/lib rest=[]
+  find github.com/u/lib/pkg -> github.com/u/lib rest=[pkg]
+  find github.com/u/lib/pkg/file -> github.com/u/lib rest=[pkg/file]
+  find github.com/u/lib/sub -> github.com/u/lib/sub rest=[]
+  find github.com/u/lib/sub/deep/file -> github.com/u/lib/sub rest=[deep/file]
+  find github.com/u/missing/x -> github.com/u/missing rest=[x]
+  find github.com/u/lib2 -> none
+  find github.com/u -> none
+  find  -> none
+  find anything -> none
+== cache directory
+  from NOVUS_DEPS: /custom/deps
+  default is ~/.novus/deps: true
+== disk tree
+  x.example/dep Ready dir=<root>/deps/x.example/dep@v1 entry=[<root>/deps/x.example/dep@v1/lib.nv]
+  x.example/vendored Ready dir=<root>/proj/vendored entry=[<root>/proj/vendored/main.nv]
+  x.example/none NotFetched dir=<root>/deps/x.example/none@v1 entry=[]

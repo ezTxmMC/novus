@@ -1,0 +1,184 @@
+package markup
+
+import bytes
+
+private final MARKUP_QUOTE = "\""
+private final MARKUP_BACKSLASH = "\\"
+private final MARKUP_OPEN_BRACE = "{"
+private final MARKUP_CLOSE_BRACE = "}"
+private final MARKUP_LINE_FEED = "\n"
+private final MARKUP_SLASH = "/"
+private final MARKUP_STAR = "*"
+private final MARKUP_OPENERS = ["{", "(", "["]
+private final MARKUP_CLOSERS = ["}", ")", "]"]
+private final MARKUP_BLOCK_COMMENT_END = "*/"
+
+// Index after the string literal that starts at `at`; the limit when it never ends. Same rules as the compiler's
+// nvhSkipString: only double quotes, a backslash hides the next byte.
+method markupSkipString(string text, integer at, integer limit): integer {
+    var index = at + 1
+    while (index < limit) {
+        var current = text.charAt(index)
+        if (current == MARKUP_BACKSLASH) {
+            index = index + 2
+            continue
+        }
+        if (current == MARKUP_QUOTE) {
+            return index + 1
+        }
+        index = index + 1
+    }
+    return limit
+}
+
+// Index after the `}` that closes the `{` at `open`, -1 when there is none (nvhCloseBrace).
+method markupCloseBrace(string text, integer open, integer limit): integer {
+    var depth = 0
+    var index = open
+    while (index < limit) {
+        var current = text.charAt(index)
+        if (current == MARKUP_QUOTE) {
+            index = markupSkipString(text, index, limit)
+            continue
+        }
+        depth = markupBraceDepth(depth, current)
+        if (current == MARKUP_CLOSE_BRACE && depth == 0) {
+            return index + 1
+        }
+        index = index + 1
+    }
+    return 0 - 1
+}
+
+// Matches `{` against `}` for the scanners of one text. Once a brace is found to be unclosed, no later one is tried:
+// that would read to the end of the text again for every `{`, which is quadratic on a torn template.
+define class MarkupBraceMatcher {
+    string text
+    integer length
+    bool exhausted
+
+    construct(string text) {
+        this.text = text
+        this.length = text.length()
+        this.exhausted = false
+    }
+
+    // The index behind the matching `}`, -1 when there is none.
+    method closeFrom(integer open): integer {
+        if (this.exhausted) {
+            return 0 - 1
+        }
+        var close = markupCloseBrace(this.text, open, this.length)
+        if (close < 0) {
+            this.exhausted = true
+        }
+        return close
+    }
+}
+
+method markupBraceDepth(integer depth, string current): integer {
+    if (current == MARKUP_OPEN_BRACE) {
+        return depth + 1
+    }
+    if (current == MARKUP_CLOSE_BRACE) {
+        return depth - 1
+    }
+    return depth
+}
+
+// The line break that ends the statement starting at `from`: the first one outside every bracket pair, string and
+// comment (nvhStatementEnd). The limit when there is none.
+method markupStatementEnd(string text, integer from, integer limit): integer {
+    var depth = 0
+    var index = from
+    while (index < limit) {
+        var current = text.charAt(index)
+        if (current == MARKUP_LINE_FEED && depth <= 0) {
+            return index
+        }
+        if (current == MARKUP_QUOTE) {
+            index = markupSkipString(text, index, limit)
+            continue
+        }
+        if (current == MARKUP_SLASH && markupStartsComment(text, index, limit)) {
+            index = markupSkipComment(text, index, limit)
+            continue
+        }
+        depth = depth + markupBracketChange(current)
+        index = index + 1
+    }
+    return limit
+}
+
+method markupBracketChange(string current): integer {
+    if (MARKUP_OPENERS.contains(current)) {
+        return 1
+    }
+    if (MARKUP_CLOSERS.contains(current)) {
+        return 0 - 1
+    }
+    return 0
+}
+
+method markupStartsComment(string text, integer index, integer limit): bool {
+    if (index + 1 >= limit) {
+        return false
+    }
+    var next = text.charAt(index + 1)
+    return next == MARKUP_SLASH || next == MARKUP_STAR
+}
+
+// A `//` comment stops before its line break, a block comment after its end (or at the limit).
+method markupSkipComment(string text, integer index, integer limit): integer {
+    if (text.charAt(index + 1) == MARKUP_STAR) {
+        var close = bytes.indexOf(text, MARKUP_BLOCK_COMMENT_END, index + 2)
+        if (close < 0 || close + 2 > limit) {
+            return limit
+        }
+        return close + 2
+    }
+    var lineEnd = bytes.indexOf(text, MARKUP_LINE_FEED, index)
+    if (lineEnd < 0 || lineEnd > limit) {
+        return limit
+    }
+    return lineEnd
+}
+
+method markupIsSpace(string character): bool {
+    return character == " " || character == "\t" || character == MARKUP_LINE_FEED || character == "\r"
+}
+
+// Letters and `_`, like isAlpha of the compiler's lexer.
+method markupIsAlpha(string character): bool {
+    if (character == "") {
+        return false
+    }
+    return (character >= "a" && character <= "z") || (character >= "A" && character <= "Z") || character == "_"
+}
+
+method markupIsDigit(string character): bool {
+    return character != "" && character >= "0" && character <= "9"
+}
+
+method markupIsIdentifier(string word): bool {
+    if (word == "" || markupIsDigit(word.charAt(0))) {
+        return false
+    }
+    var index = 0
+    while (index < word.length()) {
+        var current = word.charAt(index)
+        if (markupIsAlpha(current) == false && markupIsDigit(current) == false) {
+            return false
+        }
+        index = index + 1
+    }
+    return true
+}
+
+// True when `needle` stands at `index`; the bounds are checked here so callers never cut past the end.
+method markupStartsAt(string text, integer index, string needle): bool {
+    if (index < 0 || index + needle.length() > text.length()) {
+        return false
+    }
+    return text.substring(index, index + needle.length()) == needle
+}

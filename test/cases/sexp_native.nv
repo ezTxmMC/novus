@@ -1,0 +1,512 @@
+package main
+
+// The compiler's native s-expression navigation (runtime/nv_sexp.h) against
+// the Novus implementation it replaced, kept here as the reference: the same
+// answers for every node, including malformed ones, in any order of asking,
+// with the per-node memory evicted and after collections.
+
+method nodeChild(string s, integer index): string native "nv_sexp_child"
+method nodeCount(string s): integer native "nv_sexp_count"
+method nodeHead(string s): string native "nv_sexp_head"
+method isList(string s): bool native "nv_sexp_is_list"
+method atomEnd(string s, integer i): integer native "nv_sexp_atom_end"
+method sexpStr(string text): string native "nv_sexp_str"
+method sexpUnescape(string s): string native "nv_sexp_unescape"
+method tokKind(string token): string native "nv_token_kind"
+method tokPos(string token): string native "nv_token_pos"
+method tokVal(string token): string native "nv_token_value"
+
+method collect() native "nv_gc_collect"
+
+final QUOTE = chr(34)
+final BACKSLASH = chr(92)
+final SCAN_ALL = 1000000
+
+// --- the reference: the Novus code the natives replaced --------------------
+
+method refListEnd(string s, integer from): integer {
+    var n = s.length()
+    var i = from
+    var depth = 0
+    var inQuote = false
+    while (i < n) {
+        var c = s.charAt(i)
+        if (inQuote) {
+            if (c == BACKSLASH) {
+                i = i + 2
+                continue
+            }
+            if (c == QUOTE) {
+                inQuote = false
+            }
+            i = i + 1
+            continue
+        }
+        if (c == QUOTE) {
+            inQuote = true
+        }
+        if (c == "(") {
+            depth = depth + 1
+        }
+        if (c == ")") {
+            depth = depth - 1
+            if (depth == 0) {
+                return i + 1
+            }
+        }
+        i = i + 1
+    }
+    return n
+}
+
+method refStringEnd(string s, integer from): integer {
+    var n = s.length()
+    var i = from + 1
+    while (i < n && s.charAt(i) != QUOTE) {
+        if (s.charAt(i) == BACKSLASH) {
+            i = i + 1
+        }
+        i = i + 1
+    }
+    return i + 1
+}
+
+method refAtomEnd(string s, integer from): integer {
+    if (s.charAt(from) == "(") {
+        return refListEnd(s, from)
+    }
+    if (s.charAt(from) == QUOTE) {
+        return refStringEnd(s, from)
+    }
+    var n = s.length()
+    var i = from
+    while (i < n && s.charAt(i) != " " && s.charAt(i) != ")") {
+        i = i + 1
+    }
+    return i
+}
+
+method refChild(string s, integer index): string {
+    var n = s.length()
+    var i = 1
+    var count = 0
+    while (i < n) {
+        while (i < n && s.charAt(i) == " ") {
+            i = i + 1
+        }
+        if (i >= n || s.charAt(i) == ")") {
+            return ""
+        }
+        var start = i
+        i = refAtomEnd(s, i)
+        if (count == index) {
+            return s.substring(start, i)
+        }
+        count = count + 1
+    }
+    return ""
+}
+
+method refCount(string s): integer {
+    var n = s.length()
+    var i = 1
+    var count = 0
+    while (i < n) {
+        while (i < n && s.charAt(i) == " ") {
+            i = i + 1
+        }
+        if (i >= n || s.charAt(i) == ")") {
+            return count
+        }
+        i = refAtomEnd(s, i)
+        count = count + 1
+    }
+    return count
+}
+
+method refUnescapeChar(string e): string {
+    if (e == "n") {
+        return chr(10)
+    }
+    if (e == "r") {
+        return chr(13)
+    }
+    if (e == "t") {
+        return chr(9)
+    }
+    return e
+}
+
+method refUnescape(string atom): string {
+    var text = ""
+    if (atom.length() >= 2) {
+        text = atom.substring(1, atom.length() - 1)
+    }
+    var out = ""
+    var i = 0
+    var n = text.length()
+    while (i < n) {
+        var c = text.charAt(i)
+        if (c == BACKSLASH && i + 1 < n) {
+            out = out + refUnescapeChar(text.charAt(i + 1))
+            i = i + 2
+            continue
+        }
+        out = out + c
+        i = i + 1
+    }
+    return out
+}
+
+method refEscapeChar(string c): string {
+    if (c == BACKSLASH) {
+        return BACKSLASH + BACKSLASH
+    }
+    if (c == QUOTE) {
+        return BACKSLASH + QUOTE
+    }
+    if (c == chr(10)) {
+        return BACKSLASH + "n"
+    }
+    if (c == chr(13)) {
+        return BACKSLASH + "r"
+    }
+    if (c == chr(9)) {
+        return BACKSLASH + "t"
+    }
+    if (c == "?") {
+        return BACKSLASH + "?"
+    }
+    return c
+}
+
+method refStr(string text): string {
+    var out = QUOTE
+    var i = 0
+    while (i < text.length()) {
+        out = out + refEscapeChar(text.charAt(i))
+        i = i + 1
+    }
+    return out + QUOTE
+}
+
+// --- checks ---------------------------------------------------------------
+
+var failures = 0
+var checks = 0
+
+method expect(string what, object got, object want) {
+    checks = checks + 1
+    if (got == want) {
+        return
+    }
+    failures = failures + 1
+    if (failures <= 10) {
+        println "MISMATCH ${what}: got [${got}] want [${want}]"
+    }
+}
+
+// Every question the compiler can ask of one string, in the given order of
+// child indexes.
+method checkNode(string s, array<integer> order) {
+    expect("count of ${s}", nodeCount(s), refCount(s))
+    expect("head of ${s}", nodeHead(s), refHead(s))
+    expect("isList of ${s}", isList(s), s.length() > 0 && s.charAt(0) == "(")
+    for (index in order) {
+        expect("child ${index} of ${s}", nodeChild(s, index), refChild(s, index))
+    }
+}
+
+method refHead(string s): string {
+    if (s.length() > 0 && s.charAt(0) == "(") {
+        return refChild(s, 0)
+    }
+    return ""
+}
+
+method ascending(integer count): array<integer> {
+    var order = []
+    var i = -1
+    while (i < count + 2) {
+        order.append(i)
+        i = i + 1
+    }
+    return order
+}
+
+method descending(integer count): array<integer> {
+    var order = []
+    var i = count + 1
+    while (i >= -1) {
+        order.append(i)
+        i = i - 1
+    }
+    return order
+}
+
+// A pseudo random order that repeats and jumps back and forth.
+method scattered(integer count, integer seed): array<integer> {
+    var order = []
+    var state = seed
+    var steps = 0
+    while (steps < count * 2 + 4) {
+        state = (state * 1103515245 + 12345) % 2147483648
+        order.append(state / 65536 % (count + 3) - 1)
+        steps = steps + 1
+    }
+    return order
+}
+
+method checkAllOrders(string s) {
+    var count = refCount(s)
+    checkNode(s, ascending(count))
+    checkNode(s, descending(count))
+    checkNode(s, scattered(count, count + 7))
+}
+
+final SAMPLES = [
+    "", "(", ")", "()", "( )", "(a)", "(a b c)", "(  a   b  )", "abc", "a", "(a",
+    "(call f (str \"a b\") 1)",
+    "(str \"has ) paren and ( too\")",
+    "(str \"escaped \\\" quote\" next)",
+    "(str \"ends with backslash\\\\\" x)",
+    "(str \"unterminated",
+    "(str \"unterminated\\",
+    "(list (list (list (list 1 2) 3) 4) 5)",
+    "(method main - (params) (annos) (block (at f:1 (println (str \"hi\")))))",
+    "(a (b (c) \"x y\") d",
+    "(a \"b",
+    "((a) (b) (c))",
+    "(a)(b)",
+    "(a) b",
+    "(a  )  ",
+    "(-1 1.5 true)"
+]
+
+method checkSamples() {
+    for (sample in SAMPLES) {
+        checkAllOrders(sample)
+    }
+    println "samples: ${SAMPLES.length()} nodes"
+}
+
+// All strings up to a length over a small alphabet that makes the scanner's
+// states meet: parentheses, quotes, backslashes, spaces and atoms.
+final ALPHABET = ["(", ")", QUOTE, BACKSLASH, " ", "a", "1"]
+
+method generated(integer seed, integer length): string {
+    var state = seed
+    var out = ""
+    var i = 0
+    while (i < length) {
+        state = (state * 1103515245 + 12345) % 2147483648
+        out = out + ALPHABET[state / 65536 % ALPHABET.length()]
+        i = i + 1
+    }
+    return out
+}
+
+method checkGenerated() {
+    var seed = 1
+    var total = 0
+    while (seed <= 1500) {
+        var s = generated(seed, 1 + seed % 14)
+        checkAllOrders(s)
+        total = total + 1
+        seed = seed + 1
+    }
+    println "generated: ${total} nodes"
+}
+
+method atomEndAgrees(string s): bool {
+    var i = 0
+    while (i < s.length()) {
+        if (atomEnd(s, i) != refAtomEnd(s, i)) {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+method checkAtomEnd() {
+    var seed = 1
+    while (seed <= 400) {
+        var s = generated(seed, 1 + seed % 12)
+        expect("atomEnd of ${s}", atomEndAgrees(s), true)
+        seed = seed + 1
+    }
+    for (sample in SAMPLES) {
+        expect("atomEnd of ${sample}", atomEndAgrees(sample), true)
+    }
+    println "atomEnd: checked"
+}
+
+// A block of thousands of statements, walked the way the code generator
+// does, and then in the other direction.
+method wideBlock(integer width): string {
+    var parts = ["block"]
+    var i = 0
+    while (i < width) {
+        parts.append("(at f:" + i + " (println (str \"line " + i + "\")))")
+        i = i + 1
+    }
+    return "(" + parts.join(" ") + ")"
+}
+
+// Allocates enough garbage for the collector to run several times.
+method churn(integer rounds) {
+    var keep = 0
+    var i = 0
+    while (i < rounds) {
+        var junk = "garbage" + i + "........................................"
+        keep = keep + junk.length()
+        i = i + 1
+    }
+    expect("churn", keep > 0, true)
+}
+
+method checkWideBlock() {
+    var width = 3000
+    var block = wideBlock(width)
+    expect("wide count", nodeCount(block), width + 1)
+    var i = 0
+    while (i <= width) {
+        expect("wide child ${i}", nodeChild(block, i), refChild(block, i))
+        i = i + 1
+        if (i % 1000 == 0) {
+            churn(300000)
+        }
+    }
+    i = width
+    while (i >= 0) {
+        expect("wide child back ${i}", nodeChild(block, i), refChild(block, i))
+        i = i - 7
+    }
+    expect("wide beyond", nodeChild(block, width + 1), "")
+    println "wide block: ${width} statements"
+}
+
+// Nodes that are made after a collection must not be answered from what was
+// known about whatever lived at the same address before.
+method checkAfterCollections() {
+    var round = 0
+    while (round < 40) {
+        churn(60000)
+        var s = generated(round + 1, 40)
+        var t = "(" + s + ")"
+        expect("round count ${round}", nodeCount(t), refCount(t))
+        expect("round child ${round}", nodeChild(t, 1), refChild(t, 1))
+        round = round + 1
+    }
+    println "collections: ${round} rounds"
+}
+
+// More nodes than the memory has places for: evicted nodes are scanned again.
+method checkEviction() {
+    var nodes = []
+    var i = 0
+    while (i < 5000) {
+        nodes.append("(n" + i + " (x " + i + ") y)")
+        i = i + 1
+    }
+    var round = 0
+    while (round < 3) {
+        i = 0
+        while (i < nodes.length()) {
+            expect("evict child", nodeChild(nodes[i], 1), "(x " + i + ")")
+            expect("evict count", nodeCount(nodes[i]), 3)
+            i = i + 1
+        }
+        round = round + 1
+    }
+    println "eviction: ${nodes.length()} nodes"
+}
+
+// Nodes of one length are made, asked about and dropped with a collection
+// after each: what the memory knows about a node must never be taken for the
+// answer about a later node that happens to lie in the same place.
+method checkCollectionsBetweenNodes() {
+    var i = 0
+    while (i < 300) {
+        var number = "" + (1000000 + i)
+        var node = "(k" + number + " (v" + number + "))"
+        expect("reuse count", nodeCount(node), 2)
+        expect("reuse child ${i}", nodeChild(node, 1), "(v" + number + ")")
+        node = ""
+        collect()
+        i = i + 1
+    }
+    println "collections between nodes: ${i} nodes"
+}
+
+method checkViews() {
+    var program = "(root (a (b c) d) (e f))"
+    var inner = nodeChild(program, 1)
+    var deeper = nodeChild(inner, 1)
+    println inner
+    println deeper
+    println nodeCount(inner)
+    println nodeChild(deeper, 0) + nodeChild(deeper, 1)
+    println nodeChild(nodeChild(program, 2), 1)
+}
+
+method checkQuoted() {
+    var texts = [
+        "", "plain", "a b", "tab\there", "nl\nx", "cr\rx", "quote\"q", "back\\slash",
+        "what??", "a?b", "(paren)", "\\\"\n\r\t?"
+    ]
+    for (text in texts) {
+        var atom = sexpStr(text)
+        expect("sexpStr ${text}", atom, refStr(text))
+        expect("sexpUnescape ${text}", sexpUnescape(atom), text)
+        expect("reference unescape ${text}", refUnescape(atom), text)
+    }
+    expect("unescape short", sexpUnescape(""), "")
+    expect("unescape one", sexpUnescape("x"), "")
+    expect("unescape pair", sexpUnescape("\"\""), "")
+    expect("unescape trailing backslash", sexpUnescape("\"a\\\""), refUnescape("\"a\\\""))
+    expect("unescape unknown", sexpUnescape("\"\\q\""), "q")
+    println sexpStr("it's \"quoted\"\n")
+    println sexpUnescape(sexpStr("round\ttrip"))
+}
+
+method checkTokens() {
+    var token = "IDENT main.nv:12 some value with spaces"
+    println tokKind(token)
+    println tokPos(token)
+    println tokVal(token)
+    println tokVal("OP f:1 +")
+    println tokVal("STR f:1 ")
+    println tokKind("A b c")
+    println tokPos("A b c")
+    println tokVal("A b c")
+    tryRun(TokenProbe{})
+    println tryFailed()
+    println tryError()
+}
+
+define class TokenProbe {
+    method run(): string {
+        return tokKind("nospace")
+    }
+}
+
+method tryRun(object task): object native "nv_try_run"
+method tryFailed(): bool native "nv_try_failed"
+method tryError(): string native "nv_try_error"
+
+method main {
+    checkSamples()
+    checkGenerated()
+    checkAtomEnd()
+    checkWideBlock()
+    checkAfterCollections()
+    checkEviction()
+    checkCollectionsBetweenNodes()
+    checkViews()
+    checkQuoted()
+    checkTokens()
+    println "checks: ${checks}"
+    println "mismatches: ${failures}"
+}

@@ -1,0 +1,87 @@
+package markup
+
+import base/maybe
+import base/text
+import bytes
+
+private final MARKUP_HEADER_OPEN = "<?nv"
+private final MARKUP_HEADER_CLOSE = "?>"
+private final MARKUP_HEADER_KIND = "header"
+private final MARKUP_TAG_KIND = "tag"
+
+// A region of a .nvh text. `header` islands cover the Novus code between `<?nv` and `?>` (what the parser reads
+// as members); `tag` islands cover the name of a component start tag, `Item` in `<Item text={x} />`.
+define class Island {
+    string kind
+    Span span
+
+    construct(string kind, Span span) {
+        this.kind = kind
+        this.span = span
+    }
+}
+
+// Where the `<?nv ... ?>` block of a component is. It only counts as the header when it is the first thing in the
+// file after whitespace, like the compiler's transpileNvh; without a closing `?>` it runs to the end of the text.
+define class MarkupHeader {
+    integer start
+    integer contentStart
+    integer contentEnd
+    bool closed
+    integer templateStart
+
+    construct(integer start, integer contentStart, integer contentEnd, bool closed, integer templateStart) {
+        this.start = start
+        this.contentStart = contentStart
+        this.contentEnd = contentEnd
+        this.closed = closed
+        this.templateStart = templateStart
+    }
+
+    method content(): Span {
+        return Span(this.contentStart, this.contentEnd)
+    }
+}
+
+// nil when the text has no header.
+method markupLocateHeader(string text): MarkupHeader {
+    var start = 0
+    while (start < text.length() && markupIsSpace(text.charAt(start))) {
+        start = start + 1
+    }
+    if (markupStartsAt(text, start, MARKUP_HEADER_OPEN) == false) {
+        return nothing()
+    }
+    var contentStart = start + MARKUP_HEADER_OPEN.length()
+    var close = bytes.indexOf(text, MARKUP_HEADER_CLOSE, contentStart)
+    if (close < 0) {
+        return MarkupHeader(start, contentStart, text.length(), false, text.length())
+    }
+    return MarkupHeader(start, contentStart, close, true, close + MARKUP_HEADER_CLOSE.length())
+}
+
+// The header island (at most one), whose span is the code between the delimiters.
+method findIslands(string text): array<Island> {
+    var header = markupLocateHeader(text)
+    if (isNone(header)) {
+        return []
+    }
+    return [Island(MARKUP_HEADER_KIND, header.content())]
+}
+
+// One island per component start tag (`<Name`, an upper-case first letter) of the template, in source order. The
+// scan follows the compiler's tokenizer: comments, `{...}` expressions, `<?= ?>` code, attributes and the text of
+// script and style elements are skipped, so a tag-like text inside them is no tag.
+method componentTagNames(string text): array<Island> {
+    var start = 0
+    var header = markupLocateHeader(text)
+    if (isSome(header)) {
+        start = header.templateStart
+    }
+    var names = MarkupTagScanner(text).scanFrom(start)
+    var islands = []
+    for (name in names) {
+        islands.append(Island(MARKUP_TAG_KIND, name))
+    }
+    return islands
+}

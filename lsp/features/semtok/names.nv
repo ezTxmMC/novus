@@ -1,0 +1,180 @@
+package semtok
+
+import base/maybe
+import base/model
+import projects/workspace
+import semantics/semantic
+import syntax/lexing
+
+// contract-note: the primitive type names are a local table, because the built-in tables live in `builtins`, which
+// semtok may not import (semtok/DESIGN-NOTES.md 4).
+private final SEMTOK_PRIMITIVE_TYPES = { "string": true, "str": true, "integer": true, "int": true, "float": true,
+    "bool": true, "array": true, "map": true, "object": true, "any": true }
+
+// Classifies the identifiers that the lexical pass left alone: what a name means in the program, by the rules of the
+// loader (5.6). A name that resolves to nothing stays unclassified, so a typo is not painted like a real symbol.
+define class SemtokNames {
+    FileContext context
+    Resolver resolver
+    SemtokScopes scopes
+    SemtokDeclarations declared
+    SemtokMembers members
+
+    construct(FileContext context) {
+        this.context = context
+        this.resolver = context.resolver()
+        this.scopes = SemtokScopes(context)
+        this.declared = SemtokDeclarations(context.syntax)
+        this.members = SemtokMembers(context)
+    }
+
+    method classify(SemtokStream stream, integer index): SemanticSpan {
+        var token = stream.tokenAt(index)
+        var declaration = this.declared.spanAt(token)
+        if (semtokIsNone(declaration) == false) {
+            return declaration
+        }
+        if (this.declared.insideImportPath(token.start)) {
+            return SemanticSpan(token.span(), SEMTOK_TYPE_NAMESPACE, SEMTOK_MOD_NONE)
+        }
+        var scope = this.scopes.scopeAt(token.start)
+        var local = this.localDeclaredAt(scope, token)
+        if (semtokIsNone(local) == false) {
+            return local
+        }
+        if (stream.isPunct(index - 1, ".")) {
+            return this.members.classify(stream, index, scope)
+        }
+        if (stream.isPunct(index + 1, "(")) {
+            return this.classifyCall(stream, index, scope)
+        }
+        return this.classifyName(stream, index, scope)
+    }
+
+    // The name of a local variable or loop variable at its declaration: the local is not visible yet at its own name, so
+    // the resolver cannot find it there.
+    method localDeclaredAt(Scope scope, Token token): SemanticSpan {
+        if (isNone(scope.enclosingCallable)) {
+            return semtokNoSpan(token.start)
+        }
+        for (local in scope.enclosingCallable.locals) {
+            if (local.nameSpan.start == token.start) {
+                return SemanticSpan(token.span(), SEMTOK_TYPE_VARIABLE, SEMTOK_MOD_DECLARATION)
+            }
+        }
+        return semtokNoSpan(token.start)
+    }
+
+    method classifyCall(SemtokStream stream, integer index, Scope scope): SemanticSpan {
+        var token = stream.tokenAt(index)
+        var found = this.resolver.lookupCall(scope, token.text, stream.argumentCount(index + 1))
+        if (semtokIsUnknown(found) == false) {
+            return semtokSymbolSpan(token.span(), found.candidates[0])
+        }
+        if (this.resolver.isBuiltinCall(token.text)) {
+            return SemanticSpan(token.span(), SEMTOK_TYPE_FUNCTION, SEMTOK_MOD_DEFAULT_LIBRARY)
+        }
+        return this.typeNamed(token)
+    }
+
+    method classifyName(SemtokStream stream, integer index, Scope scope): SemanticSpan {
+        var token = stream.tokenAt(index)
+        var field = this.objectField(stream, index)
+        if (semtokIsNone(field) == false) {
+            return field
+        }
+        var found = this.resolver.lookupName(scope, token.text)
+        if (semtokIsUnknown(found) == false) {
+            return this.useOf(stream, index, found.candidates[0])
+        }
+        var type = this.typeNamed(token)
+        if (semtokIsNone(type) == false) {
+            return type
+        }
+        return this.qualifierOrPrimitive(stream, index)
+    }
+
+    method typeNamed(Token token): SemanticSpan {
+        var symbol = this.resolver.lookupType(token.text)
+        if (isNone(symbol)) {
+            return semtokNoSpan(token.start)
+        }
+        return semtokSymbolSpan(token.span(), symbol)
+    }
+
+    // A variable or field read or written; a local that is declared right here carries the declaration modifier.
+    method useOf(SemtokStream stream, integer index, Symbol symbol): SemanticSpan {
+        var token = stream.tokenAt(index)
+        var span = semtokSymbolSpan(token.span(), symbol)
+        if (symbol.isLocal() && symbol.decl.nameSpan.start == token.start) {
+            span.modifiers = span.modifiers + SEMTOK_MOD_DECLARATION
+            return span
+        }
+        if (stream.isPunct(index + 1, "=") && semtokIsWritable(span.tokenType)) {
+            span.modifiers = span.modifiers + SEMTOK_MOD_MODIFICATION
+        }
+        return span
+    }
+
+    method qualifierOrPrimitive(SemtokStream stream, integer index): SemanticSpan {
+        var token = stream.tokenAt(index)
+        if (stream.isPunct(index + 1, ".") && this.resolver.isModuleQualifier(token.text)) {
+            return SemanticSpan(token.span(), SEMTOK_TYPE_NAMESPACE, this.libraryBit(token.text))
+        }
+        if (SEMTOK_PRIMITIVE_TYPES.has(token.text)) {
+            return SemanticSpan(token.span(), SEMTOK_TYPE_TYPE, SEMTOK_MOD_DEFAULT_LIBRARY)
+        }
+        return semtokNoSpan(token.start)
+    }
+
+    method libraryBit(string qualifier): integer {
+        if (this.resolver.index.isStandardQualifier(qualifier)) {
+            return SEMTOK_MOD_DEFAULT_LIBRARY
+        }
+        return SEMTOK_MOD_NONE
+    }
+
+    // The field name in `Name{field=value}` and in `@Annotation{key=value}`.
+    method objectField(SemtokStream stream, integer index): SemanticSpan {
+        var token = stream.tokenAt(index)
+        var none = semtokNoSpan(token.start)
+        if (this.startsFieldInitializer(stream, index) == false) {
+            return none
+        }
+        var open = this.openBraceBefore(stream, index)
+        if (open < 1 || stream.isIdent(open - 1) == false) {
+            return none
+        }
+        if (stream.isPunct(stream.beforePrevious(open), "@") || isSome(this.resolver.lookupType(stream.textAt(open - 1)))) {
+            return SemanticSpan(token.span(), SEMTOK_TYPE_PROPERTY, SEMTOK_MOD_NONE)
+        }
+        return none
+    }
+
+    // `name =` right after a `{` or a `,`.
+    method startsFieldInitializer(SemtokStream stream, integer index): bool {
+        if (stream.isPunct(index + 1, "=") == false) {
+            return false
+        }
+        return stream.isPunct(index - 1, "{") || stream.isPunct(index - 1, ",")
+    }
+
+    // The `{` that is still open in front of the token, -1 when there is none.
+    method openBraceBefore(SemtokStream stream, integer index): integer {
+        var depth = 0
+        var back = index - 1
+        while (back >= 0) {
+            if (stream.isPunct(back, "}")) {
+                depth = depth + 1
+            }
+            if (stream.isPunct(back, "{") && depth == 0) {
+                return back
+            }
+            if (stream.isPunct(back, "{")) {
+                depth = depth - 1
+            }
+            back = back - 1
+        }
+        return -1
+    }
+}

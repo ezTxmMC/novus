@@ -1,0 +1,108 @@
+package main
+
+import strings
+import "novus/lsp/syntax/outline"
+import "novus/lsp/syntax/parsing"
+
+private final SHOWCASE = "../../syntax.nv"
+
+// Empty when the declaration spans are sane: inside the text, name inside the full span, members inside their owner.
+method spanProblem(Decl decl, integer length, Span outer): string {
+    var full = decl.fullSpan
+    if (full.start < outer.start || full.end > outer.end || full.start > full.end) {
+        return decl.name + " full span " + full.start + "-" + full.end + " outside " + outer.start + "-" + outer.end
+    }
+    if (decl.nameSpan.start < full.start || decl.nameSpan.end > full.end) {
+        return decl.name + " name span outside its full span"
+    }
+    if (decl.bodySpan.start >= 0 && (decl.bodySpan.start < full.start || decl.bodySpan.end > full.end)) {
+        return decl.name + " body span outside its full span"
+    }
+    for (member in decl.members) {
+        var problem = spanProblem(member, length, full)
+        if (problem != "") {
+            return problem
+        }
+    }
+    return ""
+}
+
+method fileProblem(string source): string {
+    var file = parseSourceText("r.nv", source, editorParseOptions())
+    var everything = Span(0, source.length())
+    var previousStart = -1
+    for (decl in file.decls) {
+        var problem = spanProblem(decl, source.length(), everything)
+        if (problem != "") {
+            return problem
+        }
+        if (decl.fullSpan.start < previousStart) {
+            return decl.name + " is out of order"
+        }
+        previousStart = decl.fullSpan.start
+    }
+    for (issue in file.issues) {
+        if (issue.span.start < 0 || issue.span.end > source.length() || issue.span.start > issue.span.end) {
+            return "issue " + issue.code + " outside the text"
+        }
+    }
+    return ""
+}
+
+method checkTruncationSweep() {
+    var source = readFile(SHOWCASE)
+    var failures = []
+    var cut = 0
+    while (cut <= source.length()) {
+        var problem = fileProblem(source.substring(0, cut))
+        if (problem != "") {
+            failures.append(cut + ": " + problem)
+        }
+        cut = cut + 37
+    }
+    expectEqual("sweep/every-37th-prefix-of-the-showcase-parses-sanely", "", failures.join(" | "))
+}
+
+method checkMutationSweep() {
+    var source = readFile(SHOWCASE)
+    var inserts = ["{", "}", "(", ")", "\"", "/*", "${", "\\", "#", "[", "]", ";", " method ", " define class "]
+    var failures = []
+    var at = 3
+    var round = 0
+    while (at < source.length()) {
+        var removed = source.substring(0, at) + source.substring(at + 1, source.length())
+        var inserted = source.substring(0, at) + inserts[round % inserts.length()] + source.substring(at, source.length())
+        var problem = fileProblem(removed) + fileProblem(inserted)
+        if (problem != "") {
+            failures.append(at + ": " + problem)
+        }
+        at = at + 41
+        round = round + 1
+    }
+    expectEqual("sweep/single-byte-deletions-and-insertions", "", failures.join(" | "))
+}
+
+method checkNesting() {
+    var deep = strings.repeat("if (a) {\n", 300) + strings.repeat("}\n", 300)
+    scenario("deep/blocks-beyond-the-nesting-limit", "method m() {\n" + deep + "}\n", "method m()", "")
+    var parens = "X = " + strings.repeat("(", 5000) + "1" + strings.repeat(")", 5000) + "\n"
+    scenario("deep/parentheses", parens, "X", "")
+    var members = "define class A {\n" + strings.repeat("    integer f\n", 3000) + "}\n"
+    expectInt("deep/many-members", 3000, SourceParser(editorParseOptions()).parseText("a.nv", members).decls[0].members.length())
+    var many = strings.repeat("method m() {\n}\n", 3000)
+    expectInt("deep/many-methods", 3000, SourceParser(editorParseOptions()).parseText("a.nv", many).decls.length())
+}
+
+method checkNastyInput() {
+    var garbage = strings.repeat("}{)(][ \" $ { ", 400)
+    expectEqual("nasty/brackets-and-quotes", "", fileProblem(garbage))
+    var binary = ""
+    var byte = 1
+    while (byte < 256) {
+        binary = binary + chr(byte) + "method m() {}"
+        byte = byte + 1
+    }
+    expectEqual("nasty/every-byte-value", "", fileProblem(binary))
+    expectEqual("nasty/only-keywords", "", fileProblem(strings.repeat("method define import package var @ ", 500)))
+    expectTrue("nasty/issue-count-is-capped", parseSourceText("a.nv", strings.repeat("# ", 20000), editorParseOptions()).issues.length() <= 3000)
+}

@@ -1,0 +1,149 @@
+package protocol
+
+import base/maybe
+import base/model
+import base/text
+
+// Decoding request parameters into domain values; every decoder is total (missing or mistyped parts give defaults).
+private final PROTOCOL_DEFAULT_VERSION = 0
+private final PROTOCOL_TAG_UNNECESSARY = 1
+private final PROTOCOL_TAG_DEPRECATED = 2
+
+define class TextDocumentPosition {
+    string uri
+    WirePosition position
+
+    construct(string uri, WirePosition position) {
+        this.uri = uri
+        this.position = position
+    }
+}
+
+method protocolDecodePosition(object value): WirePosition {
+    return WirePosition(protocolWhole(value, "line", 0), protocolWhole(value, "character", 0))
+}
+
+method decodeDocumentUri(map<string, object> params): string {
+    return protocolText(protocolField(params, "textDocument"), "uri", "")
+}
+
+method decodePositionParams(map<string, object> params): TextDocumentPosition {
+    var position = protocolDecodePosition(protocolField(params, "position"))
+    return TextDocumentPosition(decodeDocumentUri(params), position)
+}
+
+method decodeWireRange(map<string, object> value): WireRange {
+    var start = protocolDecodePosition(protocolField(value, "start"))
+    var end = protocolDecodePosition(protocolField(value, "end"))
+    return WireRange(start, end)
+}
+
+method decodeContentChanges(object contentChanges): array<TextChange> {
+    var changes = []
+    for (entry in protocolItems(contentChanges)) {
+        var change = protocolDecodeChange(entry)
+        if (isSome(change)) {
+            changes.append(change)
+        }
+    }
+    return changes
+}
+
+// A range counts only when both ends are objects with numeric line and character.
+method protocolIsWirePosition(object value): bool {
+    return protocolIsNumber(protocolField(value, "line")) && protocolIsNumber(protocolField(value, "character"))
+}
+
+method protocolIsWireRange(object value): bool {
+    return protocolIsWirePosition(protocolField(value, "start")) && protocolIsWirePosition(protocolField(value, "end"))
+}
+
+// A change without a text or with a malformed range is dropped: guessing "whole document" or an insertion at the top would damage the buffer.
+method protocolDecodeChange(object entry): object {
+    var range = protocolField(entry, "range")
+    if (typeOf(protocolField(entry, "text")) != "string") {
+        return nothing()
+    }
+    var text = protocolText(entry, "text", "")
+    if (protocolIsWireRange(range)) {
+        return TextChange(true, decodeWireRange(range), text)
+    }
+    if (isNone(range)) {
+        return TextChange(false, WireRange(WirePosition(0, 0), WirePosition(0, 0)), text)
+    }
+    return nothing()
+}
+
+method decodeTextDocumentItem(map<string, object> params): Document {
+    var item = protocolField(params, "textDocument")
+    var uri = protocolText(item, "uri", "")
+    var languageId = protocolText(item, "languageId", "")
+    var version = protocolWhole(item, "version", PROTOCOL_DEFAULT_VERSION)
+    return Document(uri, languageId, version, protocolText(item, "text", ""))
+}
+
+method decodeRenameName(map<string, object> params): string {
+    return protocolText(params, "newName", "")
+}
+
+method decodeSymbolQuery(map<string, object> params): string {
+    return protocolText(params, "query", "")
+}
+
+method decodeSelectedRange(map<string, object> params): WireRange {
+    return decodeWireRange(protocolField(params, "range"))
+}
+
+// LSP DiagnosticSeverity numbers; an absent or unknown severity reads as an error.
+method protocolSeverityOf(integer code): Severity {
+    if (code == Severity.Warning.code) {
+        return Severity.Warning
+    }
+    if (code == Severity.Information.code) {
+        return Severity.Information
+    }
+    if (code == Severity.Hint.code) {
+        return Severity.Hint
+    }
+    return Severity.Error
+}
+
+// A diagnostic code is a string or a number on the wire; the domain keeps text.
+method protocolCodeText(object code): string {
+    if (typeOf(code) == "string") {
+        return code
+    }
+    if (typeOf(code) == "integer") {
+        return "" + code
+    }
+    return ""
+}
+
+method protocolApplyTags(Diagnostic diagnostic, object tags) {
+    for (tag in protocolItems(tags)) {
+        diagnostic.unnecessary = diagnostic.unnecessary || tag == PROTOCOL_TAG_UNNECESSARY
+        diagnostic.deprecated = diagnostic.deprecated || tag == PROTOCOL_TAG_DEPRECATED
+    }
+}
+
+method protocolDecodeDiagnostic(object entry, PositionCodec codec, LineIndex lines): Diagnostic {
+    var span = codec.spanOf(lines, decodeWireRange(protocolField(entry, "range")))
+    var severity = protocolSeverityOf(protocolWhole(entry, "severity", Severity.Error.code))
+    var source = protocolText(entry, "source", "")
+    var code = protocolCodeText(protocolField(entry, "code"))
+    var diagnostic = Diagnostic(span, severity, source, code, protocolText(entry, "message", ""))
+    diagnostic.data = protocolText(entry, "data", "")
+    protocolApplyTags(diagnostic, protocolField(entry, "tags"))
+    return diagnostic
+}
+
+// The diagnostics a code action request carries (context.diagnostics), as domain values.
+method decodeContextDiagnostics(map<string, object> params, PositionCodec codec, LineIndex lines): array<Diagnostic> {
+    var decoded = []
+    for (entry in protocolList(protocolField(params, "context"), "diagnostics")) {
+        if (protocolIsMap(entry)) {
+            decoded.append(protocolDecodeDiagnostic(entry, codec, lines))
+        }
+    }
+    return decoded
+}

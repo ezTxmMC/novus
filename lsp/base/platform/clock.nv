@@ -1,0 +1,11 @@
+package platform
+
+import math
+import os
+
+private final PLATFORM_MILLIS_PER_SECOND = 1000
+
+// os.clock is the wall clock with sub-second precision; time.now() has one second only.
+method nowMillis(): integer {
+    return math.floor(os.clock() * PLATFORM_MILLIS_PER_SECOND)
+}

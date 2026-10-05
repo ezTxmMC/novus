@@ -1,0 +1,17 @@
+package main
+
+import @output_cases
+import @convert_cases
+import @locate_cases
+import @shadow_cases
+import @runner_cases
+
+// lsp/services/checker: the novusc output parser on every message shape, the finding to diagnostic conversion, the
+// novusc discovery, the shadow tree for dirty buffers and the runner against fake novusc shell scripts (skipped on Windows).
+method main() {
+    runOutputCases()
+    runConvertCases()
+    runLocateCases()
+    runShadowCases()
+    runRunnerCases()
+}

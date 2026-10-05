@@ -1,0 +1,36 @@
+package unicode
+
+// UTF-8 text and UTF-16 positions.
+//
+// A Novus string is a byte buffer: length(), charAt() and substring() count
+// bytes. This module reads the same bytes as UTF-8 characters, and converts
+// between byte offsets and the UTF-16 code unit offsets that protocols such
+// as LSP use (a character beyond U+FFFF counts as two units).
+//
+// Nothing here aborts on malformed input: every byte that is not part of a
+// valid sequence counts as one character, U+FFFD. Offsets are clamped to the
+// string, and an offset inside a character maps to the start of that
+// character.
+
+// Length of the text in UTF-16 code units.
+method utf16Length(string text): integer native "nv_unicode_utf16_length"
+
+// UTF-16 offset of a byte offset; clamped to 0..length.
+method byteToUtf16(string text, integer byteIndex): integer native "nv_unicode_byte_to_utf16"
+
+// Byte offset of a UTF-16 offset; clamped to 0..length. An offset in the
+// middle of a surrogate pair gives the start of that character.
+method utf16ToByte(string text, integer utf16Index): integer native "nv_unicode_utf16_to_byte"
+
+// Code point of the character that contains the byte offset, or -1 when the
+// offset is outside the text.
+method codePointAt(string text, integer byteIndex): integer native "nv_unicode_code_point_at"
+
+// The UTF-8 text of one code point; U+FFFD for a surrogate or a value outside 0..0x10FFFF.
+method fromCodePoint(integer codePoint): string native "nv_unicode_from_code_point"
+
+// Whether the whole text is well formed UTF-8 (NUL bytes are fine).
+method isValidUtf8(string text): bool native "nv_unicode_is_valid_utf8"
+
+// Number of characters (code points) in the text.
+method charLength(string text): integer native "nv_unicode_char_length"

@@ -1,0 +1,20 @@
+import geo
+import strings
+import @helper
+
+define enum Color {
+    Red,
+    Green
+}
+
+method main() {
+    var circle = Circle(2.0)
+    var area = circle.area()
+    println(geo.describe(circle))
+    println(strings.repeat("a", 2))
+    var shade = Color.Red
+    var total = helper(1)
+    total = total + helper(2)
+    println(scaled(1.0) + scaled(1.0, 2.0))
+    println(area)
+}

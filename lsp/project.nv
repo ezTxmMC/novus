@@ -1,0 +1,14 @@
+// Manifest of the Novus language server (written in Novus, speaks LSP over stdio).
+// Build: build/novusc build lsp/main.nv -o build/novus-lsp   (see lsp/DESIGN.md)
+project "github.com/ezTxmMC/novus-lsp"
+version "0.1.0"
+main "main.nv"
+output "novus-lsp"
+
+// The standard library sources embedded in the compiler (compiler/std) are the
+// only copy the server reads: stdModules() and stdSource(name). The module root
+// must be the compiler folder itself, because the compiler's own packages import
+// each other relative to it; the path must be relative (absolute replace paths
+// are not supported by novusc).
+require "novus/compiler"
+replace "novus/compiler" "../compiler"

@@ -1,0 +1,115 @@
+package main
+
+import "novus/lsp/base/platform"
+import "novus/lsp/projects/closure"
+import "novus/lsp/projects/modules"
+import "novus/lsp/projects/stdlib"
+import "novus/lsp/projects/workspace"
+import @support
+
+method runRevalidationCases() {
+    println("== Revalidator: modification time, once per second")
+    var world = WsWorld(wsSimpleProject())
+    var context = world.open("/p/main.nv", 1)
+    var model = context.project
+    world.space.revalidate(1000)
+    wsCheck("the first run only records the stamps", model.valid + " stamps=" + world.space.revalidator.lastChecked.length(), "true stamps=4")
+    world.source.write("/p/geo/extra.nv", "package geo\n\nmethod touched(): integer {\n    return 9\n}\n")
+    world.space.revalidate(1500)
+    wsCheck("within a second of the last run: not looked at", model.valid, "true")
+    world.space.revalidate(2100)
+    wsCheck("a changed file makes the project stale", model.valid + " parsed=" + world.cache.parsed.has("/p/geo/extra.nv"), "false parsed=false")
+    var rebuilt = world.open("/p/main.nv", 1)
+    wsCheck("and the next request sees the new text", rebuilt.index().functionsNamed("touched").length(), "1")
+    world.space.revalidate(3200)
+    wsCheck("the stamps were updated: nothing stale any more", model.valid, "true")
+}
+
+method runRevalidationKinds() {
+    println("== Revalidator: overlays, deletions, manifests, stale models")
+    var world = WsWorld(wsSimpleProject())
+    var context = world.open("/p/main.nv", 1)
+    var model = context.project
+    world.space.revalidate(1000)
+    world.source.write("/p/main.nv", "import geo\n\nmethod main() {\n    println(\"on disk only\")\n}\n")
+    world.space.revalidate(2100)
+    wsCheck("an open file is the editor's: its disk time is not looked at", model.valid, "true")
+    world.source.erase("/p/geo/shape.nv")
+    world.space.revalidate(3200)
+    wsCheck("a deleted file", model.valid, "false")
+    var rebuilt = world.open("/p/main.nv", 1)
+    wsCheck("is gone from the program", wsNames(rebuilt.project.closure.files), "/p/main.nv, /p/geo/extra.nv")
+    world.space.revalidate(4300)
+    world.source.write("/p/project.nv", "project \"p\"\nmain \"main.nv\"\n")
+    world.space.revalidate(5400)
+    wsCheck("the manifest counts too", model.valid, "false")
+    world.space.revalidate(6500)
+    wsCheck("a stale project is skipped until it is rebuilt", model.valid, "false")
+}
+
+method runRevalidationScratch() {
+    println("== Revalidator ignores scratch buffers")
+    var world = WsWorld(wsSimpleProject())
+    var context = world.space.contextFor(Document("untitled:Untitled-1", "novus", 1, "method s() {\n}\n"))
+    world.space.revalidate(1000)
+    wsCheck("nothing to look at", context.project.valid + " " + world.space.revalidator.lastChecked.length(), "true 0")
+}
+
+method dependencyFiles(): map<string, string> {
+    return {
+        "/deps/ex.com/lib@v1/lib.nv": "package lib\n\nmethod libFn() {\n}\n",
+        "/deps/ex.com/lib@v1/util/u.nv": "package util\n\nmethod utilFn() {\n}\n",
+        "/deps/ex.com/lib@v1/tools/t.nv": "package main\n\nmethod rootLike() {\n}\n",
+        "/deps/ex.com/lib@v1/readme.md": "not a source\n"
+    }
+}
+
+method describeFiles(array<ClosureFile> files): string {
+    var lines = []
+    for (file in files) {
+        lines.append(file.filePath.substring("/deps/ex.com/".length(), file.filePath.length()) + " q=[" + file.qualifier + "] package=[" + file.packageName + "] " + file.origin + " module=" + file.moduleName + " root=" + file.root)
+    }
+    return lines.join("; ")
+}
+
+method runDependencyIndexCases() {
+    println("== DependencyIndex")
+    var world = WsWorld(dependencyFiles())
+    var entry = ModuleEntry("ex.com/lib", "v1", "/deps/ex.com/lib@v1", ModuleStatus.Ready, "/p/project.nv")
+    var index = DependencyIndex()
+    var files = index.filesOfModule(world.cache, entry)
+    wsCheck("every source file of the module", describeFiles(files), "lib@v1/lib.nv q=[] package=[] Dependency module=ex.com/lib root=/deps/ex.com/lib@v1; lib@v1/tools/t.nv q=[] package=[tools] Dependency module=ex.com/lib root=/deps/ex.com/lib@v1; lib@v1/util/u.nv q=[util] package=[util] Dependency module=ex.com/lib root=/deps/ex.com/lib@v1")
+    wsCheck("parsed", files[1].syntax.decls[0].name + " " + files[2].syntax.decls[0].name, "rootLike utilFn")
+    var again = index.filesOfModule(world.cache, entry)
+    wsCheck("cached", (again == files) + " entries=" + index.byModule.length(), "true entries=1")
+    world.source.write("/deps/ex.com/lib@v1/util/u.nv", "package util\n\nmethod changedFn() {\n}\n")
+    var changed = index.filesOfModule(world.cache, entry)
+    wsCheck("a changed file is read again", (changed == files) + " " + changed[2].syntax.decls[0].name + " entries=" + index.byModule.length(), "false changedFn entries=1")
+    world.source.write("/deps/ex.com/lib@v1/extra/e.nv", "package extra\n")
+    var grown = index.filesOfModule(world.cache, entry)
+    wsCheck("a new file in a new folder is found", grown.length() + " entries=" + index.byModule.length(), "4 entries=1")
+    world.source.erase("/deps/ex.com/lib@v1/extra/e.nv")
+    wsCheck("a removed file is dropped", index.filesOfModule(world.cache, entry).length(), "3")
+    var missing = ModuleEntry("ex.com/gone", "v1", "/deps/ex.com/gone@v1", ModuleStatus.NotFetched, "/p/project.nv")
+    var replaceMissing = ModuleEntry("ex.com/loc", "", "/nowhere", ModuleStatus.ReplaceMissing, "/p/project.nv")
+    wsCheck("a module that is not Ready has no files", index.filesOfModule(world.cache, missing).length() + index.filesOfModule(world.cache, replaceMissing).length(), "0")
+    var empty = ModuleEntry("ex.com/empty", "v1", "/deps/ex.com/empty@v1", ModuleStatus.Ready, "/p/project.nv")
+    wsCheck("a Ready module without sources", index.filesOfModule(world.cache, empty).length(), "0")
+}
+
+method runStdSourceCases() {
+    println("== StdSourceStore")
+    var store = StdSourceStore(standardLibrary())
+    var path = store.pathOf("math")
+    var second = store.pathOf("math")
+    wsCheck("written once, the same path afterwards", (second == path) + " " + store.written.length() + " " + (readTextFile(path) == standardLibrary().module("math").source), "true 1 true")
+    writeTextFile(path, "stale copy")
+    var cached = store.pathOf("math")
+    wsCheck("a store trusts its own record", readTextFile(cached), "stale copy")
+    var fresh = StdSourceStore(standardLibrary())
+    var rewritten = fresh.pathOf("math")
+    wsCheck("a new store rewrites a copy whose content differs", (rewritten == path) + " " + (readTextFile(path) == standardLibrary().module("math").source), "true true")
+    wsCheck("an unknown module", fresh.pathOf("nope") + "|" + fresh.written.length(), "|1")
+    var jsonPath = fresh.pathOf("json")
+    wsCheck("one directory for all modules", wsFolderOf(jsonPath) == wsFolderOf(path), "true")
+}

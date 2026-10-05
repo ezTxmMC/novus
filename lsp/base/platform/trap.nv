@@ -1,0 +1,17 @@
+package platform
+
+import base/maybe
+
+// The trap natives are declared again here because platform cannot import rpc (NG25).
+method platformTryRun(object task): object native "nv_try_run"
+method platformTryFailed(): bool native "nv_try_failed"
+method platformTryError(): string native "nv_try_error"
+
+// The task's result, or nil when the task hit a runtime error; every task returns a non-nil value on success.
+method platformAttempt(object task): object {
+    var result = platformTryRun(task)
+    if (platformTryFailed()) {
+        return nothing()
+    }
+    return result
+}

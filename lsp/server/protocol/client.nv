@@ -1,0 +1,84 @@
+package protocol
+
+// What the client told us in initialize.
+private final PROTOCOL_MARKDOWN = "markdown"
+private final PROTOCOL_ADJUST_INDENTATION_MODE = 2
+
+define class ClientInfo {
+    string name
+    array<string> positionEncodings
+    bool snippetSupport
+    bool insertTextModeSupport
+    bool labelDetailsSupport
+    bool configurationPull
+    bool dynamicWatchers
+    bool workspaceFolders
+    bool hierarchicalSymbols
+    bool markdownDocumentation
+    bool relatedInformation
+
+    construct() {
+        this.name = ""
+        this.positionEncodings = []
+        this.snippetSupport = false
+        this.insertTextModeSupport = false
+        this.labelDetailsSupport = false
+        this.configurationPull = false
+        this.dynamicWatchers = false
+        this.workspaceFolders = false
+        this.hierarchicalSymbols = false
+        this.markdownDocumentation = false
+        this.relatedInformation = false
+    }
+}
+
+method protocolOffersMarkdown(object capabilities): bool {
+    var formats = [
+        protocolPath(capabilities, ["textDocument", "completion", "completionItem", "documentationFormat"]),
+        protocolPath(capabilities, ["textDocument", "hover", "contentFormat"]),
+        protocolPath(capabilities, ["textDocument", "signatureHelp", "signatureInformation", "documentationFormat"])
+    ]
+    for (candidate in formats) {
+        if (protocolTextList(candidate).contains(PROTOCOL_MARKDOWN)) {
+            return true
+        }
+    }
+    return false
+}
+
+method protocolCompletionFlag(object capabilities, string flag): bool {
+    return protocolFlagAt(capabilities, ["textDocument", "completion", "completionItem", flag], false)
+}
+
+// insertTextModeSupport is {valueSet: [1, 2]}: the client says which modes it understands, 2 is adjustIndentation.
+method protocolOffersAdjustIndentation(object capabilities): bool {
+    var support = protocolPath(capabilities, ["textDocument", "completion", "completionItem", "insertTextModeSupport"])
+    for (mode in protocolList(support, "valueSet")) {
+        if (protocolIsNumber(mode) && mode == PROTOCOL_ADJUST_INDENTATION_MODE) {
+            return true
+        }
+    }
+    return false
+}
+
+method protocolReadFlags(ClientInfo info, object capabilities) {
+    info.snippetSupport = protocolCompletionFlag(capabilities, "snippetSupport")
+    info.insertTextModeSupport = protocolOffersAdjustIndentation(capabilities)
+    info.labelDetailsSupport = protocolCompletionFlag(capabilities, "labelDetailsSupport")
+    info.configurationPull = protocolFlagAt(capabilities, ["workspace", "configuration"], false)
+    info.dynamicWatchers = protocolFlagAt(capabilities, ["workspace", "didChangeWatchedFiles", "dynamicRegistration"], false)
+    info.workspaceFolders = protocolFlagAt(capabilities, ["workspace", "workspaceFolders"], false)
+    info.hierarchicalSymbols = protocolFlagAt(capabilities, ["textDocument", "documentSymbol", "hierarchicalDocumentSymbolSupport"], false)
+    info.relatedInformation = protocolFlagAt(capabilities, ["textDocument", "publishDiagnostics", "relatedInformation"], false)
+    info.markdownDocumentation = protocolOffersMarkdown(capabilities)
+}
+
+// Never fails: whatever the client did not say stays at the conservative default of ClientInfo.
+method parseClientInfo(map<string, object> initializeParams): ClientInfo {
+    var info = ClientInfo()
+    var capabilities = protocolField(initializeParams, "capabilities")
+    info.name = protocolText(protocolField(initializeParams, "clientInfo"), "name", "")
+    info.positionEncodings = protocolTextList(protocolPath(capabilities, ["general", "positionEncodings"]))
+    protocolReadFlags(info, capabilities)
+    return info
+}

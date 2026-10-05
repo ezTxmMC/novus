@@ -1,0 +1,177 @@
+package outline
+
+import base/maybe
+import base/text
+import syntax/lexing
+
+define enum ImportKind {
+    Package, File, Module
+}
+
+define class ImportDecl {
+    ImportKind kind
+    string target
+    Span span
+    Span targetSpan
+
+    construct(ImportKind kind, string target, Span span, Span targetSpan) {
+        this.kind = kind
+        this.target = target
+        this.span = span
+        this.targetSpan = targetSpan
+    }
+}
+
+private final OUTLINE_HINT_CODE = "useless-top-level-print"
+private final OUTLINE_UNTERMINATED_CODES = { "unterminated-block": true, "unterminated-class-body": true }
+
+define class SyntaxIssue {
+    Span span
+    string code
+    string message
+    bool warning
+
+    construct(Span span, string code, string message, bool warning) {
+        this.span = span
+        this.code = code
+        this.message = message
+        this.warning = warning
+    }
+
+    // contract-note: additive, see outline/DESIGN-NOTES.md 1. The only code of 5.9 with severity hint; `warning`
+    // cannot express a hint, so such an issue sets both.
+    method isHint(): bool {
+        return this.code == OUTLINE_HINT_CODE
+    }
+}
+
+define class SourceFile {
+    string filePath
+    string fileKind
+    string packageName
+    Span packageSpan
+    array<ImportDecl> imports
+    array<Decl> decls
+    array<SyntaxIssue> issues
+    array<Token> tokens
+    array<Token> comments
+    integer textHash
+    integer declSignature
+    integer lineCount
+
+    construct(string filePath, string fileKind, integer textHash) {
+        this.filePath = filePath
+        this.fileKind = fileKind
+        this.packageName = ""
+        this.packageSpan = Span(-1, -1)
+        this.imports = []
+        this.decls = []
+        this.issues = []
+        this.tokens = []
+        this.comments = []
+        this.textHash = textHash
+        this.declSignature = 0
+        this.lineCount = 0
+    }
+
+    method topLevelNamed(string name): array<Decl> {
+        var found = []
+        for (decl in this.decls) {
+            if (decl.name == name) {
+                found.append(decl)
+            }
+        }
+        return found
+    }
+
+    method typeNamed(string name): Decl {
+        for (decl in this.decls) {
+            if (decl.name == name && decl.isType()) {
+                return decl
+            }
+        }
+        return nothing()
+    }
+
+    method memberNamed(string typeName, string memberName): array<Decl> {
+        var owner = this.typeNamed(typeName)
+        if (isNone(owner)) {
+            return []
+        }
+        var found = []
+        for (member in owner.members) {
+            if (member.name == memberName) {
+                found.append(member)
+            }
+        }
+        return found
+    }
+
+    // The innermost declaration (top level or member) whose full span contains the offset.
+    method declAt(integer offset): Decl {
+        for (decl in this.decls) {
+            if (this.inside(decl, offset)) {
+                return this.innermost(decl, offset)
+            }
+        }
+        return nothing()
+    }
+
+    method enclosingType(integer offset): Decl {
+        for (decl in this.decls) {
+            if (decl.isType() && this.inside(decl, offset)) {
+                return decl
+            }
+        }
+        return nothing()
+    }
+
+    method enclosingCallable(integer offset): Decl {
+        var inner = this.declAt(offset)
+        if (isSome(inner) && inner.isCallable()) {
+            return inner
+        }
+        return nothing()
+    }
+
+    // contract-note: widens `fullSpan.contains` (outline/DESIGN-NOTES.md 2). The full span is half open, except that the
+    // very end of the text counts as inside a declaration that was never closed: that is where the cursor stands while
+    // the closing brace is still being typed.
+    method inside(Decl decl, integer offset): bool {
+        if (decl.fullSpan.contains(offset)) {
+            return true
+        }
+        return offset == decl.fullSpan.end && this.isLastOffset(offset) && this.isUnterminated(decl)
+    }
+
+    method isLastOffset(integer offset): bool {
+        return this.tokens.length() > 0 && this.tokens[this.tokens.length() - 1].start == offset
+    }
+
+    method isUnterminated(Decl decl): bool {
+        for (issue in this.issues) {
+            if (OUTLINE_UNTERMINATED_CODES.has(issue.code) && issue.span.start == decl.bodySpan.start) {
+                return true
+            }
+        }
+        return false
+    }
+
+    // Members never nest further than one level, so the descent ends after one step.
+    method innermost(Decl decl, integer offset): Decl {
+        for (member in decl.members) {
+            if (this.inside(member, offset)) {
+                return member
+            }
+        }
+        return decl
+    }
+
+    method importLines(): array<ImportDecl> {
+        var copy = []
+        for (importDecl in this.imports) {
+            copy.append(importDecl)
+        }
+        return copy
+    }
+}

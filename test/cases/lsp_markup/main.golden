@@ -1,0 +1,251 @@
+== no header
+== header first
+  island header 4-25 [\nprop string a = "x"\n]
+== whitespace before the header is fine
+  island header 10-21 [ ref int n ]
+== text before the header: no header
+== header without a close runs to the end
+  island header 4-18 [\nmethod f() {\n]
+== only the first ?> closes it
+  island header 4-7 [ a ]
+  island tag 16-19 [Tag]
+== empty header
+  island header 4-4 []
+== not <?nv exactly
+  island tag 14-17 [Tag]
+== empty text
+== a NUL byte inside the header
+  island header 4-21 [\nprop string a\0b\n]
+  island tag 24-27 [Tag]
+== a NUL byte in the template
+  island header 4-5 [ ]
+  island tag 16-19 [Tag]
+== components start with a capital letter
+  island tag 6-10 [Item]
+  island tag 20-28 [Ab-c.d:e]
+== an underscore is a letter: <_x> is a tag, never a component
+  island tag 6-9 [A_b]
+== every start tag counts, closing tags do not
+  island tag 1-2 [A]
+  island tag 8-9 [B]
+  island tag 12-13 [A]
+== attributes: quotes, braces and bare values
+  island tag 1-5 [Card]
+  island tag 50-55 [Inner]
+== single quotes and escaped braces in values
+  island tag 1-4 [Box]
+  island tag 32-36 [Real]
+== expressions and comments hide tags
+  island tag 43-48 [Shown]
+== escaped braces are text
+  island tag 4-9 [Shown]
+== script and style are raw text, matched without case (a capital <Style> is still a component by its name)
+  island tag 42-47 [After]
+  island tag 50-55 [Style]
+  island tag 74-78 [Last]
+== template code islands
+  island tag 30-34 [Kept]
+== doctype and unknown markup
+  island tag 16-20 [Page]
+  island tag 36-37 [Y]
+== inside the header the tags do not count
+  island header 4-40 [\nmethod f() { return "<NotATag/>" }\n]
+  island tag 43-46 [Tag]
+== unclosed tag
+  island tag 1-2 [A]
+  island tag 4-5 [B]
+== unclosed quote
+  island tag 1-2 [A]
+== unclosed brace
+  island tag 3-4 [A]
+  island tag 8-9 [B]
+== unclosed comment and code
+  island tag 1-2 [A]
+== unclosed script
+  island tag 1-2 [A]
+== lonely angle brackets
+  island tag 14-15 [A]
+== tag at the very end
+  island tag 2-3 [Z]
+== attribute without name
+  island tag 1-2 [A]
+  island tag 11-12 [B]
+== a typical component
+  kind=nvh hash ok true lines=13 tokens=33 comments=0 package=[]
+  Class Todo name 0-0 full 0-133 body 4-133 base=[NvhComponent] 0-0 members=4
+    Field title type=[string] name 32-37 full 20-46 container=Todo modifiers=[private, prop] params=0 doc=[] locals=0
+    Field items type=[array<string>] name 65-70 full 47-75 container=Todo modifiers=[private, ref] params=0 doc=[] locals=0
+    Field draft type=[object] name 80-85 full 76-90 container=Todo modifiers=[private, var] params=0 doc=[] locals=0
+    Method add type=[] name 99-102 full 92-132 container=Todo modifiers=[] params=0 doc=[] locals=0
+  import Package [strings] span 5-19 target 12-19
+== the same with the index options keeps no tokens
+  kind=nvh hash ok true lines=13 tokens=0 comments=0 package=[]
+  Class Todo name 0-0 full 0-133 body 4-133 base=[NvhComponent] 0-0 members=4
+    Field title type=[string] name 32-37 full 20-46 container=Todo modifiers=[private, prop] params=0 doc=[] locals=0
+    Field items type=[array<string>] name 65-70 full 47-75 container=Todo modifiers=[private, ref] params=0 doc=[] locals=0
+    Field draft type=[object] name 80-85 full 76-90 container=Todo modifiers=[private, var] params=0 doc=[] locals=0
+    Method add type=[] name 99-102 full 92-132 container=Todo modifiers=[] params=0 doc=[] locals=0
+  import Package [strings] span 5-19 target 12-19
+== no header: an empty class
+  kind=nvh hash ok true lines=2 tokens=0 comments=0 package=[]
+  Class Plain name 0-0 full 0-0 body -1--1 base=[NvhComponent] 0-0 members=0
+== empty file
+  kind=nvh hash ok true lines=1 tokens=0 comments=0 package=[]
+  Class Empty name 0-0 full 0-0 body -1--1 base=[NvhComponent] 0-0 members=0
+== empty header
+  kind=nvh hash ok true lines=2 tokens=1 comments=0 package=[]
+  Class E name 0-0 full 0-5 body 4-5 base=[NvhComponent] 0-0 members=0
+== prop, ref and var become fields
+  kind=nvh hash ok true lines=13 tokens=57 comments=1 package=[]
+  Class F name 0-0 full 0-225 body 4-225 base=[NvhComponent] 0-0 members=8
+    Field a type=[string] name 17-18 full 5-18 container=F modifiers=[private, prop] params=0 doc=[] locals=0
+    Field count type=[object] name 24-29 full 19-33 container=F modifiers=[private, prop] params=0 doc=[] locals=0
+    Field counts type=[map<string,integer>] name 65-71 full 34-76 container=F modifiers=[private, ref] params=0 doc=[] locals=0
+    Field flag type=[object] name 81-85 full 77-96 container=F modifiers=[private, var] params=0 doc=[] locals=0
+    Field list type=[array<string>] name 116-120 full 97-133 container=F modifiers=[private, prop] params=0 doc=[] locals=0
+    Field spaced type=[string] name 145-151 full 134-175 container=F modifiers=[private, ref] params=0 doc=[] locals=0
+    Field n type=[int] name 185-186 full 176-198 container=F modifiers=[private, prop] params=0 doc=[] locals=0
+    Field string type=[object] name 218-224 full 214-224 container=F modifiers=[private, ref] params=0 doc=[] locals=0
+  issue expected-token 199-208 warning=false: expected 'prop [type] name [= value]'
+  issue expected-token 209-213 warning=false: expected 'prop [type] name [= value]'
+== the three import forms
+  kind=nvh hash ok true lines=9 tokens=20 comments=1 package=[]
+  Class I name 0-0 full 0-149 body 4-149 base=[NvhComponent] 0-0 members=0
+  import Package [strings] span 5-19 target 12-19
+  import File [helpers/format] span 20-42 target 28-42
+  import Module [example.com/geo/shapes] span 43-74 target 51-73
+  import Package [math] span 75-88 target 84-88
+  import Package [app/models] span 102-119 target 109-119
+  import Module [never closed] span 128-148 target 136-148
+  issue expected-token 121-127 warning=false: expected a package name after 'import'
+  issue unterminated-string 135-148 warning=false: unterminated string literal: closing quote is missing
+== imports agree with the Wave-1 parser
+  Package strings: same kind true same target true same shape true
+  File helpers/format: same kind true same target true same shape true
+  Module example.com/geo/shapes: same kind true same target true same shape true
+  Package app/models: same kind true same target true same shape true
+== members go through the member grammar, in source order
+  kind=nvh hash ok true lines=23 tokens=58 comments=1 package=[]
+  Class M name 0-0 full 0-260 body 4-260 base=[NvhComponent] 0-0 members=7
+    Field name type=[string] name 17-21 full 5-27 container=M modifiers=[private, prop] params=0 doc=[] locals=0
+    Constructor construct type=[] name 29-38 full 29-70 container=M modifiers=[] params=1 doc=[] locals=1
+    Method greet type=[string] name 93-98 full 86-167 container=M modifiers=[] params=1 doc=[documented] locals=2
+    Method later type=[] name 176-181 full 169-187 container=M modifiers=[] params=0 doc=[] locals=0
+    Field extra type=[string] name 196-201 full 189-201 container=M modifiers=[] params=0 doc=[] locals=0
+    Method count type=[integer] name 202-207 full 202-235 container=M modifiers=[] params=0 doc=[] locals=0
+    Field after type=[string] name 248-253 full 236-259 container=M modifiers=[private, prop] params=0 doc=[] locals=0
+== define blocks are file-level declarations before the class
+  kind=nvh hash ok true lines=14 tokens=39 comments=0 package=[]
+  Class Item name 18-22 full 5-98 body 23-98 base=[] -1--1 members=2
+    Field label type=[string] name 36-41 full 29-41 container=Item modifiers=[] params=0 doc=[] locals=0
+    Method show type=[string] name 53-57 full 46-96 container=Item modifiers=[] params=0 doc=[] locals=0
+  Enum Mode name 111-115 full 99-134 body 116-134 base=[] -1--1 members=2
+    EnumConstant Fast type=[] name 122-126 full 122-127 container=Mode modifiers=[] params=0 doc=[] locals=0
+    EnumConstant Slow type=[] name 128-132 full 128-132 container=Mode modifiers=[] params=0 doc=[] locals=0
+  Class D name 0-0 full 0-180 body 4-180 base=[NvhComponent] 0-0 members=2
+    Field current type=[Item] name 145-152 full 135-161 container=D modifiers=[private, prop] params=0 doc=[] locals=0
+    Method pick type=[] name 169-173 full 162-179 container=D modifiers=[] params=0 doc=[] locals=0
+  declAt inside the define: label, inside pick: pick, on the first line: D
+  enclosingType in the define: Item, typeNamed Mode Mode, typeNamed D NvhComponent
+== an unclosed header is reported and still read
+  kind=nvh hash ok true lines=5 tokens=13 comments=0 package=[]
+  Class U name 0-0 full 0-51 body 4-51 base=[NvhComponent] 0-0 members=2
+    Field a type=[string] name 17-18 full 5-24 container=U modifiers=[private, prop] params=0 doc=[] locals=0
+    Method f type=[] name 32-33 full 25-51 container=U modifiers=[] params=0 doc=[] locals=0
+  issue unterminated-block 0-4 warning=false: unclosed <?nv (missing ?>)
+  issue unterminated-block 36-37 warning=false: unterminated block: the closing '}' is missing
+== member errors keep their parser codes
+  kind=nvh hash ok true lines=6 tokens=12 comments=0 package=[]
+  Class B name 0-0 full 0-40 body 4-40 base=[NvhComponent] 0-0 members=2
+    Method broken type=[] name 12-18 full 5-23 container=B modifiers=[] params=0 doc=[] locals=0
+    Method ok type=[] name 31-33 full 24-39 container=B modifiers=[] params=0 doc=[] locals=0
+  issue unterminated-list 18-19 warning=false: unterminated parameter list: the closing ')' is missing
+== an unterminated string inside a define
+  kind=nvh hash ok true lines=6 tokens=10 comments=0 package=[]
+  Class A name 18-19 full 5-43 body 20-43 base=[] -1--1 members=1
+    Field s type=[string] name 33-34 full 26-41 container=A modifiers=[] params=0 doc=[] locals=0
+  Class S name 0-0 full 0-44 body 4-44 base=[NvhComponent] 0-0 members=0
+  issue expected-token 35-36 warning=false: expected a type but found '=': fields have no initialiser
+  issue unterminated-string 37-41 warning=false: unterminated string literal: closing quote is missing
+== class names
+  [/a/Todo.nvh] -> [Todo]
+  [/a/my-page.nvh] -> [my_page]
+  [C:\site\Hello World.nvh] -> [Hello_World]
+  [9lives.nvh] -> [_9lives]
+  [.nvh] -> [_]
+  [] -> [_]
+  [a.b.c.nvh] -> [a_b_c]
+  [/x/ünï.nvh] -> [__n__]
+  [noext] -> [noext]
+  [/a/b/] -> [_]
+== declSignature
+  body and template edits keep it true, a new field changes it true
+== declSignature sees every declaration detail
+  a parameter type: changes it true
+  a return type: changes it true
+  a define member type: changes it true
+  a define base class: changes it true
+  an added import: changes it true
+  a changed import target: changes it true
+  a modifier: changes it true
+  a field kind (prop to ref): changes it true
+  only a method body: changes it false
+== a duplicate field name is reported
+  kind=nvh hash ok true lines=4 tokens=7 comments=0 package=[]
+  Class R1 name 0-0 full 0-33 body 4-33 base=[NvhComponent] 0-0 members=2
+    Field a type=[string] name 17-18 full 5-18 container=R1 modifiers=[private, prop] params=0 doc=[] locals=0
+    Field a type=[integer] name 31-32 full 19-32 container=R1 modifiers=[private, ref] params=0 doc=[] locals=0
+  issue duplicate-declaration 31-32 warning=false: 'a' is declared twice
+== a define after a member is reported
+  kind=nvh hash ok true lines=5 tokens=8 comments=0 package=[]
+  Class K name 25-26 full 12-30 body 27-30 base=[] -1--1 members=0
+  Class R2 name 0-0 full 0-31 body 4-31 base=[NvhComponent] 0-0 members=1
+    Field x type=[object] name 10-11 full 5-11 container=R2 modifiers=[private, prop] params=0 doc=[] locals=0
+  issue misplaced-define 12-18 warning=false: define blocks go before the component's members in the <?nv ?> block
+== a define after only imports is fine
+  kind=nvh hash ok true lines=6 tokens=10 comments=0 package=[]
+  Class K name 33-34 full 20-38 body 35-38 base=[] -1--1 members=0
+  Class R3 name 0-0 full 0-46 body 4-46 base=[NvhComponent] 0-0 members=1
+    Field x type=[object] name 44-45 full 39-45 container=R3 modifiers=[private, prop] params=0 doc=[] locals=0
+  import Package [strings] span 5-19 target 12-19
+== NUL byte
+  fields 2 hash ok true lines 5
+== examples/web/pages/Home.nvh
+  class Home members [total, changed] imports 0 defines 0 issues 0
+  tags [Layout, Counter, Counter, Clock] header 1
+== examples/web/pages/Todos.nvh
+  class Todos members [draft, add, toggle, remove, open] imports 0 defines 0 issues 0
+  tags [Layout, TodoItem] header 1
+== examples/web/pages/Chat.nvh
+  class Chat members [name, text, send] imports 0 defines 0 issues 0
+  tags [Layout] header 1
+== examples/web/pages/Hello.nvh
+  class Hello members [name, times] imports 0 defines 0 issues 0
+  tags [Layout] header 1
+== examples/web/components/Layout.nvh
+  class Layout members [title] imports 0 defines 0 issues 0
+  tags [] header 1
+== examples/web/components/Clock.nvh
+  class Clock members [now, mount, tick] imports 1 defines 0 issues 0
+  tags [] header 1
+== examples/web/components/TodoItem.nvh
+  class TodoItem members [todo, editing] imports 0 defines 0 issues 0
+  tags [] header 1
+== examples/web/components/Counter.nvh
+  class Counter members [label, start, count, mount, change] imports 0 defines 0 issues 0
+  tags [] header 1
+== test/cases/web/Card.nvh
+  class Card members [title] imports 0 defines 0 issues 0
+  tags [] header 1
+== test/cases/web/Item.nvh
+  class Item members [label, clicks, hit] imports 0 defines 0 issues 0
+  tags [] header 1
+== test/cases/web/Pair.nvh
+  class Pair members [open] imports 0 defines 0 issues 0
+  tags [] header 1
+== test/cases/web/Page.nvh
+  class Page members [who, entries, agree, color, notes, last, markup, dropFirst, hit, shout] imports 1 defines 1 issues 0
+  tags [Card, Item, Pair, Fragile] header 1
+== test/cases/web/Fragile.nvh
+  class Fragile members [items, at, explode] imports 0 defines 0 issues 0
+  tags [] header 1

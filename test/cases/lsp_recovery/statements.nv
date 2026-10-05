@@ -1,0 +1,69 @@
+package main
+
+// Statements go on lines 2.. of `method m() { ... }`, so a statement on its first line reports line 2.
+method wrap(string statements): string {
+    return "method m() {\n" + statements + "}\n"
+}
+
+method checkForLoops() {
+    scenario("for/c-style-with-var", wrap("    for (var i = 0; i < 3; i = i + 1) {\n    }\n"), "method m()", "c-style-for@2/e")
+    scenario("for/c-style-without-var", wrap("    for (;;) {\n    }\n"), "method m()", "c-style-for@2/e")
+    scenario("for/index-and-item", wrap("    for (i, x in xs) {\n    }\n"), "method m()", "expected-token@2/e")
+    scenario("for/keyword-as-loop-variable", wrap("    for (in in xs) {\n    }\n"), "method m()", "keyword-as-name@2/e")
+    scenario("for/missing-in", wrap("    for (x) {\n    }\n"), "method m()", "expected-token@2/e")
+    scenario("for/without-parentheses", wrap("    for x in xs {\n    }\n"), "method m()", "missing-parens@2/e")
+    scenario("for/valid", wrap("    for (x in xs) {\n        println x\n    }\n"), "method m()", "")
+}
+
+method checkCompoundAssignment() {
+    var lines = "    i += 1\n    i -= 1\n    i *= 2\n    i /= 2\n    i %= 2\n    i++\n    i--\n"
+    scenario("compound/every-form", wrap(lines), "method m()", "compound-assignment@2/e compound-assignment@3/e compound-assignment@4/e compound-assignment@5/e compound-assignment@6/e compound-assignment@7/e compound-assignment@8/e")
+    scenario("compound/bitwise-forms", wrap("    a &= 1\n    a |= 1\n    a ^= 1\n"), "method m()", "compound-assignment@2/e compound-assignment@3/e compound-assignment@4/e")
+    scenario("compound/valid-subtraction-of-a-negation", wrap("    var a = b - -c\n    var d = b--c\n    var e = b - - 1\n"), "method m()", "")
+    scenario("compound/valid-comparisons-and-assignments", wrap("    x = a <= b\n    y = a >= b\n    z = a != b\n    w = a == b\n    v = -1\n    u = !x\n"), "method m()", "")
+    scenario("compound/inside-strings-and-comments", wrap("    var s = \"i += 1 and i++\" // i--\n    /* j += 1 */\n"), "method m()", "")
+}
+
+method checkBracesAndParentheses() {
+    scenario("brace/if-without-braces", wrap("    if (x) println 1\n"), "method m()", "braceless-body@2/e")
+    scenario("brace/while-without-braces", wrap("    while (x) i = 1\n"), "method m()", "braceless-body@2/e")
+    scenario("brace/else-without-braces", wrap("    if (a) {\n    }\n    else println 2\n"), "method m()", "braceless-body@4/e")
+    scenario("brace/sync-without-braces", wrap("    sync (lock) println 1\n"), "method m()", "braceless-body@2/e")
+    scenario("parens/if-without-parentheses", wrap("    if x > 3 {\n    }\n"), "method m()", "missing-parens@2/e")
+    scenario("parens/while-without-parentheses", wrap("    while x {\n    }\n"), "method m()", "missing-parens@2/e")
+    scenario("else/without-if", wrap("    else {\n    }\n"), "method m()", "else-without-if@2/e")
+    scenario("else/after-another-statement", wrap("    if (a) {\n    }\n    x = 1\n    else {\n    }\n"), "method m()", "else-without-if@5/e")
+    scenario("else/chains-are-valid", wrap("    if (a) {\n    } else if (b) {\n    } else if (c) {\n    } else {\n    }\n    if (d) {\n    }\n    else {\n    }\n"), "method m()", "")
+    scenario("return/with-semicolon", wrap("    return;\n"), "method m()", "return-semicolon@2/e")
+    scenario("return/value-on-the-next-line-is-a-new-statement", wrap("    return\n    5\n"), "method m()", "")
+    scenario("return/continued-expression", wrap("    return a\n    + b\n"), "method m()", "")
+}
+
+method checkKeywordsAsNames() {
+    scenario("name/variable", wrap("    var print = 1\n"), "method m()", "keyword-as-name@2/e")
+    scenario("name/member-after-a-dot", wrap("    x.print()\n"), "method m()", "keyword-as-name@2/e")
+    scenario("name/parameter-type-position", "method f(integer in) {\n}\n", "method f(integer in)", "keyword-as-name@1/e")
+    scenario("name/method", "method print() {\n}\n", "method print()", "keyword-as-name@1/e")
+    scenario("name/field", "define class A {\n    string if\n}\n", "define class A /   string if", "keyword-as-name@2/e")
+    scenario("name/class", "define class final {\n}\n", "define class final", "keyword-as-name@1/e")
+    scenario("name/contextual-words-are-fine", wrap("    var class = 1\n    var define = 2\n    var async = 3\n    var thread = 4\n    var get = 5\n    x.set = 1\n"), "method m()", "")
+}
+
+method checkGenericsInStatements() {
+    scenario("generic/shift-in-a-declaration-statement", wrap("    map<string, array<integer>> g = {}\n"), "method m()", "generic-shift-token@2/w")
+    scenario("generic/fused-closer-in-a-var-type", wrap("    var t: array<integer>= []\n"), "method m()", "generic-shift-token@2/w")
+    scenario("generic/var-with-nested-generics-is-fine", wrap("    var t: array<array<integer>> = []\n    var u: map<string, array<integer>> = {}\n"), "method m()", "")
+    scenario("generic/single-closers-are-fine", wrap("    map<string, integer> m = {}\n    array<string> a = []\n"), "method m()", "")
+}
+
+method checkExpressionErrors() {
+    scenario("expr/var-without-a-name", wrap("    var = 1\n"), "method m()", "expected-token@2/e")
+    scenario("expr/assignment-without-a-value", wrap("    x =\n"), "method m()", "expected-token@2/e")
+    scenario("expr/print-without-an-expression", wrap("    println\n"), "method m()", "expected-token@2/e")
+    scenario("expr/unterminated-literal", wrap("    x = [1, 2\n"), "method m()", "unterminated-list@2/e")
+    scenario("expr/dangling-dot", wrap("    foo.\n"), "method m()", "expected-token@2/e")
+    scenario("expr/stray-closing-parenthesis", wrap("    x = 1\n    )\n"), "method m()", "unexpected-token@3/e")
+    scenario("expr/stray-keyword", wrap("    in\n"), "method m()", "unexpected-token@2/e")
+    scenario("expr/operator-without-operand", wrap("    x = a +\n"), "method m()", "expected-token@2/e")
+    scenario("expr/next-assignment-is-not-swallowed", wrap("    x =\n    y = 2\n    var z = 3\n"), "method m()", "expected-token@2/e")
+}

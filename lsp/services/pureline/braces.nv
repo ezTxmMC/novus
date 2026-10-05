@@ -1,0 +1,104 @@
+package pureline
+
+import syntax/lexing
+
+// The code tokens of a file without the unknown bytes (the parser drops them from its own list, 5.4) and the position of the
+// partner of every curly brace. One pass with a stack, so a rule can ask for a partner without walking the file again.
+// Angle brackets are left out: a line may end with the `>` of a generic type.
+private final PURELINE_CONTINUING_PUNCT = { "+": true, "-": true, "*": true, "/": true, "%": true, "&&": true, "||": true, "&": true, "|": true,
+    "^": true, "<<": true, "==": true, "!=": true, "<=": true, ">=": true, "=": true, "+=": true, "-=": true, "=>": true, "=<": true,
+    ",": true, ".": true }
+
+define class PurelineCode {
+    array<Token> tokens
+    array<integer> partners
+
+    construct(array<Token> allTokens) {
+        this.tokens = []
+        this.partners = []
+        this.collect(allTokens)
+        this.pairBraces()
+    }
+
+    method collect(array<Token> allTokens) {
+        for (token in allTokens) {
+            if (token.kind != TokenKind.Unknown && token.kind != TokenKind.EndOfFile) {
+                this.tokens.append(token)
+                this.partners.append(-1)
+            }
+        }
+    }
+
+    method pairBraces() {
+        var open = []
+        var index = 0
+        while (index < this.tokens.length()) {
+            if (this.tokens[index].isPunct("{")) {
+                open.append(index)
+            }
+            if (this.tokens[index].isPunct("}") && open.length() > 0) {
+                var opener = open.pop()
+                this.partners[opener] = index
+                this.partners[index] = opener
+            }
+            index = index + 1
+        }
+    }
+
+    // True when the block between the braces ends with return, break or continue as its last statement.
+    method blockEndsWithJump(integer open, integer close): bool {
+        var statement = this.lastStatementStart(open, close)
+        if (statement < 0) {
+            return false
+        }
+        var first = this.tokens[statement]
+        return first.isKeyword("return") || first.isKeyword("break") || first.isKeyword("continue")
+    }
+
+    // The first token of the last statement that starts at bracket depth 0 of the block: after a line break or a `;`.
+    method lastStatementStart(integer open, integer close): integer {
+        var start = -1
+        var depth = 0
+        var index = open + 1
+        while (index < close) {
+            if (depth == 0 && this.startsStatement(index, open)) {
+                start = index
+            }
+            depth = this.depthAfter(depth, this.tokens[index])
+            index = index + 1
+        }
+        return start
+    }
+
+    method startsStatement(integer index, integer open): bool {
+        if (index == open + 1) {
+            return true
+        }
+        if (this.tokens[index].firstOnLine) {
+            return this.continuesExpression(index) == false
+        }
+        return this.tokens[index - 1].isPunct(";")
+    }
+
+    // A line that starts with an operator or follows one goes on with the expression of the line before.
+    method continuesExpression(integer index): bool {
+        return this.isContinuingPunct(this.tokens[index - 1]) || this.isContinuingPunct(this.tokens[index])
+    }
+
+    method isContinuingPunct(Token token): bool {
+        return token.kind == TokenKind.Punct && PURELINE_CONTINUING_PUNCT.has(token.text)
+    }
+
+    method depthAfter(integer depth, Token token): integer {
+        if (token.kind != TokenKind.Punct) {
+            return depth
+        }
+        if (token.text == "{" || token.text == "(" || token.text == "[") {
+            return depth + 1
+        }
+        if ((token.text == "}" || token.text == ")" || token.text == "]") && depth > 0) {
+            return depth - 1
+        }
+        return depth
+    }
+}

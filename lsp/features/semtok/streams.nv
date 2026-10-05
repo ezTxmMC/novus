@@ -1,0 +1,141 @@
+package semtok
+
+import base/maybe
+import syntax/lexing
+
+// The words that the classifiers compare against, once for the whole package.
+final SEMTOK_WORD_THIS = "this"
+final SEMTOK_WORD_IMPORT = "import"
+final SEMTOK_WORD_DEFINE = "define"
+final SEMTOK_WORD_CLASS = "class"
+final SEMTOK_WORD_ABSTRACT = "abstract"
+final SEMTOK_WORD_ASYNC = "async"
+final SEMTOK_WORD_METHOD = "method"
+final SEMTOK_WORD_NATIVE = "native"
+final SEMTOK_WORD_VARIADIC = "variadic"
+final SEMTOK_WORD_GET = "get"
+final SEMTOK_WORD_SET = "set"
+final SEMTOK_WORD_BASED = "based"
+final SEMTOK_WORD_CONSTRUCT = "construct"
+final SEMTOK_WORD_SYNC = "sync"
+final SEMTOK_WORD_AWAIT = "await"
+final SEMTOK_WORD_THREAD = "thread"
+final SEMTOK_WORD_VIRTUAL = "virtual"
+
+// Distances between tokens: the token in front of the one before (`x` of `x.name`, `define` of `define class`) and the
+// token in front of a receiver (the dot of `a.b.name` when asked for `name`).
+private final SEMTOK_BEFORE_PREVIOUS = 2
+private final SEMTOK_BEFORE_RECEIVER = 3
+private final SEMTOK_OPENERS = ["(", "[", "{"]
+private final SEMTOK_CLOSERS = [")", "]", "}"]
+
+method semtokDepthChange(Token token): integer {
+    if (token.kind != TokenKind.Punct) {
+        return 0
+    }
+    if (SEMTOK_OPENERS.contains(token.value)) {
+        return 1
+    }
+    if (SEMTOK_CLOSERS.contains(token.value)) {
+        return -1
+    }
+    return 0
+}
+
+// Read access to a run of tokens with a window [first, last), `inner` for the expression of a `${...}`: every query outside the run answers false or nothing,
+// so the classifiers look at neighbours without bounds checks of their own.
+define class SemtokStream {
+    array<Token> tokens
+    integer first
+    integer last
+    bool inner
+
+    construct(array<Token> tokens, integer first, integer last, bool inner) {
+        this.tokens = tokens
+        this.first = first
+        this.last = last
+        this.inner = inner
+    }
+
+    method inRun(integer index): bool {
+        return index >= 0 && index < this.tokens.length()
+    }
+
+    method tokenAt(integer index): Token {
+        if (this.inRun(index) == false) {
+            return nothing()
+        }
+        return this.tokens[index]
+    }
+
+    method isKind(integer index, TokenKind kind): bool {
+        return this.inRun(index) && this.tokens[index].kind == kind
+    }
+
+    method isPunct(integer index, string punct): bool {
+        return this.inRun(index) && this.tokens[index].isPunct(punct)
+    }
+
+    method isWord(integer index, string word): bool {
+        return this.inRun(index) && this.tokens[index].isWord(word)
+    }
+
+    method isIdent(integer index): bool {
+        return this.isKind(index, TokenKind.Ident)
+    }
+
+    method textAt(integer index): string {
+        if (this.inRun(index) == false) {
+            return ""
+        }
+        return this.tokens[index].text
+    }
+
+    method beforePrevious(integer index): integer {
+        return index - SEMTOK_BEFORE_PREVIOUS
+    }
+
+    method beforeReceiver(integer index): integer {
+        return index - SEMTOK_BEFORE_RECEIVER
+    }
+
+    // The arguments of the call whose `(` is at the index: the commas at its own level plus one, zero for `()`. The scan
+    // ends at the matching bracket, or at the closer of the enclosing block when the call was never closed, so its cost
+    // follows the arguments and no argument list is cut short.
+    method argumentCount(integer open): integer {
+        var depth = 0
+        var commas = 0
+        var hasArgument = false
+        var i = open
+        while (this.inRun(i)) {
+            var token = this.tokens[i]
+            depth = depth + semtokDepthChange(token)
+            if (depth <= 0) {
+                break
+            }
+            if (depth == 1 && token.isPunct(",")) {
+                commas = commas + 1
+            }
+            if (i > open && token.isPunct(",") == false) {
+                hasArgument = true
+            }
+            i = i + 1
+        }
+        if (hasArgument == false) {
+            return 0
+        }
+        return commas + 1
+    }
+}
+
+// What one request classifies: the token runs (the file first, then the expression of every `${...}` inside a string
+// of the window) and the comments that touch the range.
+define class SemtokSource {
+    array<SemtokStream> streams
+    array<Token> comments
+
+    construct(array<SemtokStream> streams, array<Token> comments) {
+        this.streams = streams
+        this.comments = comments
+    }
+}

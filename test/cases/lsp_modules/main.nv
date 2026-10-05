@@ -1,0 +1,13 @@
+package main
+
+import @resolve_cases
+import @lookup_cases
+import @disk_cases
+
+// lsp/projects/modules: the dependency module table, cache naming and entry files, never fetching.
+method main() {
+    runNamingCases()
+    runResolveCases()
+    runLookupCases()
+    runDiskCases()
+}

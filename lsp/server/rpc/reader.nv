@@ -1,0 +1,131 @@
+package rpc
+
+import base/maybe
+import json
+import log
+import thread
+
+private final INBOX_CAPACITY = 4096
+private final RPC_CANCEL_METHOD = "$/cancelRequest"
+private final RPC_READER_NAME = "reader"
+private final RPC_PARSE_ERROR_TEXT = "parse error"
+
+// The one queue that wakes the main loop: reader, ticker and workers post, only the main thread receives.
+// Created once in wiring: handles are permanent (NG27).
+define class InboxChannel {
+    integer channel
+
+    construct(integer capacity) {
+        this.channel = thread.channel(capacity)
+    }
+
+    method post(Envelope envelope) {
+        thread.send(this.channel, envelope)
+    }
+
+    method receive(): Envelope {
+        return thread.recv(this.channel)
+    }
+
+    // nil when nothing is waiting.
+    method tryReceive(): Envelope {
+        return thread.tryRecv(this.channel)
+    }
+
+    method pendingCount(): integer {
+        return thread.length(this.channel)
+    }
+
+    method hasPending(): bool {
+        return thread.length(this.channel) > 0
+    }
+}
+
+// Starts the reader on an OS thread: io.readBytes blocks its carrier, so it is never a virtual thread.
+method startReaderThread(InboxChannel inbox, CancelRegistry cancellations) {
+    thread rpcReadLoop(inbox, cancellations)
+}
+
+// A runtime error outside tryRun in an OS thread would end the whole process, hence the guard (LSP-R08).
+method rpcReadLoop(InboxChannel inbox, CancelRegistry cancellations) {
+    var outcome = runGuarded(RpcReaderWork(inbox, cancellations))
+    if (outcome.failed) {
+        log.error("rpc: the reader failed: " + outcome.message)
+        postWorkerFailure(inbox, RPC_READER_NAME, 0, outcome)
+        inbox.post(Envelope(ENVELOPE_EOF, nothing()))
+    }
+}
+
+method postWorkerFailure(InboxChannel inbox, string worker, integer requestId, GuardOutcome outcome) {
+    inbox.post(Envelope(ENVELOPE_WORKER_FAILED, WorkerFailure(worker, requestId, outcome.message)))
+}
+
+define class RpcReaderWork based GuardedWork {
+    InboxChannel inbox
+    CancelRegistry cancellations
+
+    construct(InboxChannel inbox, CancelRegistry cancellations) {
+        this.inbox = inbox
+        this.cancellations = cancellations
+    }
+
+    // Every iteration consumes a frame or ends the loop (LSP-R12).
+    method run(): object {
+        var reader = FrameReader()
+        var reading = true
+        while (reading) {
+            reading = this.accept(reader.readFrame())
+        }
+        return nothing()
+    }
+
+    // true while the stream is still usable.
+    method accept(Frame frame): bool {
+        if (frame.status == FRAME_OK) {
+            this.handleBody(frame.body)
+            return true
+        }
+        if (frame.status == FRAME_EMPTY) {
+            return true
+        }
+        if (frame.status == FRAME_CORRUPT) {
+            log.warn("rpc: corrupt frame: " + frame.detail)
+            this.postFrameError(rpcInvalidRequest(), frame.detail)
+        }
+        this.inbox.post(Envelope(ENVELOPE_EOF, nothing()))
+        return false
+    }
+
+    method handleBody(string body) {
+        var message = json.tryParse(body)
+        if (isNone(message)) {
+            this.postFrameError(rpcParseError(), RPC_PARSE_ERROR_TEXT)
+            return
+        }
+        if (this.interceptCancellation(message)) {
+            return
+        }
+        this.inbox.post(Envelope(ENVELOPE_MESSAGE, message))
+    }
+
+    // Requests are tracked before they are queued; $/cancelRequest acts at once and never reaches the main loop.
+    method interceptCancellation(object message): bool {
+        var kind = classifyMessage(message)
+        if (kind == RPC_KIND_REQUEST) {
+            this.cancellations.track(message["id"])
+            return false
+        }
+        if (kind != RPC_KIND_NOTIFICATION || message["method"] != RPC_CANCEL_METHOD) {
+            return false
+        }
+        var params = message.get("params", {})
+        if (typeOf(params) == "map") {
+            this.cancellations.cancel(params.get("id", nothing()))
+        }
+        return true
+    }
+
+    method postFrameError(integer code, string text) {
+        this.inbox.post(Envelope(ENVELOPE_FRAME_ERROR, {"code": code, "message": text}))
+    }
+}

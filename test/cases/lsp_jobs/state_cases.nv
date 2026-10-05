@@ -1,0 +1,86 @@
+package main
+
+import "novus/lsp/base/model"
+import "novus/lsp/server/jobs"
+import "novus/lsp/server/session"
+
+method describePending(JobsPending waiting): string {
+    if (isNone(waiting)) {
+        return "none"
+    }
+    return waiting.uri + "/" + waiting.reason
+}
+
+method runStateCases() {
+    println("--- which reason may start a check, per mode")
+    for (mode in ["off", "onSave", "onType"]) {
+        var allowed = []
+        for (reason in ["open", "save", "idle", "command"]) {
+            if (jobsReasonAllowed(mode, reason)) {
+                allowed.push(reason)
+            }
+        }
+        println(mode + ": " + allowed.join(" "))
+    }
+    println("--- coordinator state")
+    var state = JobsCheckState()
+    var firstId = state.nextRequestId()
+    var secondId = state.nextRequestId()
+    println("ids count up: " + firstId + " " + secondId)
+    state.begin("/a/project.nv", 1)
+    println("running " + state.isRunning("/a/project.nv") + ", other project " + state.isRunning("/b/project.nv") + ", full " + state.isFull())
+    state.begin("/b/project.nv", 2)
+    println("two workers fill it: " + state.isFull())
+    state.rememberPending("/a/project.nv", "file:///a/x.nv", "save")
+    state.rememberPending("/a/project.nv", "file:///a/y.nv", "open")
+    var finished = state.finish(1)
+    println("finish maps the id to its project: '" + finished + "', running " + state.isRunning("/a/project.nv") + ", full " + state.isFull())
+    var again = state.finish(1)
+    println("finish twice: '" + again + "'")
+    var unknown = state.finish(99)
+    println("finish of an unknown id: '" + unknown + "'")
+    var waiting = state.takePending("/a/project.nv")
+    println("the later pending request wins: " + describePending(waiting))
+    var taken = state.takePending("/a/project.nv")
+    println("taken once: " + describePending(taken))
+    println("--- requests that wait for a free slot")
+    var slots = JobsCheckState()
+    slots.begin("/a/project.nv", 1)
+    slots.begin("/b/project.nv", 2)
+    slots.rememberPending("/a/project.nv", "file:///a/x.nv", "save")
+    slots.rememberPending("/d/project.nv", "file:///d/x.nv", "open")
+    slots.rememberPending("/c/project.nv", "file:///c/x.nv", "open")
+    println("a pending request of a running project is not waiting for a slot: " + slots.waitingKeys().join(" "))
+    slots.finish(2)
+    println("projects that wait for a slot, ascending: " + slots.waitingKeys().join(" "))
+    println("--- the union of two uri lists")
+    println(jobsUnion(["b", "a"], ["c", "a"]).join(" "))
+    println("--- the idle timer (mode onType)")
+    runIdleTimerCases()
+}
+
+method runIdleTimerCases() {
+    var state = fixtureSession()
+    state.settings.check.mode = "onType"
+    var timer = JobsIdleTimer(state)
+    var uri = fixtureOpen(state, "/proj/main.nv", 1, fixtureDiskText("/proj/main.nv"))
+    println("first sight records only: " + idleDue(timer, 1000))
+    state.documentFor(uri).version = 2
+    println("an edit starts the quiet time: " + idleDue(timer, 2000))
+    println("1499 ms later: " + idleDue(timer, 3499))
+    println("1500 ms later: " + idleDue(timer, 3500))
+    println("only once: " + idleDue(timer, 9000))
+    state.documentFor(uri).version = 3
+    idleDue(timer, 10000)
+    state.documentFor(uri).version = 4
+    println("another edit at 11000 restarts it: " + idleDue(timer, 11000))
+    println("1400 ms later: " + idleDue(timer, 12400))
+    println("1500 ms later: " + idleDue(timer, 12500))
+    state.settings.check.mode = "onSave"
+    state.documentFor(uri).version = 5
+    println("other modes never ask: " + idleDue(timer, 20000) + " / " + idleDue(timer, 30000))
+}
+
+method idleDue(JobsIdleTimer timer, integer now): string {
+    return "[" + timer.collectDue(now).join(",") + "]"
+}

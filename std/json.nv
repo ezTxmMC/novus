@@ -1,15 +1,54 @@
 package json
 
 // JSON: text <-> maps, arrays, primitives (objects serialize their fields).
+//
+// Nesting is limited to 256 levels everywhere (parse, isValid, stringify,
+// pretty): a deeper document is an error, or "invalid", instead of a crash.
+// 256 levels of writing fit a 128 KB virtual thread stack together with a few
+// hundred frames of the caller.
+//
+// Strings are exact: \uD83D\uDE00 becomes one 4 byte UTF-8 character, a lone
+// surrogate escape becomes U+FFFD, a NUL byte is written as \u0000. The writer
+// always produces valid JSON text: a byte sequence that is not well formed
+// UTF-8 is written as U+FFFD (one per bad byte), and NaN and Infinity are
+// written as null.
+//
+// Objects become maps whose keys are C strings, so a key that contains a NUL
+// byte (raw or \u0000) is a parse error rather than a silently cut short key.
 
-method stringify(object value): string native "nv_json_stringify"
+method stringify(object value): string native "nv_json_stringify"      // error beyond 256 levels
 method pretty(object value): string native "nv_json_pretty"          // 2-space indented
 method parse(string text): object native "nv_json_parse"             // aborts on invalid input
+
+// Like parse, but returns null instead of aborting when the text cannot be
+// parsed (syntax error, empty input, more than 256 levels, a NUL byte in an
+// object key). A valid document that is the literal null also gives null -
+// ask isValid to tell them apart. It accepts exactly what parse accepts, and
+// that is more than isValid does:
+//   - numbers: leading zeros (01), a trailing point (1.), an empty exponent
+//     (1e), and a bare minus sign, which reads as 0
+//   - strings: raw control characters (a tab, a newline) and unknown escapes
+//     (\q reads as q)
+// What it does not accept: whitespace other than space, tab, LF and CR, any
+// text after the value (also after a NUL byte), unquoted keys, trailing commas.
+// It does not disturb an enclosing tryRun: tryFailed() and tryError() keep
+// describing the failure of the task, whatever tryParse does inside it.
+method tryParse(string text): object native "nv_json_try_parse"
+
+// Strict RFC 8259 check, never aborts: no leading zeros, no 1. or .5, no raw
+// control characters or unknown escapes in strings, whitespace only space,
+// tab, LF and CR, at most 256 levels, and nothing after the value - the text
+// is compared by its full length, so garbage behind a NUL byte is invalid.
 method isValid(string text): bool native "nv_json_is_valid"
 method load(string file): object native "nv_json_load"
 method save(object value, string dir, string file) native "nv_json_save"  // creates dir, pretty printed
 
 // Parses text, or returns `fallback` when it is not valid JSON.
+//
+// The contract is the strict one: the text must pass isValid. That makes it
+// stricter than parse and tryParse - "[01]" or a string with a raw tab give the
+// fallback here, although parse reads them. Use tryParse when lenient reading
+// is wanted; use parseOr when the text must really be JSON.
 method parseOr(string text, object fallback): object {
     if (isValid(text)) {
         return parse(text)

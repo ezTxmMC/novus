@@ -1,0 +1,193 @@
+package main
+
+import "novus/lsp/server/rpc"
+import arrays
+import json
+import os
+import thread
+
+private final STALE_REQUESTS = 20000
+private final STALE_DOCUMENTS = 50
+private final STALE_SECONDS_LIMIT = 1.0
+
+// A request that ends the loop, the way the exit handler does.
+define class LoopStopHandler based RequestHandler {
+    MainLoop loop
+    integer code
+
+    construct(MainLoop loop, integer code) {
+        this.loop = loop
+        this.code = code
+    }
+
+    method handle(Request request): object {
+        this.loop.stop(this.code)
+        return nothingHere()
+    }
+}
+
+define class LoopStopListener based EnvelopeListener {
+    MainLoop loop
+    integer code
+
+    construct(MainLoop loop, integer code) {
+        this.loop = loop
+        this.code = code
+    }
+
+    method onEnvelope(Envelope envelope) {
+        this.loop.stop(this.code)
+    }
+}
+
+define class LoopRig {
+    InboxChannel inbox
+    Router router
+    MessageWriter writer
+    CancelRegistry cancellations
+    MainLoop loop
+
+    construct() {
+        this.inbox = InboxChannel(INBOX_CAPACITY)
+        this.router = buildRouter()
+        this.writer = MessageWriter()
+        this.cancellations = CancelRegistry()
+        this.loop = MainLoop(this.inbox, this.router, this.writer, this.cancellations)
+    }
+
+    method message(string jsonText) {
+        this.inbox.post(Envelope("message", json.tryParse(jsonText)))
+    }
+
+    method post(string kind, object payload) {
+        this.inbox.post(Envelope(kind, payload))
+    }
+
+    method runAndShow(string label) {
+        say("> " + label)
+        var exitCode = this.loop.run()
+        say("")
+        sayCase("exit code", exitCode)
+    }
+}
+
+method runBatchCase() {
+    var rig = LoopRig()
+    rig.router.registerHandler("textDocument/didChange", RouterNoteHandler("didChange handler"))
+    rig.router.registerHandler("test/stop", LoopStopHandler(rig.loop, 5))
+    rig.router.registerListener("tick", RouterTickListener("tick", false))
+    rig.router.registerListener("workerFailed", RouterTickListener("workerFailed", false))
+    rig.cancellations.track(4)
+    rig.cancellations.cancel(4)
+    rig.message("{\"id\":1,\"method\":\"test/echo\",\"params\":{\"textDocument\":{\"uri\":\"file:///a.nv\"}}}")
+    rig.message("{\"id\":2,\"method\":\"test/echo\",\"params\":{\"textDocument\":{\"uri\":\"file:///b.nv\"}}}")
+    rig.message("{\"method\":\"textDocument/didChange\",\"params\":{\"textDocument\":{\"uri\":\"file:///a.nv\"}}}")
+    rig.message("{\"method\":\"textDocument/didClose\",\"params\":{\"textDocument\":{\"uri\":\"file:///b.nv\"}}}")
+    rig.message("{\"id\":3,\"method\":\"test/echo\",\"params\":{\"textDocument\":{\"uri\":\"file:///a.nv\"}}}")
+    rig.message("{\"id\":4,\"method\":\"test/echo\"}")
+    rig.message("[1]")
+    rig.message("{\"id\":5}")
+    rig.message("{\"id\":\"novus-7\",\"result\":null}")
+    rig.post("frameError", {"code": -32700, "message": "parse error"})
+    rig.post("tick", 1)
+    rig.post("workerFailed", WorkerFailure("check", 3, "boom"))
+    rig.message("{\"id\":6,\"method\":\"test/stop\"}")
+    rig.message("{\"id\":7,\"method\":\"test/echo\"}")
+    rig.runAndShow("one batch: stale requests, cancelled request, invalid messages, signals, then stop(5)")
+    sayCase("inbox after the batch (what follows the stop was dropped)", rig.inbox.pendingCount())
+}
+
+method runBrokenGateLoopCase() {
+    var rig = LoopRig()
+    rig.router.setGate(RouterBrokenGate())
+    rig.cancellations.track(1)
+    rig.message("{\"id\":1,\"method\":\"test/echo\"}")
+    rig.post("eof", nothingHere())
+    rig.runAndShow("a gate that fails does not leave the request unanswered")
+    sayCase("and its id is forgotten", rig.cancellations.cancelled.keys())
+}
+
+// 20000 queued requests on 50 documents with a change for each: asking "is it stale" must not rescan the batch.
+method runStaleScaleCase() {
+    var batch = []
+    for (number in arrays.range(0, STALE_REQUESTS)) {
+        var uri = "file:///doc" + (number % STALE_DOCUMENTS) + ".nv"
+        batch.push(Envelope("message", {"jsonrpc": "2.0", "id": number, "method": "hover", "params": {"textDocument": {"uri": uri}}}))
+    }
+    batch.push(Envelope("message", {"jsonrpc": "2.0", "method": "textDocument/didChange", "params": {"textDocument": {"uri": "file:///doc7.nv"}}}))
+    var rig = LoopRig()
+    var started = os.clock()
+    rig.loop.lastChanges = rpcLastChangeIndexes(batch)
+    var stale = 0
+    for (number in arrays.range(0, STALE_REQUESTS)) {
+        if (rig.loop.isStale(requestFrom(batch[number].payload), number)) {
+            stale = stale + 1
+        }
+    }
+    sayCase("stale requests among 20000 (the 400 on doc7)", stale)
+    sayCase("the staleness of 20000 requests is not quadratic", os.clock() - started < STALE_SECONDS_LIMIT)
+}
+
+method runEofCases() {
+    var plain = LoopRig()
+    plain.post("eof", nothingHere())
+    plain.runAndShow("eof without a listener ends with exit code 1")
+    var listened = LoopRig()
+    listened.router.registerListener("eof", LoopStopListener(listened.loop, 0))
+    listened.router.registerListener("eof", RouterTickListener("second eof listener", false))
+    listened.post("eof", nothingHere())
+    listened.runAndShow("eof, the first listener stops with 0, the second still runs")
+}
+
+method runSafetyNetCase() {
+    var rig = LoopRig()
+    rig.post("frameError", {"code": -32700})
+    rig.message("{\"id\":1,\"method\":\"test/echo\",\"params\":{\"alive\":true}}")
+    rig.post("eof", nothingHere())
+    rig.runAndShow("a malformed envelope is logged and the loop goes on")
+}
+
+method runInboxCases() {
+    var inbox = InboxChannel(8)
+    sayCase("empty inbox", inbox.hasPending() + " " + inbox.pendingCount())
+    sayCase("tryReceive on an empty inbox is nil", isNothing(inbox.tryReceive()))
+    inbox.post(Envelope("one", 1))
+    inbox.post(Envelope("two", 2))
+    sayCase("two pending", inbox.hasPending() + " " + inbox.pendingCount())
+    var first = inbox.receive()
+    var second = inbox.tryReceive()
+    sayCase("receive keeps the order", first.kind + " " + second.kind)
+    sayCase("drained", inbox.hasPending() + " " + inbox.pendingCount())
+    var failure = GuardOutcome(true, "boom", nothingHere())
+    postWorkerFailure(inbox, "reader", 7, failure)
+    var envelope = inbox.receive()
+    sayCase("postWorkerFailure", envelope.kind + " " + envelope.payload.worker + " " + envelope.payload.requestId + " " + envelope.payload.message)
+}
+
+method isNothing(object value): bool {
+    return typeOf(value) == "unknown"
+}
+
+method runTickerCase() {
+    var inbox = InboxChannel(8)
+    startTickerThread(inbox, 20)
+    os.sleep(300)
+    var pending = inbox.pendingCount()
+    sayCase("a busy main thread never sees more than one tick", pending == 1)
+    var tick = inbox.receive()
+    sayCase("the tick carries the clock", tick.kind + " " + typeOf(tick.payload) + " " + (tick.payload > 1600000000000))
+    os.sleep(100)
+    sayCase("a new tick arrives once the inbox is empty", inbox.pendingCount() == 1)
+}
+
+method runLoopCases() {
+    say("--- main loop")
+    runBatchCase()
+    runBrokenGateLoopCase()
+    runStaleScaleCase()
+    runEofCases()
+    runSafetyNetCase()
+    say("--- inbox, ticker")
+    runInboxCases()
+    runTickerCase()
+}

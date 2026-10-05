@@ -1,0 +1,23 @@
+package main
+
+import "novus/lsp/base/platform"
+
+method showStdio(string label, object value) {
+    println("stdio " + label + ": " + value)
+}
+
+// main.stdin: "first line", "second line", then the bytes 0123456789 without a newline.
+method runStdioCases() {
+    println("--- stdio")
+    showStdio("not at eof", stdinAtEof())
+    showStdio("readLine", stdinReadLine())
+    showStdio("readLine again", stdinReadLine())
+    showStdio("readBytes(4)", stdinReadBytes(4))
+    showStdio("readBytes(100) returns what is left", stdinReadBytes(100))
+    showStdio("at eof", stdinAtEof())
+    showStdio("readBytes at eof is empty", stdinReadBytes(5) == "")
+    stdoutWriteText("written by stdoutWriteText\n")
+    stdoutWriteFrame("written by stdoutWriteFrame\n")
+    stderrWriteLine("written by stderrWriteLine")
+    stdoutWriteText("after stderr\n")
+}

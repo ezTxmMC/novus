@@ -1,0 +1,27 @@
+package main
+
+import "novus/lsp/base/platform"
+import "novus/lsp/projects/manifest"
+import "novus/lsp/projects/modules"
+import @show
+
+method runLookupCases() {
+    var files = {
+        "/cache/github.com/u/lib@v1/lib.nv": "x",
+        "/cache/github.com/u/lib/sub@v1/lib.nv": "x"
+    }
+    var root = parseManifestText("/proj/project.nv", "require \"github.com/u/lib\" \"v1\"\nrequire \"github.com/u/lib/sub\" \"v1\"\nrequire \"github.com/u/missing\" \"v1\"\n")
+    var table = ModuleTableBuilder(MemoryTextSource(files), "/cache").build(root)
+    println("== lookup")
+    println("  has lib " + table.has("github.com/u/lib") + " has other " + table.has("github.com/u/other"))
+    showMatch(table, "github.com/u/lib")
+    showMatch(table, "github.com/u/lib/pkg")
+    showMatch(table, "github.com/u/lib/pkg/file")
+    showMatch(table, "github.com/u/lib/sub")
+    showMatch(table, "github.com/u/lib/sub/deep/file")
+    showMatch(table, "github.com/u/missing/x")
+    showMatch(table, "github.com/u/lib2")
+    showMatch(table, "github.com/u")
+    showMatch(table, "")
+    showMatch(ModuleTable(), "anything")
+}

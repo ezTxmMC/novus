@@ -1,0 +1,29 @@
+package main
+
+import "novus/lsp/features/hover"
+import @support
+import @fixtures
+import @hover_cases
+
+private final HOVER_IMPORTS_TEXT = "import strings\nimport geo\nimport @helper\nimport \"ex.com/lib\"\nimport nowhere\n\nmethod main() {\n}\n"
+
+method hoverImports(string needle, integer shift): NavWorld {
+    var files = {
+        "/q/project.nv": "project \"q\"\nmain \"main.nv\"\nrequire \"ex.com/lib\"\nreplace \"ex.com/lib\" \"lib\"\n",
+        "/q/main.nv": hoverMarked(HOVER_IMPORTS_TEXT, needle, shift),
+        "/q/geo/shape.nv": "package geo\n\ndefine class Shape {\n}\n",
+        "/q/geo/extra.nv": "package geo\n\nmethod extra(): integer {\n    return 1\n}\n",
+        "/q/helper.nv": "method helper(): integer {\n    return 1\n}\n",
+        "/q/lib/lib.nv": "method libEntry(): integer {\n    return 1\n}\n"
+    }
+    return NavWorld(files)
+}
+
+method runImportHoverCases() {
+    println("== imports")
+    hoverCase("std module", hoverImports("strings", 2))
+    hoverCase("package folder", hoverImports("geo", 1))
+    hoverCase("root file", hoverImports("helper", 1))
+    hoverCase("dependency entry", hoverImports("ex.com/lib", 2))
+    hoverCase("import that leads nowhere", hoverImports("nowhere", 1))
+}

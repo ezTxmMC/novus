@@ -1,0 +1,4 @@
+{"id":1,"jsonrpc":"2.0","result":{"capabilities":"@CAPABILITIES@","serverInfo":{"name":"novus-lsp","version":"0.1.0"}}}
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@ROOTURI@/main.nv","version":1}}
+{"id":2,"jsonrpc":"2.0","result":{"isIncomplete":false,"items":[{"detail":"var wide: string","kind":6,"label":"wide","sortText":"01_wide","textEdit":{"newText":"wide","range":{"end":{"character":27,"line":6},"start":{"character":23,"line":6}}}}]}}
+{"id":99,"jsonrpc":"2.0","result":null}

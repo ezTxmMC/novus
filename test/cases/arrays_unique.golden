@@ -1,0 +1,17 @@
+empty: [] (0 of 0)
+one: [a] (1 of 1)
+strings: [b, a, c, , A] (5 of 8)
+integers: [3, 1, 2, -1, 0] (5 of 8)
+floats: [1.500000, 2.500000, 0.500000] (3 of 4)
+int and float: [1, 2, 2.500000, 0] (4 of 8)
+big integers: [9007199254740993, 9007199254740992, 4611686018427387904, 4611686018427387905] (4 of 5)
+mixed: [1, a, true, false, 2] (5 of 10)
+text and number: [1, 2] (2 of 6)
+bools: [true, false] (2 of 4)
+nested: [[1], [1], x] (3 of 3)
+same array twice: [[1, 2], [1, 2]] (2 of 3)
+characters: [m, i, s, p] (4 of 4)
+map keys: [a, b] (2 of 2)
+97 true
+97 true
+[x, y, x]

@@ -1,0 +1,18 @@
+package main
+
+import "novus/lsp/syntax/parsing"
+
+method checkReport() {
+    var text = "println 1\nmethod m() {\n    var s = \"abc\n    i += 1\n}\nmethod\t(\n"
+    var lines = syntaxReportLines("a.nv", text)
+    expectEqual("report/hint-severity-and-format", "a.nv:1:1: hint useless-top-level-print: top-level 'println' is parsed and discarded by the compiler", lines[0])
+    expectEqual("report/error-severity", "a.nv:3:13: error unterminated-string: unterminated string literal: closing quote is missing", lines[1])
+    expectEqual("report/compound-assignment", "a.nv:4:7: error compound-assignment: '+=' does not exist: write 'x = x + 1'", lines[2])
+    expectEqual("report/expected-token-mirrors-the-compiler", "a.nv:6:8: error expected-token: expected method name but found '('", lines[3])
+    expectInt("report/line-count", 4, lines.length())
+    var warning = syntaxReportLines("w.nv", "var #x = 1\n")
+    expectEqual("report/warning-severity", "w.nv:1:5: warning unknown-character: unknown character '#' is ignored by the compiler", warning[0])
+    expectInt("report/clean-file-is-empty", 0, syntaxReportLines("ok.nv", "method m() {\n    return 1\n}\n").length())
+    expectInt("report/empty-text-is-empty", 0, syntaxReportLines("ok.nv", "").length())
+    expectEqual("report/columns-are-byte-columns", "b.nv:1:10: warning unknown-character: unknown character '#' is ignored by the compiler", syntaxReportLines("b.nv", "X = \"é\" #\n")[0])
+}

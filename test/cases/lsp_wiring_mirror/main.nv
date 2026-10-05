@@ -1,0 +1,33 @@
+package main
+
+import "novus/lsp/base/platform"
+import "novus/lsp/projects/stdlib"
+import "novus/lsp/projects/workspace"
+import "novus/lsp/server/rpc"
+import "novus/lsp/server/session"
+import "novus/lsp/server/wiring"
+
+method failure(string worker, string text): Envelope {
+    return Envelope(ENVELOPE_WORKER_FAILED, WorkerFailure(worker, 1, text))
+}
+
+// lsp/server/wiring WiringErrorMirror: a dead worker reaches the client once per kind, after initialize and before shutdown.
+method main() {
+    var state = Session(DocumentStore(), Workspace(FileCache(MemoryTextSource({})), standardLibrary()))
+    var mirror = WiringErrorMirror(state, MessageWriter())
+    stdoutWriteText("--- before initialize: nothing\n")
+    mirror.onEnvelope(failure("check", "early"))
+    state.initialized = true
+    stdoutWriteText("\n--- a check worker fails\n")
+    mirror.onEnvelope(failure("check", "boom"))
+    stdoutWriteText("\n--- the same kind again: nothing\n")
+    mirror.onEnvelope(failure("check", "boom again"))
+    stdoutWriteText("\n--- another kind\n")
+    mirror.onEnvelope(failure("fetch", "no space"))
+    stdoutWriteText("\n--- other envelopes are ignored\n")
+    mirror.onEnvelope(Envelope(ENVELOPE_TICK, 5))
+    state.shutdownRequested = true
+    stdoutWriteText("\n--- after shutdown: nothing\n")
+    mirror.onEnvelope(failure("reader", "late"))
+    stdoutWriteText("\n")
+}

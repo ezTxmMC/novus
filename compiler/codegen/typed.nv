@@ -1,0 +1,102 @@
+package codegen
+
+import ast
+import parser
+
+// Calls and field reads of the expressions that have a kind (kinds.nv):
+// unboxed workers, numeric natives, numeric fields.
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+// The C name of the unboxed worker of the function `name`.
+method rawFuncName(string name, integer nargs): string {
+    return "f_" + cName(name) + "_" + nargs + "_raw"
+}
+
+// The unboxed form of one argument of a worker call: what the entry of the
+// boxed function makes of the value, without boxing it first.
+method genRawArgument(string arg, string paramKind, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    if (paramKind == KIND_INT || paramKind == KIND_FLOAT) {
+        return genNumberAs(arg, paramKind, prog, ctx, locals)
+    }
+    return genExpr(arg, prog, ctx, locals)
+}
+
+// `arg` as a C `long long` or `double`: converted as nv_as_int and
+// nv_as_double convert a boxed value (a float to an integer truncates).
+method genNumberAs(string arg, string kind, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    var argKind = kindOf(arg, prog, ctx, locals)
+    if (isBareRead(arg, prog, ctx, locals)) {
+        // passed on, not computed with: a value that is no number is not reported here
+        argKind = KIND_NONE
+    }
+    if (argKind == kind) {
+        return genTyped(arg, kind, prog, ctx, locals)
+    }
+    if (kind == KIND_INT && argKind == KIND_FLOAT) {
+        return "nv_d2i(" + genFloat(arg, prog, ctx, locals) + ")"
+    }
+    if (kind == KIND_FLOAT && argKind == KIND_INT) {
+        return "nv_i2d(" + genInt(arg, prog, ctx, locals) + ")"
+    }
+    if (kind == KIND_INT) {
+        return "nv_as_int(" + genExpr(arg, prog, ctx, locals) + ")"
+    }
+    return "nv_as_double(" + genExpr(arg, prog, ctx, locals) + ")"
+}
+
+// The call of the worker described by `descriptor`; the arguments start at
+// child `from` of the node.
+method genWorkerCall(string name, string node, integer from, string descriptor, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    var nargs = nodeCount(node) - from
+    var args = []
+    var i = 0
+    while (i < nargs) {
+        args.append(genRawArgument(nodeChild(node, from + i), rawParamKind(descriptor, i), prog, ctx, locals))
+        i = i + 1
+    }
+    return rawFuncName(name, nargs) + "(" + args.join(", ") + ")"
+}
+
+// A native of the math module on unboxed numbers.
+method genMathNative(string cfn, string node, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    var args = []
+    var i = 3
+    while (i < nodeCount(node)) {
+        args.append(genNumberAs(nodeChild(node, i), KIND_FLOAT, prog, ctx, locals))
+        i = i + 1
+    }
+    return mathNativeFunction(cfn) + "(" + args.join(", ") + ")"
+}
+
+// `target.name()` that reads a numeric field: the object's class is checked
+// against the class guessed for `target`, then the slot is read and unboxed.
+method genFieldRead(string node, string kind, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    var target = nodeChild(node, 1)
+    var name = nodeChild(node, 2)
+    var cls = classOf(target, prog, ctx, locals)
+    var slot = fieldSlot(prog, cls, name)
+    if (target == "this") {
+        return unboxCode("nv_fields(self->o)[" + slot + "]", kind)
+    }
+    var read = "nv_get_field(" + icSite(prog) + ", " + genExpr(target, prog, ctx, locals) + ", nv_cls_" + cls + ", " + slot + ", " + cstr(name) + ")"
+    return unboxCode(read, kind)
+}
+
+// A call or a method call node of kind `kind`, as unboxed code.
+method genTypedCall(string node, string kind, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    if (nodeHead(node) == "call") {
+        var target = freeCallTarget(nodeChild(node, 1), nodeCount(node) - 2, prog, ctx)
+        return genWorkerCall(target, node, 2, rawDescriptor(prog, target, nodeCount(node) - 2), prog, ctx, locals)
+    }
+    if (isModuleTarget(nodeChild(node, 1), prog, ctx, locals) == false) {
+        return genFieldRead(node, kind, prog, ctx, locals)
+    }
+    var native = nativeOf(node, prog)
+    if (isMathNative(native)) {
+        return genMathNative(native, node, prog, ctx, locals)
+    }
+    var name = nodeChild(node, 1) + "." + nodeChild(node, 2)
+    return genWorkerCall(name, node, 3, rawDescriptor(prog, name, nodeCount(node) - 3), prog, ctx, locals)
+}

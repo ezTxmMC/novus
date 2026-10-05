@@ -1,0 +1,99 @@
+package main
+
+import json
+import thread
+
+// json.tryParse inside a failed tryRun, the visit stack after a failed
+// stringify, and the writer and parser on a virtual thread's small stack.
+
+final MAX_DEPTH = 256
+final CALLER_FRAMES = 300
+
+define class ParseTask {
+    private string text: get, set
+    method run(): object {
+        return json.parse(text)
+    }
+}
+
+define class StringifyTask {
+    private object value: get, set
+    method run(): object {
+        return json.stringify(value)
+    }
+}
+
+method tryRun(object task): object native "nv_try_run"
+method tryFailed(): bool native "nv_try_failed"
+method tryError(): string native "nv_try_error"
+
+method nested(integer depth): object {
+    var value = []
+    var level = 1
+    while (level < depth) {
+        value = [value]
+        level = level + 1
+    }
+    return value
+}
+
+// tryParse traps its own error but must leave the one of the task alone.
+method printTryParseInsideFailure() {
+    tryRun(ParseTask{text="{bad"})
+    var before = tryError()
+    println "task failed: ${tryFailed()} ${before}"
+    var inside = json.tryParse("[nope")
+    println "tryParse inside: ${typeOf(inside)}"
+    println "still failed: ${tryFailed()}"
+    println "message kept: ${tryError() == before}"
+    json.tryParse("{\"a\": ")
+    println "message kept again: ${tryError() == before}"
+}
+
+method printTryParseAfterSuccess() {
+    tryRun(ParseTask{text="[1]"})
+    println "task failed: ${tryFailed()}"
+    json.tryParse("[nope")
+    println "flag still clear: ${!tryFailed()}"
+}
+
+// A stringify that fails halfway leaves its containers entered: tryRun must
+// unwind them, or the same value would later look like a reference cycle.
+method printVisitStackAfterFailure() {
+    var deep = nested(MAX_DEPTH + 1)
+    tryRun(StringifyTask{value=deep})
+    println "too deep: ${tryFailed()} ${tryError()}"
+    var inner = json.stringify(deep[0])
+    var nothing = "null"
+    println "inner value: ${inner.length()} bytes, null ${inner == nothing}"
+    println "twice: ${json.stringify(deep[0]) == inner}"
+}
+
+method recurse(integer frames, integer depth): integer {
+    if (frames > 0) {
+        return recurse(frames - 1, depth) + 0
+    }
+    var value = nested(depth)
+    var compact = json.stringify(value)
+    var pretty = json.pretty(value)
+    var back = json.parse(pretty)
+    var valid = json.isValid(compact)
+    if (!valid) {
+        return -1
+    }
+    return compact.length() + pretty.length() + json.stringify(back).length()
+}
+
+// The deepest document json accepts, written, read and checked from a
+// virtual thread (128 KB of stack) that is already CALLER_FRAMES frames deep.
+method printOnVirtualThread() {
+    var task = virtual recurse(CALLER_FRAMES, MAX_DEPTH)
+    println "virtual thread: ${thread.join(task)}"
+}
+
+method main {
+    printTryParseInsideFailure()
+    printTryParseAfterSuccess()
+    printVisitStackAfterFailure()
+    printOnVirtualThread()
+}

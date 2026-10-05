@@ -1,0 +1,39 @@
+package lexing
+
+import base/text
+
+define class Lexer {
+    string text
+
+    construct(string text) {
+        this.text = text
+    }
+
+    method scan(): LexResult {
+        return this.scanRange(0, this.text.length())
+    }
+
+    // Offsets stay absolute, so a slice of a larger text (an `.nvh` island, an interpolation) lines up with the file.
+    method scanRange(integer start, integer end): LexResult {
+        var limit = end
+        if (limit > this.text.length()) {
+            limit = this.text.length()
+        }
+        var from = start
+        if (from < 0) {
+            from = 0
+        }
+        if (from > limit) {
+            from = limit
+        }
+        return LexingRun(this.text, from, limit).run()
+    }
+}
+
+method lexText(string text): LexResult {
+    return Lexer(text).scan()
+}
+
+method lexRange(string text, integer start, integer end): LexResult {
+    return Lexer(text).scanRange(start, end)
+}

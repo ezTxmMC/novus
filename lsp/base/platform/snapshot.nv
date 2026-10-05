@@ -1,0 +1,73 @@
+package platform
+
+import arrays
+
+private final PLATFORM_SEGMENT_SEPARATOR = "/"
+
+// The directory structure of a MemoryTextSource, indexed once, so that a walk costs one lookup per entry instead of a scan of
+// every key. It is a snapshot: later changes of the map are not seen, and the walker makes a new one for every walk.
+define class PlatformMemorySnapshot based TextSource {
+    MemoryTextSource memory
+    map<string, bool> directories
+    map<string, map<string, bool>> children
+
+    construct(MemoryTextSource memory) {
+        this.memory = memory
+        this.directories = {}
+        this.children = {}
+        for (key in memory.files) {
+            this.indexKey(key)
+        }
+    }
+
+    method exists(string filePath): bool {
+        return this.memory.files.has(filePath) || this.isDirectory(filePath)
+    }
+
+    method isDirectory(string dirPath): bool {
+        return this.directories.has(platformDirectoryPrefix(dirPath))
+    }
+
+    method textOf(string filePath): string {
+        return this.memory.textOf(filePath)
+    }
+
+    method entriesOf(string dirPath): array<string> {
+        var names = this.children.get(platformDirectoryPrefix(dirPath), {})
+        return arrays.sort(names.keys())
+    }
+
+    method modifiedMillis(string filePath): integer {
+        if (this.exists(filePath)) {
+            return PLATFORM_MEMORY_MODIFIED
+        }
+        return PLATFORM_MISSING_MILLIS
+    }
+
+    // Every prefix of the key that ends in a slash is a directory; the segment after it is an entry (empty segments are not).
+    method indexKey(string key) {
+        var segments = key.split(PLATFORM_SEGMENT_SEPARATOR)
+        var prefix = ""
+        var index = 0
+        while (index < segments.length()) {
+            if (index > 0) {
+                this.addEntry(prefix, segments[index])
+            }
+            prefix = prefix + segments[index] + PLATFORM_SEGMENT_SEPARATOR
+            if (index < segments.length() - 1) {
+                this.directories[prefix] = true
+            }
+            index = index + 1
+        }
+    }
+
+    method addEntry(string directoryPrefix, string name) {
+        if (name == "") {
+            return
+        }
+        if (this.children.has(directoryPrefix) == false) {
+            this.children[directoryPrefix] = {}
+        }
+        this.children[directoryPrefix][name] = true
+    }
+}

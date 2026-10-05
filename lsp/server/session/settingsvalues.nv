@@ -1,0 +1,97 @@
+package session
+
+import base/maybe
+import log
+import math
+import server/protocol
+
+// Typed readers over the settings JSON: a value of the wrong type or outside its bounds gives the fallback (LSP-R08).
+private final SESSION_NOVUS_KEY = "novus"
+private final SESSION_NOVUS_PREFIX = "novus."
+private final SESSION_KEY_SEPARATOR = "."
+private final SESSION_TYPE_BOOL = "bool"
+private final SESSION_TYPE_STRING = "string"
+private final SESSION_TYPE_ARRAY = "array"
+private final SESSION_TYPE_INTEGER = "integer"
+private final SESSION_TYPE_FLOAT = "float"
+private final SESSION_MAX_TEXT_BYTES = 256
+private final SESSION_MAX_PATH_BYTES = 4096
+
+// The settings of the novus section, whether the client sent the section itself or the whole settings object.
+method sessionRoot(object changes): object {
+    var wrapped = protocolField(changes, SESSION_NOVUS_KEY)
+    if (protocolIsMap(wrapped)) {
+        return wrapped
+    }
+    return changes
+}
+
+// Nested ({"check": {"mode": ..}}), dotted ("check.mode") and fully dotted ("novus.check.mode") spellings all work.
+method sessionLookup(object root, array<string> keyPath): object {
+    var nested = protocolPath(root, keyPath)
+    if (isSome(nested)) {
+        return nested
+    }
+    var dotted = keyPath.join(SESSION_KEY_SEPARATOR)
+    var flat = protocolField(root, dotted)
+    if (isSome(flat)) {
+        return flat
+    }
+    return protocolField(root, SESSION_NOVUS_PREFIX + dotted)
+}
+
+method sessionFlag(object value, bool fallback): bool {
+    if (typeOf(value) == SESSION_TYPE_BOOL) {
+        return value
+    }
+    return fallback
+}
+
+method sessionText(object value, string fallback): string {
+    return sessionBoundedText(value, fallback, SESSION_MAX_TEXT_BYTES)
+}
+
+// Paths may be long (a deep Nix store or CI directory), so they get the PATH_MAX limit.
+method sessionPathText(object value, string fallback): string {
+    return sessionBoundedText(value, fallback, SESSION_MAX_PATH_BYTES)
+}
+
+// A text above its limit is ignored with a warning, never silently.
+method sessionBoundedText(object value, string fallback, integer limit): string {
+    if (typeOf(value) != SESSION_TYPE_STRING) {
+        return fallback
+    }
+    if (value.length() > limit) {
+        log.warn("session: a text setting of " + value.length() + " bytes is ignored; the limit is " + limit + " bytes")
+        return fallback
+    }
+    return value
+}
+
+method sessionTexts(object value, array<string> fallback): array<string> {
+    if (typeOf(value) == SESSION_TYPE_ARRAY) {
+        return protocolTextList(value)
+    }
+    return fallback
+}
+
+method sessionBoundedWhole(object value, integer fallback, integer low, integer high): integer {
+    var whole = fallback
+    if (typeOf(value) == SESSION_TYPE_INTEGER) {
+        whole = value
+    }
+    if (typeOf(value) == SESSION_TYPE_FLOAT) {
+        whole = protocolFloatToWhole(value)
+    }
+    if (whole < low || whole > high) {
+        return fallback
+    }
+    return whole
+}
+
+method sessionChoice(object value, array<string> allowed, string fallback): string {
+    if (typeOf(value) == SESSION_TYPE_STRING && allowed.contains(value)) {
+        return value
+    }
+    return fallback
+}

@@ -1,0 +1,17 @@
+package main
+
+import @support
+import @fixtures
+import @outline_cases
+import @search_cases
+import @folding_cases
+import @link_cases
+import @deep_cases
+
+method main() {
+    runOutlineCases()
+    runSearchCases()
+    runFoldingCases()
+    runLinkCases()
+    runDeepFoldingCases()
+}

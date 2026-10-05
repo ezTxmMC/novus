@@ -1,0 +1,138 @@
+package main
+
+import @fixtures
+import @support
+
+// A program with classes, an enum, std use and locals of every kind that the light inference knows.
+method typingSource(): string {
+    return typingTemplate().replace("%main%", "method main")
+}
+
+// `%main%` stands for the words `method main` at the start of a line (see SEM_MAIN_MARK in fixtures.nv).
+method typingTemplate(): string {
+    return "import strings
+
+define class Shape {
+    string label
+
+    method describe(): string {
+        return label
+    }
+}
+
+define class Circle based Shape {
+    float radius
+    array<string> tags
+    map<string, integer> counts
+
+    construct(float radius) {
+        this.radius = radius
+    }
+
+    method area(): float {
+        return radius
+    }
+
+    method describe(): string {
+        return \"circle\"
+    }
+
+    method clone(): Circle {
+        return this
+    }
+
+    method rename(string label): Shape {
+        return this
+    }
+}
+
+define class Square based Circle {
+    float side
+
+    method perimeter(): float {
+        return side
+    }
+
+    method summary(): string {
+        return describe() + label + this.radius
+    }
+}
+
+define enum Color {
+    Red, Green;
+
+    method shade(): string {
+        return \"x\"
+    }
+}
+
+LIMIT = 3
+
+method make(integer n): Circle {
+    return Circle(1.0)
+}
+
+%main%() {
+    var c = Circle(2.0)
+    var s = make(1)
+    var label = c.label
+    var tags = c.tags
+    var first = c.tags[0]
+    var counts = c.counts
+    var total = counts.get(\"a\", 0)
+    var parts = \"a,b\".split(\",\")
+    var n = parts.length()
+    var upper = parts[0].toUpper()
+    var cloned = c.clone().clone()
+    var color = Color.Red
+    var all = Color.values()
+    var text = \"x\" + label
+    var flag = n > 1
+    var neg = -n
+    var m = {}
+    var list = [1, 2]
+    var parsed = parseInt(\"5\")
+    var joined = strings.repeat(\"a\", 2)
+    var shape = Shape{label=\"x\"}
+    var unknownCall = nothing(1)
+    var loopSelf = a
+    var p1 = c.clone().clone().area()
+    var p2 = c.tags[0].length()
+    var p3 = c.counts.keys()
+    var p4 = Color.Red.shade()
+    var p5 = Color.values()[0]
+    var p6 = strings.repeat(\"a\", 2).toUpper()
+    var p7 = make(1).label
+    var p8 = label.length()
+    var p9 = parts.pop()
+    var p10 = counts.values()
+    var p11 = c.describe()
+    var p12 = c.rename(\"x\").describe()
+    var p13 = Color.Purple
+    var p14 = (1 + 2)
+    var p15 = \"a\" == label
+    var p16 = !flag
+    var p17 = p16
+    for (t in c.tags) {
+        println(t)
+    }
+    for (k in c.counts) {
+        println(k)
+    }
+    for (col in Color.values()) {
+        println(col)
+    }
+    for (ch in label) {
+        println(ch)
+    }
+    println(\"here\")
+}
+"
+}
+
+method typingWorld(): SemWorld {
+    return SemWorld({
+        "/proj/project.nv": semManifest(),
+        "/proj/main.nv": typingSource()
+    }, "/proj/main.nv")
+}

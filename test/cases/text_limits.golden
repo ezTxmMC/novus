@@ -1,0 +1,4 @@
+half: 1073741824 bytes
+a + b: failed true, text is longer than 2147483646 bytes
+a + b + c: failed true, text is longer than 2147483646 bytes
+just below the limit: 1073741825 bytes

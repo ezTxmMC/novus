@@ -1,0 +1,70 @@
+package main
+
+import json
+import math
+import unicode
+
+// What json.stringify writes for text that is not well formed UTF-8 and for
+// floats JSON cannot express: always valid JSON text.
+
+method describe(string label, string text) {
+    println "${label}: ${text.length()} bytes, valid UTF-8 ${unicode.isValidUtf8(text)}, valid JSON ${json.isValid(text)}"
+}
+
+method printBytes(string label, string text) {
+    var codes = []
+    var index = 0
+    while (index < text.length()) {
+        codes.append(ord(text.charAt(index)))
+        index = index + 1
+    }
+    var joined = codes.join(",")
+    println "${label}: ${joined}"
+}
+
+method printIllFormed() {
+    var replacement = unicode.fromCodePoint(65533)
+    printBytes("replacement", replacement)
+    var cases = [
+        ["stray high byte", chr(255)],
+        ["stray continuation", chr(128)],
+        ["truncated two byte", "a" + chr(195)],
+        ["truncated three byte", chr(226) + chr(130)],
+        ["overlong slash", chr(192) + chr(175)],
+        ["utf-8 surrogate", chr(237) + chr(160) + chr(128)],
+        ["beyond U+10FFFF", chr(244) + chr(144) + chr(128) + chr(128)]
+    ]
+    for (entry in cases) {
+        var text = json.stringify(entry[1])
+        describe(entry[0], text)
+        printBytes("  bytes", text)
+    }
+}
+
+method printWellFormed() {
+    var text = "é€😀 \"quoted\" \\ \n" + chr(1)
+    var out = json.stringify(text)
+    describe("well formed", out)
+    println out
+    println json.parse(out) == text
+    println json.stringify(unicode.fromCodePoint(65533)) == "\"" + unicode.fromCodePoint(65533) + "\""
+    println json.stringify({"é": 1}) == "{\"é\":1}"
+}
+
+// Infinity and NaN come from math; their display differs between platforms,
+// so only the JSON is printed.
+method printFloats() {
+    var infinity = math.pow(10.0, 400.0)
+    var notANumber = math.sqrt(-1.0)
+    println json.stringify([1.5, 2.0, 1234567.125, -0.25])
+    println json.stringify([infinity, -infinity])
+    println json.stringify({"nan": notANumber, "ok": 0.5})
+    println json.pretty([infinity])
+    println json.isValid(json.stringify([infinity, notANumber, 1.0]))
+}
+
+method main {
+    printIllFormed()
+    printWellFormed()
+    printFloats()
+}

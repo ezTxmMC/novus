@@ -1,0 +1,13 @@
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"rootUri":"@ROOTURI@","capabilities":{}}}
+{"jsonrpc":"2.0","method":"initialized","params":{}}
+{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"@ROOTURI@/main.nv","languageId":"novus","version":1,"text":"import strings\nimport geo\n\n/* A registry of\n   shapes. */\nprivate final LIMIT = 3\n\ndefine enum Kind {\n    Round, Square\n}\n\ndefine class Registry {\n    array<Shape> shapes: get, set\n\n    construct() {\n        this.shapes = []\n    }\n\n    method add(Shape shape): integer {\n        this.shapes.append(shape)\n        return this.shapes.length()\n    }\n}\n\nmethod main() {\n    var registry = Registry{}\n    var kind = Kind.Round\n    var shape = Shape{name=\"a\", sides=4}\n    var count = registry.add(shape)\n    println(\"count ${registry.add(shape)} of ${LIMIT}\")\n    println(geo.describe(shape) + strings.repeat(\"-\", count))\n}\n"}}}
+{"jsonrpc":"2.0","id":2,"method":"textDocument/semanticTokens/full","params":{"textDocument":{"uri":"@ROOTURI@/main.nv"}}}
+{"jsonrpc":"2.0","id":3,"method":"textDocument/semanticTokens/range","params":{"textDocument":{"uri":"@ROOTURI@/main.nv"},"range":{"start":{"line":13,"character":0},"end":{"line":18,"character":0}}}}
+{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"@ROOTURI@/main.nv","version":2},"contentChanges":[{"range":{"start":{"line":5,"character":0},"end":{"line":5,"character":0}},"text":"private final NAME = \"novus\"\n"}]}}
+{"jsonrpc":"2.0","id":4,"method":"textDocument/semanticTokens/full","params":{"textDocument":{"uri":"@ROOTURI@/main.nv"}}}
+{"jsonrpc":"2.0","id":5,"method":"textDocument/semanticTokens/full","params":{"textDocument":{"uri":"@ROOTURI@/closed.nv"}}}
+{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"@ROOTURI@/project.nv","languageId":"novus","version":1,"text":"project \"semantic-tokens\"\nversion \"0.1.0\"\nmain \"main.nv\"\n"}}}
+{"jsonrpc":"2.0","id":6,"method":"textDocument/semanticTokens/full","params":{"textDocument":{"uri":"@ROOTURI@/project.nv"}}}
+{"jsonrpc":"2.0","id":7,"method":"textDocument/semanticTokens/range","params":{"textDocument":{"uri":"@ROOTURI@/main.nv"},"range":{"start":{"line":40,"character":0},"end":{"line":50,"character":0}}}}
+{"jsonrpc":"2.0","id":99,"method":"shutdown"}
+{"jsonrpc":"2.0","method":"exit"}

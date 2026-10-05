@@ -1,0 +1,86 @@
+package queries
+
+import base/maybe
+import features/navigation
+import server/protocol
+import server/rpc
+import server/session
+
+private final QUERIES_CANCELLED_MESSAGE = "request cancelled"
+
+// textDocument/definition: the declarations that the identifier under the cursor leads to, `[]` for nothing.
+define class DefinitionHandler based RequestHandler {
+    Session session
+    DefinitionFinder finder
+    WireEncoder encoder
+
+    construct(Session session, DefinitionFinder finder, WireEncoder encoder) {
+        this.session = session
+        this.finder = finder
+        this.encoder = encoder
+    }
+
+    method handle(Request request): object {
+        var target = this.session.targetAt(request.params)
+        if (isNone(target)) {
+            return []
+        }
+        var places = QueriesPlaces(this.session, this.encoder, target.context.document)
+        return places.locations(this.finder.find(target.context, target.offset))
+    }
+}
+
+// textDocument/references: every reference over the closure; a cancelled request is answered with -32800, never with
+// a partial list.
+define class ReferencesHandler based RequestHandler {
+    Session session
+    ReferenceFinder finder
+    WireEncoder encoder
+    CancelRegistry cancellations
+
+    construct(Session session, ReferenceFinder finder, WireEncoder encoder, CancelRegistry cancellations) {
+        this.session = session
+        this.finder = finder
+        this.encoder = encoder
+        this.cancellations = cancellations
+    }
+
+    method handle(Request request): object {
+        var target = this.session.targetAt(request.params)
+        if (isNone(target)) {
+            return []
+        }
+        var include = protocolFlagAt(request.params, ["context", "includeDeclaration"], true)
+        var cancel = RequestCancelCheck(this.cancellations, request.id)
+        var found = this.finder.find(target.context, target.offset, include, cancel)
+        if (cancel.isCancelled()) {
+            failRequest(rpcRequestCancelled(), QUERIES_CANCELLED_MESSAGE)
+        }
+        return QueriesPlaces(this.session, this.encoder, target.context.document).locations(found)
+    }
+}
+
+// textDocument/documentHighlight: the occurrences of the symbol under the cursor inside the document.
+define class HighlightHandler based RequestHandler {
+    Session session
+    ReferenceFinder finder
+    WireEncoder encoder
+
+    construct(Session session, ReferenceFinder finder, WireEncoder encoder) {
+        this.session = session
+        this.finder = finder
+        this.encoder = encoder
+    }
+
+    method handle(Request request): object {
+        var target = this.session.targetAt(request.params)
+        if (isNone(target)) {
+            return []
+        }
+        var encoded = []
+        for (entry in this.finder.highlights(target.context, target.offset)) {
+            encoded.append(this.encoder.highlight(target.context.document.lines, entry))
+        }
+        return encoded
+    }
+}

@@ -1,0 +1,141 @@
+package main
+
+import strings
+import time
+import "novus/lsp/base/text"
+import "novus/lsp/syntax/lexing"
+
+private final OPEN_INTERPOLATION = "$" + "{"
+private final PIECES = ["$", "{", "}", "x", "\\$", "\\{", "\\}", "\\\\"]
+private final DIFFERENTIAL_CASES = 3000
+private final LONGEST_BODY = 14
+private final TIME_LIMIT_SECONDS = 5.0
+private final HEAVY_UNIT = "method m() {\n    var s = \"hello world\"\n    /* c */\n    s = s + \"x\"\n}\n"
+
+// The first algorithm of the lexer, kept as the reference: every `${` rescans the text for its closing brace.
+method referenceWidth(string text, integer at, integer to): integer {
+    if (at + 1 < to && text.charAt(at) == "\\") {
+        return 2
+    }
+    return 1
+}
+
+method referenceCode(string text, integer at, integer to): integer {
+    if (referenceWidth(text, at, to) == 2) {
+        return ord(text.charAt(at + 1))
+    }
+    return ord(text.charAt(at))
+}
+
+method referenceClose(string text, integer inner, integer to): integer {
+    var depth = 1
+    var at = inner
+    while (at < to) {
+        var code = referenceCode(text, at, to)
+        if (code == ord("{")) {
+            depth = depth + 1
+        }
+        if (code == ord("}")) {
+            depth = depth - 1
+        }
+        if (depth == 0) {
+            return at
+        }
+        at = at + referenceWidth(text, at, to)
+    }
+    return -1
+}
+
+method referenceSpans(string text, integer from, integer to): string {
+    var spans = []
+    var at = from
+    while (at < to) {
+        var brace = at + referenceWidth(text, at, to)
+        var opens = referenceCode(text, at, to) == ord("$") && brace < to && referenceCode(text, brace, to) == ord("{")
+        var inner = brace + referenceWidth(text, brace, to)
+        var close = -1
+        if (opens) {
+            close = referenceClose(text, inner, to)
+        }
+        if (close < 0) {
+            at = at + referenceWidth(text, at, to)
+            continue
+        }
+        spans.append("[" + inner + "," + close + ")")
+        at = close + referenceWidth(text, close, to)
+    }
+    return spans.join(" ")
+}
+
+method renderSpans(Token token): string {
+    var spans = []
+    for (span in token.interpolations) {
+        spans.append("[" + span.start + "," + span.end + ")")
+    }
+    return spans.join(" ")
+}
+
+method randomBody(array<integer> seed): string {
+    var pieces = []
+    seed[0] = nextRandom(seed[0])
+    var count = seed[0] % (LONGEST_BODY + 1)
+    while (pieces.length() < count) {
+        seed[0] = nextRandom(seed[0])
+        pieces.append(PIECES[(seed[0] / 65536) % PIECES.length()])
+    }
+    return pieces.join("")
+}
+
+method nextRandom(integer state): integer {
+    return (state * 1103515245 + 12345) % 2147483648
+}
+
+method checkInterpolationDifferential() {
+    var seed = [42]
+    var mismatches = []
+    var checked = 0
+    while (checked < DIFFERENTIAL_CASES) {
+        var source = "\"" + randomBody(seed) + "\""
+        var token = lexText(source).tokens[0]
+        var expected = referenceSpans(source, 1, source.length() - 1)
+        if (expected != renderSpans(token)) {
+            mismatches.append(source + " expected " + expected + " got " + renderSpans(token))
+        }
+        checked = checked + 1
+    }
+    expectEqual("linear/interpolations-agree-with-the-rescanning-reference", "", mismatches.join(" | "))
+}
+
+method checkInterpolationShapes() {
+    expectEqual("linear/unbalanced-start-then-balanced", "[6,7)", renderSpans(lexText("\"" + OPEN_INTERPOLATION + " " + OPEN_INTERPOLATION + "a}\"").tokens[0]))
+    expectEqual("linear/closer-before-an-opener-is-ignored", "[5,6)", renderSpans(lexText("\"} " + OPEN_INTERPOLATION + "a}\"").tokens[0]))
+    expectEqual("linear/nested-interpolations-are-one-span", "[3,10)", renderSpans(lexText("\"" + OPEN_INTERPOLATION + "a" + OPEN_INTERPOLATION + "b} c}\"").tokens[0]))
+}
+
+method elapsedSince(float started): float {
+    return time.clock() - started
+}
+
+method expectFast(string name, float started) {
+    expectTrue(name, elapsedSince(started) < TIME_LIMIT_SECONDS)
+}
+
+method checkQuadraticInputs() {
+    var started = time.clock()
+    var openers = lexText("\"" + strings.repeat(OPEN_INTERPOLATION, 50000) + "\"")
+    expectInt("linear/many-unmatched-interpolation-openers-are-two-tokens", 2, openers.tokens.length())
+    expectFast("linear/many-unmatched-interpolation-openers-are-fast", started)
+    started = time.clock()
+    var escaped = lexText(strings.repeat("\\\"\n", 40000))
+    expectTrue("linear/escaped-quotes-report-a-bounded-number-of-issues", escaped.issues.length() <= 1000)
+    expectFast("linear/lines-of-escaped-quotes-are-fast", started)
+}
+
+method checkNulSearchCost() {
+    var started = time.clock()
+    var text = strings.repeat(HEAVY_UNIT, 8000) + chr(0)
+    var lexed = lexText(text)
+    expectInt("linear/nul-at-the-end-keeps-every-token", 8000 * 15 + 1, lexed.tokens.length())
+    expectInt("linear/nul-at-the-end-keeps-every-comment", 8000, lexed.comments.length())
+    expectFast("linear/nul-at-the-end-does-not-slow-the-searches", started)
+}

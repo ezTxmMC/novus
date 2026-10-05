@@ -1,0 +1,199 @@
+package completion
+
+import base/maybe
+import base/text
+import projects/workspace
+import syntax/lexing
+
+private final COMPLETION_NO_INDEX = -1
+private final COMPLETION_OPENER_UNKNOWN = -2
+private final COMPLETION_OPENERS = ["(", "[", "{"]
+private final COMPLETION_CLOSERS = [")", "]", "}"]
+
+// Where the cursor sits among the tokens: the identifier that it touches (the prefix), the significant tokens before the
+// insertion point and the innermost bracket that is still open there. A cursor inside `${...}` of a string reads the
+// tokens of that expression only. Unknown tokens and the end-of-file token are never significant.
+define class CompletionCursor {
+    array<Token> tokens
+    LexResult lexed
+    integer offset
+    integer line
+    Token prefixToken
+    string prefix
+    Span replaceSpan
+    integer lastIndex
+    integer openerIndex
+    bool inInterpolation
+
+    construct(LexResult lexed, string text, integer offset, integer line) {
+        this.lexed = lexed
+        this.tokens = lexed.tokens
+        this.offset = offset
+        this.line = line
+        this.prefixToken = nothing()
+        this.prefix = ""
+        this.replaceSpan = Span(offset, offset)
+        this.openerIndex = COMPLETION_OPENER_UNKNOWN
+        this.inInterpolation = false
+        this.locate(text)
+    }
+
+    // The prefix token is the identifier or keyword that contains the offset or ends at it (8.2).
+    method locate(string text) {
+        var index = this.lexed.indexBefore(this.offset)
+        var cutAt = index
+        if (index >= 0) {
+            var token = this.tokens[index]
+            if (this.isWordToken(token) && token.end >= this.offset) {
+                this.prefixToken = token
+                this.prefix = text.substring(token.start, this.offset)
+                this.replaceSpan = Span(token.start, token.end)
+                cutAt = index - 1
+            }
+            if (this.prefix == "" && token.end > this.offset) {
+                cutAt = index - 1
+            }
+        }
+        this.lastIndex = this.significantAtOrBefore(cutAt)
+    }
+
+    method isWordToken(Token token): bool {
+        return token.kind == TokenKind.Ident || token.kind == TokenKind.Keyword
+    }
+
+    method isSignificant(Token token): bool {
+        return token.kind != TokenKind.Unknown && token.kind != TokenKind.EndOfFile
+    }
+
+    method significantAtOrBefore(integer index): integer {
+        var at = index
+        while (at >= 0 && this.isSignificant(this.tokens[at]) == false) {
+            at = at - 1
+        }
+        return at
+    }
+
+    // Where new text would start: the identifier that is being completed, else the cursor.
+    method insertionStart(): integer {
+        return this.replaceSpan.start
+    }
+
+    // The index of the `back`-th significant token before the insertion point (1 is the nearest), -1 when there is none.
+    method indexBack(integer back): integer {
+        var at = this.lastIndex
+        var remaining = back
+        while (at >= 0 && remaining > 1) {
+            at = this.significantAtOrBefore(at - 1)
+            remaining = remaining - 1
+        }
+        return at
+    }
+
+    method tokenBack(integer back): Token {
+        var at = this.indexBack(back)
+        if (at < 0) {
+            return nothing()
+        }
+        return this.tokens[at]
+    }
+
+    method isPunctBack(integer back, string punct): bool {
+        var token = this.tokenBack(back)
+        return isSome(token) && token.isPunct(punct)
+    }
+
+    method isWordBack(integer back, string word): bool {
+        var token = this.tokenBack(back)
+        return isSome(token) && token.isWord(word)
+    }
+
+    // True when the nearest token ends exactly where the insertion starts (`@Dep`, `a.`).
+    method isAdjacent(): bool {
+        var token = this.tokenBack(1)
+        return isSome(token) && token.end == this.insertionStart()
+    }
+
+    // No token before, or the nearest one is on an earlier line than the cursor.
+    method startsLine(): bool {
+        var token = this.tokenBack(1)
+        return isNone(token) || token.line < this.line
+    }
+
+    // The index of the innermost bracket that is open at the insertion point, -1 at the top level.
+    method opener(): integer {
+        if (this.openerIndex == COMPLETION_OPENER_UNKNOWN) {
+            this.openerIndex = this.scanOpener()
+        }
+        return this.openerIndex
+    }
+
+    method scanOpener(): integer {
+        var depth = 0
+        var at = this.lastIndex
+        while (at >= 0) {
+            var token = this.tokens[at]
+            if (token.kind == TokenKind.Punct && COMPLETION_CLOSERS.contains(token.value)) {
+                depth = depth + 1
+            }
+            if (token.kind == TokenKind.Punct && COMPLETION_OPENERS.contains(token.value)) {
+                if (depth == 0) {
+                    return at
+                }
+                depth = depth - 1
+            }
+            at = at - 1
+        }
+        return COMPLETION_NO_INDEX
+    }
+
+    method openerToken(): Token {
+        var at = this.opener()
+        if (at < 0) {
+            return nothing()
+        }
+        return this.tokens[at]
+    }
+
+    // The token before the one at `index`, skipping unknown tokens; nil at the start.
+    method tokenBefore(integer index): Token {
+        var at = this.significantAtOrBefore(index - 1)
+        if (at < 0) {
+            return nothing()
+        }
+        return this.tokens[at]
+    }
+}
+
+// The tokens of the document: the lexed manifest (its `SourceFile` is empty), else what the parse kept.
+method completionLexResult(FileContext context): LexResult {
+    if (context.document.fileKind() == FILE_KIND_MANIFEST) {
+        return lexText(context.document.text)
+    }
+    return LexResult(context.syntax.tokens, context.syntax.comments, [])
+}
+
+// The cursor for an offset; inside `${...}` of a string it reads the tokens of that expression.
+method completionCursorFor(FileContext context, integer offset): CompletionCursor {
+    var lexed = completionLexResult(context)
+    var text = context.document.text
+    var line = context.document.lines.lineOf(offset)
+    var index = lexed.indexBefore(offset)
+    if (index >= 0 && lexed.tokens[index].kind == TokenKind.String) {
+        for (span in lexed.tokens[index].interpolations) {
+            if (span.start <= offset && offset <= span.end) {
+                var inner = CompletionCursor(lexRange(text, span.start, span.end), text, offset, line)
+                inner.inInterpolation = true
+                return inner
+            }
+        }
+    }
+    return CompletionCursor(lexed, text, offset, line)
+}
+
+// True when the offset is inside the string literal: after the opening quote and before the closing one.
+method completionInsideString(Token token, integer offset): bool {
+    if (token.kind != TokenKind.String || offset <= token.start) {
+        return false
+    }
+    return offset < token.end || (offset == token.end && token.terminated == false)
+}

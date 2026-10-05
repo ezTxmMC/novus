@@ -46,6 +46,7 @@ static nv nv_concat(nv l, nv r) {
     if (rl == 0 && nv_type_of(l) == NV_STR) {
         return l;
     }
+    nv_check_text_length(ll + rl);
     if (nv_type_of(l) == NV_STR && l->owns && l->s[l->slen] == 0 && rl > 0 && rs[0] != 0 &&
         nv_buf_cap(l->s) > ll + rl) {
         buf = (char *)l->s;
@@ -127,6 +128,7 @@ static nv nv_add_chain(int n, ...) {
         return acc;
     }
     at = (size_t)acc->slen;
+    nv_check_text_length(at + total);
     if (acc->owns && acc->s[acc->slen] == 0 && nv_buf_cap(acc->s) > at + total) {
         buf = (char *)acc->s;             /* still owns the end of its buffer */
     } else {
@@ -147,6 +149,28 @@ static nv nv_add_chain(int n, ...) {
     return v;
 }
 
+/* Integer arithmetic wraps around at 64 bits, like the boxed operators do in
+ * practice; plain C `+` on signed values would let the C compiler assume it
+ * never overflows. Division by zero is 0 in Novus, not a trap. */
+static inline long long nv_iadd(long long a, long long b) { return (long long)((unsigned long long)a + (unsigned long long)b); }
+static inline long long nv_isub(long long a, long long b) { return (long long)((unsigned long long)a - (unsigned long long)b); }
+static inline long long nv_imul(long long a, long long b) { return (long long)((unsigned long long)a * (unsigned long long)b); }
+static inline long long nv_ineg(long long a) { return (long long)(0ULL - (unsigned long long)a); }
+
+/* Unboxed integer helpers: division by zero is 0 in Novus, not a trap. */
+static inline long long nv_idiv(long long a, long long b) {
+    if (b == -1) {
+        return nv_ineg(a);   /* the lowest integer / -1 would trap on some processors */
+    }
+    return b ? a / b : 0;
+}
+static inline long long nv_imod(long long a, long long b) {
+    if (b == -1) {
+        return 0;
+    }
+    return b ? a % b : 0;
+}
+
 static void nv_arith_check(nv l, nv r, const char *op) {
     if (!nv_is_num(l) || !nv_is_num(r)) {
         nv_error("cannot apply '%s' to %s and %s", op, nv_type_name(l), nv_type_name(r));
@@ -155,7 +179,7 @@ static void nv_arith_check(nv l, nv r, const char *op) {
 
 static nv nv_add(nv l, nv r) {
     if (nv_is_tagged(l) && nv_is_tagged(r)) {
-        return nv_int(nv_ival(l) + nv_ival(r));
+        return nv_int(nv_iadd(nv_ival(l), nv_ival(r)));
     }
     if (nv_type_of(l) == NV_STR || nv_type_of(r) == NV_STR) {
         return nv_concat(l, r);
@@ -164,29 +188,29 @@ static nv nv_add(nv l, nv r) {
     if (nv_type_of(l) == NV_FLOAT || nv_type_of(r) == NV_FLOAT) {
         return nv_float(nv_as_double(l) + nv_as_double(r));
     }
-    return nv_int(nv_ival(l) + nv_ival(r));
+    return nv_int(nv_iadd(nv_ival(l), nv_ival(r)));
 }
 
 static nv nv_sub(nv l, nv r) {
     if (nv_is_tagged(l) && nv_is_tagged(r)) {
-        return nv_int(nv_ival(l) - nv_ival(r));
+        return nv_int(nv_isub(nv_ival(l), nv_ival(r)));
     }
     nv_arith_check(l, r, "-");
     if (nv_type_of(l) == NV_FLOAT || nv_type_of(r) == NV_FLOAT) {
         return nv_float(nv_as_double(l) - nv_as_double(r));
     }
-    return nv_int(nv_ival(l) - nv_ival(r));
+    return nv_int(nv_isub(nv_ival(l), nv_ival(r)));
 }
 
 static nv nv_mul(nv l, nv r) {
     if (nv_is_tagged(l) && nv_is_tagged(r)) {
-        return nv_int(nv_ival(l) * nv_ival(r));
+        return nv_int(nv_imul(nv_ival(l), nv_ival(r)));
     }
     nv_arith_check(l, r, "*");
     if (nv_type_of(l) == NV_FLOAT || nv_type_of(r) == NV_FLOAT) {
         return nv_float(nv_as_double(l) * nv_as_double(r));
     }
-    return nv_int(nv_ival(l) * nv_ival(r));
+    return nv_int(nv_imul(nv_ival(l), nv_ival(r)));
 }
 
 static nv nv_div(nv l, nv r) {
@@ -195,23 +219,24 @@ static nv nv_div(nv l, nv r) {
         double d = nv_as_double(r);
         return nv_float(d != 0.0 ? nv_as_double(l) / d : 0.0);
     }
-    return nv_int(nv_ival(r) != 0 ? nv_ival(l) / nv_ival(r) : 0);
+    return nv_int(nv_idiv(nv_ival(l), nv_ival(r)));
 }
 
 static nv nv_mod(nv l, nv r) {
     nv_arith_check(l, r, "%");
     if (nv_type_of(l) == NV_FLOAT || nv_type_of(r) == NV_FLOAT) {
-        return nv_float(fmod(nv_as_double(l), nv_as_double(r)));
+        double d = nv_as_double(r);
+        return nv_float(d != 0.0 ? fmod(nv_as_double(l), d) : 0.0);   /* x % 0.0 is 0.0, like x / 0.0 */
     }
-    return nv_int(nv_ival(r) != 0 ? nv_ival(l) % nv_ival(r) : 0);
+    return nv_int(nv_imod(nv_ival(l), nv_ival(r)));
 }
 
 static nv nv_neg(nv v) {
     if (nv_type_of(v) == NV_FLOAT) {
-        return nv_float(-v->f);
+        return nv_float(-nv_fval(v));
     }
     if (nv_type_of(v) == NV_INT) {
-        return nv_int(-nv_ival(v));
+        return nv_int(nv_ineg(nv_ival(v)));
     }
     nv_error("cannot negate %s", nv_type_name(v));
     return nv_nil;
@@ -219,15 +244,58 @@ static nv nv_neg(nv v) {
 
 static nv nv_not(nv v) { return nv_bool(!nv_truthy(v)); }
 
+/* Strings are equal when their lengths and their bytes are: the length is
+ * compared first, so most unequal strings never touch their bytes, and the
+ * comparison does not stop at a NUL byte. */
+static inline int nv_str_equal(nv l, nv r) {
+    if (l->slen != r->slen) {
+        return 0;
+    }
+    if (l->slen == 0 || l->s == r->s) {
+        return 1;
+    }
+    return l->s[0] == r->s[0] && memcmp(l->s, r->s, (size_t)l->slen) == 0;
+}
+
+/* strcmp's order (unsigned bytes, a prefix is smaller) for texts of known
+ * length; the result is -1, 0 or 1. */
+static int nv_text_compare(const char *a, size_t al, const char *b, size_t bl) {
+    size_t common = al < bl ? al : bl;
+    int c = common ? memcmp(a, b, common) : 0;
+    if (c != 0) {
+        return c < 0 ? -1 : 1;
+    }
+    return al < bl ? -1 : (al > bl ? 1 : 0);
+}
+
+/* Comparison of two values of which at least one is a string: the data of
+ * both sides, byte for byte. */
+static int nv_data_compare(nv l, nv r) {
+    size_t ll, rl;
+    const char *lp, *rp;
+    if (nv_type_of(l) == NV_STR && nv_type_of(r) == NV_STR) {
+        return nv_text_compare(l->s, (size_t)l->slen, r->s, (size_t)r->slen);
+    }
+    lp = nv_data_text(l, &ll);
+    rp = nv_data_text(r, &rl);
+    return nv_text_compare(lp, ll, rp, rl);
+}
+
 static int nv_equals(nv l, nv r) {
     if (nv_is_tagged(l) && nv_is_tagged(r)) {
         return l == r;
     }
+    if (nv_type_of(l) == NV_STR && nv_type_of(r) == NV_STR) {
+        return nv_str_equal(l, r);
+    }
     if (nv_type_of(l) == NV_STR || nv_type_of(r) == NV_STR) {
-        return strcmp(nv_data(l), nv_data(r)) == 0;
+        return nv_data_compare(l, r) == 0;
     }
     if (nv_type_of(l) == NV_BOOL || nv_type_of(r) == NV_BOOL) {
-        return strcmp(nv_data(l), nv_data(r)) == 0;
+        return nv_data_compare(l, r) == 0;
+    }
+    if (nv_type_of(l) == NV_INT && nv_type_of(r) == NV_INT) {
+        return nv_ival(l) == nv_ival(r);   /* beyond 2^53 a double cannot tell integers apart */
     }
     if (nv_is_num(l) && nv_is_num(r)) {
         return nv_as_double(l) == nv_as_double(r);
@@ -252,21 +320,38 @@ static int nv_equals(nv l, nv r) {
     return 1; /* nil == nil */
 }
 
+/* nv_compare is -1, 0 or 1 - or this, for two numbers of which one is a NaN:
+ * a NaN is neither smaller, nor larger, nor equal (see nv_order_le). */
+#define NV_UNORDERED 2
+
 static int nv_compare(nv l, nv r, const char *op) {
     if (nv_is_tagged(l) && nv_is_tagged(r)) {
         long long a = nv_ival(l), b = nv_ival(r);
         return a < b ? -1 : (a > b ? 1 : 0);
     }
     if (nv_type_of(l) == NV_STR || nv_type_of(r) == NV_STR) {
-        return strcmp(nv_data(l), nv_data(r));
+        return nv_data_compare(l, r);
+    }
+    if (nv_type_of(l) == NV_INT && nv_type_of(r) == NV_INT) {
+        long long a = nv_ival(l), b = nv_ival(r);
+        return a < b ? -1 : (a > b ? 1 : 0);
     }
     if (nv_is_num(l) && nv_is_num(r)) {
         double a = nv_as_double(l), b = nv_as_double(r);
+        if (a != a || b != b) {
+            return NV_UNORDERED;
+        }
         return a < b ? -1 : (a > b ? 1 : 0);
     }
     nv_error("cannot compare %s and %s with '%s'", nv_type_name(l), nv_type_name(r), op);
     return 0;
 }
+
+/* The four orderings, false for a NaN like C's operators on doubles. */
+static inline int nv_order_lt(int order) { return order == -1; }
+static inline int nv_order_gt(int order) { return order == 1; }
+static inline int nv_order_le(int order) { return order == -1 || order == 0; }
+static inline int nv_order_ge(int order) { return order == 1 || order == 0; }
 
 /* ---------------------------------------------------------------- */
 /* Fast paths: small-integer arithmetic and comparisons without a call */
@@ -285,10 +370,6 @@ static inline int nv_both_tagged(nv l, nv r) { return ((uintptr_t)l & (uintptr_t
 static inline double nv_fdiv(double a, double b) { return b != 0.0 ? a / b : 0.0; }
 static inline double nv_fmod_(double a, double b) { return b != 0.0 ? fmod(a, b) : 0.0; }
 
-/* Unboxed integer helpers: division by zero is 0 in Novus, not a trap. */
-static inline long long nv_idiv(long long a, long long b) { return b ? a / b : 0; }
-static inline long long nv_imod(long long a, long long b) { return b ? a % b : 0; }
-
 /* Shifts on unboxed integers. A count of 64 or more, or a negative one, is
  * undefined in C but not here - see nv_shl/nv_shr, which these mirror. */
 static inline long long nv_ishl(long long v, long long n) {
@@ -305,65 +386,139 @@ static inline long long nv_ishr(long long v, long long n) {
     return n >= 64 ? (v < 0 ? -1 : 0) : (v >> n);
 }
 
+/* Both operands as doubles, when each is an immediate float or a small
+ * integer and at least one is a float: the case where the result is a float
+ * and neither operand needs a call to be read. Operands that are anything
+ * else (heap floats, strings, ...) take the general functions. */
+static inline int nv_float_operands(nv l, nv r, double *a, double *b) {
+    if (nv_is_imm_float(l)) {
+        *a = nv_fval(l);
+        if (nv_is_imm_float(r)) {
+            *b = nv_fval(r);
+            return 1;
+        }
+        if (nv_is_tagged(r)) {
+            *b = (double)nv_ival(r);
+            return 1;
+        }
+        return 0;
+    }
+    if (nv_is_imm_float(r) && nv_is_tagged(l)) {
+        *a = (double)nv_ival(l);
+        *b = nv_fval(r);
+        return 1;
+    }
+    return 0;
+}
+
 static inline nv nv_add_fast(nv l, nv r) {
+    double a, b;
     if (nv_both_tagged(l, r)) {
         return nv_tag(nv_ival(l) + nv_ival(r));
+    }
+    if (nv_float_operands(l, r, &a, &b)) {
+        return nv_float(a + b);
     }
     return nv_add(l, r);
 }
 
 static inline nv nv_sub_fast(nv l, nv r) {
+    double a, b;
     if (nv_both_tagged(l, r)) {
         return nv_tag(nv_ival(l) - nv_ival(r));
+    }
+    if (nv_float_operands(l, r, &a, &b)) {
+        return nv_float(a - b);
     }
     return nv_sub(l, r);
 }
 
 static inline nv nv_mul_fast(nv l, nv r) {
+    double a, b;
     if (nv_both_tagged(l, r)) {
-        long long a = nv_ival(l), b = nv_ival(r);
-        if (a > -0x40000000LL && a < 0x40000000LL && b > -0x40000000LL && b < 0x40000000LL) {
-            return nv_tag(a * b);
+        long long x = nv_ival(l), y = nv_ival(r);
+        if (x > -0x40000000LL && x < 0x40000000LL && y > -0x40000000LL && y < 0x40000000LL) {
+            return nv_tag(x * y);
         }
+    }
+    if (nv_float_operands(l, r, &a, &b)) {
+        return nv_float(a * b);
     }
     return nv_mul(l, r);
 }
 
+static inline nv nv_div_fast(nv l, nv r) {
+    double a, b;
+    if (nv_both_tagged(l, r)) {
+        long long y = nv_ival(r);
+        return y != 0 ? nv_tag(nv_ival(l) / y) : nv_tag(0);
+    }
+    if (nv_float_operands(l, r, &a, &b)) {
+        return nv_float(nv_fdiv(a, b));
+    }
+    return nv_div(l, r);
+}
+
+static inline nv nv_mod_fast(nv l, nv r) {
+    double a, b;
+    if (nv_both_tagged(l, r)) {
+        long long y = nv_ival(r);
+        return y != 0 ? nv_tag(nv_ival(l) % y) : nv_tag(0);
+    }
+    if (nv_float_operands(l, r, &a, &b)) {
+        return nv_float(nv_fmod_(a, b));
+    }
+    return nv_mod(l, r);
+}
+
 /* Conditions want a C int, not a boxed bool - these skip the boxing. */
 static inline int nv_lt_bool(nv l, nv r) {
+    double a, b;
     if (nv_both_tagged(l, r)) return nv_ival(l) < nv_ival(r);
-    return nv_compare(l, r, "<") < 0;
+    if (nv_float_operands(l, r, &a, &b)) return a < b;
+    return nv_order_lt(nv_compare(l, r, "<"));
 }
 static inline int nv_gt_bool(nv l, nv r) {
+    double a, b;
     if (nv_both_tagged(l, r)) return nv_ival(l) > nv_ival(r);
-    return nv_compare(l, r, ">") > 0;
+    if (nv_float_operands(l, r, &a, &b)) return a > b;
+    return nv_order_gt(nv_compare(l, r, ">"));
 }
 static inline int nv_le_bool(nv l, nv r) {
+    double a, b;
     if (nv_both_tagged(l, r)) return nv_ival(l) <= nv_ival(r);
-    return nv_compare(l, r, "<=") <= 0;
+    if (nv_float_operands(l, r, &a, &b)) return a <= b;
+    return nv_order_le(nv_compare(l, r, "<="));
 }
 static inline int nv_ge_bool(nv l, nv r) {
+    double a, b;
     if (nv_both_tagged(l, r)) return nv_ival(l) >= nv_ival(r);
-    return nv_compare(l, r, ">=") >= 0;
+    if (nv_float_operands(l, r, &a, &b)) return a >= b;
+    return nv_order_ge(nv_compare(l, r, ">="));
 }
 static inline int nv_eq_bool(nv l, nv r) {
+    double a, b;
     if (nv_both_tagged(l, r)) return l == r;
+    if (nv_float_operands(l, r, &a, &b)) return a == b;
+    if (nv_is_ptr(l) && nv_is_ptr(r) && l->type == NV_STR && r->type == NV_STR) return nv_str_equal(l, r);
     return nv_equals(l, r);
 }
 static inline int nv_ne_bool(nv l, nv r) { return !nv_eq_bool(l, r); }
 
 static nv nv_eq(nv l, nv r) { return nv_bool(nv_equals(l, r)); }
 static nv nv_ne(nv l, nv r) { return nv_bool(!nv_equals(l, r)); }
-static nv nv_lt(nv l, nv r) { return nv_bool(nv_compare(l, r, "<") < 0); }
-static nv nv_gt(nv l, nv r) { return nv_bool(nv_compare(l, r, ">") > 0); }
-static nv nv_le(nv l, nv r) { return nv_bool(nv_compare(l, r, "<=") <= 0); }
-static nv nv_ge(nv l, nv r) { return nv_bool(nv_compare(l, r, ">=") >= 0); }
+static nv nv_lt(nv l, nv r) { return nv_bool(nv_order_lt(nv_compare(l, r, "<"))); }
+static nv nv_gt(nv l, nv r) { return nv_bool(nv_order_gt(nv_compare(l, r, ">"))); }
+static nv nv_le(nv l, nv r) { return nv_bool(nv_order_le(nv_compare(l, r, "<="))); }
+static nv nv_ge(nv l, nv r) { return nv_bool(nv_order_ge(nv_compare(l, r, ">="))); }
 
 /* ------------------------------------------------------------------ */
 /* Indexing and members                                                */
 /* ------------------------------------------------------------------ */
 
-static nv nv_index(nv t, nv k) {
+static nv nv_coerce_numeric_field(NvClass *c, int at, nv v);
+
+static nv nv_index_general(nv t, nv k) {
     if (nv_type_of(t) == NV_MAP) {
         const char *key = nv_display(k);
         nv v = nv_map_get(t->m, key);
@@ -390,7 +545,7 @@ static nv nv_index(nv t, nv k) {
     return nv_nil;
 }
 
-static void nv_index_set(nv t, nv k, nv v) {
+static void nv_index_set_general(nv t, nv k, nv v) {
     if (nv_type_of(t) == NV_MAP) {
         nv_map_set_key(t->m, k, v);
         return;
@@ -404,6 +559,30 @@ static void nv_index_set(nv t, nv k, nv v) {
         return;
     }
     nv_error("cannot assign by index into a value of type %s", nv_type_name(t));
+}
+
+/* Indexing an array with a small integer in range - the loops of numeric
+ * code - is a bounds check and a load; everything else, including the
+ * errors, goes through the general functions. */
+static inline nv nv_index(nv t, nv k) {
+    if (nv_is_ptr(t) && t->type == NV_ARR && nv_is_tagged(k)) {
+        long long i = nv_ival(k);
+        if (i >= 0 && i < t->a->len) {
+            return t->a->items[i];
+        }
+    }
+    return nv_index_general(t, k);
+}
+
+static inline void nv_index_set(nv t, nv k, nv v) {
+    if (nv_is_ptr(t) && t->type == NV_ARR && nv_is_tagged(k)) {
+        long long i = nv_ival(k);
+        if (i >= 0 && i < t->a->len) {
+            t->a->items[i] = v;
+            return;
+        }
+    }
+    nv_index_set_general(t, k, v);
 }
 
 static nv nv_get_member(nv t, const char *name) {
@@ -432,7 +611,7 @@ static void nv_set_member(nv t, const char *name, nv v) {
         if (at < 0) {
             nv_error("no field '%s' on %s", name, t->o->cls->name);
         }
-        nv_fields(t->o)[at] = v;
+        nv_fields(t->o)[at] = nv_coerce_numeric_field(t->o->cls, at, v);
         return;
     }
     if (nv_type_of(t) == NV_MAP) {

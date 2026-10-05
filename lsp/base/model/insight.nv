@@ -1,0 +1,38 @@
+package model
+
+import base/text
+
+// Hover and signature help.
+define class HoverInfo {
+    string markdown
+    Span span
+
+    construct(string markdown, Span span) {
+        this.markdown = markdown
+        this.span = span
+    }
+}
+
+define class SignatureInfo {
+    string label
+    array<string> parameters
+    string documentation
+
+    construct(string label, array<string> parameters, string documentation) {
+        this.label = label
+        this.parameters = parameters
+        this.documentation = documentation
+    }
+}
+
+define class SignatureHelp {
+    array<SignatureInfo> signatures
+    integer activeSignature
+    integer activeParameter
+
+    construct(array<SignatureInfo> signatures, integer activeSignature, integer activeParameter) {
+        this.signatures = signatures
+        this.activeSignature = activeSignature
+        this.activeParameter = activeParameter
+    }
+}

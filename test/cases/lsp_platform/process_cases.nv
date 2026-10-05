@@ -1,0 +1,66 @@
+package main
+
+import "novus/lsp/base/platform"
+
+method showRun(string label, object value) {
+    println("run " + label + ": " + value)
+}
+
+method describeResult(CommandResult result): string {
+    return "code=" + result.exitCode + " started=" + result.started + " timedOut=" + result.timedOut + " output=[" + result.output.trim() + "]"
+}
+
+method runBasicCommands() {
+    showRun("echo", describeResult(runCommand("echo hello", 5)))
+    showRun("exit code", describeResult(runCommand("exit 3", 0)))
+    showRun("stderr only comes back when the caller redirects it", describeResult(runCommand("sh -c " + shellQuote("echo out; echo err 1>&2") + " 2>&1", 5)))
+    showRun("stdin is closed", describeResult(runCommand("cat", 5)))
+    var limited = runCommand("sleep 5", 1)
+    var canLimit = commandExists("timeout") && operatingSystem() != "windows"
+    showRun("a timeout kills a long command", limited.timedOut == canLimit)
+    showRun("a timeout is only reported when it applied", describeResult(runCommand("exit 124", 0)))
+}
+
+method runDirectoryCommands() {
+    if (operatingSystem() == "windows") {
+        println("run runCommandIn: skipped on windows")
+        return
+    }
+    var root = createTempDirectory("lsp-run-")
+    var odd = root + "/it's a dir"
+    makeDirectories(odd)
+    var here = runCommandIn(root, "pwd", 5)
+    showRun("runCommandIn pwd", here.exitCode + " " + (here.output.trim() == realPath(root)) + " " + here.started)
+    var quoted = runCommandIn(odd, "pwd", 5)
+    showRun("runCommandIn in a directory with spaces and an apostrophe", quoted.exitCode + " " + (quoted.output.trim() == realPath(odd)))
+    showRun("runCommandIn with a timeout prefix after cd", runCommandIn(root, "echo ran", 5).output.trim())
+    removeTree(root)
+}
+
+method runQuoteCases() {
+    var tricky = ["plain", "with space", "it's", "a;b|c&d", "$HOME `date`", "quote\"inside", "", "star*?[x]"]
+    for (item in tricky) {
+        var quoted = shellQuote(item)
+        var echoed = runCommand("printf %s " + quoted, 5)
+        var verdict = operatingSystem() == "windows" || echoed.output == item
+        showRun("shellQuote round trip [" + item + "]", verdict)
+    }
+    showRun("shellQuote of the empty string is not empty", shellQuote("") != "")
+}
+
+method runExistenceCases() {
+    var known = "sh"
+    if (operatingSystem() == "windows") {
+        known = "cmd"
+    }
+    showRun("commandExists " + known, commandExists(known))
+    showRun("commandExists of a missing command", commandExists("no-such-command-lsp-platform"))
+}
+
+method runProcessCases() {
+    println("--- process")
+    runBasicCommands()
+    runDirectoryCommands()
+    runQuoteCases()
+    runExistenceCases()
+}

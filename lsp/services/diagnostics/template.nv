@@ -1,0 +1,190 @@
+package diagnostics
+
+import base/text
+
+private final DIAGNOSTICS_BIND_WORD = "bind"
+private final DIAGNOSTICS_BIND_PREFIX = "bind:"
+private final DIAGNOSTICS_QUOTES = ["\"", "'"]
+private final DIAGNOSTICS_ESCAPE_WIDTH = 2
+private final DIAGNOSTICS_SELF_CLOSE = "/>"
+
+define class DiagnosticsAttribute {
+    string text
+    Span span
+
+    construct(string text, Span span) {
+        this.text = text
+        this.span = span
+    }
+}
+
+// Reads the tags of a template in the order of the compiler's `nvhTokens` and collects the value of every `bind` attribute.
+// Escaped braces, `{...}` blocks, `<?...?>` code, comments and closing tags are skipped as units; a quoted value is one unit,
+// so a word inside it is never an attribute. Every unit advances the position, and a construct that never closes ends the
+// read (the compiler rejects such a file). The raw text of script and style is read like markup: a miss, never a finding.
+define class DiagnosticsTemplateReader {
+    DiagnosticsTemplateCursor cursor
+    array<DiagnosticsAttribute> values
+
+    construct(string text) {
+        this.cursor = DiagnosticsTemplateCursor(text)
+        this.values = []
+    }
+
+    method bindValues(): array<DiagnosticsAttribute> {
+        while (this.cursor.hasMore()) {
+            this.step()
+        }
+        return this.values
+    }
+
+    method step() {
+        var character = this.cursor.peek(0)
+        var next = this.cursor.peek(1)
+        if (character == DIAGNOSTICS_BACKSLASH && (next == "{" || next == "}")) {
+            this.cursor.advance(DIAGNOSTICS_ESCAPE_WIDTH)
+            return
+        }
+        if (character == "{") {
+            this.cursor.skipBlock()
+            return
+        }
+        if (character == "<") {
+            this.markup(next)
+            return
+        }
+        this.cursor.advance(1)
+    }
+
+    method markup(string next) {
+        var closer = this.closerOf(next)
+        if (closer != "") {
+            this.cursor.skipPast(closer)
+            return
+        }
+        if (diagnosticsIsLetterByte(next) == false) {
+            this.cursor.advance(1)
+            return
+        }
+        this.cursor.skipTagName()
+        this.attributes()
+    }
+
+    // The marker that ends a unit of markup without attributes: code, a comment, a doctype or a closing tag; "" for a tag.
+    method closerOf(string next): string {
+        if (next == "?") {
+            return "?>"
+        }
+        if (this.cursor.startsWith("<!--")) {
+            return "-->"
+        }
+        var closesTag = next == "/" && diagnosticsIsLetterByte(this.cursor.peek(DIAGNOSTICS_ESCAPE_WIDTH))
+        if (next == "!" || closesTag) {
+            return ">"
+        }
+        return ""
+    }
+
+    // The attributes up to the end of the tag.
+    method attributes() {
+        while (this.cursor.hasMore()) {
+            this.cursor.skipSpaces()
+            if (this.cursor.peek(0) == ">") {
+                this.cursor.advance(1)
+                return
+            }
+            if (this.cursor.startsWith(DIAGNOSTICS_SELF_CLOSE)) {
+                this.cursor.advance(DIAGNOSTICS_SELF_CLOSE.length())
+                return
+            }
+            this.attribute()
+        }
+    }
+
+    method attribute() {
+        var start = this.cursor.position
+        while (this.cursor.hasMore() && this.endsName() == false) {
+            this.cursor.advance(1)
+        }
+        if (this.cursor.position == start) {
+            this.cursor.advance(1)
+            return
+        }
+        var name = this.cursor.slice(start, this.cursor.position)
+        var afterName = this.cursor.position
+        this.cursor.skipSpaces()
+        if (this.cursor.peek(0) != "=") {
+            this.cursor.position = afterName
+            return
+        }
+        this.cursor.advance(1)
+        this.cursor.skipSpaces()
+        this.value(name)
+    }
+
+    method endsName(): bool {
+        var character = this.cursor.peek(0)
+        return DIAGNOSTICS_SPACES.contains(character) || character == "=" || character == ">" || this.cursor.startsWith(DIAGNOSTICS_SELF_CLOSE)
+    }
+
+    method value(string name) {
+        var character = this.cursor.peek(0)
+        if (character == "{") {
+            this.cursor.skipBlock()
+            return
+        }
+        var isQuoted = DIAGNOSTICS_QUOTES.contains(character)
+        if (isQuoted) {
+            this.cursor.advance(1)
+        }
+        var start = this.cursor.position
+        this.cursor.position = this.endOfValue(character, isQuoted)
+        this.collect(name, start, this.cursor.position)
+        if (isQuoted) {
+            this.cursor.advance(1)
+        }
+    }
+
+    // The end of an attribute value that starts at the position: the closing quote, else the next space or `>`.
+    method endOfValue(string quote, bool isQuoted): integer {
+        var text = this.cursor.text
+        var index = this.cursor.position
+        if (isQuoted) {
+            var close = text.indexOf(quote, index)
+            if (close < 0) {
+                return text.length()
+            }
+            return close
+        }
+        while (index < text.length() && DIAGNOSTICS_SPACES.contains(this.cursor.peekAt(index)) == false && this.cursor.peekAt(index) != ">") {
+            index = index + 1
+        }
+        return index
+    }
+
+    method collect(string name, integer start, integer end) {
+        if (name != DIAGNOSTICS_BIND_WORD && name.startsWith(DIAGNOSTICS_BIND_PREFIX) == false) {
+            return
+        }
+        var raw = this.cursor.slice(start, end)
+        var word = raw.trim()
+        if (this.isIdentifier(word) == false) {
+            return
+        }
+        var first = start + raw.indexOf(word)
+        this.values.append(DiagnosticsAttribute(word, Span(first, first + word.length())))
+    }
+
+    // The compiler's `nvhIsIdent`: a letter, then letters and digits.
+    method isIdentifier(string word): bool {
+        if (word == "" || diagnosticsIsLetterByte(word.charAt(0)) == false) {
+            return false
+        }
+        for (character in word.split("")) {
+            if (diagnosticsIsLetterByte(character) == false && diagnosticsIsDigitByte(character) == false) {
+                return false
+            }
+        }
+        return true
+    }
+}

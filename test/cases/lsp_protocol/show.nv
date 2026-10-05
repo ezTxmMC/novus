@@ -1,0 +1,24 @@
+package main
+
+import json
+
+method show(string label, object value) {
+    println label + ": " + value
+}
+
+method showJson(string label, object value) {
+    println label + ": " + json.stringify(value)
+}
+
+method newClient(bool markdown, bool labelDetails, bool related, bool hierarchical): ClientInfo {
+    var client = ClientInfo()
+    client.markdownDocumentation = markdown
+    client.labelDetailsSupport = labelDetails
+    client.relatedInformation = related
+    client.hierarchicalSymbols = hierarchical
+    return client
+}
+
+method showRange(string label, WireRange range) {
+    println label + ": " + range.start.line + ":" + range.start.character + "-" + range.end.line + ":" + range.end.character
+}

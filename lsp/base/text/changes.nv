@@ -1,0 +1,46 @@
+package text
+
+import base/maybe
+
+// didChange application (incremental splice or whole text).
+define class TextChange {
+    bool hasRange
+    WireRange range
+    string text
+
+    construct(bool hasRange, WireRange range, string text) {
+        this.hasRange = hasRange
+        this.range = range
+        this.text = text
+    }
+}
+
+method textIsIncremental(TextChange change): bool {
+    return change.hasRange && isSome(change.range)
+}
+
+// before + inserted + after is a fresh buffer; a substring view would keep the old text alive.
+method textSplice(string source, Span span, string inserted): string {
+    return source.substring(0, span.start) + inserted + source.substring(span.end)
+}
+
+// Each range is resolved against the text as the previous change left it (5.1).
+method applyTextChanges(Document document, PositionCodec codec, integer version, array<TextChange> changes) {
+    var current = document.text
+    var lines = document.lines
+    var i = 0
+    while (i < changes.length()) {
+        var change = changes[i]
+        if (textIsIncremental(change)) {
+            current = textSplice(current, codec.spanOf(lines, change.range), change.text)
+        }
+        if (textIsIncremental(change) == false) {
+            current = change.text
+        }
+        if (i < changes.length() - 1) {
+            lines = LineIndex(current)
+        }
+        i = i + 1
+    }
+    document.replaceText(version, current)
+}

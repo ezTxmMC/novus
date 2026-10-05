@@ -4,6 +4,9 @@
 *.vsix binary
 *.png binary
 *.jar binary
+# bytes fed to a program on stdin (CRLF framing, NUL) must not be normalized
+test/cases/*.stdin binary
+test/cases/*/*.stdin binary
 
 # GitHub language statistics: generated files do not count
 bootstrap/novusc.c linguist-generated=true

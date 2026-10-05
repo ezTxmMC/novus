@@ -1,0 +1,94 @@
+package main
+
+import bytes
+import "novus/lsp/base/model"
+import "novus/lsp/base/text"
+import "novus/lsp/syntax/lexing"
+import "novus/lsp/services/format"
+
+private final failures = []
+
+method visible(string value): string {
+    return value.replace(chr(13), "\\r").replace(chr(10), "\\n").replace(chr(9), "\\t").replace(chr(0), "\\0").replace(chr(1), "\\1")
+}
+
+method formatWith(FormatSettings settings, string source): string {
+    return Formatter(settings).formatText(source, lexText(source))
+}
+
+method formatted(string source): string {
+    return formatWith(FormatSettings(), source)
+}
+
+method record(string label, bool passed, string detail) {
+    if (passed) {
+        println("ok   " + label)
+        return
+    }
+    println("FAIL " + label + " " + detail)
+    failures.append(label)
+}
+
+// The input formatted must equal `expected` (without the final line break the formatter always adds).
+method expectLine(string label, string source, string expected) {
+    var got = formatted(source)
+    record(label, bytes.equal(got, expected + "\n"), "got [" + visible(got) + "] wanted [" + visible(expected) + "\\n]")
+}
+
+method expectText(string label, string source, string expected) {
+    var got = formatted(source)
+    record(label, bytes.equal(got, expected), "got [" + visible(got) + "] wanted [" + visible(expected) + "]")
+}
+
+method expectWith(string label, FormatSettings settings, string source, string expected) {
+    var got = formatWith(settings, source)
+    record(label, bytes.equal(got, expected), "got [" + visible(got) + "] wanted [" + visible(expected) + "]")
+}
+
+// Formatting what was already formatted changes nothing.
+method expectStable(string label, string source) {
+    var once = formatted(source)
+    var twice = formatted(once)
+    record(label + " is stable", bytes.equal(once, twice), "once [" + visible(once) + "] twice [" + visible(twice) + "]")
+}
+
+method expectTrue(string label, bool condition) {
+    record(label, condition, "")
+}
+
+method finishChecks(): integer {
+    println("failures: " + failures.length())
+    if (failures.length() == 0) {
+        return 0
+    }
+    return 1
+}
+
+method stripBlanks(string source): string {
+    var parts = []
+    var index = 0
+    while (index < source.length()) {
+        var code = ord(source.charAt(index))
+        if (code != 32 && code != 9 && code != 10 && code != 13) {
+            parts.append(source.charAt(index))
+        }
+        index = index + 1
+    }
+    return parts.join("")
+}
+
+method documentOf(string source): Document {
+    return Document("file:///work/main.nv", "novus", 1, source)
+}
+
+// Applies the edits back to front, which keeps the earlier offsets valid.
+method applyEdits(string source, array<TextEdit> edits): string {
+    var result = source
+    var index = edits.length() - 1
+    while (index >= 0) {
+        var edit = edits[index]
+        result = result.substring(0, edit.span.start) + edit.newText + result.substring(edit.span.end, result.length())
+        index = index - 1
+    }
+    return result
+}

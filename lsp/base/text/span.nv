@@ -1,0 +1,35 @@
+package text
+
+// Byte-offset range [start, end), the internal coordinate system of the server (LSP-R06).
+define class Span {
+    integer start
+    integer end
+
+    construct(integer start, integer end) {
+        this.start = start
+        this.end = end
+    }
+
+    method length(): integer {
+        if (this.end < this.start) {
+            return 0
+        }
+        return this.end - this.start
+    }
+
+    method isEmpty(): bool {
+        return this.length() == 0
+    }
+
+    method contains(integer offset): bool {
+        return this.start <= offset && offset < this.end
+    }
+
+    method touches(integer offset): bool {
+        return this.start <= offset && offset <= this.end
+    }
+
+    method overlaps(Span other): bool {
+        return this.start < other.end && other.start < this.end
+    }
+}

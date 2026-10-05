@@ -1,0 +1,146 @@
+package checker
+
+import bytes
+import base/maybe
+import base/model
+import base/platform
+import base/text
+
+// novusc findings as diagnostics (source "novusc", code "compile-error"), the compiler's one error per run.
+private final CHECKER_DIAGNOSTIC_SOURCE = "novusc"
+private final CHECKER_DIAGNOSTIC_CODE = "compile-error"
+private final CHECKER_QUOTE = "'"
+private final CHECKER_BLANK_BYTES = [32, 9, 13]
+private final CHECKER_UNDERSCORE_BYTE = 95
+private final CHECKER_UPPER_A = 65
+private final CHECKER_UPPER_Z = 90
+private final CHECKER_LOWER_A = 97
+private final CHECKER_LOWER_Z = 122
+private final CHECKER_DIGIT_ZERO = 48
+private final CHECKER_DIGIT_NINE = 57
+
+method findingsToDiagnostics(CheckResult result, TextSource source, string filePath): array<Diagnostic> {
+    var diagnostics = []
+    var lines = nothing()
+    for (finding in result.findings) {
+        if (checkerSamePath(finding.filePath, filePath) == false) {
+            continue
+        }
+        if (isNone(lines)) {
+            lines = LineIndex(source.textOf(filePath))
+        }
+        diagnostics.append(checkerDiagnosticOf(finding, lines))
+    }
+    return diagnostics
+}
+
+// The compiler counts lines from 1; a text that has become shorter than the checked one clamps to its last line.
+method checkerDiagnosticOf(CheckFinding finding, LineIndex lines): Diagnostic {
+    var line = 0
+    if (finding.hasPosition && finding.line > 0) {
+        line = lines.clampLine(finding.line - 1)
+    }
+    var span = checkerRefinedSpan(finding.message, lines, line)
+    return Diagnostic(span, Severity.Error, CHECKER_DIAGNOSTIC_SOURCE, CHECKER_DIAGNOSTIC_CODE, finding.message)
+}
+
+// The first to the last non-blank byte of the line, narrowed to the first quoted identifier of the message that the line holds.
+method checkerRefinedSpan(string message, LineIndex lines, integer line): Span {
+    var lineStart = lines.lineStart(line)
+    var lineText = lines.lineText(line)
+    var first = 0
+    var last = lineText.length()
+    while (first < last && checkerIsBlank(ord(lineText.charAt(first)))) {
+        first = first + 1
+    }
+    while (last > first && checkerIsBlank(ord(lineText.charAt(last - 1)))) {
+        last = last - 1
+    }
+    var column = checkerQuotedColumn(message, lineText, first, last)
+    if (column.start >= 0) {
+        return Span(lineStart + column.start, lineStart + column.end)
+    }
+    return Span(lineStart + first, lineStart + last)
+}
+
+method checkerIsBlank(integer code): bool {
+    for (blank in CHECKER_BLANK_BYTES) {
+        if (blank == code) {
+            return true
+        }
+    }
+    return false
+}
+
+method checkerIsIdentifierByte(integer code): bool {
+    if (code == CHECKER_UNDERSCORE_BYTE) {
+        return true
+    }
+    if (code >= CHECKER_LOWER_A && code <= CHECKER_LOWER_Z) {
+        return true
+    }
+    if (code >= CHECKER_UPPER_A && code <= CHECKER_UPPER_Z) {
+        return true
+    }
+    return code >= CHECKER_DIGIT_ZERO && code <= CHECKER_DIGIT_NINE
+}
+
+method checkerIsIdentifier(string word): bool {
+    if (word == "" || checkerIsDigitAt(word, 0)) {
+        return false
+    }
+    var index = 0
+    while (index < word.length()) {
+        if (checkerIsIdentifierByte(ord(word.charAt(index))) == false) {
+            return false
+        }
+        index = index + 1
+    }
+    return true
+}
+
+// Span of the first quoted identifier ('name') of the message that occurs as a whole word in [first, last) of the line; (-1, -1) when none does.
+method checkerQuotedColumn(string message, string lineText, integer first, integer last): Span {
+    var open = message.indexOf(CHECKER_QUOTE)
+    while (open >= 0) {
+        var close = checkerFindFrom(message, CHECKER_QUOTE, open + 1)
+        if (close < 0) {
+            break
+        }
+        var found = checkerWholeWord(lineText, message.substring(open + 1, close), first, last)
+        if (found >= 0) {
+            return Span(found, found + close - open - 1)
+        }
+        open = checkerFindFrom(message, CHECKER_QUOTE, close + 1)
+    }
+    return Span(-1, -1)
+}
+
+method checkerFindFrom(string haystack, string needle, integer from): integer {
+    if (from >= haystack.length()) {
+        return -1
+    }
+    return bytes.indexOf(haystack, needle, from)
+}
+
+method checkerWholeWord(string lineText, string word, integer first, integer last): integer {
+    if (checkerIsIdentifier(word) == false) {
+        return -1
+    }
+    var at = checkerFindFrom(lineText, word, first)
+    while (at >= 0 && at + word.length() <= last) {
+        if (checkerIsWordAt(lineText, at, word.length())) {
+            return at
+        }
+        at = checkerFindFrom(lineText, word, at + 1)
+    }
+    return -1
+}
+
+method checkerIsWordAt(string lineText, integer at, integer length): bool {
+    if (at > 0 && checkerIsIdentifierByte(ord(lineText.charAt(at - 1)))) {
+        return false
+    }
+    var after = at + length
+    return after >= lineText.length() || checkerIsIdentifierByte(ord(lineText.charAt(after))) == false
+}

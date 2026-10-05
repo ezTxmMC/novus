@@ -1,0 +1,93 @@
+package session
+
+import base/maybe
+import base/model
+import base/text
+import projects/workspace
+import server/protocol
+
+// What a request that names a position asks about: the context of the open document and the byte offset of the
+// position (amendment 6, V111).
+define class RequestTarget {
+    FileContext context
+    integer offset
+
+    construct(FileContext context, integer offset) {
+        this.context = context
+        this.offset = offset
+    }
+}
+
+// All mutable server state; only the main thread touches it (LSP-R09).
+define class Session {
+    DocumentStore documents
+    Workspace workspace
+    DiagnosticStore diagnostics
+    PositionCodec codec
+    ClientInfo client
+    Settings settings
+    array<string> tokenTypes
+    array<string> tokenModifiers
+    array<string> commandIds
+    array<string> registeredMethods
+    bool initialized
+    bool shutdownRequested
+
+    construct(DocumentStore documents, Workspace workspace) {
+        this.documents = documents
+        this.workspace = workspace
+        this.diagnostics = DiagnosticStore()
+        this.codec = PositionCodec("utf-16")
+        this.client = ClientInfo()
+        this.settings = Settings()
+        this.tokenTypes = []
+        this.tokenModifiers = []
+        this.commandIds = []
+        this.registeredMethods = []
+        this.initialized = false
+        this.shutdownRequested = false
+    }
+
+    // nil when the uri is not an open document.
+    method documentFor(string uri): Document {
+        return this.documents.find(uri)
+    }
+
+    // nil when the uri is not an open document.
+    method contextFor(string uri): FileContext {
+        var document = this.documents.find(uri)
+        if (isNone(document)) {
+            return nothing()
+        }
+        return this.workspace.contextFor(document)
+    }
+
+    // The target of a request with `textDocument` and `position` parameters; nil when the uri is not an open document.
+    method targetAt(map<string, object> params): RequestTarget {
+        var wire = decodePositionParams(params)
+        var context = this.contextFor(wire.uri)
+        if (isNone(context)) {
+            return nothing()
+        }
+        return RequestTarget(context, this.codec.offsetOf(context.document.lines, wire.position))
+    }
+
+    // The line index that answers about a file are encoded with (amendment 6, V111): the buffer of an open file, else
+    // the text of the file; a logical std key reads the materialised copy that the editor is pointed at (6.13).
+    method linesOf(string filePath): LineIndex {
+        var document = this.documents.findByPath(filePath)
+        if (isSome(document)) {
+            return document.lines
+        }
+        return LineIndex(this.workspace.files.textOf(this.workspace.editorPathOf(filePath)))
+    }
+
+    // The uri the client knows the file by: the uri of its open document, else the uri of its editor path ("" for "").
+    method uriOf(string filePath): string {
+        var document = this.documents.findByPath(filePath)
+        if (isSome(document)) {
+            return document.uri
+        }
+        return filePathToUri(this.workspace.editorPathOf(filePath))
+    }
+}

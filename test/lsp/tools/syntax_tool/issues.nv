@@ -1,0 +1,80 @@
+package main
+
+import "novus/lsp/base/text"
+import "novus/lsp/projects/manifest"
+import "novus/lsp/syntax/markup"
+import "novus/lsp/syntax/parsing"
+
+private final SYNTAX_TOOL_MANIFEST_CODE = "manifest-issue"
+private final SYNTAX_TOOL_SEVERITY_ERROR = "error"
+private final SYNTAX_TOOL_SEVERITY_WARNING = "warning"
+private final SYNTAX_TOOL_SEVERITY_HINT = "hint"
+
+// One own syntax issue of any file kind in the terms the corpus compares: 1-based line and byte column.
+define class SyntaxToolIssue {
+    integer line
+    integer column
+    string severity
+    string code
+    string message
+
+    construct(integer line, integer column, string severity, string code, string message) {
+        this.line = line
+        this.column = column
+        this.severity = severity
+        this.code = code
+        this.message = message
+    }
+
+    method isError(): bool {
+        return this.severity == SYNTAX_TOOL_SEVERITY_ERROR
+    }
+
+    method describe(string filePath): string {
+        return filePath + ":" + this.line + ":" + this.column + ": " + this.severity + " " + this.code + ": " + this.message
+    }
+}
+
+// The one dispatch by file kind (DESIGN 6.3): the parser owns `.nv`, `markup` owns `.nvh`, `manifest` owns `project.nv`.
+method syntaxToolIssuesOf(string filePath, string text): array<SyntaxToolIssue> {
+    var kind = fileKindOf(filePath)
+    if (kind == FILE_KIND_MANIFEST) {
+        return syntaxToolManifestIssues(filePath, text)
+    }
+    if (kind == FILE_KIND_NVH) {
+        return syntaxToolConvert(text, parseComponentText(filePath, text, editorParseOptions()).issues)
+    }
+    return syntaxToolConvert(text, parseSourceText(filePath, text, editorParseOptions()).issues)
+}
+
+method syntaxToolConvert(string text, array<SyntaxIssue> issues): array<SyntaxToolIssue> {
+    var lines = LineIndex(text)
+    var converted = []
+    for (issue in issues) {
+        var line = lines.lineOf(issue.span.start) + 1
+        var column = lines.byteColumn(issue.span.start) + 1
+        converted.append(SyntaxToolIssue(line, column, syntaxToolSeverity(issue), issue.code, issue.message))
+    }
+    return converted
+}
+
+method syntaxToolSeverity(SyntaxIssue issue): string {
+    if (issue.isHint()) {
+        return SYNTAX_TOOL_SEVERITY_HINT
+    }
+    if (issue.warning) {
+        return SYNTAX_TOOL_SEVERITY_WARNING
+    }
+    return SYNTAX_TOOL_SEVERITY_ERROR
+}
+
+method syntaxToolManifestIssues(string filePath, string text): array<SyntaxToolIssue> {
+    var lines = LineIndex(text)
+    var converted = []
+    for (issue in parseManifestText(filePath, text).issues) {
+        var line = lines.lineOf(issue.span.start) + 1
+        var column = lines.byteColumn(issue.span.start) + 1
+        converted.append(SyntaxToolIssue(line, column, SYNTAX_TOOL_SEVERITY_ERROR, SYNTAX_TOOL_MANIFEST_CODE, issue.message))
+    }
+    return converted
+}

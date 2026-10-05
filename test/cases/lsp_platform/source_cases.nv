@@ -1,0 +1,77 @@
+package main
+
+import "novus/lsp/base/platform"
+
+method memoryFiles(): map<string, string> {
+    return {
+        "/p/a.nv": "package a",
+        "/p/Z.nv": "upper",
+        "/p/_u.nv": "underscore",
+        "/p/sub/b.nv": "package b",
+        "/p/sub/deep/c.nv": "package c",
+        "/q/x.txt": "text",
+        "root.nv": "relative"
+    }
+}
+
+method showMemory(string label, object value) {
+    println("memory " + label + ": " + value)
+}
+
+method runMemoryCases() {
+    var source = MemoryTextSource(memoryFiles())
+    showMemory("exists file", source.exists("/p/a.nv"))
+    showMemory("exists directory", source.exists("/p"))
+    showMemory("exists missing", source.exists("/p/nope.nv"))
+    showMemory("isDirectory /p", source.isDirectory("/p"))
+    showMemory("isDirectory /p/", source.isDirectory("/p/"))
+    showMemory("isDirectory a file", source.isDirectory("/p/a.nv"))
+    showMemory("isDirectory /pp (prefix of a name only)", source.isDirectory("/pp"))
+    showMemory("isDirectory /p/sub/deep", source.isDirectory("/p/sub/deep"))
+    showMemory("textOf", source.textOf("/p/sub/b.nv"))
+    showMemory("textOf missing is empty", source.textOf("/p/missing.nv") == "")
+    showMemory("textOf a directory is empty", source.textOf("/p") == "")
+    showMemory("entriesOf /p (ascending, uppercase first)", source.entriesOf("/p"))
+    showMemory("entriesOf /p/", source.entriesOf("/p/"))
+    showMemory("entriesOf /p/sub", source.entriesOf("/p/sub"))
+    showMemory("entriesOf a file", source.entriesOf("/p/a.nv"))
+    showMemory("entriesOf missing", source.entriesOf("/nowhere"))
+    showMemory("modifiedMillis file", source.modifiedMillis("/q/x.txt"))
+    showMemory("modifiedMillis missing", source.modifiedMillis("/q/y.txt"))
+}
+
+method showDisk(string label, object value) {
+    println("disk " + label + ": " + value)
+}
+
+method runDiskCases() {
+    var root = createTempDirectory("lsp-platform-")
+    var source = DiskTextSource()
+    showDisk("temp root exists", source.exists(root) && source.isDirectory(root))
+    showDisk("temp root is below the temp directory", root.startsWith(temporaryDirectory() + "/lsp-platform-"))
+    var second = createTempDirectory("lsp-platform-")
+    showDisk("two temp roots differ", second != root && second != "")
+    removeTree(second)
+    makeDirectories(root + "/sub/deep")
+    writeTextFile(root + "/b.txt", "bee")
+    writeTextFile(root + "/A.txt", "ay")
+    writeTextFile(root + "/sub/c.txt", "see")
+    showDisk("entriesOf root", source.entriesOf(root))
+    showDisk("entriesOf sub", source.entriesOf(root + "/sub"))
+    showDisk("entriesOf a file", source.entriesOf(root + "/b.txt"))
+    showDisk("entriesOf missing", source.entriesOf(root + "/nope"))
+    showDisk("textOf", source.textOf(root + "/sub/c.txt"))
+    showDisk("textOf missing is empty", source.textOf(root + "/nope.txt") == "")
+    showDisk("textOf a directory is empty", source.textOf(root + "/sub") == "")
+    showDisk("exists file / directory / missing", source.exists(root + "/b.txt") + " " + source.exists(root + "/sub") + " " + source.exists(root + "/zz"))
+    showDisk("isDirectory file / directory", source.isDirectory(root + "/b.txt") + " " + source.isDirectory(root + "/sub"))
+    showDisk("modifiedMillis file is a real time", source.modifiedMillis(root + "/b.txt") > 1600000000000)
+    showDisk("modifiedMillis missing", source.modifiedMillis(root + "/zz"))
+    removeTree(root)
+}
+
+method runSourceCases() {
+    println("--- textsource")
+    runMemoryCases()
+    runDiskCases()
+}

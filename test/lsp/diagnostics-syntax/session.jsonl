@@ -1,0 +1,13 @@
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"rootUri":"@ROOTURI@","capabilities":{}}}
+{"jsonrpc":"2.0","method":"initialized","params":{}}
+{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"@ROOTURI@/a.nv","languageId":"novus","version":1,"text":"package main\n\nmethod main() {\n    for (var i = 0; i < 3; i++) {\n        println(i)\n    }\n    var x = 1\n    x += 2\n    if x > 1 {\n        println(\"big\")\n    }\n}\n"}}}
+{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"@ROOTURI@/a.nv","version":2},"contentChanges":[{"text":"package main\n\nmethod main() {\n    var s = \"oops\n    println(s)\n}\n"}]}}
+{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"@ROOTURI@/a.nv","version":3},"contentChanges":[{"text":"package main\n\nprintln(\"top level\")\n\ndefine class Box {\n    integer size\n\n    construct() {\n        this.size = 1\n    }\n\n    construct(integer size) {\n        this.size = size\n    }\n}\n\nmethod main() {\n    else {\n        return\n    }\n}\n"}]}}
+{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"@ROOTURI@/a.nv","version":4},"contentChanges":[{"text":"package main\n\nmethod main() {\n    println(\"ok\")\n}\n"}]}}
+{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"@ROOTURI@/page.nvh","languageId":"novus","version":1,"text":"<?nv\nprop string title\n"}}}
+{"jsonrpc":"2.0","method":"textDocument/didClose","params":{"textDocument":{"uri":"@ROOTURI@/a.nv"}}}
+{"jsonrpc":"2.0","method":"textDocument/didClose","params":{"textDocument":{"uri":"@ROOTURI@/page.nvh"}}}
+{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"@ROOTURI@/project.nv","languageId":"novus","version":1,"text":"project \"x\"\nversion \"1.0\"\n"}}}
+{"jsonrpc":"2.0","method":"textDocument/didClose","params":{"textDocument":{"uri":"@ROOTURI@/project.nv"}}}
+{"jsonrpc":"2.0","id":99,"method":"shutdown"}
+{"jsonrpc":"2.0","method":"exit"}

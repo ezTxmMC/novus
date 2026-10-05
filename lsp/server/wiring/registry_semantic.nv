@@ -1,0 +1,16 @@
+package wiring
+
+import features/semtok
+import server/queries
+
+private final WIRING_METHOD_SEMANTIC_FULL = "textDocument/semanticTokens/full"
+private final WIRING_METHOD_SEMANTIC_RANGE = "textDocument/semanticTokens/range"
+
+// One handler answers both methods; the legend that the capability advertises is the one of the engine.
+method registerSemanticTokenHandlers(ServerParts parts) {
+    var handler = SemanticTokensHandler(parts.session, SemanticTokenEngine(), parts.encoder)
+    parts.router.registerHandler(WIRING_METHOD_SEMANTIC_FULL, handler)
+    parts.router.registerHandler(WIRING_METHOD_SEMANTIC_RANGE, handler)
+    parts.session.tokenTypes = semanticTokenTypes()
+    parts.session.tokenModifiers = semanticTokenModifiers()
+}

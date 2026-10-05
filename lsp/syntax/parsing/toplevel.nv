@@ -1,0 +1,180 @@
+package parsing
+
+import base/maybe
+import base/text
+import syntax/lexing
+import syntax/outline
+
+// Top-level items in the order of the compiler's parseFile; every error resynchronises at the next declaration.
+define class ParsingTopLevel {
+    ParsingCursor cursor
+    SourceFile file
+    ParsingImports imports
+    ParsingMembers members
+    ParsingDeclFactory factory
+    ParsingSignatures signatures
+    ParsingDefines defines
+
+    construct(ParsingCursor cursor, SourceFile file, ParsingImports imports, ParsingMembers members, ParsingDeclFactory factory, ParsingSignatures signatures, ParsingDefines defines) {
+        this.cursor = cursor
+        this.file = file
+        this.imports = imports
+        this.members = members
+        this.factory = factory
+        this.signatures = signatures
+        this.defines = defines
+    }
+
+    method run() {
+        while (this.cursor.atEnd() == false) {
+            var start = this.cursor.pos
+            this.parseItem()
+            if (this.cursor.pos == start) {
+                this.cursor.advance()
+            }
+        }
+    }
+
+    method parseItem() {
+        var at = this.cursor.pos
+        var token = this.cursor.current()
+        if (token.isPunct(";")) {
+            this.cursor.advance()
+            return
+        }
+        if (token.isKeyword("package")) {
+            this.imports.parsePackage()
+            return
+        }
+        if (token.isKeyword("import")) {
+            this.imports.parseImport()
+            return
+        }
+        if (token.isPunct("@")) {
+            this.factory.readAnnotation()
+            return
+        }
+        this.parseDeclaration(at, token)
+    }
+
+    method parseDeclaration(integer at, Token token) {
+        if (parsingStartsAsyncMethod(this.cursor, at) || token.isKeyword("method")) {
+            this.parseMethod()
+            return
+        }
+        if (token.isIdent("define")) {
+            this.defines.parse()
+            return
+        }
+        if (this.startsGlobal(at, token)) {
+            this.parseGlobal()
+            return
+        }
+        if (token.kind == TokenKind.Keyword && parsingIsPrintWord(token.text)) {
+            this.parsePrint()
+            return
+        }
+        this.unexpected(token)
+    }
+
+    method startsGlobal(integer at, Token token): bool {
+        if (token.isKeyword("private") || token.isKeyword("final") || token.isKeyword("var")) {
+            return true
+        }
+        return token.kind == TokenKind.Ident && this.cursor.punctAt(at + 1, "=")
+    }
+
+    method unexpected(Token token) {
+        this.cursor.reportAtToken(token, "unexpected-token", "unexpected " + this.cursor.describe(this.cursor.pos) + " at top level")
+        this.cursor.advance()
+        parsingSkipToTopLevelStart(this.cursor)
+    }
+
+    // `[async] method ...`: the member grammar with no owner; `async` is recorded as a modifier.
+    method parseMethod() {
+        var firstIndex = this.factory.firstIndexOr(this.cursor.pos)
+        var modifiers = []
+        if (this.cursor.identWordAt(this.cursor.pos, "async")) {
+            modifiers.append("async")
+            this.cursor.advance()
+        }
+        this.members.parseMethod(this.file.decls, "", firstIndex, modifiers, false)
+        this.factory.reset()
+    }
+
+    // `[private] [final] [var] NAME [: Type] = expression`; the initialiser is skipped, not kept.
+    method parseGlobal() {
+        var firstIndex = this.factory.firstIndexOr(this.cursor.pos)
+        var modifiers = []
+        while (this.cursor.keywordAt(this.cursor.pos, "private") || this.cursor.keywordAt(this.cursor.pos, "final")) {
+            modifiers.append(this.cursor.current().text)
+            this.cursor.advance()
+        }
+        if (this.cursor.keywordAt(this.cursor.pos, "method")) {
+            this.cursor.reportAtToken(this.cursor.current(), "expected-token", "expected constant name but found 'method': modifiers do not apply to methods")
+            this.members.parseMethod(this.file.decls, "", firstIndex, modifiers, false)
+            this.factory.reset()
+            return
+        }
+        if (this.cursor.keywordAt(this.cursor.pos, "var")) {
+            this.cursor.advance()
+        }
+        this.finishGlobal(firstIndex, modifiers)
+        this.factory.reset()
+    }
+
+    method finishGlobal(integer firstIndex, array<string> modifiers) {
+        var name = this.signatures.readName("constant name")
+        if (isNone(name)) {
+            return
+        }
+        var decl = this.factory.make(DeclKind.Global, name, firstIndex, modifiers, "")
+        this.cursor.types.fusedAssign = false
+        if (this.cursor.punctAt(this.cursor.pos, ":")) {
+            this.cursor.advance()
+            decl.typeText = this.signatures.readType()
+        }
+        this.skipInitializer()
+        decl.fullSpan.end = this.cursor.lastEnd()
+        this.factory.complete(decl, this.file.decls, firstIndex)
+    }
+
+    method skipInitializer() {
+        var fused = this.cursor.types.fusedAssign
+        if (fused == false && this.cursor.punctAt(this.cursor.pos, "=") == false) {
+            this.cursor.reportAtToken(this.cursor.current(), "expected-token", "expected '=' but found " + this.cursor.describe(this.cursor.pos))
+            return
+        }
+        var start = this.cursor.pos + 1
+        if (fused) {
+            start = this.cursor.pos
+        }
+        this.cursor.pos = this.afterExpression(start)
+    }
+
+    // Index after the expression at `start`; a missing expression is reported and the offending token consumed.
+    method afterExpression(integer start): integer {
+        var end = this.cursor.expressions.endOf(start)
+        if (parsingIsNextAssignment(this.cursor, start, end)) {
+            this.cursor.reportAtToken(this.cursor.tokenAt(start - 1), "expected-token", "expected an expression after '" + this.cursor.tokenAt(start - 1).text + "'")
+            return start
+        }
+        if (end > start) {
+            return end
+        }
+        if (this.cursor.tokenAt(start).isEnd()) {
+            this.cursor.reportAtToken(this.cursor.tokenAt(start), "expected-token", "expected an expression after '='")
+            return start
+        }
+        this.cursor.reportAtToken(this.cursor.tokenAt(start), "unexpected-token", "unexpected " + this.cursor.describe(start) + " in expression")
+        return start + 1
+    }
+
+    // A top-level `println` is parsed and discarded by the compiler.
+    method parsePrint() {
+        var keyword = this.cursor.current()
+        this.cursor.advance()
+        this.cursor.pos = this.afterExpression(this.cursor.pos)
+        this.cursor.report(keyword.span(), "useless-top-level-print", "top-level '" + keyword.text + "' is parsed and discarded by the compiler", true)
+    }
+}

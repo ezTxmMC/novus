@@ -1,0 +1,68 @@
+package main
+
+import os
+import path
+
+// Floats are IEEE doubles, one operation at a time. A C compiler that fuses
+// `a * b + c` into one multiply-add (clang does by default where the
+// processor has one, gcc may) rounds once instead of twice and prints other
+// last digits; the generated code is compiled with -ffp-contract=off to keep
+// that from happening. The program below subtracts a product from itself:
+// exactly 0.0 without fusing, a rounding error of the product with it.
+//
+// It is built for the machine at hand (-march=native, so that a fused
+// instruction is available) with every C compiler found, and all of them must
+// print the same.
+
+final PROGRAM = "package main\n\nimport math\n\nmethod show(object a, float p1) {\n    println a\n    println p1\n}\n\nmethod main {\n    float t31 = math.sin(3.14159)\n    show(t31, (t31 * t31) - (t31 * t31))\n    var u = t31 * t31 - t31 * t31\n    println u\n    println (t31 * t31) - (t31 * t31)\n}\n"
+final COMPILERS = ["", "gcc", "clang"]
+final BUILD_OK = 0
+
+method compiler(): string {
+    var fromEnvironment = os.env("NOVUSC")
+    if (fromEnvironment == "") {
+        return "novusc"
+    }
+    return fromEnvironment
+}
+
+// The output of the program built by `cc` ("" is the default C compiler), or
+// "" when that compiler is missing or cannot build it.
+method outputWith(string dir, string cc): string {
+    if (cc != "" && os.hasCommand(cc) == false) {
+        return ""
+    }
+    var binary = path.join(dir, "contract-" + cc)
+    var command = os.shellQuote(compiler()) + " build " + os.shellQuote(path.join(dir, "contract.nv")) + " -o " + os.shellQuote(binary) + " --cflags -march=native"
+    if (cc != "") {
+        command = command + " --cc " + cc
+    }
+    var built = os.run(command + " 2>&1")
+    if (built["code"] != BUILD_OK) {
+        return ""
+    }
+    return os.run(os.shellQuote(binary) + " 2>&1")["output"]
+}
+
+method main {
+    var dir = path.join(os.temp(), "novus-float-contract-" + os.pid())
+    os.mkdir(dir)
+    os.writeFile(path.join(dir, "contract.nv"), PROGRAM)
+    var outputs = []
+    for (cc in COMPILERS) {
+        var output = outputWith(dir, cc)
+        if (output != "") {
+            outputs.append(output)
+        }
+    }
+    os.removeAll(dir)
+    var same = outputs.length() > 0
+    for (output in outputs) {
+        same = same && output == outputs[0]
+    }
+    println "built: ${outputs.length() > 0}"
+    println "same on every compiler: ${same}"
+    if (outputs.length() > 0) {
+        println outputs[0]
+    }
+}

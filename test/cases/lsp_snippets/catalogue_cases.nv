@@ -1,0 +1,128 @@
+package main
+
+import "novus/compiler/std"
+import "novus/lsp/services/snippets"
+
+// The catalogue as data (DESIGN 6.16, 7.1, 7.5): sizes per file, valid notation everywhere,
+// unique ids and prefixes, std modules only, and the lookups.
+
+private final KNOWN_SCOPES = ["toplevel", "class", "statement", "expression", "manifest", "nvh", "nvh_block", "nvh_template", "nvh_tag"]
+private final KNOWN_MODES = ["file", "toplevel", "toplevel_raw", "toplevel_or_member", "annotation", "member", "member_abstract", "statement", "after_if", "expression", "manifest", "nvh", "nvh_block", "nvh_element", "nvh_attr"]
+
+method runCatalogueCases() {
+    printGroupSizes()
+    var catalogue = loadSnippetCatalogue()
+    println "snippets: " + catalogue.all.length() + ", prefixes: " + countPrefixes(catalogue.all)
+    println "notation errors: [" + notationErrors(catalogue).join("; ") + "]"
+    println "duplicate ids: [" + duplicates(allIds(catalogue)).join(",") + "]"
+    println "unknown scopes: [" + unknownValues(catalogue, true).join(",") + "]"
+    println "unknown verify modes: [" + unknownValues(catalogue, false).join(",") + "]"
+    println "imports that are no std module: [" + unknownImports(catalogue).join(",") + "]"
+    printPrefixUniqueness(catalogue)
+    printLookups(catalogue)
+}
+
+method printGroupSizes() {
+    println "toplevel " + toplevelSnippets().length() + ", types " + typeSnippets().length() + ", members " + memberSnippets().length() + ", basics " + basicSnippets().length()
+    println "flow " + flowSnippets().length() + ", library " + librarySnippets().length() + ", manifest " + manifestSnippets().length() + ", components " + componentSnippets().length()
+}
+
+method countPrefixes(array<Snippet> snippets): integer {
+    var total = 0
+    for (snippet in snippets) {
+        total = total + snippet.prefixes.length()
+    }
+    return total
+}
+
+method notationErrors(SnippetCatalogue catalogue): array<string> {
+    var errors = []
+    for (snippet in catalogue.all) {
+        var message = validateNotation(snippet.body)
+        if (message != "") {
+            errors.append(snippet.id + ": " + message)
+        }
+    }
+    return errors
+}
+
+method allIds(SnippetCatalogue catalogue): array<string> {
+    var ids = []
+    for (snippet in catalogue.all) {
+        ids.append(snippet.id)
+    }
+    return ids
+}
+
+method duplicates(array<string> words): array<string> {
+    var seen = {}
+    var repeated = []
+    for (word in words) {
+        if (seen.has(word)) {
+            repeated.append(word)
+        }
+        seen[word] = true
+    }
+    return repeated
+}
+
+// The scopes (scopes = true) or the verify modes (false) that are not in the known lists.
+method unknownValues(SnippetCatalogue catalogue, bool scopes): array<string> {
+    var unknown = []
+    for (snippet in catalogue.all) {
+        var values = [snippet.verify]
+        var known = KNOWN_MODES
+        if (scopes) {
+            values = snippet.scopes
+            known = KNOWN_SCOPES
+        }
+        for (value in values) {
+            if (known.contains(value) == false) {
+                unknown.append(snippet.id + ":" + value)
+            }
+        }
+    }
+    return unknown
+}
+
+method unknownImports(SnippetCatalogue catalogue): array<string> {
+    var modules = stdModules()
+    var unknown = []
+    for (snippet in catalogue.all) {
+        for (module in snippet.imports) {
+            if (modules.contains(module) == false) {
+                unknown.append(snippet.id + ":" + module)
+            }
+        }
+    }
+    return unknown
+}
+
+method printPrefixUniqueness(SnippetCatalogue catalogue) {
+    var clashes = []
+    for (scope in KNOWN_SCOPES) {
+        var prefixes = []
+        for (snippet in catalogue.forScope(scope)) {
+            for (prefix in snippet.prefixes) {
+                prefixes.append(prefix)
+            }
+        }
+        for (prefix in duplicates(prefixes)) {
+            clashes.append(scope + ":" + prefix)
+        }
+        println "scope " + scope + ": " + catalogue.forScope(scope).length() + " snippets, " + prefixes.length() + " prefixes"
+    }
+    println "prefix clashes within a scope: [" + clashes.join(",") + "]"
+}
+
+method printLookups(SnippetCatalogue catalogue) {
+    var psvm = catalogue.byId("psvm")
+    println "byId psvm: " + psvm.prefixes.join(" ") + " | " + psvm.scopes.join(" ") + " | " + psvm.verify
+    println "byId missing is nil: " + (typeOf(catalogue.byId("nothing")) == "unknown")
+    var struct = catalogue.byId("struct")
+    println "struct scopes: " + struct.scopes.join(" ") + ", verify " + struct.verify
+    var assertEqual = catalogue.byId("assertEqual")
+    println "assertEqual imports " + assertEqual.imports.join(",") + ", overrides " + assertEqual.overrides[1] + "/" + assertEqual.overrides[2]
+    println "tryrun fixtures " + catalogue.byId("tryrun").fixtures.length() + ", importm fixture " + catalogue.byId("importm").fixtures["fixture"]
+    println "empty catalogue: " + SnippetCatalogue([]).forScope("statement").length()
+}

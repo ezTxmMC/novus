@@ -1,0 +1,34 @@
+package main
+
+import @dump
+import @fix_cases
+import @index_cases
+import @rule_cases
+import @scope_cases
+import @type_cases
+
+// lsp/semantics/semantic: the program index, the resolver with the loader's rules (DESIGN 5.6, one fixture per
+// rule, each verified against build/novusc by verify_compiler.sh) and the light typing. `main.nv dump <dir>`
+// writes the fixtures to disk for that script.
+method main(array<string> args) {
+    if (args.length() == 2 && args[0] == "dump") {
+        dumpFixtures(args[1])
+        return
+    }
+    runRuleIndex()
+    runAllRules()
+    runTypeTexts()
+    runLocalTypes()
+    runChainTypes()
+    runClassScopeTypes()
+    runInferenceLimits()
+    runIndexTables()
+    runIndexStandard()
+    runStdTypes()
+    runSymbolDescriptions()
+    runRefreshCases()
+    runScopeCases()
+    runLeanScopeCases()
+    runMemberLookup()
+    runFixRegressions()
+}

@@ -1,0 +1,156 @@
+== the syntax rule: severities of the parser issues
+main.nv
+  1:1 hint useless-top-level-print: top-level 'println' is parsed and discarded by the compiler
+  6:5 warning duplicate-constructor: only the last 'construct' of a class is used
+  16:5 error else-without-if: 'else' needs an 'if' block right before it
+  20:7 error compound-assignment: '+=' does not exist: write 'x = x + 1'
+== the same file through SyntaxDiagnosticRule alone
+rule
+  1:1 hint useless-top-level-print: top-level 'println' is parsed and discarded by the compiler
+  6:5 warning duplicate-constructor: only the last 'construct' of a class is used
+  16:5 error else-without-if: 'else' needs an 'if' block right before it
+  20:7 error compound-assignment: '+=' does not exist: write 'x = x + 1'
+== a component keeps only the syntax rule
+page.nvh
+  1:1 error unterminated-block: unclosed <?nv (missing ?>)
+== bind-not-ref: bind="x" in a tag needs a ref or var of that name in the header
+Page.nvh: prop, missing; the header class Entry is not the component
+  14:14 error bind-not-ref: bind="who": 'who' is not a ref of Page (declare it: ref who = ...)
+  17:14 error bind-not-ref: bind="missing": 'missing' is not a ref of Page (declare it: ref missing = ...)
+  21:14 error bind-not-ref: bind="who": 'who' is not a ref of Page (declare it: ref who = ...)
+a component without a header: nothing is declared
+  1:12 error bind-not-ref: bind="anything": 'anything' is not a ref of Plain (declare it: ref anything = ...)
+Page.nvh: only the attribute of the last tag is reported
+  11:14 error bind-not-ref: bind="absent": 'absent' is not a ref of Page (declare it: ref absent = ...)
+== unresolved-import and package-folder-mismatch come from the closure
+main.nv
+  1:8 error unresolved-import: no package 'missing/folder': there is no folder missing/folder with .nv files and no standard module of that name
+geo/shape.nv
+  1:9 error package-folder-mismatch: the file declares package wrong but lives in the folder of package geo - a folder is a package, so write 'package geo'
+== unresolved-import without a manifest: an error for an entry file, a warning for a part of a program
+a file without method main
+  1:8 warning unresolved-import: no package 'missing/folder': there is no folder missing/folder with .nv files and no standard module of that name
+an entry file
+  1:8 error unresolved-import: no package 'missing/folder': there is no folder missing/folder with .nv files and no standard module of that name
+== module-not-imported: a std module that no loaded file imports
+two modules, the first use of each
+  2:13 error module-not-imported: module 'strings' is not imported - add 'import strings' [strings]
+  4:13 error module-not-imported: module 'math' is not imported - add 'import math' [math]
+another file imports it: visibility is flat, nothing to report
+  (none)
+a variable of that name is no module
+  (none)
+a local folder wins over the std module
+  (none)
+a use inside an interpolation is not scanned
+  (none)
+== import-not-used-here: a std import that this file never writes (explicitImports)
+arrays and json are unused, strings and thread are used
+  1:1 hint import-not-used-here: 'arrays' is imported but this file does not use it [arrays] (unnecessary)
+  2:1 hint import-not-used-here: 'json' is imported but this file does not use it [json] (unnecessary)
+with explicitImports off
+  (none)
+== import-not-used-here: the classes of a std module and the modules it brings along are uses
+web by NvhComponent and NvhConn, toml by TomlParser, yaml is unused
+  3:1 hint import-not-used-here: 'yaml' is imported but this file does not use it [yaml] (unnecessary)
+web is used because it loads json; math is unused
+  2:1 hint import-not-used-here: 'math' is imported but this file does not use it [math] (unnecessary)
+== a dependency that is not fetched belongs to project.nv
+main.nv: no unresolved-import, and no judgement of names
+  (none)
+a ready dependency without that path is an unresolved-import
+  1:9 error unresolved-import: module github.com/x/dep has no package or file 'nothing'
+== duplicate-definition: the second class or enum of a name, with the first related
+main.nv
+  (none)
+geo/one.nv
+  3:14 error duplicate-definition: duplicate definition of 'Box': a class or enum of that name exists already (related /p/main.nv 25: first definition)
+  6:14 error duplicate-definition: duplicate definition of 'Color': a class or enum of that name exists already (related /p/main.nv 46: first definition)
+geo/two.nv (an interface of the same name is not reported)
+  (none)
+== missing-interface-method: by name, through the base chain, abstract methods too
+main.nv
+  6:14 error missing-interface-method: class 'Square' does not implement 'name()' from interface Shape
+  28:14 error missing-interface-method: class 'Impl' must implement abstract method 'run()'
+a method found in a base class counts; an unknown base is not judged
+  (none)
+== qualifier-collision: two folders with one last segment
+a/shapes/one.nv
+  1:9 warning qualifier-collision: the folders 'a/shapes' and 'b/shapes' share the qualifier 'shapes': their functions and globals merge
+b/shapes/two.nv (no package line: the finding is at offset 0)
+  1:1 warning qualifier-collision: the folders 'b/shapes' and 'a/shapes' share the qualifier 'shapes': their functions and globals merge
+main.nv
+  (none)
+== unknown-name: functions, variables, assignment targets, the words null and new
+main.nv
+  22:13 warning unknown-name: unknown function 'missingFunction': no function or class of that name is in the program [missingFunction]
+  23:13 warning unknown-name: unknown variable 'missingVariable': nothing of that name is declared here [missingVariable]
+  24:5 warning unknown-name: unknown variable 'missingTarget': nothing of that name is declared here [missingTarget]
+  25:19 warning unknown-name: Novus has no 'null': a method without a value returns nothing, test it with isNone() [null]
+  26:16 warning unknown-name: Novus has no 'new': call the class like a function, Circle(2.0) [new]
+== ambiguous-call: a function of several packages, called unqualified
+main.nv
+  5:13 warning ambiguous-call: 'hello' is defined in more than one package (a, b): call it qualified, e.g. a.hello(...)
+== when the name rules stay silent
+no method main anywhere: a library file
+  (none)
+a syntax error in the file: only the syntax rule speaks
+  2:10 error c-style-for: C-style 'for (var i = ...; ...)' does not exist: use 'for (item in items)' or a 'while' loop
+an import that leads nowhere: the program is incomplete
+  1:8 error unresolved-import: no package 'nowhere': there is no folder nowhere with .nv files and no standard module of that name
+a class whose base type is not in the program is not judged, the rest of the file is
+  8:13 warning unknown-name: unknown function 'missingFunction': no function or class of that name is in the program [missingFunction]
+novus.diagnostics.own is false
+  (none)
+a scratch buffer is its own program
+  2:13 warning unknown-name: unknown function 'missingFunction': no function or class of that name is in the program [missingFunction]
+== unknown-member: a receiver of a declared user type
+main.nv (shape.extra is declared by the subtype Circle, so it stays quiet)
+  14:14 warning unknown-member: 'Circle' has no member 'missing' [missing]
+  30:19 warning unknown-member: 'Shape' has no member 'nowhere' [nowhere]
+  33:20 warning unknown-member: 'Circle' has no member 'nowhere' [nowhere]
+  34:20 warning unknown-member: 'Circle' has no member 'nowhere' [nowhere]
+a base type outside the program: nothing is judged
+  (none)
+an interface-typed receiver
+  7:21 warning unknown-member: 'Handler' has no member 'other' [other]
+== ManifestDiagnostics: reader issues, derived notes, dependency states
+project.nv
+  9:1 error unknown-setting: unknown setting 'bogus' (known: project, version, main, lib, output, novus, require, replace)
+  10:6 error values-must-be-quoted: values in project.nv must be quoted strings (near 'bad')
+  3:1 warning duplicate-require: 'github.com/x/dep' is required twice: novusc keeps the first require [github.com/x/dep]
+  6:1 warning replace-without-require: 'github.com/z/free' is replaced but no require names it [github.com/z/free]
+  7:1 warning absolute-replace-unsupported: an absolute replace target is not supported by novusc: use a path relative to this file [github.com/x/lost]
+  4:1 information dependency-not-fetched: dependency 'github.com/x/gone' (v1) is not fetched: run Fetch dependencies (novusc deps) [require "github.com/x/gone" "v1"]
+  7:1 error replace-target-missing: the replace target '/abs/lost' of 'github.com/x/lost' does not exist
+a source file gets nothing from the manifest layer
+  (none)
+project.nv gets nothing from OwnDiagnostics
+  (none)
+== unterminated string in a manifest is a warning, a good manifest is clean
+clean
+  (none)
+unterminated
+  1:9 warning unterminated-string: unterminated string: the closing quote is missing
+novus.diagnostics.own is false: the source novus is silent for the manifest too
+  (none)
+== diagnosticReportLines: path:line:column: source severity code: message, in position order
+main.nv
+  /p/main.nv:1:1: novus hint useless-top-level-print: top-level 'println' is parsed and discarded by the compiler
+  /p/main.nv:4:13: novus warning unknown-name: unknown function 'missingFunction': no function or class of that name is in the program
+project.nv
+  /p/project.nv:2:1: novus error unknown-setting: unknown setting 'bogus' (known: project, version, main, lib, output, novus, require, replace)
+a file that does not exist
+  (none)
+== a local is unknown after the block that declared it, an outer one shows again
+main.nv
+  8:13 warning unknown-name: unknown variable 'inner': nothing of that name is declared here [inner]
+  13:13 warning unknown-name: unknown variable 'item': nothing of that name is declared here [item]
+== a file of many methods is judged in one pass
+main.nv
+  4005:21 warning unknown-name: unknown variable 'unknownTail': nothing of that name is declared here [unknownTail]
+ok   run time below the limit
+== a class of many members is judged in one pass
+main.nv
+  4003:44 warning unknown-member: 'Big' has no member 'absent' [absent]
+ok   run time below the limit

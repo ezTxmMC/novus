@@ -1,0 +1,163 @@
+package semantic
+
+import base/maybe
+import base/text
+import projects/closure
+import syntax/outline
+import syntax/scanning
+
+private final SEMANTIC_PARAMETER_ORIGIN = "parameter"
+private final SEMANTIC_THIS_WORD = "this"
+
+// Where an offset sits: the file, the enclosing type and callable (nil when there is none) and the locals that are
+// visible at the offset, parameters included, the innermost declaration of a name winning.
+define class Scope {
+    ClosureFile file
+    Decl enclosingType
+    Decl enclosingCallable
+    array<Local> locals
+    integer offset
+
+    construct(ClosureFile file, integer offset) {
+        this.file = file
+        this.enclosingType = nothing()
+        this.enclosingCallable = nothing()
+        this.locals = []
+        this.offset = offset
+    }
+}
+
+// Builds a Scope. A file that was parsed without locals (a project file nobody opened) has them scanned from its
+// tokens when it keeps tokens, else only its parameters are known.
+define class SemanticScopeBuilder {
+    construct() {
+    }
+
+    method build(ClosureFile file, integer offset): Scope {
+        var scope = Scope(file, offset)
+        if (isNone(file) || isNone(file.syntax)) {
+            return scope
+        }
+        scope.enclosingType = file.syntax.enclosingType(offset)
+        scope.enclosingCallable = file.syntax.enclosingCallable(offset)
+        if (isSome(scope.enclosingCallable)) {
+            scope.locals = this.localsAt(file.syntax, scope.enclosingCallable, offset)
+        }
+        return scope
+    }
+
+    method localsAt(SourceFile syntax, Decl callable, integer offset): array<Local> {
+        if (callable.locals.length() == 0 && callable.localsScanned == false && syntax.tokens.length() > 0 && callable.bodySpan.start >= 0) {
+            callable.locals = scanCallableLocals(callable, syntax.tokens)
+            callable.localsScanned = true
+        }
+        if (callable.locals.length() == 0) {
+            return this.parametersAt(callable, offset)
+        }
+        return localsVisibleAt(callable, offset)
+    }
+
+    // Without tokens the body cannot be scanned; the parameters are still visible in the whole body.
+    method parametersAt(Decl callable, integer offset): array<Local> {
+        var visible = []
+        if (callable.bodySpan.start < 0 || callable.bodySpan.touches(offset) == false) {
+            return visible
+        }
+        for (param in callable.params) {
+            var local = Local(param.name, param.nameSpan, SEMANTIC_PARAMETER_ORIGIN, Span(callable.bodySpan.start, callable.bodySpan.end))
+            local.typeText = param.typeText
+            visible.append(local)
+        }
+        return visible
+    }
+}
+
+// Variable lookup in the order of the loader (compiler/codegen/expressions.nv resolveVar): locals, `this`, a global of
+// the own package, a global of the root level, a field of the enclosing class (and its bases), then a global that
+// exactly one program package has. A type name or a std module is no variable.
+define class SemanticNameRules {
+    Resolver resolver
+    ProgramIndex index
+
+    construct(Resolver resolver) {
+        this.resolver = resolver
+        this.index = resolver.index
+    }
+
+    method lookup(Scope scope, string name): Resolution {
+        var found = this.fromLocals(scope, name)
+        if (isNone(found)) {
+            found = this.fromThis(scope, name)
+        }
+        if (isNone(found)) {
+            found = this.fromGlobals(scope, name)
+        }
+        if (isNone(found)) {
+            found = this.fromFields(scope, name)
+        }
+        if (isNone(found)) {
+            found = this.fromProgramPackages(name)
+        }
+        if (isNone(found)) {
+            return Resolution([], SEMANTIC_STATUS_UNKNOWN)
+        }
+        return found
+    }
+
+    // contract-note: a local is returned as a synthetic symbol (DESIGN-NOTES.md 3).
+    method fromLocals(Scope scope, string name): Resolution {
+        var local = this.resolver.localNamed(scope, name)
+        if (isNone(local)) {
+            return nothing()
+        }
+        return Resolution([semanticLocalSymbol(scope.file, local)], SEMANTIC_STATUS_RESOLVED)
+    }
+
+    method fromThis(Scope scope, string name): Resolution {
+        if (name != SEMANTIC_THIS_WORD || isNone(scope.enclosingType)) {
+            return nothing()
+        }
+        var owner = this.index.typeNamed(scope.enclosingType.name)
+        if (isNone(owner)) {
+            return nothing()
+        }
+        return Resolution([owner], SEMANTIC_STATUS_RESOLVED)
+    }
+
+    // The own package first, then the root level: a root global wins over a field and over a package global.
+    method fromGlobals(Scope scope, string name): Resolution {
+        var named = this.index.globalsNamed(name)
+        if (isNone(scope.file) == false && scope.file.qualifier != "") {
+            var own = semanticInQualifier(named, scope.file.qualifier)
+            if (own.length() > 0) {
+                return semanticResolution(own)
+            }
+        }
+        var root = semanticInQualifier(named, "")
+        if (root.length() > 0) {
+            return semanticResolution(root)
+        }
+        return nothing()
+    }
+
+    method fromFields(Scope scope, string name): Resolution {
+        if (isNone(scope.enclosingType)) {
+            return nothing()
+        }
+        var owner = semanticNamedType(scope.enclosingType.name)
+        for (member in this.resolver.lookup.findMember(owner, name, SEMANTIC_ANY_ARITY)) {
+            if (member.decl.kind == DeclKind.Field) {
+                return Resolution([member], SEMANTIC_STATUS_RESOLVED)
+            }
+        }
+        return nothing()
+    }
+
+    method fromProgramPackages(string name): Resolution {
+        var candidates = semanticInProgramPackages(this.index.globalsNamed(name))
+        if (candidates.length() == 0) {
+            return nothing()
+        }
+        return semanticResolution(candidates)
+    }
+}

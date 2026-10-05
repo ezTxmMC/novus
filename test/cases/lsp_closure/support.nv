@@ -1,0 +1,61 @@
+package main
+
+import "novus/lsp/base/platform"
+import "novus/lsp/projects/closure"
+import "novus/lsp/projects/manifest"
+import "novus/lsp/projects/modules"
+import "novus/lsp/projects/stdlib"
+import "novus/lsp/syntax/markup"
+import "novus/lsp/syntax/outline"
+import "novus/lsp/syntax/parsing"
+import "novus/lsp/base/text"
+
+// What the workspace cache does: syntax of any file by its kind, from the text source.
+define class TestProvider based SourceProvider {
+    TextSource source
+    integer requests
+
+    construct(TextSource source) {
+        this.source = source
+        this.requests = 0
+    }
+
+    method syntaxOf(string filePath): SourceFile {
+        this.requests = this.requests + 1
+        var content = this.source.textOf(filePath)
+        if (fileKindOf(filePath) == "nvh") {
+            return parseComponentText(filePath, content, indexParseOptions())
+        }
+        return parseSourceText(filePath, content, indexParseOptions())
+    }
+}
+
+define class TestWorld {
+    MemoryTextSource source
+    ProjectLayout layout
+    ModuleTable modules
+    TestProvider provider
+    ProgramClosure closure
+    construct(map<string, string> files, string startPath, array<string> entries) {
+        this.source = MemoryTextSource(files)
+        this.layout = findProjectLayout(this.source, startPath)
+        this.modules = ModuleTableBuilder(this.source, "/cache").build(this.layout.manifest)
+        this.provider = TestProvider(this.source)
+        var builder = ClosureBuilder(this.layout, this.modules, this.source, this.provider, standardLibrary())
+        this.closure = builder.build(entries)
+    }
+}
+
+method showClosure(string title, TestWorld world) {
+    println("== " + title)
+    println("  root=[" + world.layout.root + "] files=" + world.closure.files.length())
+    for (file in world.closure.files) {
+        if (file.origin != FileOrigin.Standard) {
+            println("  " + file.filePath + " " + file.origin + " root=" + file.root + " q=[" + file.qualifier + "] package=[" + file.packageName + "] module=[" + file.moduleName + "] rootLevel=" + file.isRootLevel())
+        }
+    }
+    println("  std: " + world.closure.loadedStdModules)
+    for (issue in world.closure.issues) {
+        println("  issue " + issue.code + " " + issue.filePath + " " + issue.span.start + "-" + issue.span.end + ": " + issue.message)
+    }
+}

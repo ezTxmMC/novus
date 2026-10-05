@@ -1,0 +1,62 @@
+package main
+
+import "novus/lsp/server/rpc"
+import json
+
+// Refuses two methods like the lifecycle gate does: -32002 before initialize, -32600 after shutdown.
+define class RouterGate based RequestGate {
+    construct() {
+    }
+
+    method check(Request request): integer {
+        if (request.methodName == "gate/closed") {
+            return rpcServerNotInitialized()
+        }
+        if (request.methodName == "gate/refused") {
+            return rpcInvalidRequest()
+        }
+        return 0
+    }
+}
+
+// A gate that fails: failRequest with an own code for gate/fails, a runtime error for everything else.
+define class RouterBrokenGate based RequestGate {
+    construct() {
+    }
+
+    method check(Request request): integer {
+        if (request.methodName == "gate/fails") {
+            failRequest(rpcServerNotInitialized(), "the state is unreadable")
+        }
+        var empty = {}
+        return empty["absent"]
+    }
+}
+
+method runGateCases() {
+    var router = buildRouter()
+    var writer = MessageWriter()
+    var registry = CancelRegistry()
+    router.setGate(RouterGate())
+    dispatchShown(router, writer, registry, "gate: request refused with -32002", "{\"id\":5,\"method\":\"gate/closed\"}")
+    dispatchShown(router, writer, registry, "gate: request refused with -32600", "{\"id\":6,\"method\":\"gate/refused\"}")
+    dispatchShown(router, writer, registry, "gate: notification refused is dropped", "{\"method\":\"gate/closed\"}")
+    dispatchShown(router, writer, registry, "gate: the gate comes before the lookup of unknown methods", "{\"id\":7,\"method\":\"gate/refused\"}")
+    dispatchShown(router, writer, registry, "gate: open", "{\"id\":8,\"method\":\"test/echo\",\"params\":{\"through\":true}}")
+    registry.track(9)
+    registry.cancel(9)
+    dispatchShown(router, writer, registry, "cancelled request is answered -32800 without running", "{\"id\":9,\"method\":\"test/crash\"}")
+    sayCase("a cancelled request is forgotten after its answer", registry.cancelled.keys())
+}
+
+method runBrokenGateCases() {
+    var router = buildRouter()
+    var writer = MessageWriter()
+    var registry = CancelRegistry()
+    router.setGate(RouterBrokenGate())
+    registry.track(10)
+    dispatchShown(router, writer, registry, "broken gate: a runtime error answers -32603", "{\"id\":10,\"method\":\"test/echo\"}")
+    sayCase("the id is forgotten after the answer of a broken gate", registry.cancelled.keys())
+    dispatchShown(router, writer, registry, "broken gate: failRequest answers its own code", "{\"id\":11,\"method\":\"gate/fails\"}")
+    dispatchShown(router, writer, registry, "broken gate: a notification is logged, not answered", "{\"method\":\"test/note\"}")
+}

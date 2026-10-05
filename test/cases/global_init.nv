@@ -1,0 +1,55 @@
+package main
+
+// Start-up initialisation: enum constants in a global's initialiser, globals
+// that use globals declared later, an enum constant built from a global, and
+// a global initialised by a function that reaches both. Every unit runs after
+// the units it uses; otherwise in the order of the source.
+
+define enum Color {
+    RED,
+    GREEN
+}
+
+define enum Scaled {
+    BIG(FACTOR * 2),
+    SMALL(FACTOR);
+
+    private final integer size: get
+
+    private construct(integer size) {
+        this.size = size
+    }
+}
+
+final FACTOR = 5
+final FAVOURITE = Color.GREEN
+final ALL = [FIRST, SECOND, Color.RED]
+final FIRST = SECOND + 1
+final SECOND = Scaled.BIG.size()
+final LABELS = describe()
+final TABLE = {"favourite": FAVOURITE, "count": COUNT}
+final COUNT = ALL.length()
+final EARLY = report("EARLY")
+final LATE = report("LATE")
+
+method report(string name): string {
+    println "initialising ${name}"
+    return name
+}
+
+method describe(): array<string> {
+    var out = []
+    for (color in Color.values()) {
+        out.append("${color}:${Scaled.SMALL.size()}")
+    }
+    return out
+}
+
+method main {
+    println FAVOURITE
+    println ALL
+    println LABELS
+    println TABLE
+    println Scaled.SMALL.size()
+    println EARLY + LATE
+}

@@ -1,0 +1,11 @@
+task failed: true json parse error at position 1: expected object key
+tryParse inside: unknown
+still failed: true
+message kept: true
+message kept again: true
+task failed: false
+flag still clear: true
+too deep: true json stringify error: nesting is deeper than 256 levels
+inner value: 512 bytes, null false
+twice: true
+virtual thread: 132096

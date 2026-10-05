@@ -1,0 +1,154 @@
+package main
+
+import "novus/lsp/projects/closure"
+import @support
+
+method plainTree(): map<string, string> {
+    return {
+        "/p/project.nv": "project \"p\"\nmain \"main.nv\"\n",
+        "/p/main.nv": "package main\nimport geo\nimport @helpers\nmethod main() {\n}\n",
+        "/p/helpers.nv": "package main\nimport strings\n",
+        "/p/geo/circle.nv": "package geo\nimport geo/shapes\n",
+        "/p/geo/units.nv": "package geo\n",
+        "/p/geo/shapes/square.nv": "package shapes\n",
+        "/p/geo/readme.txt": "not source",
+        "/p/geo/Sub.nvh": "<h1>x</h1>",
+        "/p/unreachable.nv": "package main\n",
+        "/p/other/lone.nv": "package other\n"
+    }
+}
+
+method runBasicRules() {
+    showClosure("packages, nested package, @file, std, unreachable files", TestWorld(plainTree(), "/p/main.nv", []))
+}
+
+method runQualifierRules() {
+    var files = {
+        "/p/project.nv": "project \"p\"\n",
+        "/p/main.nv": "import geo/shapes\nimport draw/shapes\nimport tools\n",
+        "/p/geo/shapes/a.nv": "package shapes\n",
+        "/p/draw/shapes/b.nv": "package shapes\n",
+        "/p/tools/helper.nv": "package main\n",
+        "/p/tools/other.nv": "package tools\n"
+    }
+    var world = TestWorld(files, "/p/main.nv", [])
+    showClosure("qualifier is the last segment, package main means root level", world)
+    println("  files of qualifier shapes: " + names(world.closure.filesOfQualifier("shapes")))
+    println("  files of qualifier tools: " + names(world.closure.filesOfQualifier("tools")))
+    println("  root level files: " + names(world.closure.filesOfQualifier("")))
+}
+
+method names(array<ClosureFile> files): array<string> {
+    var found = []
+    for (file in files) {
+        found.append(file.filePath)
+    }
+    return found
+}
+
+method runLocalFolderRules() {
+    var files = {
+        "/p/project.nv": "project \"p\"\n",
+        "/p/main.nv": "import json\nimport strings\n",
+        "/p/json/mine.nv": "package json\nimport strings\n"
+    }
+    showClosure("a local folder wins over the std module of the same name", TestWorld(files, "/p/main.nv", []))
+}
+
+method runPackageLineRules() {
+    var files = {
+        "/p/project.nv": "project \"p\"\n",
+        "/p/main.nv": "import util\nimport misc\nimport free\n",
+        "/p/util/help.nv": "package tools\n",
+        "/p/misc/a.nv": "package misc\n",
+        "/p/misc/b.nv": "// no package line at all\n",
+        "/p/free/c.nv": "package main\n"
+    }
+    showClosure("package line against the folder", TestWorld(files, "/p/main.nv", []))
+}
+
+method runUnresolvedRules() {
+    var files = {
+        "/p/project.nv": "project \"p\"\n",
+        "/p/main.nv": "import nope\nimport @missing\nimport @geo/zzz\nimport \"no/module\"\nimport \"a/b.nv\"\nimport geo\n",
+        "/p/geo/a.nv": "package geo\n",
+        "/p/empty/readme.txt": "no sources",
+        "/p/other.nv": "import empty\n"
+    }
+    showClosure("every import that names nothing is an issue, never an abort", TestWorld(files, "/p/main.nv", ["/p/main.nv", "/p/other.nv"]))
+}
+
+method runEntryRules() {
+    var files = {
+        "/p/project.nv": "project \"p\"\nmain \"cmd/start.nv\"\n",
+        "/p/cmd/start.nv": "import @cmd/extra\nimport lib\n",
+        "/p/cmd/extra.nv": "x\n",
+        "/p/lib/l.nv": "package lib\n",
+        "/p/orphan.nv": "import lib\n",
+        "/outside/stray.nv": "import strings\n"
+    }
+    showClosure("no entries: the manifest main (in a folder: its qualifier)", TestWorld(files, "/p/orphan.nv", []))
+    showClosure("an orphan is an extra entry", TestWorld(files, "/p/orphan.nv", ["/p/cmd/start.nv", "/p/orphan.nv"]))
+    showClosure("an orphan alone still gets the program of the project", TestWorld(files, "/p/orphan.nv", ["/p/orphan.nv"]))
+    showClosure("entry outside the root has no qualifier", TestWorld(files, "/p/orphan.nv", ["/outside/stray.nv"]))
+    showClosure("missing and empty entries are skipped", TestWorld(files, "/p/orphan.nv", ["/p/none.nv", ""]))
+    showClosure("a scratch buffer has no project", TestWorld({}, "", []))
+}
+
+method runCycleRules() {
+    var files = {
+        "/p/project.nv": "project \"p\"\n",
+        "/p/main.nv": "import a\n",
+        "/p/a/a.nv": "package a\nimport b\n",
+        "/p/b/b.nv": "package b\nimport a\nimport @main\n"
+    }
+    showClosure("import cycles end", TestWorld(files, "/p/main.nv", []))
+}
+
+method runLookupRules() {
+    var world = TestWorld(plainTree(), "/p/main.nv", [])
+    var closure = world.closure
+    println("== lookups")
+    println("  has main " + closure.has("/p/main.nv") + " has unreachable " + closure.has("/p/unreachable.nv"))
+    println("  fileAt known " + closure.fileAt("/p/geo/units.nv").filePath)
+    println("  fileAt unknown is nothing " + (typeOf(closure.fileAt("/p/zzz.nv")) == "unknown"))
+    println("  std keys " + stdFileKey("os") + " -> [" + stdModuleOfKey("std:os") + "] [" + stdModuleOfKey("/p/std:os") + "] [" + stdModuleOfKey("std:") + "]")
+    println("  the provider was asked once per project file: " + (world.provider.requests == closure.files.length() - closure.loadedStdModules.length()))
+    println("  std file in the closure " + closure.has(stdFileKey("strings")) + " origin " + closure.fileAt(stdFileKey("strings")).origin + " q=" + closure.fileAt(stdFileKey("strings")).qualifier + " rootLevel=" + closure.fileAt(stdFileKey("strings")).isRootLevel())
+}
+
+method runLoaderRules() {
+    var world = TestWorld(plainTree(), "/p/main.nv", [])
+    var loader = PackageLoader(world.layout, world.source, world.provider, standardLibrary())
+    println("== package loader")
+    var folder = loader.loadFolder("/p/geo", "geo", FileOrigin.Project, "/p")
+    for (file in folder) {
+        println("  loadFolder " + file.filePath + " q=[" + file.qualifier + "] package=[" + file.packageName + "]")
+    }
+    println("  loadFolder of a missing folder: " + loader.loadFolder("/p/none", "none", FileOrigin.Project, "/p").length() + ", of a file: " + loader.loadFolder("/p/main.nv", "", FileOrigin.Project, "/p").length())
+    var main = loader.loadFile("/p/main.nv", "ignored", FileOrigin.Project, "/p")
+    println("  loadFile with package main: q=[" + main.qualifier + "]")
+    var circle = loader.loadFile("/p/geo/../geo/circle.nv", "geo", FileOrigin.Project, "/p")
+    println("  loadFile normalises the path: " + circle.filePath + " q=[" + circle.qualifier + "]")
+    println("  loadFile of a missing file is nothing " + (typeOf(loader.loadFile("/p/none.nv", "", FileOrigin.Project, "/p")) == "unknown") + ", of a folder " + (typeOf(loader.loadFile("/p/geo", "", FileOrigin.Project, "/p")) == "unknown"))
+    var standard = loader.loadStandard("strings")
+    println("  loadStandard: " + standard.filePath + " " + standard.origin + " q=[" + standard.qualifier + "] module=[" + standard.moduleName + "] root=[" + standard.root + "]")
+    println("  loadStandard of an unknown module is nothing " + (typeOf(loader.loadStandard("nope")) == "unknown"))
+}
+
+method runRuleCases() {
+    runBasicRules()
+    runQualifierRules()
+    runLocalFolderRules()
+    runPackageLineRules()
+    runUnresolvedRules()
+    runEntryRules()
+    runCycleRules()
+    runLookupRules()
+    runLoaderRules()
+    runPathEntryRules()
+}
+
+method runPathEntryRules() {
+    showClosure("entries are normalised", TestWorld(plainTree(), "/p/main.nv", ["/p/geo/../main.nv", "/p/./main.nv"]))
+}

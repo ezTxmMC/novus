@@ -1,0 +1,10 @@
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"rootUri":"@ROOTURI@","capabilities":{"textDocument":{"completion":{"completionItem":{"snippetSupport":true,"labelDetailsSupport":true,"documentationFormat":["markdown","plaintext"],"insertTextModeSupport":{"valueSet":[1,2]}}}}},"initializationOptions":{"novus":{"diagnostics":{"own":false}}}}}
+{"jsonrpc":"2.0","method":"initialized","params":{}}
+{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"@ROOTURI@/main.nv","languageId":"novus","version":1,"text":"package main\n\nimport geo\n\nmethod main() {\n    var count = 3\n    var label = \"😀é\"\n    println(\"😀é\" + count)\n    var shape = Shape(\"round\", 2.5)\n    println(shape)\n    println(count)\n    sout\n    Shape(\"a\", 1.0)\n    println(label)\n}\n"}}}
+{"jsonrpc":"2.0","id":2,"method":"textDocument/completion","params":{"textDocument":{"uri":"@ROOTURI@/main.nv"},"position":{"line":7,"character":23},"context":{"triggerKind":1}}}
+{"jsonrpc":"2.0","id":3,"method":"textDocument/completion","params":{"textDocument":{"uri":"@ROOTURI@/main.nv"},"position":{"line":10,"character":7},"context":{"triggerKind":1}}}
+{"jsonrpc":"2.0","id":4,"method":"textDocument/completion","params":{"textDocument":{"uri":"@ROOTURI@/main.nv"},"position":{"line":11,"character":7},"context":{"triggerKind":1}}}
+{"jsonrpc":"2.0","id":5,"method":"textDocument/completion","params":{"textDocument":{"uri":"@ROOTURI@/main.nv"},"position":{"line":12,"character":7},"context":{"triggerKind":1}}}
+{"jsonrpc":"2.0","id":6,"method":"textDocument/completion","params":{"textDocument":{"uri":"@ROOTURI@/main.nv"},"position":{"line":13,"character":15},"context":{"triggerKind":1}}}
+{"jsonrpc":"2.0","id":99,"method":"shutdown"}
+{"jsonrpc":"2.0","method":"exit"}

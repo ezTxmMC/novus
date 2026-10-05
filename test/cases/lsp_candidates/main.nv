@@ -1,0 +1,40 @@
+package main
+
+import @support
+import @rank_cases
+import @import_cases
+import @source_cases
+import @module_cases
+import @lexical_cases
+import @scale_cases
+
+method main() {
+    runQualityCases()
+    runRankCases()
+    runSnippetRankCases()
+    runDuplicateCases()
+    runImportLineCases()
+    runStdGroupCases()
+    runProjectGroupCases()
+    runNewGroupCases()
+    runFirstImportCases()
+    runLineEndingCases()
+    runTrailingCommentCases()
+    runWithheldCases()
+    runLocalCases()
+    runMemberSourceCases()
+    runSymbolSourceCases()
+    runHygieneCases()
+    runQualifiedCases()
+    runStandardModuleCases()
+    runImportPathCases()
+    runManifestItemCases()
+    runKeywordCases()
+    runSnippetCases()
+    runSnippetImportCases()
+    runTypeAndFieldCases()
+    runDuplicateLabelCases()
+    runDiskCases()
+    runManyLocalCases()
+    runUnloadedLimitCases()
+}

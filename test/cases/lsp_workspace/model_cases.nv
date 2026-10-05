@@ -1,0 +1,121 @@
+package main
+
+import "novus/lsp/base/platform"
+import "novus/lsp/projects/closure"
+import "novus/lsp/projects/manifest"
+import "novus/lsp/projects/stdlib"
+import "novus/lsp/projects/workspace"
+import @support
+
+method modelOf(WsWorld world, string startPath): ProjectModel {
+    var model = ProjectModel(findProjectLayout(world.cache, startPath))
+    model.rebuild(world.cache, standardLibrary(), [])
+    return model
+}
+
+method runModelBasics() {
+    println("== ProjectModel: key, rebuild, invalidate, revision")
+    var world = WsWorld(wsSimpleProject())
+    var model = ProjectModel(findProjectLayout(world.cache, "/p/main.nv"))
+    wsCheck("before the first build", wsSummary(model) + " files=" + model.closure.files.length(), "key=/p/project.nv valid=false revision=0 files=0")
+    model.rebuild(world.cache, standardLibrary(), [])
+    wsCheck("built", wsSummary(model) + " files: " + wsNames(model.closure.files), "key=/p/project.nv valid=true revision=1 files: /p/main.nv, /p/geo/extra.nv, /p/geo/shape.nv")
+    wsCheck("index and resolver follow the closure", model.index.closure == model.closure, "true")
+    wsCheck("the resolver answers", model.resolver.lookupType("Shape").file.filePath, "/p/geo/shape.nv")
+    model.invalidate()
+    wsCheck("invalidate only flips the flag", wsSummary(model), "key=/p/project.nv valid=false revision=1")
+    world.source.write("/p/project.nv", "project \"p\"\nmain \"lone.nv\"\n")
+    model.rebuild(world.cache, standardLibrary(), [])
+    wsCheck("a rebuild reads the manifest again", wsSummary(model) + " main=" + model.layout.mainFile + " files: " + wsNames(model.closure.files), "key=/p/project.nv valid=true revision=2 main=/p/lone.nv files: /p/lone.nv")
+    model.rebuildIndex(standardLibrary())
+    wsCheck("rebuildIndex is a revision of its own", model.revision, "3")
+    var solo = WsWorld({"/solo/a.nv": "import @b\nmethod main() {\n}\n", "/solo/b.nv": "method b() {\n}\n"})
+    var soloModel = modelOf(solo, "/solo/a.nv")
+    wsCheck("without a manifest the file is its own program", wsSummary(soloModel) + " files: " + wsNames(soloModel.closure.files), "key=/solo/a.nv valid=true revision=1 files: /solo/a.nv, /solo/b.nv")
+    var scratch = ProjectModel(ProjectLayout("", "", ManifestFile(""), ""))
+    wsCheck("a scratch model has the empty key", "[" + scratch.key() + "] " + scratch.containsPath("/x.nv"), "[] false")
+}
+
+method entryOf(map<string, string> files, string startPath, string openPath, array<string> extra): string {
+    var world = WsWorld(files)
+    var model = ProjectModel(findProjectLayout(world.cache, startPath))
+    model.rebuild(world.cache, standardLibrary(), extra)
+    return "[" + model.checkEntry(openPath) + "]"
+}
+
+method runCheckEntryCases() {
+    println("== ProjectModel.checkEntry")
+    var library = {"/p/project.nv": "project \"p\"\nmain \"lib.nv\"\n", "/p/lib.nv": "method helper() {\n}\n", "/p/tool.nv": "method main() {\n}\n", "/p/other.nv": "method other() {\n}\n"}
+    wsCheck("main file declares main", entryOf(wsSimpleProject(), "/p/main.nv", "/p/geo/shape.nv", []), "[/p/main.nv]")
+    wsCheck("the open path is normalised and ignored when main exists", entryOf(wsSimpleProject(), "/p/main.nv", "/p/./geo/../lone.nv", []), "[/p/main.nv]")
+    wsCheck("a library: the main file has no main method", entryOf(library, "/p/lib.nv", "/p/tool.nv", ["/p/tool.nv"]), "[]")
+    var noMain = {"/p/project.nv": "project \"p\"\nmain \"gone.nv\"\n", "/p/tool.nv": "method main() {\n}\n", "/p/other.nv": "method other() {\n}\n"}
+    wsCheck("main file missing: the open file with main", entryOf(noMain, "/p/tool.nv", "/p/tool.nv", ["/p/tool.nv"]), "[/p/tool.nv]")
+    wsCheck("main file missing: an open file without main", entryOf(noMain, "/p/other.nv", "/p/other.nv", ["/p/other.nv"]), "[]")
+    wsCheck("main file missing: a file that is not in the program", entryOf(noMain, "/p/tool.nv", "/p/other.nv", ["/p/tool.nv"]), "[]")
+    wsCheck("a program without manifest", entryOf({"/solo/a.nv": "method main() {\n}\n"}, "/solo/a.nv", "/solo/a.nv", []), "[/solo/a.nv]")
+    var dependency = {"/p/project.nv": "project \"p\"\nmain \"gone.nv\"\nrequire \"ex.com/lib\"\nreplace \"ex.com/lib\" \"lib\"\n", "/p/lib/lib.nv": "method main() {\n}\n", "/p/user.nv": "import \"ex.com/lib\"\n"}
+    wsCheck("a dependency file is never the entry", entryOf(dependency, "/p/user.nv", "/p/lib/lib.nv", ["/p/user.nv"]), "[]")
+}
+
+method runDependencyCases() {
+    println("== ProjectModel.hasUnfetchedDependencies and userFiles")
+    var none = WsWorld(wsSimpleProject())
+    wsCheck("no requirement", modelOf(none, "/p/main.nv").hasUnfetchedDependencies(), "false")
+    var missing = {"/p/project.nv": "project \"p\"\nmain \"main.nv\"\nrequire \"nowhere.invalid/lib\"\n", "/p/main.nv": "method main() {\n}\n"}
+    wsCheck("a module that is not in the cache", modelOf(WsWorld(missing), "/p/main.nv").hasUnfetchedDependencies(), "true")
+    var replaced = {"/p/project.nv": "project \"p\"\nmain \"main.nv\"\nrequire \"ex.com/lib\"\nreplace \"ex.com/lib\" \"lib\"\n", "/p/main.nv": "import \"ex.com/lib\"\nmethod main() {\n}\n", "/p/lib/lib.nv": "method libFunction() {\n}\n", "/p/mine.nv": "method mine() {\n}\n"}
+    var model = modelOf(WsWorld(replaced), "/p/main.nv")
+    wsCheck("a replaced module that exists", model.hasUnfetchedDependencies(), "false")
+    wsCheck("user files are the project's own files, not the replaced dependency's", wsNames(model.userFiles()) + " | all: " + wsNames(model.closure.files), "/p/main.nv | all: /p/main.nv, /p/lib/lib.nv")
+    var replacedMissing = {"/p/project.nv": "project \"p\"\nmain \"main.nv\"\nrequire \"ex.com/lib\"\nreplace \"ex.com/lib\" \"nowhere\"\n", "/p/main.nv": "method main() {\n}\n"}
+    wsCheck("a replace target that does not exist", modelOf(WsWorld(replacedMissing), "/p/main.nv").hasUnfetchedDependencies(), "true")
+}
+
+method scanFiles(): map<string, string> {
+    return {
+        "/s/project.nv": "project \"s\"\nmain \"main.nv\"\n",
+        "/s/main.nv": "method main() {\n}\n",
+        "/s/util.nv": "method util() {\n}\n",
+        "/s/geo/a.nv": "package geo\n",
+        "/s/geo/shapes/b.nv": "package shapes\n",
+        "/s/components/Button.nvh": "<button/>\n",
+        "/s/pages/Home.nvh": "<h1/>\n",
+        "/s/sub/project.nv": "project \"sub\"\n",
+        "/s/sub/deep.nv": "method deep() {\n}\n",
+        "/s/.git/hooks.nv": "method git() {\n}\n",
+        "/s/node_modules/m/m.nv": "method m() {\n}\n",
+        "/s/build/out.nv": "method out() {\n}\n",
+        "/s/empty/readme.txt": "no sources\n"
+    }
+}
+
+method runScanCases() {
+    println("== scanProject and ProjectModel.scanFor")
+    var world = WsWorld(scanFiles())
+    var layout = findProjectLayout(world.cache, "/s/main.nv")
+    var scan = scanProject(world.cache, layout)
+    wsCheck("package folders", scan.packageFolders.join(", "), "/s/components, /s/geo, /s/geo/shapes, /s/pages, /s/sub")
+    wsCheck("root files (no manifest)", scan.rootFiles.join(", "), "/s/main.nv, /s/util.nv")
+    wsCheck("components", scan.nvhFiles.join(", "), "/s/components/Button.nvh, /s/pages/Home.nvh")
+    wsCheck("knows", scan.knows("/s/util.nv") + " " + scan.knows("/s/geo/new.nv") + " " + scan.knows("/s/empty/x.nv") + " " + scan.knows("/other/x.nv"), "true true false false")
+    var scratch = scanProject(world.cache, ProjectLayout("", "", ManifestFile(""), ""))
+    wsCheck("a layout without a root has nothing", scratch.packageFolders.length() + scratch.rootFiles.length() + scratch.nvhFiles.length(), "0")
+    runScanCacheCases(world, layout)
+}
+
+method runScanCacheCases(WsWorld world, ProjectLayout layout) {
+    var model = ProjectModel(layout)
+    var first = model.scanFor(world.cache, 1000)
+    wsCheck("first scan", model.scannedAt + " " + first.rootFiles.length(), "1000 2")
+    var second = model.scanFor(world.cache, 20000)
+    wsCheck("served from the cache for 30 seconds", (second == first) + " " + model.scannedAt, "true 1000")
+    var third = model.scanFor(world.cache, 31001)
+    wsCheck("older than 30 seconds: scanned again", (third == first) + " " + model.scannedAt, "false 31001")
+    world.source.write("/s/fresh.nv", "method fresh() {\n}\n")
+    var cached = model.scanFor(world.cache, 32000)
+    wsCheck("a new file is not seen from the cache", (cached == third) + " " + cached.rootFiles.length(), "true 2")
+    model.invalidateScan()
+    var renewed = model.scanFor(world.cache, 32001)
+    wsCheck("invalidateScan forces a new scan", (renewed == third) + " " + renewed.rootFiles.join(", ") + " at " + model.scannedAt, "false /s/fresh.nv, /s/main.nv, /s/util.nv at 32001")
+}

@@ -1,0 +1,85 @@
+package main
+
+import "novus/lsp/base/platform"
+import "novus/lsp/projects/manifest"
+import "novus/lsp/projects/modules"
+import @show
+
+method runNamingCases() {
+    println("== naming")
+    println("  key " + moduleKeyOf("github.com/user/lib"))
+    println("  key " + moduleKeyOf("https://host.example/x/y"))
+    println("  key " + moduleKeyOf("file:///tmp/lib"))
+    println("  key " + moduleKeyOf("///a/b"))
+    println("  key [" + moduleKeyOf("") + "]")
+    println("  dir " + dependencyDirectoryOf("/cache", "github.com/user/lib", "v1.2.0"))
+    println("  dir " + dependencyDirectoryOf("/cache/", "https://h/x", "latest"))
+}
+
+method buildTable(map<string, string> files, string rootText): ModuleTable {
+    var source = MemoryTextSource(files)
+    var root = parseManifestText("/proj/project.nv", rootText)
+    return ModuleTableBuilder(source, "/cache").build(root)
+}
+
+method runBasicResolution() {
+    var files = {
+        "/cache/github.com/u/ready@v1/main.nv": "package main",
+        "/cache/github.com/u/withlib@v2/lib.nv": "package lib",
+        "/cache/github.com/u/manifest@latest/project.nv": "project \"m\"\nmain \"a.nv\"\nlib \"src/entry.nv\"\n",
+        "/cache/github.com/u/mainonly@v3/project.nv": "project \"m\"\nmain \"cmd/start.nv\"\n",
+        "/cache/github.com/u/bare@v1/other.nv": "x"
+    }
+    var text = "require \"github.com/u/ready\" \"v1\"\nrequire \"github.com/u/withlib\" \"v2\"\nrequire \"github.com/u/manifest\"\nrequire \"github.com/u/mainonly\" \"v3\"\nrequire \"github.com/u/bare\" \"v1\"\nrequire \"github.com/u/absent\" \"v9\"\nrequire \"https://other.example/p/q\" \"v1\"\n"
+    showTable("statuses and entry files", buildTable(files, text))
+}
+
+method runReplaceResolution() {
+    var files = {
+        "/lib/lib.nv": "package lib",
+        "/proj/local/main.nv": "package main",
+        "/abs/main.nv": "package main"
+    }
+    var text = "require \"a/lib\" \"v1\"\nreplace \"a/lib\" \"../lib\"\nrequire \"a/local\"\nreplace \"a/local\" \"./local\"\nrequire \"a/gone\"\nreplace \"a/gone\" \"../gone\"\nrequire \"a/abs\"\nreplace \"a/abs\" \"/abs\"\nreplace \"a/unrequired\" \"../lib\"\n"
+    showTable("replace is relative to the manifest and may be missing", buildTable(files, text))
+}
+
+method runTransitiveResolution() {
+    var files = {
+        "/cache/m/b@v1/project.nv": "project \"b\"\nrequire \"m/x\" \"v2\"\nrequire \"m/c\" \"v1\"\nreplace \"m/c\" \"../c-local\"\n",
+        "/cache/m/b@v1/lib.nv": "x",
+        "/cache/m/x@v2/lib.nv": "x",
+        "/cache/m/x@v1/lib.nv": "x",
+        "/cache/m/c@v1/lib.nv": "x",
+        "/cache/m/c-local/lib.nv": "x"
+    }
+    var text = "require \"m/b\" \"v1\"\nrequire \"m/x\" \"v1\"\nreplace \"m/c\" \"/never-used\"\n"
+    showTable("transitive: first seen wins, the root replace does not reach nested requires", buildTable(files, text))
+}
+
+method runDirectResolution() {
+    var files = {
+        "/cache/m/a@v1/project.nv": "require \"m/b\" \"v1\"\nrequire \"m/deep\" \"v1\"\n",
+        "/cache/m/b@v1/lib.nv": "x",
+        "/cache/m/b@v2/lib.nv": "x",
+        "/cache/m/deep@v1/lib.nv": "x"
+    }
+    showTable("direct means the root manifest requires it, although a nested version won", buildTable(files, "require \"m/a\" \"v1\"\nrequire \"m/b\" \"v2\"\n"))
+}
+
+method runCycleResolution() {
+    var files = {
+        "/cache/m/a@v1/project.nv": "require \"m/b\" \"v1\"\n",
+        "/cache/m/b@v1/project.nv": "require \"m/a\" \"v1\"\nrequire \"m/a\" \"v2\"\n"
+    }
+    showTable("a cycle ends", buildTable(files, "require \"m/a\" \"v1\"\n"))
+    showTable("no requires", buildTable({}, "project \"p\"\n"))
+}
+
+method runResolveCases() {
+    runBasicResolution()
+    runReplaceResolution()
+    runTransitiveResolution()
+    runDirectResolution()
+    runCycleResolution()
+}

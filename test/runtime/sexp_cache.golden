@@ -1,0 +1,13 @@
+short node: second child before: a
+short node: second child after the rewrite: []
+short node: count after the rewrite: 1
+long node: second child before: a
+long node: second child after the rewrite: []
+long node: count after the rewrite: 1
+walk: 20000 children, bytes of children 108888
+walk: scanning stayed within 4 times the text: yes
+many long nodes: wrong answers: 0
+release: before c
+release: cache is gone: yes
+release: still answers: c
+release: twice is fine: yes

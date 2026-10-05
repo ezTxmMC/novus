@@ -1,0 +1,158 @@
+package semtok
+
+import base/maybe
+import base/model
+import projects/workspace
+import semantics/semantic
+import syntax/lexing
+import syntax/outline
+
+private final SEMTOK_ANY_ARITY = -1
+private final SEMTOK_ENUM_VALUES = "values"
+
+// Classifies the name after a dot. The receiver is read from the token before the dot: a module or package, an enum
+// type, `this` or a local with a known type give an exact answer; for any other receiver the declarers of the member
+// name decide, and a call of a name that no declaration offers is taken to be a method of the runtime.
+define class SemtokMembers {
+    FileContext context
+    Resolver resolver
+
+    construct(FileContext context) {
+        this.context = context
+        this.resolver = context.resolver()
+    }
+
+    method classify(SemtokStream stream, integer index, Scope scope): SemanticSpan {
+        var token = stream.tokenAt(index)
+        var arity = SEMTOK_ANY_ARITY
+        if (stream.isPunct(index + 1, "(")) {
+            arity = stream.argumentCount(index + 1)
+        }
+        var exact = this.byReceiver(stream, index, scope, arity)
+        if (semtokIsNone(exact) == false || this.isNamespaceReceiver(stream, index, scope)) {
+            return this.markAssigned(stream, index, exact)
+        }
+        return this.markAssigned(stream, index, this.byDeclarers(token, arity))
+    }
+
+    // `this.count = 3` and `item.name = "x"` write the member, like `count = 3` writes a variable.
+    method markAssigned(SemtokStream stream, integer index, SemanticSpan span): SemanticSpan {
+        if (semtokIsNone(span) || stream.isPunct(index + 1, "=") == false || semtokIsWritable(span.tokenType) == false) {
+            return span
+        }
+        span.modifiers = span.modifiers + SEMTOK_MOD_MODIFICATION
+        return span
+    }
+
+    // The name in front of the dot, nothing when the receiver is no plain name or ends a longer chain (`a.b.name`).
+    //
+    // contract-note: the chain is not typed (semtok/DESIGN-NOTES.md 4): `ChainStep` lives in `scanning`, which semtok
+    // may not import (2.4), so only the single name in front of the dot is looked at.
+    method receiverOf(SemtokStream stream, integer index): Token {
+        var receiver = stream.tokenAt(stream.beforePrevious(index))
+        if (isNone(receiver) || receiver.kind != TokenKind.Ident || stream.isPunct(stream.beforeReceiver(index), ".")) {
+            return nothing()
+        }
+        return receiver
+    }
+
+    // A module, a package or an enum type in front of the dot has a closed list of members: a name that is not in it
+    // is no member of anything else.
+    method isNamespaceReceiver(SemtokStream stream, integer index, Scope scope): bool {
+        var receiver = this.receiverOf(stream, index)
+        if (isNone(receiver)) {
+            return false
+        }
+        if (isSome(this.resolver.localNamed(scope, receiver.text))) {
+            return false
+        }
+        if (this.resolver.isModuleQualifier(receiver.text)) {
+            return true
+        }
+        var type = this.resolver.lookupType(receiver.text)
+        return isSome(type) && type.decl.kind == DeclKind.Enum
+    }
+
+    method byReceiver(SemtokStream stream, integer index, Scope scope, integer arity): SemanticSpan {
+        var receiver = this.receiverOf(stream, index)
+        if (isNone(receiver)) {
+            return semtokNoSpan(stream.tokenAt(index).start)
+        }
+        var local = this.resolver.localNamed(scope, receiver.text)
+        if (isNone(local) && receiver.text != SEMTOK_WORD_THIS) {
+            return this.byName(stream.tokenAt(index), receiver.text, arity)
+        }
+        return this.byType(stream.tokenAt(index), this.typeOfReceiver(scope, receiver.text, local), arity)
+    }
+
+    method typeOfReceiver(Scope scope, string word, Local local): TypeRef {
+        if (word == SEMTOK_WORD_THIS) {
+            return this.resolver.thisType(scope)
+        }
+        return this.resolver.typeOfLocal(scope, local)
+    }
+
+    method byType(Token member, TypeRef type, integer arity): SemanticSpan {
+        if (type.known == false) {
+            return semtokNoSpan(member.start)
+        }
+        return this.firstOf(member, this.resolver.lookupMember(type, member.text, arity))
+    }
+
+    // A receiver that is no variable: a std module or package (`strings.repeat`) or an enum type (`Color.Red`).
+    method byName(Token member, string name, integer arity): SemanticSpan {
+        if (this.resolver.isModuleQualifier(name)) {
+            return this.firstOf(member, this.resolver.lookupQualified(name, member.text, arity))
+        }
+        var type = this.resolver.lookupType(name)
+        if (isSome(type) && type.decl.kind == DeclKind.Enum) {
+            return this.ofEnum(member, name, arity)
+        }
+        return semtokNoSpan(member.start)
+    }
+
+    method ofEnum(Token member, string typeName, integer arity): SemanticSpan {
+        for (constant in this.resolver.constantsOf(typeName)) {
+            if (constant.decl.name == member.text) {
+                return semtokSymbolSpan(member.span(), constant)
+            }
+        }
+        if (member.text == SEMTOK_ENUM_VALUES && arity == 0) {
+            return SemanticSpan(member.span(), SEMTOK_TYPE_METHOD, SEMTOK_MOD_DEFAULT_LIBRARY)
+        }
+        return semtokNoSpan(member.start)
+    }
+
+    method firstOf(Token member, Resolution found): SemanticSpan {
+        if (semtokIsUnknown(found)) {
+            return semtokNoSpan(member.start)
+        }
+        return semtokSymbolSpan(member.span(), found.candidates[0])
+    }
+
+    // Any type of the program that has a member of this name; a call that needs a callable matches by arity.
+    method byDeclarers(Token member, integer arity): SemanticSpan {
+        var named = this.resolver.index.declarersOfMember(member.text)
+        for (symbol in named) {
+            if (this.fits(symbol, arity)) {
+                return semtokSymbolSpan(member.span(), symbol)
+            }
+        }
+        if (arity != SEMTOK_ANY_ARITY) {
+            return SemanticSpan(member.span(), SEMTOK_TYPE_METHOD, SEMTOK_MOD_NONE)
+        }
+        return semtokNoSpan(member.start)
+    }
+
+    // A field answers every spelling (`obj.name`, `obj.name()`); a method must take that many arguments.
+    method fits(Symbol symbol, integer arity): bool {
+        if (arity == SEMTOK_ANY_ARITY || symbol.decl.kind == DeclKind.Field) {
+            return true
+        }
+        return symbol.decl.isCallable() && this.takes(symbol.decl, arity)
+    }
+
+    method takes(Decl decl, integer arity): bool {
+        return decl.arity() == arity || decl.hasModifier(SEMTOK_WORD_VARIADIC)
+    }
+}

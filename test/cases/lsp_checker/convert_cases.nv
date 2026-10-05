@@ -1,0 +1,69 @@
+package main
+
+import "novus/lsp/base/model"
+import "novus/lsp/base/platform"
+import "novus/lsp/base/text"
+import "novus/lsp/services/checker"
+
+private final CONVERT_FILE = "/work/main.nv"
+
+method describeDiagnostic(Diagnostic diagnostic, string source): string {
+    var covered = source.substring(diagnostic.span.start, diagnostic.span.end)
+    return diagnostic.severity.code + " " + diagnostic.source + " " + diagnostic.code + " " + diagnostic.span.start + "-" + diagnostic.span.end + " covers [" + covered + "] message=[" + diagnostic.message + "]"
+}
+
+method showConverted(string label, string source, array<CheckFinding> findings) {
+    var result = CheckResult(1)
+    result.findings = findings
+    var files = MemoryTextSource({ CONVERT_FILE: source })
+    var diagnostics = findingsToDiagnostics(result, files, CONVERT_FILE)
+    println("convert " + label + ": " + diagnostics.length() + " diagnostic(s)")
+    for (diagnostic in diagnostics) {
+        println("  " + describeDiagnostic(diagnostic, source))
+    }
+}
+
+method located(integer line, string message): CheckFinding {
+    return CheckFinding(CONVERT_FILE, line, message, true)
+}
+
+method runLineCases() {
+    var source = "method main {\n    var total = 1\n    println(missing)\n}\n"
+    showConverted("whole line", source, [located(3, "syntax trouble here")])
+    showConverted("quoted identifier on the line", source, [located(3, "unknown variable 'missing'")])
+    showConverted("quoted identifier not on the line", source, [located(3, "unknown variable 'other'")])
+    showConverted("quoted word that is no identifier", source, [located(3, "expected '}' but found 'x y'")])
+    showConverted("second quoted identifier", source, [located(2, "'zzz' is not 'total'")])
+    showConverted("identifier only as part of a longer word", source, [located(2, "unknown variable 'tot'")])
+    showConverted("first line", source, [located(1, "unknown variable 'main'")])
+    showConverted("last line", source, [located(4, "unexpected '}'")])
+}
+
+method runEdgeCases() {
+    var source = "alpha\n\n   \n  beta  \n"
+    showConverted("blank line is a zero length range", source, [located(2, "x")])
+    showConverted("whitespace only line", source, [located(3, "x")])
+    showConverted("indentation and trailing blanks are trimmed", source, [located(4, "x")])
+    showConverted("line past the end clamps to the last line", source, [located(40, "x")])
+    showConverted("line zero is the first line", source, [located(0, "x")])
+    showConverted("negative line is the first line", source, [located(-3, "x")])
+    showConverted("empty text", "", [located(5, "x")])
+    showConverted("crlf text", "one\r\ntwo thing\r\n", [located(2, "unknown variable 'thing'")])
+}
+
+method runSelectionCases() {
+    var source = "method main {\n}\n"
+    var other = CheckFinding("/work/other.nv", 1, "elsewhere", true)
+    var withoutPosition = CheckFinding(CONVERT_FILE, 0, "class X: duplicate definition of 'X'", false)
+    showConverted("only the findings of the file", source, [other, located(1, "mine")])
+    showConverted("position-less finding goes on line 0", source, [withoutPosition])
+    showConverted("path spelling with backslashes", source, [CheckFinding("\\work\\main.nv", 2, "x", true)])
+    showConverted("no findings", source, [])
+}
+
+method runConvertCases() {
+    println("--- convert")
+    runLineCases()
+    runEdgeCases()
+    runSelectionCases()
+}

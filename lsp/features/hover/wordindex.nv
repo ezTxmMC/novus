@@ -1,0 +1,20 @@
+package hover
+
+import semantics/targets
+import syntax/lexing
+
+// The identifier or keyword at the offset, or the identifier that ends exactly there; -1 for anything else.
+method hoverWordIndex(array<Token> tokens, integer offset): integer {
+    var index = targetsFirstTokenEndingAfter(tokens, offset)
+    if (index < tokens.length() && tokens[index].start <= offset && hoverIsWord(tokens[index])) {
+        return index
+    }
+    if (index > 0 && tokens[index - 1].end == offset && tokens[index - 1].kind == TokenKind.Ident) {
+        return index - 1
+    }
+    return -1
+}
+
+method hoverIsWord(Token token): bool {
+    return token.kind == TokenKind.Ident || token.kind == TokenKind.Keyword
+}

@@ -1,0 +1,192 @@
+package diagnostics
+
+import base/maybe
+import base/model
+import base/text
+import projects/workspace
+import syntax/outline
+
+// Converts `SourceFile.issues` and adds no checks of its own (5.9): hint when the issue says so, else warning, else error.
+define class SyntaxDiagnosticRule based DiagnosticRule {
+    construct() {
+    }
+
+    method check(FileContext context): array<Diagnostic> {
+        var found = []
+        for (issue in context.syntax.issues) {
+            found.append(diagnosticsFinding(issue.span, this.severityOf(issue), issue.code, issue.message))
+        }
+        return found
+    }
+
+    method severityOf(SyntaxIssue issue): Severity {
+        if (issue.isHint()) {
+            return Severity.Hint
+        }
+        if (issue.warning) {
+            return Severity.Warning
+        }
+        return Severity.Error
+    }
+}
+
+private final DIAGNOSTICS_BIND_NOT_REF = "bind-not-ref"
+private final DIAGNOSTICS_PROP_WORD = "prop"
+private final DIAGNOSTICS_COMPONENT_BASE = "NvhComponent"
+
+// The one semantic check of a component that v1 makes (Amendment 7, V137, 5.7, 5.9): `bind="name"` in a tag needs a `ref` or `var` of that
+// name in the header, as the compiler's `nvh` stage demands. The tags are read in sequence like the compiler reads them, so
+// the words of a text, a comment or another attribute value are never taken for an attribute.
+define class DiagnosticsBindRule based DiagnosticRule {
+    construct() {
+    }
+
+    method check(FileContext context): array<Diagnostic> {
+        var found = []
+        var component = this.componentOf(context.syntax)
+        if (context.syntax.fileKind != FILE_KIND_NVH || isNone(component)) {
+            return found
+        }
+        for (value in DiagnosticsTemplateReader(context.document.text).bindValues()) {
+            if (this.isBindable(component, value.text) == false) {
+                found.append(this.finding(component.name, value))
+            }
+        }
+        return found
+    }
+
+    // The synthetic class of the file: the header may declare classes of its own, which have fields of no ref.
+    method componentOf(SourceFile syntax): Decl {
+        for (decl in syntax.decls) {
+            if (decl.baseName == DIAGNOSTICS_COMPONENT_BASE) {
+                return decl
+            }
+        }
+        return nothing()
+    }
+
+    method isBindable(Decl component, string name): bool {
+        for (member in component.members) {
+            if (member.name == name && member.kind == DeclKind.Field) {
+                return member.hasModifier(DIAGNOSTICS_PROP_WORD) == false
+            }
+        }
+        return false
+    }
+
+    method finding(string component, DiagnosticsAttribute value): Diagnostic {
+        var message = "bind=\"" + value.text + "\": '" + value.text + "' is not a ref of " + component + " (declare it: ref " + value.text + " = ...)"
+        return diagnosticsFinding(value.span, Severity.Error, DIAGNOSTICS_BIND_NOT_REF, message)
+    }
+}
+
+private final DIAGNOSTICS_DOUBLE_QUOTE = "\""
+private final DIAGNOSTICS_BACKSLASH = "\\"
+private final DIAGNOSTICS_SPACES = [" ", "\t", "\n", "\r"]
+private final DIAGNOSTICS_TAG_PUNCTUATION = ["-", ":", "."]
+
+// The text of a template and a position in it; every move is total (a position that does not exist reads as ""), and the
+// skips follow the compiler's `nvhTokens`: a `{...}` block ends at its matching brace and a string inside it is one unit.
+define class DiagnosticsTemplateCursor {
+    string text
+    integer position
+
+    construct(string text) {
+        this.text = text
+        this.position = 0
+    }
+
+    method hasMore(): bool {
+        return this.position < this.text.length()
+    }
+
+    method advance(integer count) {
+        this.position = this.position + count
+    }
+
+    // The character `distance` ahead of the position, "" beyond the text.
+    method peek(integer distance): string {
+        return this.peekAt(this.position + distance)
+    }
+
+    method slice(integer start, integer end): string {
+        return this.text.substring(start, end)
+    }
+
+    method startsWith(string prefix): bool {
+        var end = this.position + prefix.length()
+        return end <= this.text.length() && this.text.substring(this.position, end) == prefix
+    }
+
+    method skipPast(string marker) {
+        var at = this.text.indexOf(marker, this.position + 1)
+        this.position = this.text.length()
+        if (at >= 0) {
+            this.position = at + marker.length()
+        }
+    }
+
+    method skipSpaces() {
+        while (DIAGNOSTICS_SPACES.contains(this.peek(0))) {
+            this.position = this.position + 1
+        }
+    }
+
+    method skipBlock() {
+        this.position = this.closeOfBrace(this.position)
+    }
+
+    // The index after the `}` that closes the `{` at `open`; the end of the text when there is none.
+    method closeOfBrace(integer open): integer {
+        var depth = 0
+        var index = open
+        while (index < this.text.length()) {
+            var character = this.text.charAt(index)
+            if (character == DIAGNOSTICS_DOUBLE_QUOTE) {
+                index = this.closeOfString(index)
+                continue
+            }
+            index = index + 1
+            if (character == "{") {
+                depth = depth + 1
+            }
+            if (character == "}") {
+                depth = depth - 1
+            }
+            if (depth == 0) {
+                return index
+            }
+        }
+        return this.text.length()
+    }
+
+    method closeOfString(integer open): integer {
+        var index = open + 1
+        while (index < this.text.length() && this.text.charAt(index) != DIAGNOSTICS_DOUBLE_QUOTE) {
+            index = index + 1
+            if (this.text.charAt(index - 1) == DIAGNOSTICS_BACKSLASH) {
+                index = index + 1
+            }
+        }
+        return index + 1
+    }
+
+    method peekAt(integer index): string {
+        if (index < 0 || index >= this.text.length()) {
+            return ""
+        }
+        return this.text.charAt(index)
+    }
+
+    // Moves behind the name of the tag that starts at the position (`<name`).
+    method skipTagName() {
+        this.position = this.position + 1
+        while (this.isTagCharacter(this.peek(0))) {
+            this.position = this.position + 1
+        }
+    }
+
+    method isTagCharacter(string character): bool {
+        return diagnosticsIsLetterByte(character) || diagnosticsIsDigitByte(character) || DIAGNOSTICS_TAG_PUNCTUATION.contains(character)
+    }
+}

@@ -1,0 +1,19 @@
+package geo
+
+// A shape with an area.
+define class Shape {
+    string name
+    float size: get, set
+
+    // The area of the shape.
+    method area(): float {
+        return this.size * this.size
+    }
+}
+
+define enum Color { Red, Green, Blue; }
+
+// Describes a shape in one line.
+method describe(Shape shape): string {
+    return shape.name
+}

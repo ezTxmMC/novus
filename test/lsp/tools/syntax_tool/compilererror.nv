@@ -1,0 +1,91 @@
+package main
+
+import math
+import "novus/lsp/base/maybe"
+
+private final SYNTAX_TOOL_ERROR_PREFIX = "error: "
+private final SYNTAX_TOOL_SYNTAX_CLASS = ["expected", "unexpected", "unterminated"]
+private final SYNTAX_TOOL_COLON = ":"
+
+// The first `error: <file>:<line>: <message>` line of a `novusc check` run.
+define class SyntaxToolCompilerError {
+    string file
+    integer line
+    string message
+
+    construct(string file, integer line, string message) {
+        this.file = file
+        this.line = line
+        this.message = message
+    }
+
+    // DESIGN 9.5-4 (b): the messages of the lexer and parser of the compiler start with one of three words.
+    method isSyntaxClass(): bool {
+        for (word in SYNTAX_TOOL_SYNTAX_CLASS) {
+            if (this.message.startsWith(word)) {
+                return true
+            }
+        }
+        return false
+    }
+}
+
+// Whether the output holds a line that `novusc check` writes for a rejected program; without one a failure is a crash.
+method syntaxToolHasErrorLine(string output): bool {
+    for (line in output.split("\n")) {
+        if (line.startsWith(SYNTAX_TOOL_ERROR_PREFIX)) {
+            return true
+        }
+    }
+    return false
+}
+
+// Nothing when the output holds no error line or the first one names no line number (`error: <file>: <message>`).
+method syntaxToolParseCompilerError(string output): SyntaxToolCompilerError {
+    for (line in output.split("\n")) {
+        if (line.startsWith(SYNTAX_TOOL_ERROR_PREFIX)) {
+            return syntaxToolParseErrorLine(line.substring(SYNTAX_TOOL_ERROR_PREFIX.length(), line.length()))
+        }
+    }
+    return nothing()
+}
+
+method syntaxToolParseErrorLine(string body): SyntaxToolCompilerError {
+    var start = syntaxToolLineNumberStart(body)
+    if (start < 0) {
+        return nothing()
+    }
+    var digitsEnd = syntaxToolDigitsEnd(body, start)
+    var message = body.substring(digitsEnd + 1, body.length()).trim()
+    return SyntaxToolCompilerError(body.substring(0, start - 1), math.toInt(body.substring(start, digitsEnd)), message)
+}
+
+// The index of the first digit of the first `:<digits>:` in the text, -1 when there is none.
+method syntaxToolLineNumberStart(string body): integer {
+    var colon = body.indexOf(SYNTAX_TOOL_COLON)
+    while (colon >= 0) {
+        var digitsEnd = syntaxToolDigitsEnd(body, colon + 1)
+        if (digitsEnd > colon + 1 && digitsEnd < body.length() && body.charAt(digitsEnd) == SYNTAX_TOOL_COLON) {
+            return colon + 1
+        }
+        colon = body.indexOf(SYNTAX_TOOL_COLON, colon + 1)
+    }
+    return -1
+}
+
+method syntaxToolDigitsEnd(string body, integer start): integer {
+    var end = start
+    while (end < body.length() && syntaxToolIsDigit(body.charAt(end))) {
+        end = end + 1
+    }
+    return end
+}
+
+method syntaxToolIsDigit(string character): bool {
+    return character >= "0" && character <= "9"
+}
+
+method syntaxToolFirstLine(string output): string {
+    var lines = output.split("\n")
+    return lines[0]
+}

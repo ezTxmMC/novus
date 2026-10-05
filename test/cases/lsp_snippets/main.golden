@@ -1,0 +1,215 @@
+#### notation
+lsp   text: "hello"
+lsp   final stop: "a$0b"
+lsp   tabstops: "${1} ${2}"
+lsp   placeholder: "${1:name}"
+lsp   nested: "method ${1:f}(${2:integer value})${3:: ${4:integer}} {"
+lsp   choice comma: "${1|a\\,b,c|}"
+lsp   source literal: "${3|get,get\\, set,set|}"
+lsp   hash and dollar: "# \\${${1}}"
+lsp   mirror: "${1:x} = ${1}"
+lsp   braces in default: "${3:{\"key\": \"value\"\\}}"
+lsp   backslash: "a\\\\b"
+lsp   indent 4: "if (x) {\n    $0\n}"
+lsp   indent tab: "if (x) {\n\t$0\n}"
+lsp   invalid is literal: "#x \\$1"
+plain defaults: "abab"
+plain override: "aXaX"
+plain choice: "get"
+plain choice first comma: "a,b"
+plain choice override: "set"
+plain nested: "m: integer"
+plain nested override: "m: long"
+plain plain stop override: "Point(1)"
+plain mirror before definition: "|late"
+plain end and escapes: "a# ${}"
+plain indent: "{\n    \n}"
+plain invalid is literal: "#{1:oops"
+validate "": valid
+validate "#{1:a} #{2|x,y|} #3 #0 ## #d": valid
+validate "{ } plain braces": valid
+validate "#": unknown escape '#' at offset 0
+validate "#x": unknown escape '#x' at offset 0
+validate "#{": a tabstop needs a number of 1 to 4 digits at offset 2
+validate "#{1": expected ':', '|' or '}' after the tabstop number at offset 3
+validate "#{x}": a tabstop needs a number of 1 to 4 digits at offset 2
+validate "#{1:abc": unterminated placeholder at offset 7
+validate "#{1|a|}": a choice needs at least 2 options at offset 7
+validate "#{1|a\\x,b|}": only '\,' may be escaped in a choice at offset 11
+validate "#{1|a,b": unterminated choice at offset 3
+validate "#{1:#{2:#{3:#{4:x}}}}": placeholders may not be nested deeper than 3 at offset 12
+validate "#{1:#{2:#{3:x}}}": valid
+validate "$1": a literal '$' must be written #d at offset 0
+validate "#{0:x}": tabstop 0 is the final cursor and has no default at offset 3
+validate "#12345": a tabstop needs a number of 1 to 4 digits at offset 6
+#### catalogue
+toplevel 15, types 9, members 6, basics 15
+flow 22, library 22, manifest 6, components 8
+snippets: 103, prefixes: 185
+notation errors: []
+duplicate ids: []
+unknown scopes: []
+unknown verify modes: []
+imports that are no std module: []
+scope toplevel: 27 snippets, 49 prefixes
+scope class: 11 snippets, 20 prefixes
+scope statement: 57 snippets, 104 prefixes
+scope expression: 2 snippets, 3 prefixes
+scope manifest: 6 snippets, 8 prefixes
+scope nvh: 1 snippets, 2 prefixes
+scope nvh_block: 2 snippets, 2 prefixes
+scope nvh_template: 3 snippets, 6 prefixes
+scope nvh_tag: 2 snippets, 3 prefixes
+prefix clashes within a scope: []
+byId psvm: psvm mainargs | toplevel | file
+byId missing is nil: true
+struct scopes: statement expression, verify expression
+assertEqual imports test, overrides count/3
+tryrun fixtures 0, importm fixture module
+empty catalogue: 0
+#### export
+exported entries: 89 (catalogue entries in a scope of the VS Code format: 89)
+ends with a line break: true, starts with: "{\n  \"Program entry point\": {"
+catalogue order kept: true
+manifest and nvh left out: true
+empty catalogue: "{}\n"
+Program entry point receiving the command line arguments: prefix ["psvm","mainargs"], body ["method main(array<string> args) {","\t$0","}"]
+Field with getter and/or setter: prefix ["fieldgs","accessors"], body ["${1:string} ${2:name}: ${3|get,get\\, set,set|}"]
+Print a variable with its name: prefix ["soutv","printv"], body ["println \"${1:value} = \\${${1}}\""]
+HTTP POST of a map or array as JSON: prefix ["httppost","post"], body ["var ${1:body} = http.post(\"${2:https://example.com}\", ${3:{\"key\": \"value\"\\}})"]
+Class with fields and a constructor: prefix ["class","cls"], body ["define class ${1:Name} {","\t${2:string} ${3:field}","","\tconstruct(${2} ${3}) {","\t\tthis.${3} = ${3}","\t}","","\t$0","}"]
+verification projects written: 103 of 103
+index lines: 103, build: 89, check only: 14
+first index lines: main main.nv build / package main.nv build / nvh_html comp.nvh check
+---- construct/p/main.nv
+package main
+
+define class Box {
+    string name
+    construct(string name) {
+        this.name = name
+        
+    }
+}
+
+method main {
+}
+---- classb/p/main.nv
+package main
+
+define class Base {
+}
+
+define class Name based Base {
+    
+}
+
+method main {
+}
+---- elif/p/main.nv
+package main
+
+method work() {
+}
+
+define class Point {
+    integer x
+    integer y
+}
+
+method main(array<string> args) {
+    var items = [1, 2]
+    var names = {"a": 1}
+    var count = 3
+    var text = "t"
+    var done = false
+    var condition = true
+    var value = 1
+    var tasks = []
+    var lock = 0
+    var task = 0
+    var parsed = {}
+    if (condition) {
+    }
+    else if (condition) {
+        
+    }
+}
+---- newcall/p/main.nv
+package main
+
+method work() {
+}
+
+define class Point {
+    integer x
+    integer y
+}
+
+method main(array<string> args) {
+    var items = [1, 2]
+    var names = {"a": 1}
+    var count = 3
+    var text = "t"
+    var done = false
+    var condition = true
+    var value = 1
+    var tasks = []
+    var lock = 0
+    var task = 0
+    var parsed = {}
+    var made = Point(1)
+}
+---- importn/p/main.nv
+package main
+
+import geo/shapes
+
+method main {
+}
+---- importn/p/geo/shapes/shapes.nv
+package shapes
+method shapeName(): string {
+    return "s"
+}
+---- importm/p/project.nv
+project "t"
+require "github.com/user/module"
+replace "github.com/user/module" "../module"
+---- mf_replace/p/project.nv
+project "t"
+require "github.com/user/lib"
+replace "github.com/user/lib" "../lib"
+---- mf_main/p/project.nv
+project "t"
+main "main.nv"
+---- nvh_click/p/comp.nvh
+<?nv
+ref integer count = 0
+ref bool condition = true
+ref array items = []
+ref string text = ""
+
+method bump() {
+    count = count + 1
+}
+?>
+<div>
+    <button @click="bump()">x</button>
+</div>
+---- fixtures: true true
+blocked output directory: 0
+#### regression
+fori scopes: statement,class / forir scopes: statement
+thread imports: thread,zzz / await imports: thread
+forir prefixes: forir,forr, fresh catalogue fori prefixes: fori,forc
+overrides of a sibling: false, fixtures of a sibling: false
+escape 3 bytes: unknown escape '#' before a non-ASCII character at offset 0
+escape 2 bytes: unknown escape '#x' at offset 0
+escape 1 bytes: unknown escape '#' at offset 0
+multibyte after hash is ASCII-only text: true
+emoji lead byte: unknown escape '#' before a non-ASCII character at offset 0
+plain keeps the control byte: true
+lsp form: "${1|a\u0001b,c|}", valid: []
+escaped comma next to the control byte: 4
+index cannot be written: 0 of 103

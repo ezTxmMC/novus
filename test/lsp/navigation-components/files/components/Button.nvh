@@ -1,0 +1,4 @@
+<?nv
+prop string label
+?>
+<button>{label}</button>

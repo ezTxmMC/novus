@@ -1,0 +1,169 @@
+package closure
+
+import base/maybe
+import base/platform
+import base/text
+import projects/manifest
+import projects/modules
+import projects/stdlib
+import syntax/outline
+
+private final CLOSURE_UNRESOLVED_CODE = "unresolved-import"
+private final CLOSURE_MISMATCH_CODE = "package-folder-mismatch"
+private final CLOSURE_FOLDER_MARK = "pkgdir:"
+private final CLOSURE_KEY_SEPARATOR = "|"
+
+// One walk over the imports, breadth first from the entry files. A file is loaded once (first root wins, as for
+// the compiler), a package folder is listed once, and the answer for an import is remembered per root.
+define class ClosureWalk {
+    ProgramClosure closure
+    ImportResolver resolver
+    PackageLoader loader
+    TextSource source
+    ProjectLayout layout
+    array<ClosureFile> pending
+    map<string, bool> visitedFolders
+    map<string, ClosureResolution> answers
+
+    construct(ProjectLayout layout, ModuleTable modules, TextSource source, SourceProvider provider, StdLibrary library) {
+        this.layout = layout
+        this.source = source
+        this.closure = ProgramClosure(layout)
+        this.resolver = ImportResolver(layout, modules, source, library)
+        this.loader = PackageLoader(layout, source, provider, library)
+        this.pending = []
+        this.visitedFolders = {}
+        this.answers = {}
+    }
+
+    method run(array<string> entryFiles): ProgramClosure {
+        for (entry in entryFiles) {
+            this.loadEntry(entry)
+        }
+        var index = 0
+        while (index < this.pending.length()) {
+            this.followImports(this.pending[index])
+            index = index + 1
+        }
+        return this.closure
+    }
+
+    method loadEntry(string entry) {
+        if (entry == "") {
+            return
+        }
+        var scope = ClosureScope(this.layout.root, FileOrigin.Project, "")
+        this.loadInScope(entry, scope)
+    }
+
+    method loadInScope(string filePath, ClosureScope scope) {
+        var key = manifestNormalizePath(filePath)
+        if (this.closure.has(key)) {
+            return
+        }
+        var qualifier = closureQualifierOf(closurePackagePath(scope.root, manifestDirectoryOf(key)))
+        var file = this.loader.loadFile(key, qualifier, scope.origin, scope.root)
+        if (isNone(file)) {
+            return
+        }
+        file.moduleName = scope.moduleName
+        this.closure.add(file)
+        this.pending.append(file)
+        this.checkPackageLine(file)
+    }
+
+    // The loader aborts on a package line that names another package than the folder does; the walk records it.
+    method checkPackageLine(ClosureFile file) {
+        var declared = file.syntax.packageName
+        var folderPackage = closureQualifierOf(file.packageName)
+        if (declared == "" || declared == "main" || folderPackage == "" || declared == folderPackage) {
+            return
+        }
+        var message = "the file declares package " + declared + " but lives in the folder of package " + folderPackage + " - a folder is a package, so write 'package " + folderPackage + "'"
+        this.closure.issues.append(ClosureIssue(file.filePath, file.syntax.packageSpan, CLOSURE_MISMATCH_CODE, message))
+    }
+
+    method followImports(ClosureFile file) {
+        var scope = ClosureScope(file.root, file.origin, file.moduleName)
+        for (declaration in file.syntax.imports) {
+            this.followImport(file, scope, declaration)
+        }
+        if (file.syntax.fileKind == FILE_KIND_NVH) {
+            this.followImplicitImports(file, scope)
+        }
+    }
+
+    method followImport(ClosureFile file, ClosureScope scope, ImportDecl declaration) {
+        var resolution = this.answerFor(scope, declaration)
+        if (resolution.found) {
+            this.load(resolution)
+            return
+        }
+        var span = declaration.targetSpan
+        if (span.start < 0) {
+            span = declaration.span
+        }
+        this.closure.issues.append(ClosureIssue(file.filePath, span, CLOSURE_UNRESOLVED_CODE, resolution.message))
+    }
+
+    method answerFor(ClosureScope scope, ImportDecl declaration): ClosureResolution {
+        var key = scope.root + CLOSURE_KEY_SEPARATOR + declaration.kind + CLOSURE_KEY_SEPARATOR + declaration.target
+        if (this.answers.has(key)) {
+            return this.answers[key]
+        }
+        var resolution = this.resolver.lookup(scope, declaration)
+        this.answers[key] = resolution
+        return resolution
+    }
+
+    method load(ClosureResolution resolution) {
+        if (resolution.isStandard()) {
+            this.loadStandard(resolution.target)
+            return
+        }
+        if (resolution.isFile()) {
+            this.loadInScope(resolution.target, resolution.scope())
+            return
+        }
+        this.loadFolder(resolution.target, resolution.scope())
+    }
+
+    method loadFolder(string folder, ClosureScope scope) {
+        var key = CLOSURE_FOLDER_MARK + folder
+        if (this.visitedFolders.has(key)) {
+            return
+        }
+        this.visitedFolders[key] = true
+        for (filePath in this.loader.sourceFilesOf(folder)) {
+            this.loadInScope(filePath, scope)
+        }
+    }
+
+    method loadStandard(string moduleName) {
+        if (this.closure.has(stdFileKey(moduleName))) {
+            return
+        }
+        var file = this.loader.loadStandard(moduleName)
+        if (isNone(file)) {
+            return
+        }
+        this.closure.add(file)
+        this.pending.append(file)
+        this.closure.loadedStdModules.append(moduleName)
+    }
+
+    // The edges the compiler adds to a component: `import web`, and an import of every component its template uses
+    // that it finds next to it, in components/ or in ../components/. Failures are not reported: the user wrote none.
+    method followImplicitImports(ClosureFile file, ClosureScope scope) {
+        var implicit = [ImportDecl(ImportKind.Package, "web", Span(0, 0), Span(0, 0))]
+        for (relative in closureComponentImports(file, this.source)) {
+            implicit.append(ImportDecl(ImportKind.File, relative, Span(0, 0), Span(0, 0)))
+        }
+        for (declaration in implicit) {
+            var resolution = this.answerFor(scope, declaration)
+            if (resolution.found) {
+                this.load(resolution)
+            }
+        }
+    }
+}

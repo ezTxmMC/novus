@@ -1,0 +1,102 @@
+package semtok
+
+import base/maybe
+import base/model
+import base/text
+import syntax/lexing
+
+private final SEMTOK_OPERATORS = { "+": true, "-": true, "*": true, "/": true, "%": true, "=": true, "==": true, "!=": true,
+    "<=": true, ">=": true, "&&": true, "||": true, "<<": true, "!": true, "&": true, "|": true, "^": true }
+
+private final SEMTOK_MODIFIER_KEYWORDS = { "private": true, "final": true }
+private final SEMTOK_DOC_PREFIXES = ["///", "/**"]
+private final SEMTOK_ANNOTATION_MARK = "@"
+private final SEMTOK_NO_TYPE = -1
+
+// Classifies one token by what the lexer alone knows: keywords, literals, comments, operators. `<` and `>` are not
+// operators here, and neither is `>>`: they are also the brackets of a generic type (`map<string, array<integer>>`),
+// which only the parser could tell apart. A token that the lexical pass leaves alone (a plain identifier, a bracket)
+// gets the empty span.
+define class LexicalTokens {
+    SemtokWords words
+
+    construct() {
+        this.words = SemtokWords()
+    }
+
+    method classify(Token token): SemanticSpan {
+        var type = this.typeFor(token)
+        if (type == SEMTOK_NO_TYPE) {
+            return semtokNoSpan(token.start)
+        }
+        return SemanticSpan(token.span(), type, this.modifiersOf(token))
+    }
+
+    // The same, with the neighbours of the token: contextual words (`define`, `based`, `await`, ...) and annotation
+    // names are plain identifiers for the lexer and are decided by their position.
+    method classifyAt(SemtokStream stream, integer index): SemanticSpan {
+        var token = stream.tokenAt(index)
+        if (isNone(token)) {
+            return semtokNoSpan(0)
+        }
+        if (token.kind == TokenKind.Ident) {
+            return this.words.classify(stream, index)
+        }
+        if (token.isPunct(SEMTOK_ANNOTATION_MARK) && stream.isWord(index - 1, SEMTOK_WORD_IMPORT)) {
+            return semtokNoSpan(token.start)
+        }
+        return this.classify(token)
+    }
+
+    method typeFor(Token token): integer {
+        if (token.kind == TokenKind.Keyword) {
+            return this.keywordType(token.text)
+        }
+        if (token.kind == TokenKind.Integer || token.kind == TokenKind.Float) {
+            return SEMTOK_TYPE_NUMBER
+        }
+        if (token.kind == TokenKind.String) {
+            return SEMTOK_TYPE_STRING
+        }
+        if (token.kind == TokenKind.Comment) {
+            return SEMTOK_TYPE_COMMENT
+        }
+        if (token.kind == TokenKind.Punct) {
+            return this.punctType(token.value)
+        }
+        return SEMTOK_NO_TYPE
+    }
+
+    method keywordType(string word): integer {
+        if (SEMTOK_MODIFIER_KEYWORDS.has(word)) {
+            return SEMTOK_TYPE_MODIFIER
+        }
+        return SEMTOK_TYPE_KEYWORD
+    }
+
+    method punctType(string punct): integer {
+        if (punct == SEMTOK_ANNOTATION_MARK) {
+            return SEMTOK_TYPE_DECORATOR
+        }
+        if (SEMTOK_OPERATORS.has(punct)) {
+            return SEMTOK_TYPE_OPERATOR
+        }
+        return SEMTOK_NO_TYPE
+    }
+
+    method modifiersOf(Token token): integer {
+        if (token.kind == TokenKind.Comment && this.isDocumentation(token.text)) {
+            return SEMTOK_MOD_DOCUMENTATION
+        }
+        return SEMTOK_MOD_NONE
+    }
+
+    method isDocumentation(string text): bool {
+        for (prefix in SEMTOK_DOC_PREFIXES) {
+            if (text.startsWith(prefix)) {
+                return true
+            }
+        }
+        return false
+    }
+}

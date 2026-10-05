@@ -1,0 +1,83 @@
+package main
+
+import "novus/lsp/base/model"
+import "novus/lsp/base/text"
+import "novus/lsp/features/semtok"
+import "novus/lsp/syntax/lexing"
+import @support
+
+// The lexical pass on its own: `LexicalTokens.classify` knows only the token, `classifyAt` also the neighbours.
+method runLexicalCases() {
+    println("== LexicalTokens.classify: what the lexer alone decides")
+    var lexed = lexText("var x = 0x1F + 2.5 // note\n/// doc\n/** block */ \"s\" a<b >= c => d && !e @ ; :")
+    var lexical = LexicalTokens()
+    for (token in lexed.tokens) {
+        if (token.kind != TokenKind.EndOfFile) {
+            stPrintToken(lexical.classify(token), token)
+        }
+    }
+    for (comment in lexed.comments) {
+        stPrintToken(lexical.classify(comment), comment)
+    }
+    stCheck("a plain identifier is left alone", stIsNone(lexical.classify(lexText("name").tokens[0])), "true")
+    stCheck("the end of file is left alone", stIsNone(lexical.classify(lexText("").tokens[0])), "true")
+}
+
+method stIsNone(SemanticSpan span): string {
+    return "" + semtokIsNone(span)
+}
+
+method stPrintToken(SemanticSpan span, Token token) {
+    if (semtokIsNone(span)) {
+        println(token.text + " -> none")
+        return
+    }
+    println(token.text.replace("\n", "\\n") + " -> " + stTypeName(span.tokenType) + stModifierNames(span.modifiers))
+}
+
+// The contextual words of GRAMMAR 1.2: special in one position, a plain name everywhere else.
+method runWordCases() {
+    println("== contextual words: special in their position only")
+    stWords("define class Box based Base { }", ["define", "class", "based"])
+    stWords("define abstract Shape { abstract method area(): float }", ["define", "abstract", "abstract"])
+    stWords("define abstract class Shape { }", ["define", "abstract", "class"])
+    stWords("define enum E { A }  define interface I { }  define annotation N { }", ["define", "enum", "define", "interface", "define", "annotation"])
+    stWords("var define = 1 var class = 2 var based = 3 var construct = 4", ["define", "class", "based", "construct"])
+    stWords("define class A { construct(integer x) { } method construct(integer y) { } }", ["construct", "construct"])
+    stWords("async method run() { } method abstract() { }", ["async", "abstract"])
+    stWords("method f(): T native \"nv_f\" variadic  method g(variadic: integer) { }", ["native", "variadic", "variadic"])
+    stWords("define class A { string x: get, set  integer get: integer }", ["get", "set", "get"])
+    stWords("var get = 1 var set = 2", ["get", "set"])
+    stWords("method m() { sync { x = 1 } sync (lock) { x = 2 } sync(x) y = sync(3) }", ["sync", "sync", "sync", "sync"])
+    stWords("method m() { var a = await t  var b = await + 1  var c = await -1 }", ["await", "await", "await"])
+    stWords("method m() { var a = thread work(1)  var b = thread  var c = virtual obj.run() }", ["thread", "thread", "virtual"])
+    stWords("method m() { a.define a.class a.sync a.await a.this }", ["define", "class", "sync", "await", "this"])
+    stWords("method m() { this.x = this }", ["this", "this"])
+    stWords("import @file import base/maybe @Deprecated @Async{ } method m() { }", ["file", "Deprecated", "Async"])
+}
+
+// Prints `word: classification` for the given occurrences of contextual words, in source order.
+method stWords(string source, array<string> words) {
+    var tokens = lexText(source).tokens
+    var stream = SemtokStream(tokens, 0, tokens.length(), false)
+    var lexical = LexicalTokens()
+    var out = []
+    var wanted = 0
+    var i = 0
+    while (i < tokens.length() && wanted < words.length()) {
+        if (tokens[i].text == words[wanted]) {
+            out.append(words[wanted] + "@" + tokens[i].start + "=" + stClassOf(lexical.classifyAt(stream, i)))
+            wanted = wanted + 1
+        }
+        i = i + 1
+    }
+    println(source)
+    println("    " + out.join("  "))
+}
+
+method stClassOf(SemanticSpan span): string {
+    if (semtokIsNone(span)) {
+        return "name"
+    }
+    return stTypeName(span.tokenType)
+}

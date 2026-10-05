@@ -1,0 +1,57 @@
+package semtok
+
+import base/maybe
+import projects/workspace
+import semantics/semantic
+import syntax/outline
+
+// The scope of the identifier at an offset. The resolver looks the callable up in the file, and scans its body when it
+// has no locals, for every question, which costs the product of identifiers and tokens in a long method. The names
+// that a callable sees change only where a body or the scope of a local begins or ends, so the scope that was built
+// last is reused for every offset up to the next of those places; any other offset asks the resolver again.
+define class SemtokScopes {
+    FileContext context
+    Resolver resolver
+    Scope last
+    integer from
+    integer until
+
+    construct(FileContext context) {
+        this.context = context
+        this.resolver = context.resolver()
+        this.last = nothing()
+        this.from = 0
+        this.until = 0
+    }
+
+    method scopeAt(integer offset): Scope {
+        if (isSome(this.last) && offset >= this.from && offset < this.until) {
+            return this.last
+        }
+        this.last = this.resolver.scopeAt(this.context.closureFile, offset)
+        this.from = offset
+        this.until = this.reusableUntil(this.last.enclosingCallable, offset)
+        return this.last
+    }
+
+    // The first offset after `offset` where the names of the callable differ; `offset` itself when nothing is reusable.
+    method reusableUntil(Decl callable, integer offset): integer {
+        if (isNone(callable)) {
+            return offset
+        }
+        var change = this.firstBoundary(callable.fullSpan.end, callable.bodySpan.start, offset)
+        change = this.firstBoundary(change, callable.bodySpan.end, offset)
+        for (local in callable.locals) {
+            change = this.firstBoundary(change, local.scope.start, offset)
+            change = this.firstBoundary(change, local.scope.end, offset)
+        }
+        return change
+    }
+
+    method firstBoundary(integer current, integer boundary, integer offset): integer {
+        if (boundary > offset && boundary < current) {
+            return boundary
+        }
+        return current
+    }
+}

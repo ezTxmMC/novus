@@ -1,0 +1,187 @@
+package lexing
+
+import base/text
+
+// Byte values and character classes of the Novus lexer (the compiler's chars.nv, on byte codes).
+private final LEXING_LINE_FEED = "\n"
+private final LEXING_QUOTE = "\""
+private final LEXING_BACKSLASH = "\\"
+private final LEXING_NEWLINE_BYTE = 10
+private final LEXING_CARRIAGE_RETURN_BYTE = 13
+private final LEXING_SPACE_BYTE = 32
+private final LEXING_QUOTE_BYTE = 34
+private final LEXING_DOLLAR_BYTE = 36
+private final LEXING_STAR_BYTE = 42
+private final LEXING_DOT_BYTE = 46
+private final LEXING_SLASH_BYTE = 47
+private final LEXING_BACKSLASH_BYTE = 92
+private final LEXING_OPEN_BRACE_BYTE = 123
+private final LEXING_CLOSE_BRACE_BYTE = 125
+private final LEXING_TAB_BYTE = 9
+private final LEXING_DIGIT_ZERO = 48
+private final LEXING_DIGIT_NINE = 57
+private final LEXING_UPPER_A = 65
+private final LEXING_UPPER_F = 70
+private final LEXING_UPPER_Z = 90
+private final LEXING_UNDERSCORE_BYTE = 95
+private final LEXING_LOWER_A = 97
+private final LEXING_LOWER_F = 102
+private final LEXING_LOWER_Z = 122
+private final LEXING_HEX_RADIX = 16
+private final LEXING_HEX_LETTER_BASE = 10
+private final LEXING_HEX_PREFIX_LENGTH = 2
+private final LEXING_ESCAPE_LINE_FEED = 110
+private final LEXING_ESCAPE_TAB = 116
+private final LEXING_ESCAPE_RETURN = 114
+private final LEXING_ESCAPE_NUL = 48
+private final LEXING_NON_ASCII_START = 128
+private final LEXING_PUNCT_CHARS = "{}()[]:;,.+-*/%=<>!@&|^"
+private final LEXING_DOUBLE_OP_STARTS = "=!<>&|"
+private final LEXING_DOUBLE_OPS = { "==": true, "!=": true, "<=": true, ">=": true, "&&": true, "||": true,
+    "=>": true, "=<": true, "<<": true, ">>": true }
+
+method lexingIsDigit(integer code): bool {
+    return code >= LEXING_DIGIT_ZERO && code <= LEXING_DIGIT_NINE
+}
+
+method lexingIsHexDigit(integer code): bool {
+    return lexingIsDigit(code) || (code >= LEXING_LOWER_A && code <= LEXING_LOWER_F) || (code >= LEXING_UPPER_A && code <= LEXING_UPPER_F)
+}
+
+method lexingHexValue(integer code): integer {
+    if (lexingIsDigit(code)) {
+        return code - LEXING_DIGIT_ZERO
+    }
+    if (code >= LEXING_LOWER_A) {
+        return code - LEXING_LOWER_A + LEXING_HEX_LETTER_BASE
+    }
+    return code - LEXING_UPPER_A + LEXING_HEX_LETTER_BASE
+}
+
+method lexingIsWordStart(integer code): bool {
+    return (code >= LEXING_LOWER_A && code <= LEXING_LOWER_Z) || (code >= LEXING_UPPER_A && code <= LEXING_UPPER_Z) || code == LEXING_UNDERSCORE_BYTE
+}
+
+method lexingIsWordPart(integer code): bool {
+    return lexingIsWordStart(code) || lexingIsDigit(code)
+}
+
+// The canonical operator text: the compiler reads `=>` as `>=` and `=<` as `<=`.
+method lexingCanonicalOperator(string operator): string {
+    if (operator == "=>") {
+        return ">="
+    }
+    if (operator == "=<") {
+        return "<="
+    }
+    return operator
+}
+
+private final LEXING_MAX_ISSUES = 1000
+
+// The position, the line bookkeeping and the output lists of one lexing pass.
+define class LexingCursor {
+    string text
+    LexingSearch search
+    integer limit
+    integer pos
+    integer line
+    integer lineStart
+    integer lastItemLine
+    array<Token> tokens
+    array<Token> comments
+    array<LexIssue> issues
+
+    construct(string text, integer start, integer limit) {
+        this.text = text
+        this.search = LexingSearch(text)
+        this.limit = limit
+        this.pos = start
+        this.line = 0
+        this.lineStart = 0
+        this.lastItemLine = -1
+        this.tokens = []
+        this.comments = []
+        this.issues = []
+        this.countLines(0, start)
+        this.markEarlierTextOnLine(start)
+    }
+
+    // A range that starts in the middle of a line: tokens after the visible text in front of it are not first on the line.
+    method markEarlierTextOnLine(integer start) {
+        var offset = this.lineStart
+        while (offset < start) {
+            if (this.byteAt(offset) > LEXING_SPACE_BYTE) {
+                this.lastItemLine = this.line
+                return
+            }
+            offset = offset + 1
+        }
+    }
+
+    method byteAt(integer offset): integer {
+        return ord(this.text.charAt(offset))
+    }
+
+    // `firstOnLine` is true for the first token or comment on its line.
+    method addToken(TokenKind kind, integer start, integer end): Token {
+        var token = this.makeItem(kind, start, end)
+        this.tokens.append(token)
+        this.finishItem(end)
+        return token
+    }
+
+    method addComment(integer start, integer end) {
+        this.comments.append(this.makeItem(TokenKind.Comment, start, end))
+        this.finishItem(end)
+    }
+
+    method makeItem(TokenKind kind, integer start, integer end): Token {
+        var item = Token(kind, this.text.substring(start, end), start, end, this.line, start - this.lineStart)
+        item.firstOnLine = this.lastItemLine < this.line
+        return item
+    }
+
+    method finishItem(integer end) {
+        this.lastItemLine = this.line
+        this.pos = end
+    }
+
+    // Adopts a token built elsewhere (the string scanner knows no line numbers).
+    method adoptToken(Token token) {
+        token.line = this.line
+        token.column = token.start - this.lineStart
+        token.firstOnLine = this.lastItemLine < this.line
+        this.tokens.append(token)
+        this.pos = token.end
+        this.countLines(token.start, token.end)
+        this.lastItemLine = this.line
+    }
+
+    method addIssue(LexIssue issue) {
+        if (this.issues.length() < LEXING_MAX_ISSUES) {
+            this.issues.append(issue)
+        }
+    }
+
+    // Moves `line` and `lineStart` over the line feeds in [from, to).
+    method countLines(integer from, integer to) {
+        var at = this.search.find(LEXING_LINE_FEED, from)
+        while (at >= 0 && at < to) {
+            this.line = this.line + 1
+            this.lineStart = at + 1
+            at = this.search.find(LEXING_LINE_FEED, at + 1)
+        }
+    }
+
+    method addEndOfFile() {
+        var end = Token(TokenKind.EndOfFile, "", this.limit, this.limit, this.line, this.limit - this.lineStart)
+        end.firstOnLine = this.lastItemLine < this.line
+        end.value = ""
+        this.tokens.append(end)
+    }
+
+    method result(): LexResult {
+        return LexResult(this.tokens, this.comments, this.issues)
+    }
+}

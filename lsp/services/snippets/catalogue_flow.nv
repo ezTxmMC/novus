@@ -1,0 +1,72 @@
+package snippets
+
+// Statement snippets: loops, conditionals, concurrency (DESIGN Appendix A).
+
+method flowSnippets(): array<Snippet> {
+    return snippetsConcat([snippetsLoopSnippets(), snippetsBranchSnippets(), snippetsConcurrencySnippets()])
+}
+
+method snippetsLoopSnippets(): array<Snippet> {
+    var statement = [SNIPPETS_SCOPE_STATEMENT]
+    var countedNote = "Counted loop (a while loop: Novus has no C-style for). " +
+        "Do not use continue inside it (the increment would be skipped); use forrange"
+    return [
+        Snippet("fori", ["fori", "forc"], countedNote, statement,
+            "var #{1:i} = 0\nwhile (#1 < #{2:count}) {\n\t#0\n\t#1 = #1 + 1\n}"),
+        Snippet("forir", ["forir", "forr"], "Counting down", statement,
+            "var #{1:i} = #{2:count} - 1\nwhile (#1 >= 0) {\n\t#0\n\t#1 = #1 - 1\n}"),
+        Snippet("forrange", ["forrange", "fora"], "For-in over arrays.range (continue-safe counting loop)", statement,
+            "for (#{1:i} in arrays.range(0, #{2:count})) {\n\t#0\n}").withImports(["arrays"]),
+        Snippet("foreach", ["foreach", "iter", "for", "itar"], "For-in over an array", statement,
+            "for (#{1:item} in #{2:items}) {\n\t#0\n}"),
+        Snippet("itmap", ["itmap", "formap"], "Iterate the keys of a map (sorted) and read the value", statement,
+            "for (#{1:key} in #{2:names}) {\n\tvar #{3:value} = #2[#1]\n\t#0\n}"),
+        Snippet("itstr", ["itstr", "forchar"], "Iterate the characters (bytes) of a string", statement,
+            "for (#{1:ch} in #{2:text}) {\n\t#0\n}")
+    ]
+}
+
+method snippetsBranchSnippets(): array<Snippet> {
+    var statement = [SNIPPETS_SCOPE_STATEMENT]
+    return [
+        Snippet("if", ["if"], "If", statement,
+            "if (#{1:condition}) {\n\t#0\n}"),
+        Snippet("ifelse", ["ifelse", "ife"], "If / else", statement,
+            "if (#{1:condition}) {\n\t#2\n} else {\n\t#0\n}"),
+        Snippet("elif", ["elif", "elseif"], "Else-if branch (after an if block)", statement,
+            "else if (#{1:condition}) {\n\t#0\n}").withVerify(SNIPPETS_VERIFY_AFTER_IF),
+        Snippet("else", ["else"], "Else branch (after an if block)", statement,
+            "else {\n\t#0\n}").withVerify(SNIPPETS_VERIFY_AFTER_IF),
+        Snippet("guard", ["guard", "ifret"], "Guard clause: leave early", statement,
+            "if (#{1:!condition}) {\n\treturn #{2}\n}\n#0"),
+        Snippet("ifnot", ["ifnot", "ifn"], "If not", statement,
+            "if (!#{1:condition}) {\n\t#0\n}"),
+        Snippet("ifhas", ["ifhas"], "If a map has the key", statement,
+            "if (#{1:names}.has(\"#{2:key}\")) {\n\t#0\n}"),
+        Snippet("while", ["while"], "While loop", statement,
+            "while (#{1:condition}) {\n\t#0\n}"),
+        Snippet("wh1", ["wh1", "loop"], "Endless loop with a way out", statement,
+            "while (true) {\n\t#0\n\tif (#{1:done}) {\n\t\tbreak\n\t}\n}")
+    ]
+}
+
+method snippetsConcurrencySnippets(): array<Snippet> {
+    var statement = [SNIPPETS_SCOPE_STATEMENT]
+    var threads = ["thread"]
+    return [
+        Snippet("thread", ["thread", "osthread"], "Run a method call on an operating-system thread", statement,
+            "var #{1:task} = thread #{2:work}(#{3})").withImports(threads),
+        Snippet("virtual", ["virtual", "vthread"], "Run a method call on a virtual thread", statement,
+            "var #{1:task} = virtual #{2:work}(#{3})").withImports(threads),
+        Snippet("await", ["await"], "Wait for a task and take its value", statement,
+            "var #{1:result} = await #{2:task}").withImports(threads),
+        Snippet("joinall", ["joinall"], "Wait for all tasks", statement,
+            "var #{1:results} = thread.joinAll(#{2:tasks})").withImports(threads),
+        Snippet("sync", ["sync"], "Block guarded by the program-wide lock", statement,
+            "sync {\n\t#0\n}").withImports(threads),
+        Snippet("syncl", ["syncl", "synchronized"], "Block guarded by a mutex", statement,
+            "sync (#{1:lock}) {\n\t#0\n}").withImports(threads),
+        Snippet("chan", ["chan", "channel"], "Create a channel", statement,
+            "var #{1:channel} = thread.channel(#{2:16})").withImports(threads)
+    ]
+}

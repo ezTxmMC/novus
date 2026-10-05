@@ -280,11 +280,12 @@ method nvhHasExpr(array<object> parts): bool {
     return false
 }
 
+private final VOID_TAGS = {"area": true, "base": true, "br": true, "col": true, "embed": true, "hr": true,
+    "img": true, "input": true, "link": true, "meta": true, "param": true, "source": true,
+    "track": true, "wbr": true}
+
 method nvhIsVoid(string tag): bool {
-    var voids = {"area": true, "base": true, "br": true, "col": true, "embed": true, "hr": true,
-        "img": true, "input": true, "link": true, "meta": true, "param": true, "source": true,
-        "track": true, "wbr": true}
-    return voids.has(tag.toLower())
+    return VOID_TAGS.has(tag.toLower())
 }
 
 method nvhIsComponent(string tag): bool {
@@ -1140,12 +1141,13 @@ method nvhEmitFor(map<string, object> st, map<string, object> tok, string buf) {
     }
 }
 
+private final BLOCK_KINDS = {"if": true, "elif": true, "else": true, "endif": true, "for": true, "endfor": true, "code": true}
+
 method nvhIsBlock(array<object> nodes, integer i): bool {
     if (i < 0 || i >= nodes.length()) {
         return false
     }
-    var blocks = {"if": true, "elif": true, "else": true, "endif": true, "for": true, "endfor": true, "code": true}
-    return blocks.has(nodes[i]["k"])
+    return BLOCK_KINDS.has(nodes[i]["k"])
 }
 
 method nvhEmitNodes(map<string, object> st, array<object> nodes, string buf) {

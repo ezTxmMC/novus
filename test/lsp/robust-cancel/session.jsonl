@@ -1,0 +1,11 @@
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"rootUri":"@ROOTURI@","capabilities":{}}}
+{"jsonrpc":"2.0","id":2,"method":"novus/test/sleep","params":{"millis":1000}}
+{"jsonrpc":"2.0","id":3,"method":"novus/test/crash"}
+{"jsonrpc":"2.0","id":"3","method":"nope/string-three"}
+{"jsonrpc":"2.0","id":4,"method":"nope/four"}
+{"jsonrpc":"2.0","method":"$/cancelRequest","params":{"id":3}}
+{"jsonrpc":"2.0","method":"$/cancelRequest","params":{"id":99}}
+{"jsonrpc":"2.0","method":"$/cancelRequest","params":{}}
+{"jsonrpc":"2.0","method":"$/cancelRequest"}
+{"jsonrpc":"2.0","id":5,"method":"shutdown"}
+{"jsonrpc":"2.0","method":"exit"}

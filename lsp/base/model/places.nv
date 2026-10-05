@@ -1,0 +1,34 @@
+package model
+
+import base/text
+
+// Locations, highlights and links.
+define class Location {
+    string filePath
+    Span span
+
+    construct(string filePath, Span span) {
+        this.filePath = filePath
+        this.span = span
+    }
+}
+
+define class HighlightEntry {
+    Span span
+    integer kind
+
+    construct(Span span, integer kind) {
+        this.span = span
+        this.kind = kind
+    }
+}
+
+define class DocumentLink {
+    Span span
+    string targetPath
+
+    construct(Span span, string targetPath) {
+        this.span = span
+        this.targetPath = targetPath
+    }
+}

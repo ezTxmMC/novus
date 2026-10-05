@@ -1,0 +1,164 @@
+package markup
+
+import base/maybe
+import base/text
+import syntax/outline
+
+private final MARKUP_FIELD_MODIFIER = "private"
+private final MARKUP_DEFAULT_TYPE = "object"
+private final MARKUP_FIELD_MESSAGE = "expected 'prop [type] name [= value]'"
+private final MARKUP_IMPORT_LENGTH = 6
+private final MARKUP_NOT_ASSIGNMENT_BEFORE = ["=", "!", "<", ">"]
+private final MARKUP_PATH_STOPPERS = [";", "\""]
+
+// Reads the two statement kinds of a header that become declarations of the synthetic class or imports of the
+// file: `import ...` and `prop|ref|var [type] name [= initial]`. Problems go to `issues`; a statement that cannot
+// be read gives nothing.
+define class MarkupStatementReader {
+    string text
+    string className
+    array<SyntaxIssue> issues
+
+    construct(string text, string className, array<SyntaxIssue> issues) {
+        this.text = text
+        this.className = className
+        this.issues = issues
+    }
+
+    method readField(string word, integer start, integer end): Decl {
+        var wordEnd = start + word.length()
+        var assign = markupAssignmentAt(this.text, wordEnd, end)
+        var leftEnd = end
+        if (assign >= 0) {
+            leftEnd = assign
+        }
+        leftEnd = markupTrimEnd(this.text, wordEnd, leftEnd)
+        var nameStart = this.nameStartBefore(wordEnd, leftEnd)
+        var name = this.text.substring(nameStart, leftEnd)
+        if (markupIsIdentifier(name) == false) {
+            this.issues.append(SyntaxIssue(Span(start, end), "expected-token", MARKUP_FIELD_MESSAGE, false))
+            return nothing()
+        }
+        return this.makeField(word, name, nameStart, leftEnd, start, end)
+    }
+
+    method nameStartBefore(integer lowest, integer nameEnd): integer {
+        var index = nameEnd
+        while (index > lowest && markupIsSpace(this.text.charAt(index - 1)) == false) {
+            index = index - 1
+        }
+        return index
+    }
+
+    method makeField(string word, string name, integer nameStart, integer nameEnd, integer start, integer end): Decl {
+        var field = Decl(DeclKind.Field, name, Span(nameStart, nameEnd), Span(start, end))
+        var typeText = markupCompactType(this.text.substring(start + word.length(), nameStart))
+        field.typeText = typeText
+        if (typeText == "") {
+            field.typeText = MARKUP_DEFAULT_TYPE
+        }
+        field.modifiers = [MARKUP_FIELD_MODIFIER, word]
+        field.container = this.className
+        return field
+    }
+
+    // `import a/b`, `import @a/b` or `import "module/pkg"`; the spans follow the Wave-1 parser (`span` ends behind the
+    // closing quote of a module import, `targetSpan` covers the text only).
+    method readImport(integer start, integer end): ImportDecl {
+        var index = this.skipBlanks(start + MARKUP_IMPORT_LENGTH, end)
+        var kind = ImportKind.Package
+        if (index < end && this.text.charAt(index) == "@") {
+            kind = ImportKind.File
+            index = index + 1
+        }
+        if (index < end && this.text.charAt(index) == "\"") {
+            return this.readModuleImport(start, index + 1, end)
+        }
+        var targetEnd = this.pathEnd(index, end)
+        if (targetEnd == index) {
+            this.issues.append(SyntaxIssue(Span(start, end), "expected-token", "expected a package name after 'import'", false))
+            return nothing()
+        }
+        return ImportDecl(kind, this.text.substring(index, targetEnd), Span(start, targetEnd), Span(index, targetEnd))
+    }
+
+    method readModuleImport(integer start, integer targetStart, integer end): ImportDecl {
+        var targetEnd = targetStart
+        while (targetEnd < end && this.text.charAt(targetEnd) != "\"") {
+            targetEnd = targetEnd + 1
+        }
+        var statementEnd = targetEnd
+        if (targetEnd < end) {
+            statementEnd = targetEnd + 1
+        }
+        return ImportDecl(ImportKind.Module, this.text.substring(targetStart, targetEnd), Span(start, statementEnd), Span(targetStart, targetEnd))
+    }
+
+    method skipBlanks(integer from, integer end): integer {
+        var index = from
+        while (index < end && markupIsSpace(this.text.charAt(index))) {
+            index = index + 1
+        }
+        return index
+    }
+
+    // A path stops at a blank, a `;`, a quote or the start of a `//` comment.
+    method pathEnd(integer from, integer end): integer {
+        var index = from
+        while (index < end && this.continuesPath(index, end)) {
+            index = index + 1
+        }
+        return index
+    }
+
+    method continuesPath(integer index, integer end): bool {
+        var current = this.text.charAt(index)
+        if (markupIsSpace(current) || MARKUP_PATH_STOPPERS.contains(current)) {
+            return false
+        }
+        return markupStartsAt(this.text, index, "//") == false
+    }
+}
+
+// The `=` that starts the initial value: outside brackets and strings, and not part of `==`, `!=`, `<=` or `>=`.
+method markupAssignmentAt(string text, integer from, integer limit): integer {
+    var depth = 0
+    var index = from
+    while (index < limit) {
+        var current = text.charAt(index)
+        if (current == "\"") {
+            index = markupSkipString(text, index, limit)
+            continue
+        }
+        depth = depth + markupBracketChange(current)
+        if (current == "=" && depth == 0 && markupIsPlainEquals(text, index, from, limit)) {
+            return index
+        }
+        index = index + 1
+    }
+    return 0 - 1
+}
+
+method markupIsPlainEquals(string text, integer index, integer from, integer limit): bool {
+    if (index + 1 < limit && text.charAt(index + 1) == "=") {
+        return false
+    }
+    if (index == from) {
+        return true
+    }
+    return MARKUP_NOT_ASSIGNMENT_BEFORE.contains(text.charAt(index - 1)) == false
+}
+
+// Types are written without blanks, as the parser records them: `map<string,integer>`.
+method markupCompactType(string typeText): string {
+    var kept = []
+    var index = 0
+    while (index < typeText.length()) {
+        var current = typeText.charAt(index)
+        if (markupIsSpace(current) == false) {
+            kept.append(current)
+        }
+        index = index + 1
+    }
+    return kept.join("")
+}

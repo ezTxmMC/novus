@@ -1,0 +1,112 @@
+package closure
+
+import base/maybe
+import base/text
+import projects/manifest
+import syntax/outline
+
+// Project: a file of the project's own tree. Dependency: a file below a module directory of `project.nv`.
+// Standard: a std module of the compiler (its `filePath` is the logical key `std:<module>`).
+define enum FileOrigin {
+    Project, Dependency, Standard
+}
+
+// One file of the program with the loader's package semantics. `qualifier` is the last folder segment of its
+// package ("" for the root and for `package main`; the module name for a std module), `packageName` the folder
+// path of the package below `root` ("geo/shapes"), `moduleName` the dependency module key or the std module name.
+define class ClosureFile {
+    string filePath
+    FileOrigin origin
+    string root
+    string qualifier
+    string packageName
+    string moduleName
+    SourceFile syntax
+
+    construct(string filePath, FileOrigin origin, string root, string qualifier, SourceFile syntax) {
+        this.filePath = filePath
+        this.origin = origin
+        this.root = root
+        this.qualifier = qualifier
+        this.packageName = ""
+        this.moduleName = ""
+        this.syntax = syntax
+    }
+
+    method isRootLevel(): bool {
+        return this.qualifier == ""
+    }
+}
+
+// A problem in the way the files import each other: `unresolved-import` or `package-folder-mismatch`.
+define class ClosureIssue {
+    string filePath
+    Span span
+    string code
+    string message
+
+    construct(string filePath, Span span, string code, string message) {
+        this.filePath = filePath
+        this.span = span
+        this.code = code
+        this.message = message
+    }
+}
+
+// Every file novusc would load for the program, in the order the walk met them (entry files first).
+define class ProgramClosure {
+    ProjectLayout layout
+    array<ClosureFile> files
+    map<string, ClosureFile> byPath
+    array<ClosureIssue> issues
+    array<string> loadedStdModules
+
+    construct(ProjectLayout layout) {
+        this.layout = layout
+        this.files = []
+        this.byPath = {}
+        this.issues = []
+        this.loadedStdModules = []
+    }
+
+    method add(ClosureFile file) {
+        this.files.append(file)
+        this.byPath[file.filePath] = file
+    }
+
+    // nil when the program does not contain the file.
+    method fileAt(string filePath): ClosureFile {
+        if (this.byPath.has(filePath)) {
+            return this.byPath[filePath]
+        }
+        return nothing()
+    }
+
+    method has(string filePath): bool {
+        return this.byPath.has(filePath)
+    }
+
+    method filesOfQualifier(string qualifier): array<ClosureFile> {
+        var found = []
+        for (file in this.files) {
+            if (file.qualifier == qualifier) {
+                found.append(file)
+            }
+        }
+        return found
+    }
+}
+
+private final STD_KEY_PREFIX = "std:"
+
+method stdFileKey(string moduleName): string {
+    return STD_KEY_PREFIX + moduleName
+}
+
+// The module a logical key names, "" for every path that is no std key.
+method stdModuleOfKey(string filePath): string {
+    if (filePath.startsWith(STD_KEY_PREFIX) == false) {
+        return ""
+    }
+    return filePath.substring(STD_KEY_PREFIX.length(), filePath.length())
+}

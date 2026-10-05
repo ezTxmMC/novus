@@ -1,0 +1,57 @@
+package main
+
+import "novus/lsp/base/platform"
+import os
+
+method showFile(string label, object value) {
+    println("files " + label + ": " + value)
+}
+
+method isWindows(): bool {
+    return operatingSystem() == "windows"
+}
+
+method runWriteCases(string root) {
+    showFile("write into a missing directory fails quietly", writeTextFile(root + "/missing/dir/a.txt", "x"))
+    showFile("makeDirectories creates the parents", makeDirectories(root + "/made/a/b"))
+    showFile("makeDirectories on an existing directory", makeDirectories(root + "/made/a/b"))
+    showFile("write", writeTextFile(root + "/made/a/b/f.txt", "text"))
+    showFile("read back", readTextFile(root + "/made/a/b/f.txt"))
+    var binary = "a" + chr(0) + "b"
+    writeTextFile(root + "/binary.bin", binary)
+    showFile("binary content keeps its length", readTextFile(root + "/binary.bin").length())
+    showFile("read a missing file is empty", readTextFile(root + "/none.txt") == "")
+    showFile("read a directory is empty", readTextFile(root + "/made") == "")
+    showFile("write onto a directory fails quietly", writeTextFile(root + "/made", "x"))
+    showFile("listDirectoryEntries", listDirectoryEntries(root + "/made/a"))
+    showFile("listDirectoryEntries of a file", listDirectoryEntries(root + "/binary.bin"))
+    showFile("listDirectoryEntries of a missing path", listDirectoryEntries(root + "/none"))
+}
+
+method runLinkCases(string root) {
+    if (isWindows()) {
+        println("files links: skipped on windows")
+        return
+    }
+    var outside = createTempDirectory("lsp-platform-outside-")
+    writeTextFile(outside + "/precious.txt", "keep")
+    runCommand("ln -s " + shellQuote(outside) + " " + shellQuote(root + "/linked"), 5)
+    runCommand("ln -s " + shellQuote(root + "/nowhere") + " " + shellQuote(root + "/dangling"), 5)
+    showFile("realPath of a link is its target", realPath(root + "/linked") == realPath(outside))
+    showFile("realPath of a dangling link is empty", realPath(root + "/dangling") == "")
+    showFile("realPath of a missing path is empty", realPath(root + "/none") == "")
+    showFile("removeTree of the tree", removeTree(root))
+    showFile("the tree is gone", os.exists(root))
+    showFile("a linked directory was not followed", readTextFile(outside + "/precious.txt"))
+    removeTree(outside)
+}
+
+method runFileCases() {
+    println("--- files")
+    var root = createTempDirectory("lsp-platform-")
+    runWriteCases(root)
+    runLinkCases(root)
+    showFile("removeTree of a missing path", removeTree(root + "/gone-already"))
+    removeTree(root)
+    showFile("removeTree leaves nothing", os.exists(root))
+}

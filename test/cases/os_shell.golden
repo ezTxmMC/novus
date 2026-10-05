@@ -1,0 +1,31 @@
+unix plain: 'plain'
+unix empty: ''
+unix space: 'with space'
+unix apostrophe: 'it'\''s'
+unix two apostrophes: ''\''a'\'''
+unix metacharacters: '$HOME `date` ; & | < > * ? ( ) !'
+unix double quote and backslash: 'say "hi"\'
+linux same as unix: 'it'\''s'
+macos same as unix: 'it'\''s'
+windows plain: "plain"
+windows empty: ""
+windows space: "with space"
+windows path: "C:\Program Files\app.exe"
+windows trailing backslash: "C:\dir\\"
+windows unc path: "\\server\share\\"
+windows cmd metacharacters: "a&b|c<d>e^f(g)"
+windows apostrophe: "it's"
+windows percent: "50"^%""
+windows variable: ""^%"PATH"^%""
+windows bang: "hi"^!""
+windows quote: "a"\^""b"
+windows backslash then quote: "a\\"\^""b"
+windows two backslashes then quote: "a\\\\"\^"""
+windows injection attempt: "x"\^"" & calc & "\^"""
+windows line break: true os.shellQuote: a line break cannot be quoted for cmd.exe
+windows carriage return: true
+unix line break: false
+unknown platform: true os.shellQuoteFor: unknown platform 'plan9'
+shellQuote is the quoting of this platform: true
+round trip through the shell: true
+round trip, empty: true

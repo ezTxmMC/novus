@@ -1,0 +1,196 @@
+package semantic
+
+import base/maybe
+import semantics/builtins
+import syntax/outline
+import syntax/scanning
+
+private final SEMANTIC_ANY_ARITY = -1
+private final SEMANTIC_BASE_CHAIN_LIMIT = 64
+
+// Members of a type (with its bases and interfaces) and of a qualifier, split from the resolver.
+define class MemberLookup {
+    ProgramIndex index
+
+    construct(ProgramIndex index) {
+        this.index = index
+    }
+
+    // The fields and methods a value of the type offers: its own first, then those of its bases that it does not
+    // override (a field by name, a method by name and arity). Constructors and enum constants are no instance members.
+    // A type that is not declared in the program, or not known, has none (the built-in receivers are `builtins`).
+    method membersOf(TypeRef type): array<Symbol> {
+        if (type.known == false) {
+            return []
+        }
+        return this.membersOfName(type.name)
+    }
+
+    method membersOfName(string typeName): array<Symbol> {
+        var found = []
+        var seen = {}
+        var current = this.index.typeNamed(typeName)
+        var steps = 0
+        while (isSome(current) && steps < SEMANTIC_BASE_CHAIN_LIMIT) {
+            this.collect(current.name(), seen, found)
+            current = this.index.typeNamed(current.decl.baseName)
+            steps = steps + 1
+        }
+        return found
+    }
+
+    method collect(string typeName, map<string, bool> seen, array<Symbol> found) {
+        for (member in this.index.membersOfType(typeName)) {
+            var slot = this.slotOf(member)
+            if (slot != "" && seen.has(slot) == false) {
+                seen[slot] = true
+                found.append(member)
+            }
+        }
+    }
+
+    // The identity of an instance member for the override rule; "" for a member that is never an instance member.
+    method slotOf(Symbol member): string {
+        var kind = member.decl.kind
+        if (kind == DeclKind.Field) {
+            return "f:" + member.decl.name
+        }
+        if (kind == DeclKind.Method || kind == DeclKind.AbstractMethod) {
+            return "m:" + member.decl.name + "/" + member.decl.arity()
+        }
+        return ""
+    }
+
+    // The functions and globals of a qualifier (a std module, a package folder, or `""` for the root level).
+    method qualifierMembers(string qualifier): array<Symbol> {
+        return this.index.membersOfQualifier(qualifier)
+    }
+
+    // Additive: the constants of an enum, in declaration order.
+    method constantsOf(string typeName): array<Symbol> {
+        var found = []
+        for (member in this.index.membersOfType(typeName)) {
+            if (member.decl.kind == DeclKind.EnumConstant) {
+                found.append(member)
+            }
+        }
+        return found
+    }
+
+    // Additive: the members of a value type with that name. An arity of -1 accepts any; for a callable an exact arity
+    // is preferred and the other overloads are the fallback. The fields come with their own name (`obj.name` and the
+    // getter call `obj.name()` both read it).
+    method findMember(TypeRef type, string name, integer arity): array<Symbol> {
+        var named = []
+        for (member in this.membersOf(type)) {
+            if (member.decl.name == name) {
+                named.append(member)
+            }
+        }
+        return this.preferArity(named, arity)
+    }
+
+    method preferArity(array<Symbol> named, integer arity): array<Symbol> {
+        if (arity == SEMANTIC_ANY_ARITY || named.length() < 2) {
+            return named
+        }
+        var exact = []
+        for (member in named) {
+            if (member.decl.isCallable() && member.decl.arity() == arity) {
+                exact.append(member)
+            }
+        }
+        if (exact.length() > 0) {
+            return exact
+        }
+        return named
+    }
+}
+
+// Types the step that follows a receiver: a member, a call or an index of a value, a function or global of a module
+// or package qualifier, a constant or `values()` of an enum.
+define class SemanticMemberTyper {
+    Resolver resolver
+
+    construct(Resolver resolver) {
+        this.resolver = resolver
+    }
+
+    method valueMember(TypeRef type, ChainStep step): SemanticReceiver {
+        if (step.kind == SEMANTIC_STEP_INDEX) {
+            return semanticValueReceiver(this.elementOf(type))
+        }
+        if (step.kind != SEMANTIC_STEP_NAME && step.kind != SEMANTIC_STEP_CALL) {
+            return semanticNoReceiver()
+        }
+        var arity = SEMANTIC_ANY_ARITY
+        if (step.kind == SEMANTIC_STEP_CALL) {
+            arity = step.argCount
+        }
+        var members = this.resolver.lookup.findMember(type, step.text, arity)
+        if (members.length() > 0) {
+            return semanticValueReceiver(typeFromText(members[0].decl.typeText))
+        }
+        return semanticValueReceiver(this.builtinMemberType(type, step.text))
+    }
+
+    method elementOf(TypeRef type): TypeRef {
+        if (type.isArray() || type.isMap()) {
+            return typeFromText(type.element)
+        }
+        if (type.isString()) {
+            return type
+        }
+        return unknownType()
+    }
+
+    // The member of `string`, `array`, `map` or `any`; `object` results are the element type of the collection.
+    method builtinMemberType(TypeRef type, string name): TypeRef {
+        for (member in builtinMembersOf(type.name)) {
+            if (member.name == name) {
+                return this.builtinResult(type, member.returnType)
+            }
+        }
+        return unknownType()
+    }
+
+    method builtinResult(TypeRef type, string returnType): TypeRef {
+        if (returnType == SEMANTIC_TYPE_OBJECT && (type.isArray() || type.isMap())) {
+            return typeFromText(type.element)
+        }
+        if (returnType == SEMANTIC_TYPE_ARRAY && type.isMap()) {
+            return TypeRef(SEMANTIC_TYPE_ARRAY, type.element, true)
+        }
+        return typeFromText(returnType)
+    }
+
+    method moduleMember(string qualifier, ChainStep step): SemanticReceiver {
+        if (step.kind != SEMANTIC_STEP_NAME && step.kind != SEMANTIC_STEP_CALL) {
+            return semanticNoReceiver()
+        }
+        var arity = SEMANTIC_ANY_ARITY
+        if (step.kind == SEMANTIC_STEP_CALL) {
+            arity = step.argCount
+        }
+        var resolution = this.resolver.lookupQualified(qualifier, step.text, arity)
+        if (resolution.status == "unknown") {
+            return semanticNoReceiver()
+        }
+        return semanticValueReceiver(typeFromText(resolution.candidates[0].decl.typeText))
+    }
+
+    method enumMember(string typeName, ChainStep step): SemanticReceiver {
+        if (step.kind == SEMANTIC_STEP_CALL && step.text == SEMANTIC_ENUM_VALUES) {
+            return semanticValueReceiver(TypeRef(SEMANTIC_TYPE_ARRAY, typeName, true))
+        }
+        if (step.kind != SEMANTIC_STEP_NAME) {
+            return semanticNoReceiver()
+        }
+        for (constant in this.resolver.constantsOf(typeName)) {
+            if (constant.decl.name == step.text) {
+                return semanticValueReceiver(semanticNamedType(typeName))
+            }
+        }
+        return semanticNoReceiver()
+    }
+}

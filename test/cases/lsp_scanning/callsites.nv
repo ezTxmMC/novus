@@ -1,0 +1,69 @@
+package main
+
+import "novus/lsp/base/maybe"
+import "novus/lsp/base/text"
+import "novus/lsp/syntax/lexing"
+import "novus/lsp/syntax/scanning"
+
+// `|` in the template marks the cursor; the call site is looked up at that offset.
+method siteAt(string template): string {
+    var offset = template.indexOf("|", 0)
+    var source = template.replace("|", "")
+    var site = callSiteAt(lexText(source).tokens, offset)
+    if (isNone(site)) {
+        return "none"
+    }
+    var callee = renderSteps(source, site.callee)
+    return callee + " open=" + site.openParen + " active=" + site.activeArgument + " args=<" + source.substring(site.argumentsSpan.start, site.argumentsSpan.end) + ">"
+}
+
+method checkCallSites() {
+    expectEqual("site/second-argument", "call:foo/3<foo(a, b, c)> open=1 active=1 args=<a, b, c>", siteAt("foo(a, b|, c)"))
+    expectEqual("site/first-argument", "call:foo/2<foo(a, b)> open=1 active=0 args=<a, b>", siteAt("foo(a|, b)"))
+    expectEqual("site/right-after-the-open-paren", "call:foo/2<foo(a, b)> open=1 active=0 args=<a, b>", siteAt("foo(|a, b)"))
+    expectEqual("site/empty-argument-list", "call:foo/0<foo()> open=1 active=0 args=<>", siteAt("foo(|)"))
+    expectEqual("site/unclosed-at-the-end", "call:foo/0<foo(> open=1 active=0 args=<>", siteAt("foo(|"))
+    expectEqual("site/unclosed-after-a-comma", "call:foo/2<foo(a, > open=1 active=1 args=<a, >", siteAt("foo(a, |"))
+    expectEqual("site/member-call", "name:a/0<a> call:b/2<b(x, y)> open=3 active=1 args=<x, y>", siteAt("a.b(x, |y)"))
+    expectEqual("site/after-a-chain", "name:a/0<a> call:b/1<b(x)> name:c/0<c> call:d/2<d(1, 2)> open=10 active=1 args=<1, 2>", siteAt("a.b(x).c.d(1, |2)"))
+}
+
+method checkNesting() {
+    expectEqual("site/inner-call", "call:g/2<g(1, 2)> open=3 active=1 args=<1, 2>", siteAt("f(g(1, |2), 3)"))
+    expectEqual("site/outer-call-after-the-inner-one", "call:f/2<f(g(1, 2), > open=1 active=1 args=<g(1, 2), >", siteAt("f(g(1, 2), |"))
+    expectEqual("site/commas-in-an-array-literal-are-not-arguments", "call:f/2<f(x, [1, 2> open=1 active=1 args=<x, [1, 2>", siteAt("f(x, [1, 2|"))
+    expectEqual("site/commas-in-a-map-literal", "call:f/1<f({\"a\": 1, \"b\": 2})> open=1 active=0 args=<{\"a\": 1, \"b\": 2}>", siteAt("f({\"a\": 1, \"b\"|: 2})"))
+    expectEqual("site/group-inside-an-argument", "call:f/2<f((a + b), c)> open=1 active=0 args=<(a + b), c>", siteAt("f((a + |b), c)"))
+    expectEqual("site/group-after-a-comma", "call:f/2<f(x, (y> open=1 active=1 args=<x, (y>", siteAt("f(x, (y|"))
+    expectEqual("site/index-inside-an-argument", "call:f/2<f(a[0], b)> open=1 active=1 args=<a[0], b>", siteAt("f(a[0], b|)"))
+    expectEqual("site/string-argument-with-a-comma", "call:f/2<f(\"a, b\", c)> open=1 active=0 args=<\"a, b\", c>", siteAt("f(\"a, |b\", c)"))
+    expectEqual("site/between-calls", "call:g/1<g(b)> open=6 active=0 args=<b>", siteAt("f(a) + g(|b)"))
+}
+
+method checkNoCallSite() {
+    expectEqual("site/plain-statement", "none", siteAt("var x = 5|"))
+    expectEqual("site/after-the-closing-paren", "none", siteAt("f(a)|"))
+    expectEqual("site/condition-parentheses", "none", siteAt("if (a|)"))
+    expectEqual("site/group-parentheses", "none", siteAt("x = (a + |b)"))
+    expectEqual("site/statement-boundary", "none", siteAt("foo(1)\nbar|"))
+    expectEqual("site/after-a-statement-keyword", "none", siteAt("return a, |b"))
+    expectEqual("site/empty-text", "none", siteAt("|"))
+    expectEqual("site/no-tokens", "none", renderNoTokens())
+}
+
+method renderNoTokens(): string {
+    if (isNone(callSiteAt([], 0))) {
+        return "none"
+    }
+    return "found"
+}
+
+method checkSiteCaps() {
+    var filler = ""
+    var count = 0
+    while (count < 6000) {
+        filler = filler + "a "
+        count = count + 1
+    }
+    expectEqual("site/far-away-call-is-not-searched-for", "none", siteAt("f(" + filler + "|"))
+}

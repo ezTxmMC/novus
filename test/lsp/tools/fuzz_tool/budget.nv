@@ -1,0 +1,94 @@
+package main
+
+import math
+import @check
+import "novus/lsp/base/platform"
+
+// The tool cap of DESIGN 9.5-5 and the cap of one file; both can be lowered through the environment (the self-test of
+// test/run_lsp_corpus.sh does that to provoke a breach quickly).
+private final FUZZ_TOOL_CAP_SECONDS_VARIABLE = "FUZZ_TOOL_CAP_SECONDS"
+private final FUZZ_TOOL_FILE_BUDGET_VARIABLE = "FUZZ_TOOL_FILE_BUDGET_MILLIS"
+private final FUZZ_TOOL_DEFAULT_CAP_SECONDS = 60
+private final FUZZ_TOOL_DEFAULT_FILE_BUDGET_MILLIS = 10000
+private final FUZZ_TOOL_MILLIS_IN_SECOND = 1000
+private final FUZZ_TOOL_MAX_DIGITS = 9
+
+// A text of this many bytes times the number of its cases is the work one file may cost; bigger files get fewer cases.
+private final FUZZ_TOOL_BYTES_PER_FILE_BUDGET = 2000000
+private final FUZZ_TOOL_MAX_CASES = 100
+private final FUZZ_TOOL_MIN_CASES = 10
+
+define class FuzzToolLimits {
+    integer capMillis
+    integer fileBudgetMillis
+
+    construct() {
+        this.capMillis = fuzzToolEnvironmentInteger(FUZZ_TOOL_CAP_SECONDS_VARIABLE, FUZZ_TOOL_DEFAULT_CAP_SECONDS) * FUZZ_TOOL_MILLIS_IN_SECOND
+        this.fileBudgetMillis = fuzzToolEnvironmentInteger(FUZZ_TOOL_FILE_BUDGET_VARIABLE, FUZZ_TOOL_DEFAULT_FILE_BUDGET_MILLIS)
+    }
+}
+
+// A value that is not made of digits is ignored: a typo must not abort the tool (LSP-R08).
+method fuzzToolEnvironmentInteger(string name, integer fallback): integer {
+    var text = environmentValue(name, "")
+    if (fuzzToolIsSmallNumber(text) == false) {
+        return fallback
+    }
+    return math.toInt(text)
+}
+
+method fuzzToolIsSmallNumber(string text): bool {
+    if (text == "" || text.length() > FUZZ_TOOL_MAX_DIGITS) {
+        return false
+    }
+    var i = 0
+    while (i < text.length()) {
+        if (text.charAt(i) < "0" || text.charAt(i) > "9") {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+// contract-note (9.5-5): the contract asks for 100 cases of every file; a file of several hundred KB would take 10 s
+// alone, so the number of cases shrinks with the size (the plan is thinned evenly, every kind of mutation stays).
+method fuzzToolCaseCount(integer length): integer {
+    var affordable = FUZZ_TOOL_BYTES_PER_FILE_BUDGET / math.max(length, 1)
+    return math.max(FUZZ_TOOL_MIN_CASES, math.min(FUZZ_TOOL_MAX_CASES, affordable))
+}
+
+define class FuzzToolTotals {
+    integer files
+    integer cases
+    integer violations
+    integer runtimeErrors
+    integer slowCases
+    integer reducedFiles
+
+    construct() {
+        this.files = 0
+        this.cases = 0
+        this.violations = 0
+        this.runtimeErrors = 0
+        this.slowCases = 0
+        this.reducedFiles = 0
+    }
+
+    method problems(): integer {
+        return this.violations + this.runtimeErrors + this.slowCases
+    }
+}
+
+// What one run needs to run a file.
+define class FuzzToolContext {
+    FuzzToolLimits limits
+    FuzzToolTotals totals
+    array<FuzzToolCheck> checks
+
+    construct(FuzzToolLimits limits, FuzzToolTotals totals, array<FuzzToolCheck> checks) {
+        this.limits = limits
+        this.totals = totals
+        this.checks = checks
+    }
+}

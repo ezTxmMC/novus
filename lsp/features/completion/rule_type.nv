@@ -1,0 +1,147 @@
+package completion
+
+import base/maybe
+import features/candidates
+import projects/workspace
+import syntax/lexing
+import syntax/outline
+
+private final COMPLETION_TYPE_KEYWORDS = ["var", "final", "private", "method"]
+private final COMPLETION_GENERIC_HEADS = ["array", "map"]
+private final COMPLETION_GENERIC_WINDOW = 40
+
+// Type positions and the words that follow `define`, `based` and a field's `:`.
+define class TypeContextRule based ContextRule {
+    CompletionCursors cursors
+
+    construct(CompletionCursors cursors) {
+        this.cursors = cursors
+    }
+
+    method matches(FileContext context, integer offset): CompletionContext {
+        var cursor = this.cursors.cursorFor(context, offset)
+        if (cursor.inInterpolation) {
+            return nothing()
+        }
+        var kind = this.kindOf(context, cursor, offset)
+        if (kind == "") {
+            return nothing()
+        }
+        var request = CompletionContext(kind, cursor.prefix, cursor.replaceSpan)
+        if (kind == CANDIDATES_KIND_BASED) {
+            request.typeName = this.declaredName(cursor)
+        }
+        return request
+    }
+
+    // `define class Circle based |`: the class whose header is written cannot be its own base, also without a body yet.
+    method declaredName(CompletionCursor cursor): string {
+        var name = cursor.tokenBack(2)
+        if (isSome(name) && name.kind == TokenKind.Ident) {
+            return name.text
+        }
+        return ""
+    }
+
+    method kindOf(FileContext context, CompletionCursor cursor, integer offset): string {
+        if (cursor.opener() < 0 && cursor.isWordBack(1, "based")) {
+            return CANDIDATES_KIND_BASED
+        }
+        if (cursor.opener() < 0 && cursor.isWordBack(1, "define")) {
+            return CANDIDATES_KIND_DEFINE
+        }
+        if (cursor.isPunctBack(1, ":")) {
+            return this.afterColon(context, cursor, offset)
+        }
+        if (cursor.isPunctBack(1, ",") && (cursor.isWordBack(2, "get") || cursor.isWordBack(2, "set")) && completionAtMemberLevel(context, cursor, offset)) {
+            return CANDIDATES_KIND_ACCESSOR
+        }
+        if (this.inGenericArguments(cursor) || this.inHeaderParameters(context, cursor, offset)) {
+            return CANDIDATES_KIND_TYPE
+        }
+        return ""
+    }
+
+    // `var x: |`, `): |` and `method f: |` ask for a type; `Type name: |` in a class body asks for `get` or `set`.
+    method afterColon(FileContext context, CompletionCursor cursor, integer offset): string {
+        if (cursor.isPunctBack(2, ")")) {
+            return CANDIDATES_KIND_TYPE
+        }
+        var name = cursor.tokenBack(2)
+        var before = cursor.tokenBack(3)
+        if (isNone(name) || name.kind != TokenKind.Ident || isNone(before)) {
+            return ""
+        }
+        if (before.kind == TokenKind.Keyword && COMPLETION_TYPE_KEYWORDS.contains(before.text)) {
+            return CANDIDATES_KIND_TYPE
+        }
+        if ((before.kind == TokenKind.Ident || before.isPunct(">")) && completionAtMemberLevel(context, cursor, offset)) {
+            return CANDIDATES_KIND_ACCESSOR
+        }
+        return ""
+    }
+
+    // `array<|`, `map<string, |`: a `<` that follows `array` or `map` is still open and only type tokens lie between.
+    method inGenericArguments(CompletionCursor cursor): bool {
+        var depth = 0
+        var at = cursor.lastIndex
+        var steps = 0
+        while (at >= 0 && steps < COMPLETION_GENERIC_WINDOW) {
+            var token = cursor.tokens[at]
+            if (this.isTypeToken(token) == false) {
+                return false
+            }
+            if (token.isPunct(">")) {
+                depth = depth + 1
+            }
+            if (token.isPunct(">>")) {
+                depth = depth + 2
+            }
+            if (token.isPunct("<") && depth == 0) {
+                return this.followsGenericHead(cursor, at)
+            }
+            if (token.isPunct("<")) {
+                depth = depth - 1
+            }
+            at = cursor.significantAtOrBefore(at - 1)
+            steps = steps + 1
+        }
+        return false
+    }
+
+    method isTypeToken(Token token): bool {
+        return token.kind == TokenKind.Ident || token.isPunct(",") || token.isPunct("<") || token.isPunct(">") || token.isPunct(">>")
+    }
+
+    method followsGenericHead(CompletionCursor cursor, integer angleIndex): bool {
+        var head = cursor.tokenBefore(angleIndex)
+        return isSome(head) && head.kind == TokenKind.Ident && COMPLETION_GENERIC_HEADS.contains(head.text)
+    }
+
+    // The type slot of a parameter: right after the `(` or a `,` of a method or constructor header.
+    method inHeaderParameters(FileContext context, CompletionCursor cursor, integer offset): bool {
+        var open = cursor.openerToken()
+        if (isNone(open) || open.isPunct("(") == false || (cursor.isPunctBack(1, "(") == false && cursor.isPunctBack(1, ",") == false)) {
+            return false
+        }
+        var nameIndex = cursor.significantAtOrBefore(cursor.opener() - 1)
+        if (nameIndex < 0 || cursor.tokens[nameIndex].kind != TokenKind.Ident) {
+            return false
+        }
+        var before = cursor.tokenBefore(nameIndex)
+        if (isSome(before) && before.isKeyword("method")) {
+            return true
+        }
+        return this.isMemberHeader(context, cursor, nameIndex, offset)
+    }
+
+    // `construct(` and `name(` of a method without the word `method`: a member of a class that starts its line.
+    method isMemberHeader(FileContext context, CompletionCursor cursor, integer nameIndex, integer offset): bool {
+        var name = cursor.tokens[nameIndex]
+        var typeDecl = context.syntax.enclosingType(offset)
+        if (isNone(typeDecl) || completionInCallableBody(context, offset) || offset <= typeDecl.bodySpan.start) {
+            return false
+        }
+        return name.text == "construct" || name.firstOnLine
+    }
+}

@@ -1,0 +1,25 @@
+package main
+
+import "novus/lsp/base/maybe"
+import "novus/lsp/base/model"
+import "novus/lsp/base/text"
+import @support
+
+method runMemberCases() {
+    println("== unknown-member: a receiver of a declared user type")
+    var world = DgWorld({
+        "/p/project.nv": "project \"p\"\n",
+        "/p/main.nv": "define class Shape {\n    string name\n\n    method area(): float {\n        return 0.0\n    }\n}\n\ndefine class Circle based Shape {\n    float radius\n\n    method grow() {\n        this.radius = this.radius + 1.0\n        this.missing = 1\n    }\n\n    method extra(): float {\n        return 1.0\n    }\n}\n\ndefine enum Color {\n    Red, Green;\n}\n\nmethod describe(Shape shape, Circle circle, Color color, object any, string text) {\n    println(shape.area())\n    println(shape.name)\n    println(shape.extra())\n    println(shape.nowhere())\n    println(circle.area())\n    println(circle.radius)\n    println(circle.nowhere)\n    println(circle.nowhere(1, 2))\n    println(color.anything)\n    println(any.anything)\n    println(text.length())\n    var inferred = Circle(1.0)\n    println(inferred.nowhere)\n}\n\nmethod main() {\n    describe(Shape(), Circle(), Color.Red, Shape(), \"t\")\n}\n"
+    })
+    dgShow("main.nv (shape.extra is declared by the subtype Circle, so it stays quiet)", world.ownOf("/p/main.nv"))
+    var base = DgWorld({
+        "/p/project.nv": "project \"p\"\n",
+        "/p/main.nv": "define class Page based ExternalBase {\n    method run() {\n        this.inherited()\n    }\n}\n\nmethod main() {\n    Page page = Page()\n    page.inherited()\n}\n"
+    })
+    dgShow("a base type outside the program: nothing is judged", base.ownOf("/p/main.nv"))
+    var iface = DgWorld({
+        "/p/project.nv": "project \"p\"\n",
+        "/p/main.nv": "define interface Handler {\n    handle(string text): string\n}\n\nmethod run(Handler handler) {\n    println(handler.handle(\"x\"))\n    println(handler.other(\"x\"))\n}\n\nmethod main() {\n    return\n}\n"
+    })
+    dgShow("an interface-typed receiver", iface.ownOf("/p/main.nv"))
+}

@@ -1,0 +1,28 @@
+package main
+
+private final FUZZ_TOOL_LCG_MULTIPLIER = 1664525
+private final FUZZ_TOOL_LCG_INCREMENT = 1013904223
+private final FUZZ_TOOL_LCG_MODULUS = 4294967296
+// The low bits of a power-of-two LCG have a short period, so only the high ones are used.
+private final FUZZ_TOOL_LCG_DISCARDED_BITS = 256
+
+// Deterministic generator (a 32-bit LCG): the same seed always gives the same mutations, on every machine.
+define class FuzzToolRandom {
+    integer state
+
+    construct(integer seed) {
+        this.state = seed % FUZZ_TOOL_LCG_MODULUS
+        if (this.state < 0) {
+            this.state = this.state + FUZZ_TOOL_LCG_MODULUS
+        }
+    }
+
+    // A value in [0, bound); 0 when the bound is not positive.
+    method next(integer bound): integer {
+        this.state = (this.state * FUZZ_TOOL_LCG_MULTIPLIER + FUZZ_TOOL_LCG_INCREMENT) % FUZZ_TOOL_LCG_MODULUS
+        if (bound <= 0) {
+            return 0
+        }
+        return this.state / FUZZ_TOOL_LCG_DISCARDED_BITS % bound
+    }
+}

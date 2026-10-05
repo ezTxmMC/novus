@@ -1,0 +1,33 @@
+package main
+
+import "novus/lsp/projects/manifest"
+import "novus/lsp/projects/modules"
+
+method showEntry(ModuleEntry entry) {
+    println("  " + entry.module + " @ " + entry.version + " " + entry.status + " dir=" + entry.dir + " entry=[" + entry.entryFile + "] declaredIn=" + entry.declaredIn + " direct=" + entry.direct + " replaced=" + entry.replaced)
+}
+
+method showTable(string title, ModuleTable table) {
+    println("== " + title)
+    for (entry in table.entries) {
+        showEntry(entry)
+    }
+    println("  not ready: " + names(table.notReady()) + " ready: " + names(table.readyEntries()))
+}
+
+method names(array<ModuleEntry> entries): array<string> {
+    var found = []
+    for (entry in entries) {
+        found.append(entry.module)
+    }
+    return found
+}
+
+method showMatch(ModuleTable table, string importPath) {
+    var match = table.find(importPath)
+    if (typeOf(match) == "unknown") {
+        println("  find " + importPath + " -> none")
+        return
+    }
+    println("  find " + importPath + " -> " + match.entry.module + " rest=[" + match.rest + "]")
+}

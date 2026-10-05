@@ -1,0 +1,193 @@
+package format
+
+import syntax/lexing
+
+// What a token is in its context, found once per file: generic brackets (`array<integer>`), unary operators and the
+// tokens of an `import` line. The decisions of SpacingRules read these tables.
+private final FORMAT_ROLE_NONE = 0
+private final FORMAT_ROLE_OPEN = 1
+private final FORMAT_ROLE_CLOSE = 2
+private final FORMAT_GENERIC_HEADS = { "array": true, "map": true }
+private final FORMAT_GENERIC_SCAN_LIMIT = 64
+private final FORMAT_PREFIX_WORDS = { "await": true, "thread": true, "virtual": true }
+private final FORMAT_OPERAND_END_PUNCT = { ")": true, "]": true, "}": true }
+private final FORMAT_BOOLEAN_WORDS = { "true": true, "false": true }
+
+define class FormatRoles {
+    array<Token> tokens
+    array<integer> generics
+    array<bool> unaries
+    array<bool> imports
+    FormatBraces braces
+
+    construct(array<Token> tokens) {
+        this.tokens = tokens
+        this.generics = []
+        this.unaries = []
+        this.imports = []
+        this.fillDefaults()
+        this.markGenerics()
+        this.braces = FormatBraces(tokens, this.generics)
+        this.markUnaries()
+        this.markImports()
+    }
+
+    method fillDefaults() {
+        var index = 0
+        while (index < this.tokens.length()) {
+            this.generics.append(FORMAT_ROLE_NONE)
+            this.unaries.append(false)
+            this.imports.append(false)
+            index = index + 1
+        }
+    }
+
+    method isGenericOpen(integer index): bool {
+        return this.generics[index] == FORMAT_ROLE_OPEN
+    }
+
+    // True when the source had blanks between this token and the one before it (decisions that keep the author's choice read this).
+    method isPadded(integer index): bool {
+        return index > 0 && this.tokens[index].start > this.tokens[index - 1].end
+    }
+
+    method hasGenericRole(integer index): bool {
+        return this.generics[index] != FORMAT_ROLE_NONE
+    }
+
+    method markGenerics() {
+        var index = 1
+        while (index < this.tokens.length()) {
+            if (this.startsGeneric(index)) {
+                this.tryGeneric(index)
+            }
+            index = index + 1
+        }
+    }
+
+    method startsGeneric(integer index): bool {
+        var token = this.tokens[index]
+        var head = this.tokens[index - 1]
+        if (token.kind != TokenKind.Punct || token.text != "<" || this.generics[index] != FORMAT_ROLE_NONE) {
+            return false
+        }
+        return head.kind == TokenKind.Ident && FORMAT_GENERIC_HEADS.has(head.text)
+    }
+
+    // The `<` opens a generic only when a matching `>` follows after nothing but type words and commas.
+    method tryGeneric(integer openIndex) {
+        var opens = []
+        var closes = []
+        var depth = 0
+        var index = openIndex
+        var limit = openIndex + FORMAT_GENERIC_SCAN_LIMIT
+        while (index < this.tokens.length() && index < limit) {
+            depth = depth + this.genericStep(index, opens, closes)
+            if (depth < 0 || this.isNotTypeToken(index)) {
+                return
+            }
+            if (depth == 0) {
+                this.commitGeneric(opens, closes)
+                return
+            }
+            index = index + 1
+        }
+    }
+
+    // +1 for `<`, -1 for `>`, -2 for `>>` (a shift token that closes two levels), else 0.
+    method genericStep(integer index, array<integer> opens, array<integer> closes): integer {
+        var token = this.tokens[index]
+        if (token.kind != TokenKind.Punct) {
+            return 0
+        }
+        if (token.text == "<") {
+            opens.append(index)
+            return 1
+        }
+        if (token.text == ">") {
+            closes.append(index)
+            return -1
+        }
+        if (token.text == ">>") {
+            closes.append(index)
+            return -2
+        }
+        return 0
+    }
+
+    method isNotTypeToken(integer index): bool {
+        var token = this.tokens[index]
+        if (token.kind == TokenKind.Ident || token.kind == TokenKind.Integer) {
+            return false
+        }
+        return token.kind != TokenKind.Punct || (token.text != "<" && token.text != ">" && token.text != ">>" && token.text != ",")
+    }
+
+    method commitGeneric(array<integer> opens, array<integer> closes) {
+        for (index in opens) {
+            this.generics[index] = FORMAT_ROLE_OPEN
+        }
+        for (index in closes) {
+            this.generics[index] = FORMAT_ROLE_CLOSE
+        }
+    }
+
+    method markUnaries() {
+        var index = 0
+        while (index < this.tokens.length()) {
+            this.unaries[index] = this.isUnaryAt(index)
+            index = index + 1
+        }
+    }
+
+    // `!` is always a prefix (`!=` is its own token); `-` and `+` are prefixes when an operator or an opening bracket stands right
+    // before them (as the first token of a file they are binary, which is also how gapBetween reads a lone pair).
+    method isUnaryAt(integer index): bool {
+        var token = this.tokens[index]
+        if (token.kind != TokenKind.Punct) {
+            return false
+        }
+        if (token.text == "!") {
+            return true
+        }
+        if (token.text != "-" && token.text != "+") {
+            return false
+        }
+        return index > 0 && this.endsOperand(this.tokens[index - 1]) == false
+    }
+
+    method endsOperand(Token previous): bool {
+        if (previous.kind == TokenKind.Ident) {
+            return FORMAT_PREFIX_WORDS.has(previous.text) == false
+        }
+        if (previous.kind == TokenKind.Keyword) {
+            return FORMAT_BOOLEAN_WORDS.has(previous.text)
+        }
+        if (previous.kind == TokenKind.Punct) {
+            return FORMAT_OPERAND_END_PUNCT.has(previous.text)
+        }
+        return true
+    }
+
+    // Every token after the keyword `import` on its line; the paths of imports have no spaces inside.
+    method markImports() {
+        var index = 0
+        while (index < this.tokens.length()) {
+            if (this.tokens[index].isKeyword("import")) {
+                index = this.markImportLine(index)
+                continue
+            }
+            index = index + 1
+        }
+    }
+
+    method markImportLine(integer importIndex): integer {
+        var line = this.tokens[importIndex].line
+        var index = importIndex + 1
+        while (index < this.tokens.length() && this.tokens[index].line == line) {
+            this.imports[index] = true
+            index = index + 1
+        }
+        return index
+    }
+}

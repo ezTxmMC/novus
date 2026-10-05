@@ -1,0 +1,93 @@
+package snippets
+
+// Declaration snippets and the class-body snippets (DESIGN Appendix A), and the verification
+// wrappers of their modes: a prelude for the top-level forms, a class around the member forms.
+
+// Splitting "['a', 'b']" at the quote gives the fields at the odd positions.
+private final SNIPPETS_QUOTED_FIRST = 1
+private final SNIPPETS_QUOTED_STRIDE = 2
+
+method typeSnippets(): array<Snippet> {
+    return snippetsConcat([snippetsClassDeclarations(), snippetsOtherDeclarations()])
+}
+
+method memberSnippets(): array<Snippet> {
+    var inClass = [SNIPPETS_SCOPE_CLASS]
+    var member = SNIPPETS_VERIFY_MEMBER
+    return [
+        Snippet("construct", ["construct", "ctor"], "Constructor assigning one field", inClass,
+            "construct(#{1:string} #{2:name}) {\n\tthis.#2 = #2\n\t#0\n}").withVerify(member).withFixtures({SNIPPETS_FIELDS_KEY: "['string name']"}),
+        Snippet("field", ["field", "fld"], "Field", inClass,
+            "#{1:string} #{2:name}").withVerify(member),
+        Snippet("fieldg", ["fieldg", "getter"], "Field with a getter", inClass,
+            "#{1:string} #{2:name}: get").withVerify(member),
+        Snippet("fields", ["fieldgs", "accessors"], "Field with getter and/or setter", inClass,
+            "#{1:string} #{2:name}: #{3|get,get\\, set,set|}").withVerify(member),
+        Snippet("abstractm", ["abstractm", "absm"], "Abstract method signature", inClass,
+            "abstract method #{1:name}(#{2}): #{3:string}").withVerify(SNIPPETS_VERIFY_MEMBER_ABSTRACT),
+        Snippet("constructd", ["ctord", "constructall"], "Constructor taking two fields", inClass,
+            "construct(#{1:string} #{2:first}, #{3:integer} #{4:second}) {\n\tthis.#2 = #2\n\tthis.#4 = #4\n}").withVerify(member).withFixtures(
+                {SNIPPETS_FIELDS_KEY: "['string first', 'integer second']"})
+    ]
+}
+
+method snippetsClassDeclarations(): array<Snippet> {
+    var top = [SNIPPETS_SCOPE_TOPLEVEL]
+    var toplevel = SNIPPETS_VERIFY_TOPLEVEL
+    return [
+        Snippet("class", ["class", "cls"], "Class with fields and a constructor", top,
+            "define class #{1:Name} {\n\t#{2:string} #{3:field}\n\n\tconstruct(#2 #3) {\n\t\tthis.#3 = #3\n\t}\n\n\t#0\n}").withVerify(toplevel),
+        Snippet("classb", ["classb", "extends"], "Class based on another class, abstract class or interface", top,
+            "define class #{1:Name} based #{2:Base} {\n\t#0\n}").withVerify(toplevel).withFixtures({SNIPPETS_PRELUDE_KEY: SNIPPETS_PRELUDE_BASE}),
+        Snippet("abstract", ["abstract", "abstractclass"], "Abstract class", top,
+            "define abstract #{1:Name} {\n\tabstract method #{2:name}(): #{3:string}\n\n\t#0\n}").withVerify(toplevel),
+        Snippet("interface", ["interface", "iface"], "Interface", top,
+            "define interface #{1:Name} {\n\t#{2:name}(): #{3:string}\n\t#0\n}").withVerify(toplevel),
+        Snippet("impl", ["impl", "implements"], "Class implementing an interface", top,
+            "define class #{1:Name} based #{2:Shape} {\n\t#{3:name}(): #{4:string} {\n\t\t#0\n\t\treturn #{5:\"\"}\n\t}\n}").withVerify(toplevel).withFixtures(
+                {SNIPPETS_PRELUDE_KEY: SNIPPETS_PRELUDE_SHAPE})
+    ]
+}
+
+method snippetsOtherDeclarations(): array<Snippet> {
+    var top = [SNIPPETS_SCOPE_TOPLEVEL]
+    var toplevel = SNIPPETS_VERIFY_TOPLEVEL
+    return [
+        Snippet("enum", ["enum"], "Enum", top,
+            "define enum #{1:Name} {\n\t#{2:FIRST},\n\t#{3:SECOND}\n}").withVerify(toplevel),
+        Snippet("enumv", ["enumv", "enumc"], "Enum with a value per constant", top,
+            "define enum #{1:Name} {\n\t#{2:FIRST}(#{3:1}),\n\t#{4:SECOND}(#{5:2});\n\n\t#{6:integer} #{7:code}\n\n" +
+            "\tconstruct(#6 #7) {\n\t\tthis.#7 = #7\n\t}\n}").withVerify(toplevel),
+        Snippet("annotation", ["annotation", "anno"], "Annotation definition (the braces are required)", top,
+            "define annotation #{1:Name} {\n\t#0\n}").withVerify(toplevel),
+        Snippet("deprecated", ["@Deprecated", "deprecated"], "Mark a method as deprecated", [SNIPPETS_SCOPE_TOPLEVEL, SNIPPETS_SCOPE_CLASS],
+            "@Deprecated{\n\ttext=\"#{1:Reason}\",\n\tsince=\"#{2:0.1.0}\"\n}").withVerify(SNIPPETS_VERIFY_ANNOTATION)
+    ]
+}
+
+method snippetsPrelude(Snippet snippet): string {
+    var kind = snippet.fixtures.get(SNIPPETS_PRELUDE_KEY, "")
+    if (kind == SNIPPETS_PRELUDE_BASE) {
+        return "define class Base {\n}\n\n"
+    }
+    if (kind == SNIPPETS_PRELUDE_SHAPE) {
+        return "define interface Shape {\n    name(): string\n}\n\n"
+    }
+    return ""
+}
+
+// The fields of a member snippet come as the text "['string name', 'integer count']".
+method snippetsMemberClass(Snippet snippet, string expansion): string {
+    var opening = "define class Box {\n"
+    if (snippet.verify == SNIPPETS_VERIFY_MEMBER_ABSTRACT) {
+        opening = "define abstract Box {\n"
+    }
+    var parts = snippet.fixtures.get(SNIPPETS_FIELDS_KEY, "").split("'")
+    var fields = ""
+    var i = SNIPPETS_QUOTED_FIRST
+    while (i < parts.length()) {
+        fields = fields + SNIPPETS_PLAIN_INDENT + parts[i] + "\n"
+        i = i + SNIPPETS_QUOTED_STRIDE
+    }
+    return opening + fields + snippetsIndent(expansion) + "\n}\n"
+}

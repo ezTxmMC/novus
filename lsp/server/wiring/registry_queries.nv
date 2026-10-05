@@ -1,0 +1,47 @@
+package wiring
+
+import features/hover
+import features/navigation
+import features/structure
+import server/queries
+
+private final WIRING_METHOD_HOVER = "textDocument/hover"
+private final WIRING_METHOD_SIGNATURE_HELP = "textDocument/signatureHelp"
+private final WIRING_METHOD_DEFINITION = "textDocument/definition"
+private final WIRING_METHOD_REFERENCES = "textDocument/references"
+private final WIRING_METHOD_DOCUMENT_HIGHLIGHT = "textDocument/documentHighlight"
+private final WIRING_METHOD_DOCUMENT_SYMBOL = "textDocument/documentSymbol"
+private final WIRING_METHOD_WORKSPACE_SYMBOL = "workspace/symbol"
+private final WIRING_METHOD_FOLDING_RANGE = "textDocument/foldingRange"
+private final WIRING_METHOD_DOCUMENT_LINK = "textDocument/documentLink"
+
+// The read-only queries: hover and signature help, definition, references and highlights, document and workspace
+// symbols, folding ranges and document links. Registering a method string is what advertises its capability (9.9.3).
+method registerQueryHandlers(ServerParts parts) {
+    wiringRegisterInsight(parts)
+    wiringRegisterNavigation(parts)
+    wiringRegisterStructure(parts)
+}
+
+method wiringRegisterInsight(ServerParts parts) {
+    var router = parts.router
+    router.registerHandler(WIRING_METHOD_HOVER, HoverHandler(parts.session, HoverEngine(), parts.encoder))
+    router.registerHandler(WIRING_METHOD_SIGNATURE_HELP, SignatureHelpHandler(parts.session, SignatureEngine(), parts.encoder))
+}
+
+method wiringRegisterNavigation(ServerParts parts) {
+    var router = parts.router
+    var references = ReferenceFinder()
+    router.registerHandler(WIRING_METHOD_DEFINITION, DefinitionHandler(parts.session, DefinitionFinder(), parts.encoder))
+    router.registerHandler(WIRING_METHOD_REFERENCES, ReferencesHandler(parts.session, references, parts.encoder, parts.cancellations))
+    router.registerHandler(WIRING_METHOD_DOCUMENT_HIGHLIGHT, HighlightHandler(parts.session, references, parts.encoder))
+}
+
+method wiringRegisterStructure(ServerParts parts) {
+    var router = parts.router
+    var search = SymbolSearch(parts.session.workspace)
+    router.registerHandler(WIRING_METHOD_DOCUMENT_SYMBOL, DocumentSymbolHandler(parts.session, OutlineBuilder(), parts.encoder))
+    router.registerHandler(WIRING_METHOD_WORKSPACE_SYMBOL, WorkspaceSymbolHandler(parts.session, search, parts.encoder, parts.cancellations))
+    router.registerHandler(WIRING_METHOD_FOLDING_RANGE, FoldingHandler(parts.session, FoldingBuilder(), parts.encoder))
+    router.registerHandler(WIRING_METHOD_DOCUMENT_LINK, LinkHandler(parts.session, LinkBuilder(), parts.encoder))
+}

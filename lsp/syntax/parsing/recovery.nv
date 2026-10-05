@@ -1,0 +1,200 @@
+package parsing
+
+import syntax/lexing
+import syntax/outline
+import syntax/scanning
+import base/text
+
+private final PARSING_MAX_ISSUES = 2000
+private final PARSING_KIND_WORDS = { "class": true, "abstract": true, "enum": true, "interface": true, "annotation": true }
+private final PARSING_PRINT_WORDS = { "println": true, "print": true, "eprintln": true }
+private final PARSING_TOP_LEVEL_WORDS = { "method": true, "package": true, "import": true, "private": true, "final": true,
+    "var": true, "println": true, "print": true, "eprintln": true }
+
+// Token navigation, issue reporting and the resynchronisation points of 5.4; never moves past EndOfFile.
+define class ParsingCursor {
+    array<Token> tokens
+    integer pos
+    integer last
+    bool looseBody
+    ParsingBraces braces
+    array<SyntaxIssue> issues
+    array<ScanningProblem> problems
+    ScanningCursor scan
+    ScanningTypes types
+    ScanningExpressions expressions
+
+    construct(array<Token> tokens) {
+        this.tokens = tokens
+        this.pos = 0
+        this.last = tokens.length() - 1
+        this.looseBody = true
+        this.braces = ParsingBraces(tokens)
+        this.issues = []
+        this.problems = []
+        this.scan = ScanningCursor(tokens, this.last)
+        this.types = ScanningTypes(this.scan, this.problems)
+        this.expressions = ScanningExpressions(this.scan, this.problems)
+    }
+
+    method tokenAt(integer index): Token {
+        if (index < 0) {
+            return this.tokens[0]
+        }
+        if (index > this.last) {
+            return this.tokens[this.last]
+        }
+        return this.tokens[index]
+    }
+
+    method current(): Token {
+        return this.tokenAt(this.pos)
+    }
+
+    method atEnd(): bool {
+        return this.pos >= this.last
+    }
+
+    method advance() {
+        if (this.pos < this.last) {
+            this.pos = this.pos + 1
+        }
+    }
+
+    method punctAt(integer index, string punct): bool {
+        return this.scan.isPunct(index, punct)
+    }
+
+    method keywordAt(integer index, string word): bool {
+        return this.scan.isKeyword(index, word)
+    }
+
+    method identAt(integer index): bool {
+        return this.scan.isIdent(index)
+    }
+
+    method identWordAt(integer index, string word): bool {
+        return this.scan.isIdentWord(index, word)
+    }
+
+    // End offset of the last consumed token, 0 before the first.
+    method lastEnd(): integer {
+        if (this.pos == 0) {
+            return 0
+        }
+        return this.tokenAt(this.pos - 1).end
+    }
+
+    method report(Span span, string code, string message, bool warning) {
+        if (this.issues.length() < PARSING_MAX_ISSUES) {
+            this.issues.append(SyntaxIssue(span, code, message, warning))
+        }
+    }
+
+    // The statement scanners report without a limit; what is kept here is capped like `report`.
+    method addProblems(array<ScanningProblem> found) {
+        for (problem in found) {
+            if (this.problems.length() < PARSING_MAX_ISSUES) {
+                this.problems.append(problem)
+            }
+        }
+    }
+
+    method reportAtToken(Token token, string code, string message) {
+        this.report(Span(token.start, token.end), code, message, false)
+    }
+
+    method describe(integer index): string {
+        if (index >= this.last) {
+            return "end of file"
+        }
+        return scanningDescribeToken(this.tokenAt(index))
+    }
+}
+
+// `X =` followed on the next line by `Y = 3`: the "expression" `Y` is really the next assignment.
+method parsingIsNextAssignment(ParsingCursor cursor, integer start, integer end): bool {
+    return end == start + 1 && cursor.identAt(start) && cursor.tokenAt(start).firstOnLine && cursor.punctAt(end, "=")
+}
+
+method parsingIsKindWord(string word): bool {
+    return PARSING_KIND_WORDS.has(word)
+}
+
+method parsingIsPrintWord(string word): bool {
+    return PARSING_PRINT_WORDS.has(word)
+}
+
+// `define class|abstract|enum|interface|annotation`: an identifier `define` followed by a kind word.
+method parsingStartsDefine(ParsingCursor cursor, integer index): bool {
+    return cursor.identWordAt(index, "define") && cursor.identAt(index + 1)
+}
+
+method parsingStartsAsyncMethod(ParsingCursor cursor, integer index): bool {
+    return cursor.identWordAt(index, "async") && cursor.keywordAt(index + 1, "method")
+}
+
+// Where a new top-level declaration can begin (5.4): used to resynchronise after an error.
+method parsingIsTopLevelStart(ParsingCursor cursor, integer index): bool {
+    if (index >= cursor.last) {
+        return true
+    }
+    var token = cursor.tokenAt(index)
+    if (token.kind == TokenKind.Keyword && PARSING_TOP_LEVEL_WORDS.has(token.text)) {
+        return true
+    }
+    if (token.isPunct("@") || parsingStartsDefine(cursor, index) || parsingStartsAsyncMethod(cursor, index)) {
+        return true
+    }
+    return token.kind == TokenKind.Ident && token.firstOnLine && cursor.punctAt(index + 1, "=")
+}
+
+// A token that can never occur inside a method body, first on its line: the body was never closed (5.4).
+method parsingIsBodyKiller(ParsingCursor cursor, integer index): bool {
+    return scanningIsDeclarationStart(cursor.scan, index)
+}
+
+// A top-level declaration in column 0 inside an open type body means it was never closed; `method`, `private`, `final`
+// and `@` count only in a loose body: one whose members are indented and whose `{` never gets a matching `}`.
+method parsingIsClassKiller(ParsingCursor cursor, integer index): bool {
+    var token = cursor.tokenAt(index)
+    if (token.firstOnLine == false || token.column != 0 || index >= cursor.last) {
+        return false
+    }
+    if (token.kind == TokenKind.Keyword) {
+        return token.text == "import" || token.text == "package" || token.text == "var" || (cursor.looseBody && parsingIsMemberWord(token))
+    }
+    if (token.kind == TokenKind.Ident) {
+        return parsingStartsDefine(cursor, index) || parsingStartsAsyncMethod(cursor, index) || cursor.punctAt(index + 1, "=")
+    }
+    return cursor.looseBody && token.isPunct("@")
+}
+
+method parsingIsMemberWord(Token token): bool {
+    return token.text == "method" || token.text == "private" || token.text == "final"
+}
+
+// Skips to the next top-level starter at brace depth 0; a column-0 declaration of the killer kind stops it at any depth.
+method parsingSkipToTopLevelStart(ParsingCursor cursor) {
+    var depth = 0
+    while (cursor.atEnd() == false) {
+        if (depth == 0 && parsingIsTopLevelStart(cursor, cursor.pos)) {
+            return
+        }
+        if (parsingIsClassKiller(cursor, cursor.pos) || parsingIsBodyKiller(cursor, cursor.pos)) {
+            return
+        }
+        depth = parsingDepthAfter(cursor.current(), depth)
+        cursor.advance()
+    }
+}
+
+method parsingDepthAfter(Token token, integer depth): integer {
+    if (token.isPunct("{")) {
+        return depth + 1
+    }
+    if (token.isPunct("}") && depth > 0) {
+        return depth - 1
+    }
+    return depth
+}

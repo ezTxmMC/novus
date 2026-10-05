@@ -1,0 +1,48 @@
+package main
+
+import "novus/lsp/base/text"
+import "novus/lsp/syntax/lexing"
+
+method renderComments(LexResult lexed): string {
+    var parts = []
+    for (comment in lexed.comments) {
+        parts.append(visible(comment.text) + "@" + comment.start + "-" + comment.end + "/" + renderPosition(comment))
+    }
+    return parts.join(" | ")
+}
+
+method checkComments() {
+    var lexed = lexText("a // c\nb /* d */ e")
+    expectEqual("comments/not-in-the-token-stream", "I:a I:b I:e", renderTokens(lexed))
+    expectEqual("comments/kept-aside", "// c@2-6/0:2 | /* d */@9-16/1:2", renderComments(lexed))
+    expectEqual("comments/doc-comments-are-plain-comments", "/// doc@0-7/0:0* | /** x */@8-16/1:0*", renderComments(lexText("/// doc\n/** x */\nm")))
+    expectEqual("comments/block-over-lines", "/* a\\nb */@0-9/0:0*", renderComments(lexText("/* a\nb */ c")))
+    var multi = lexText("/* a\nb */ c")
+    expectEqual("comments/token-after-a-block-comment-is-not-first", "1:5", renderPosition(multi.tokens[0]))
+    expectEqual("comments/stray-close-lexes-as-operators", "P:* P:/", lex("*/"))
+    expectEqual("comments/empty-block", "I:a I:b", lex("a/**/b"))
+    expectEqual("comments/slash-is-division", "I:a P:/ I:b", lex("a / b"))
+}
+
+method checkUnterminated() {
+    var open = lexText("a /* b")
+    expectEqual("unterminated-comment/runs-to-the-end", "/* b@2-6/0:2", renderComments(open))
+    expectEqual("unterminated-comment/warning-at-the-opener", "unterminated-comment@2-4/warning", renderIssues(open))
+    expectEqual("unterminated-comment/slash-star-slash", "unterminated-comment@0-2/warning", renderIssues(lexText("/*/")))
+    expectEqual("unterminated-comment/closed-block-has-no-issue", "", renderIssues(lexText("/**/")))
+    expectEqual("unterminated-comment/tokens-before-survive", "I:a I:b", lex("a b /* c"))
+}
+
+method checkUnterminatedStrings() {
+    var broken = lexText("var s = \"abc\nx = 1")
+    expectEqual("unterminated-string/token-ends-at-the-line", "K:var I:s P:= S:\"abc=abc I:x P:= N:1", renderTokens(broken))
+    expectEqual("unterminated-string/issue-covers-the-line-part", "unterminated-string@8-12/error", renderIssues(broken))
+    expectTrue("unterminated-string/not-terminated", broken.tokens[3].terminated == false)
+    expectEqual("unterminated-string/lexing-continues-on-the-next-line", "1:0*", renderPosition(broken.tokens[4]))
+    expectEqual("unterminated-string/at-the-end-of-the-text", "unterminated-string@0-4/error", renderIssues(lexText("\"abc")))
+    expectEqual("unterminated-string/carriage-return-stays-out", "S:\"abc=abc I:x", lex("\"abc\r\nx"))
+    expectEqual("unterminated-string/escaped-last-quote", "unterminated-string@0-6/error", renderIssues(lexText("\"abc\\\"")))
+    expectEqual("unterminated-string/interpolation-spans-survive", "[5,6)", renderSpans(lexText(dollar("\"x @{a}")).tokens[0].interpolations))
+    expectEqual("unterminated-string/later-quote-closes-a-multi-line-string", "S:\"a\\nb\"=a\\nb", lex("\"a\nb\""))
+    expectEqual("unterminated-string/no-issue-when-closed-later", "", renderIssues(lexText("\"a\nb\"")))
+}

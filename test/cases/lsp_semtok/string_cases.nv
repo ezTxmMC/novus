@@ -1,0 +1,26 @@
+package main
+
+import "novus/lsp/features/semtok"
+import @support
+
+// A string token is one span; the code inside a `${...}` is classified on top of it, and the encoder cuts the string
+// around it (6.28: an interpolation span cuts the surrounding string token).
+method runStringCases() {
+    println("== strings and interpolations")
+    var dollar = "$"
+    var source = stLines([
+        "method main() {",
+        "    var n = 1",
+        "    println(\"a " + dollar + "{n + 2} b " + dollar + "{n} c\")",
+        "    println(\"tab\\t " + dollar + "{n}\")",
+        "    println(\"open " + dollar + "{n and no close\")",
+        "    println(\"esc " + dollar + "{id(\\\"x\\\")} end\")",
+        "    println(\"two\nlines " + dollar + "{n}\nend\")",
+        "}",
+        "method id(string s): string {",
+        "    return s",
+        "}"
+    ])
+    var world = StWorld(stProject(source))
+    stShow("interpolations", source, world.spans("/p/main.nv", source))
+}

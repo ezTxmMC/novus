@@ -1,0 +1,45 @@
+package markup
+
+import base/text
+import bytes
+import strings
+import syntax/outline
+import syntax/parsing
+
+private final MARKUP_SCRATCH_PATH = "component.nv"
+private final MARKUP_LINE_FEED_TEXT = "\n"
+private final MARKUP_BLANK = " "
+
+// The `define` blocks of a header are file-level declarations in the compiled program. They are parsed with the
+// ordinary declaration parser over a copy of the text in which everything else is blanked out, so every span and
+// line of the result is the same as in the component file.
+method markupParseDefines(string text, array<Span> spans, ParseOptions options): SourceFile {
+    return parseSourceText(MARKUP_SCRATCH_PATH, markupKeepOnly(text, spans), options)
+}
+
+// `text` with every byte outside `keep` replaced by a blank; line breaks stay, so lines and offsets do not move.
+method markupKeepOnly(string text, array<Span> keep): string {
+    var pieces = []
+    var cursor = 0
+    for (span in keep) {
+        pieces.append(markupBlankRange(text, cursor, span.start))
+        pieces.append(text.substring(span.start, span.end))
+        cursor = span.end
+    }
+    pieces.append(markupBlankRange(text, cursor, text.length()))
+    return bytes.join(pieces)
+}
+
+method markupBlankRange(string text, integer from, integer to): string {
+    var pieces = []
+    var cursor = from
+    var lineEnd = bytes.indexOf(text, MARKUP_LINE_FEED_TEXT, cursor)
+    while (lineEnd >= 0 && lineEnd < to) {
+        pieces.append(strings.repeat(MARKUP_BLANK, lineEnd - cursor))
+        pieces.append(MARKUP_LINE_FEED_TEXT)
+        cursor = lineEnd + 1
+        lineEnd = bytes.indexOf(text, MARKUP_LINE_FEED_TEXT, cursor)
+    }
+    pieces.append(strings.repeat(MARKUP_BLANK, to - cursor))
+    return bytes.join(pieces)
+}

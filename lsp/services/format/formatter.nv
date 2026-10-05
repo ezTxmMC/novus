@@ -1,0 +1,80 @@
+package format
+
+import base/model
+import bytes
+import base/text
+import syntax/lexing
+
+// Whitespace-only, idempotent formatting of `.nv` text (5.7: no other file kind is formatted).
+private final FORMAT_KIND_NV = "nv"
+private final FORMAT_UNTERMINATED_CODES = { "unterminated-string": true, "unterminated-comment": true }
+
+define class Formatter {
+    FormatSettings settings
+
+    construct(FormatSettings settings) {
+        this.settings = settings
+    }
+
+    // The formatted text; the input itself when the lexer had to recover from a string or comment that never ends (the
+    // compiler reads such a token to the end of the file, so no line after it can be trusted) or when `lexed` is not the lex
+    // result of `text`.
+    method formatText(string text, LexResult lexed): string {
+        if (this.isUnsafe(text, lexed)) {
+            return text
+        }
+        return FormatLayout(text, lexed, this.settings).render()
+    }
+
+    // The same, and the input for the kinds that are not formatted (project.nv, .nvh).
+    method formatDocument(Document document, LexResult lexed): string {
+        if (document.fileKind() != FORMAT_KIND_NV) {
+            return document.text
+        }
+        return this.formatText(document.text, lexed)
+    }
+
+    method editsFor(Document document, LexResult lexed): array<TextEdit> {
+        var formatted = this.formatDocument(document, lexed)
+        if (bytes.equal(formatted, document.text)) {
+            return []
+        }
+        return minimalEdits(document, formatted)
+    }
+
+    // The edits that start inside the lines of `range`; the whole file is laid out first, so the indentation of those lines
+    // is the one the full format gives them.
+    method rangeEditsFor(Document document, LexResult lexed, Span range): array<TextEdit> {
+        var low = document.lines.lineStart(document.lines.lineOf(range.start))
+        var high = document.lines.lineEnd(this.lastLineOf(document, range))
+        var inside = []
+        for (edit in this.editsFor(document, lexed)) {
+            if (edit.span.start >= low && edit.span.start <= high) {
+                inside.append(edit)
+            }
+        }
+        return inside
+    }
+
+    // A range that ends at the very start of a line does not include that line.
+    method lastLineOf(Document document, Span range): integer {
+        var line = document.lines.lineOf(range.end)
+        if (range.end > range.start && range.end == document.lines.lineStart(line) && line > 0) {
+            return line - 1
+        }
+        return line
+    }
+
+    // A lex result of another text (its end marker is not at the end of this one) cannot be trusted either.
+    method isUnsafe(string text, LexResult lexed): bool {
+        if (lexed.tokens.length() == 0 || lexed.tokens[lexed.tokens.length() - 1].start != text.length()) {
+            return true
+        }
+        for (issue in lexed.issues) {
+            if (FORMAT_UNTERMINATED_CODES.has(issue.code)) {
+                return true
+            }
+        }
+        return false
+    }
+}

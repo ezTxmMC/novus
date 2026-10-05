@@ -1,0 +1,200 @@
+package parsing
+
+import base/text
+import syntax/lexing
+import syntax/outline
+import syntax/scanning
+
+// Method bodies are balanced-brace token ranges (5.4); this class finds their end and asks `scanning` for the locals
+// and the statement-level problems.
+define class ParsingBodies {
+    ParsingCursor cursor
+    ParseOptions options
+    integer stoppedAt
+
+    construct(ParsingCursor cursor, ParseOptions options) {
+        this.cursor = cursor
+        this.options = options
+        this.stoppedAt = 0
+    }
+
+    // Index of the `}` that closes the `{` at `open`; -1 when the body is never closed (`stoppedAt` then says where).
+    method findClose(integer open): integer {
+        var depth = 0
+        var index = open
+        while (index < this.cursor.last) {
+            var token = this.cursor.tokenAt(index)
+            if (index > open && parsingIsBodyKiller(this.cursor, index)) {
+                break
+            }
+            if (token.isPunct("{")) {
+                depth = depth + 1
+            }
+            if (token.isPunct("}")) {
+                depth = depth - 1
+            }
+            if (depth == 0) {
+                return index
+            }
+            index = index + 1
+        }
+        this.stoppedAt = index
+        return -1
+    }
+
+    // The cursor stands on the `{`: sets the body span, closes the declaration span and scans the locals.
+    method parseBody(Decl decl) {
+        var open = this.cursor.pos
+        var openToken = this.cursor.tokenAt(open)
+        var close = this.findClose(open)
+        if (close >= 0) {
+            decl.bodySpan = Span(openToken.start, this.cursor.tokenAt(close).end)
+            this.cursor.pos = close + 1
+        }
+        if (close < 0) {
+            this.closeUnterminated(decl, openToken)
+        }
+        decl.fullSpan.end = decl.bodySpan.end
+        if (this.options.scanLocals) {
+            this.scanLocals(decl)
+        }
+    }
+
+    // Ends where the next declaration begins (or at the text's end), so the lines being typed belong to the body.
+    method closeUnterminated(Decl decl, Token openToken) {
+        this.cursor.reportAtToken(openToken, "unterminated-block", "unterminated block: the closing '}' is missing")
+        this.cursor.pos = this.stoppedAt
+        decl.bodySpan = Span(openToken.start, this.cursor.current().start)
+    }
+
+    // contract-note: parsing/DESIGN-NOTES.md 2. The statement-level issue codes come from this walk, so only with `scanLocals`.
+    method scanLocals(Decl decl) {
+        var scanned = scanningReadBody(decl, this.cursor.tokens)
+        decl.locals = scanned.locals
+        this.cursor.addProblems(scanned.problems)
+    }
+}
+
+// The braces of class, enum and interface bodies: enum constants, interface entries and the closing brace.
+define class ParsingTypeBodies {
+    ParsingCursor cursor
+    ParsingSignatures signatures
+    ParsingMembers members
+    ParsingDeclFactory factory
+
+    construct(ParsingCursor cursor, ParsingSignatures signatures, ParsingMembers members, ParsingDeclFactory factory) {
+        this.cursor = cursor
+        this.signatures = signatures
+        this.members = members
+        this.factory = factory
+    }
+
+    // The cursor stands where the `{` of the body should be; a header without a body is reported and left as it is.
+    method parseBody(Decl owner) {
+        owner.fullSpan.end = this.cursor.lastEnd()
+        if (this.seekOpenBrace() == false) {
+            return
+        }
+        var openIndex = this.cursor.pos
+        var open = this.cursor.current()
+        this.cursor.advance()
+        owner.bodySpan = Span(open.start, open.end)
+        this.cursor.looseBody = this.cursor.braces.isLoose(openIndex, this.cursor.current())
+        this.parseContents(owner)
+        this.closeBody(owner, open)
+    }
+
+    method parseContents(Decl owner) {
+        if (owner.kind == DeclKind.Interface) {
+            this.parseInterfaceEntries(owner)
+            return
+        }
+        if (owner.kind == DeclKind.Enum) {
+            this.parseEnumConstants(owner)
+        }
+        this.members.parseInto(owner.members, owner.name, true)
+    }
+
+    // Reports a missing `{` and skips to one on the same line (`based B, C {` ends up there).
+    method seekOpenBrace(): bool {
+        if (this.cursor.punctAt(this.cursor.pos, "{")) {
+            return true
+        }
+        this.cursor.reportAtToken(this.cursor.current(), "expected-token", "expected '{' but found " + this.cursor.describe(this.cursor.pos))
+        while (this.cursor.atEnd() == false && this.cursor.punctAt(this.cursor.pos, "{") == false && this.cursor.current().firstOnLine == false) {
+            this.cursor.advance()
+        }
+        return this.cursor.punctAt(this.cursor.pos, "{")
+    }
+
+    method closeBody(Decl owner, Token open) {
+        if (this.cursor.punctAt(this.cursor.pos, "}")) {
+            var close = this.cursor.current()
+            this.cursor.advance()
+            owner.bodySpan = Span(open.start, close.end)
+            owner.fullSpan.end = close.end
+            return
+        }
+        this.cursor.reportAtToken(open, "unterminated-class-body", "unterminated body of '" + owner.name + "': the closing '}' is missing")
+        owner.bodySpan = Span(open.start, this.cursor.current().start)
+        owner.fullSpan.end = owner.bodySpan.end
+    }
+
+    // Constants are identifiers followed by `,` `(` `;` or `}`; members after them need a `;` first.
+    method parseEnumConstants(Decl owner) {
+        while (this.startsConstant()) {
+            var index = this.cursor.pos
+            var name = this.cursor.current()
+            this.cursor.advance()
+            var decl = this.factory.make(DeclKind.EnumConstant, name, index, [], owner.name)
+            if (this.cursor.punctAt(this.cursor.pos, "(")) {
+                this.cursor.pos = this.cursor.expressions.groupEnd(this.cursor.pos)
+            }
+            var hasSemicolon = this.cursor.punctAt(this.cursor.pos, ";")
+            if (this.cursor.punctAt(this.cursor.pos, ",")) {
+                this.cursor.advance()
+                hasSemicolon = this.cursor.punctAt(this.cursor.pos, ";")
+            }
+            decl.fullSpan.end = this.cursor.lastEnd()
+            this.factory.complete(decl, owner.members, index)
+            if (hasSemicolon) {
+                this.cursor.advance()
+                return
+            }
+        }
+    }
+
+    method startsConstant(): bool {
+        var next = this.cursor.pos + 1
+        var closesConstant = this.cursor.punctAt(next, ",") || this.cursor.punctAt(next, "(") || this.cursor.punctAt(next, ";")
+        return this.cursor.identAt(this.cursor.pos) && (closesConstant || this.cursor.punctAt(next, "}"))
+    }
+
+    // `name(params)[: Type]` entries; everything else in an interface body is skipped.
+    method parseInterfaceEntries(Decl owner) {
+        while (this.cursor.atEnd() == false) {
+            if (this.cursor.punctAt(this.cursor.pos, "}") || parsingIsClassKiller(this.cursor, this.cursor.pos)) {
+                return
+            }
+            this.parseInterfaceItem(owner)
+        }
+    }
+
+    method parseInterfaceItem(Decl owner) {
+        var at = this.cursor.pos
+        if (this.cursor.punctAt(at, "@")) {
+            this.factory.readAnnotation()
+            return
+        }
+        if (this.cursor.identAt(at) && this.cursor.punctAt(at + 1, "(")) {
+            var name = this.cursor.current()
+            this.cursor.advance()
+            var decl = this.factory.make(DeclKind.AbstractMethod, name, at, [], owner.name)
+            this.signatures.readMethodTail(decl, false)
+            this.factory.complete(decl, owner.members, at)
+            this.factory.reset()
+            return
+        }
+        this.cursor.advance()
+    }
+}

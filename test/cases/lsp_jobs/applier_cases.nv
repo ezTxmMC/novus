@@ -1,0 +1,93 @@
+package main
+
+import "novus/lsp/base/platform"
+import "novus/lsp/server/jobs"
+import "novus/lsp/server/protocol"
+import "novus/lsp/server/rpc"
+import "novus/lsp/server/session"
+import "novus/lsp/services/checker"
+
+private final APPLIER_BUFFER = "package main\n\nmethod main() {\n    println(\"edited\")\n}\n"
+
+method newApplier(Session state, map<string, array<string>> lastUris): JobsResultApplier {
+    var scheduler = DiagnosticScheduler(state, MessageWriter(), WireEncoder(state.codec, state.client), [])
+    return JobsResultApplier(state, scheduler, lastUris)
+}
+
+method findingResult(integer requestId, array<CheckFinding> findings): CheckResult {
+    var result = CheckResult(requestId)
+    result.findings = findings
+    return result
+}
+
+method describeStore(Session state) {
+    var held = []
+    for (uri in state.diagnostics.urisOf("novusc")) {
+        held.push(uri + "=" + state.diagnostics.merged(uri).length())
+    }
+    stdoutWriteText("  novusc holders [" + held.join(", ") + "]\n")
+}
+
+method runApplierCases() {
+    stdoutWriteText("--- applier: stale results, verdicts and the findings of the previous run\n")
+    var state = fixtureSession()
+    fixtureOpen(state, "/proj/main.nv", 2, APPLIER_BUFFER)
+    var lastUris = {}
+    var applier = newApplier(state, lastUris)
+    var stale = findingResult(1, [CheckFinding("/proj/main.nv", 4, "unknown member 'edited'", true)])
+    stale.snapshotVersions = {"/proj/main.nv": 1}
+    stdoutWriteText("a result of an older buffer is dropped:\n")
+    applier.apply("/proj/project.nv", stale)
+    describeStore(state)
+    var skipped = CheckResult(2)
+    skipped.skipped = true
+    stdoutWriteText("a skipped result changes nothing:\n")
+    applier.apply("/proj/project.nv", skipped)
+    describeStore(state)
+    var fresh = findingResult(3, [CheckFinding("/proj/main.nv", 4, "unknown member 'edited'", true), CheckFinding("/proj/util.nv", 3, "unknown member 'helper'", true)])
+    fresh.snapshotVersions = {"/proj/main.nv": 2}
+    stdoutWriteText("a current result with a finding in an open and a closed file:\n")
+    applier.apply("/proj/project.nv", fresh)
+    stdoutWriteText("\n")
+    describeStore(state)
+    stdoutWriteText("the files of the run are remembered: " + lastUris["/proj/project.nv"].join(", ") + "\n")
+    var verdict = CheckResult(4)
+    verdict.succeeded = true
+    stdoutWriteText("a clean run clears both files:\n")
+    applier.apply("/proj/project.nv", verdict)
+    stdoutWriteText("\n")
+    describeStore(state)
+    stdoutWriteText("nothing is remembered: " + lastUris["/proj/project.nv"].length() + "\n")
+}
+
+// The request of a check on one dirty buffer, the way the planner builds it.
+method snapshotRequest(string filePath, integer version, string text): CheckRequest {
+    var request = CheckRequest(7, "./main.nv", filePath, "/proj", 60)
+    request.overlays[filePath] = text
+    request.snapshotVersions[filePath] = version
+    return request
+}
+
+method runSnapshotCases() {
+    stdoutWriteText("--- applier: a buffer that was closed and reopened with the same version\n")
+    var state = fixtureSession()
+    fixtureOpen(state, "/proj/main.nv", 1, APPLIER_BUFFER)
+    var applier = newApplier(state, {})
+    var finding = CheckFinding("/proj/main.nv", 4, "unknown member 'edited'", true)
+    applier.rememberSnapshot(snapshotRequest("/proj/main.nv", 1, APPLIER_BUFFER))
+    state.documents.close(filePathToUri("/proj/main.nv"))
+    fixtureOpen(state, "/proj/main.nv", 1, fixtureDiskText("/proj/main.nv"))
+    var reopened = findingResult(7, [finding])
+    reopened.snapshotVersions = {"/proj/main.nv": 1}
+    stdoutWriteText("the reopened buffer has the version of the checked one but another text, so the result is dropped:\n")
+    applier.apply("/proj/project.nv", reopened)
+    describeStore(state)
+    stdoutWriteText("the snapshot is forgotten with the result: " + applier.snapshotHashes.length() + "\n")
+    applier.rememberSnapshot(snapshotRequest("/proj/main.nv", 1, fixtureDiskText("/proj/main.nv")))
+    stdoutWriteText("the same version and the same text is current:\n")
+    applier.apply("/proj/project.nv", reopened)
+    describeStore(state)
+    applier.rememberSnapshot(snapshotRequest("/proj/main.nv", 1, APPLIER_BUFFER))
+    applier.forgetSnapshot(7)
+    stdoutWriteText("a failed run leaves nothing behind: " + applier.snapshotHashes.length() + "\n")
+}

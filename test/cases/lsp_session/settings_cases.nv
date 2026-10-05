@@ -1,0 +1,56 @@
+package main
+
+import log
+import strings
+
+import "novus/lsp/base/model"
+import "novus/lsp/server/session"
+
+method describeSettings(Settings settings): string {
+    var parts = []
+    parts.push("pureline " + settings.pureline.enabled + " plain=" + settings.pureline.flagPlainElse)
+    parts.push("lines " + settings.pureline.functionReviewLines + "/" + settings.pureline.functionMaxLines + "/" + settings.pureline.maxLinesPerFile + "/" + settings.pureline.maxFilesPerFolder)
+    parts.push("names " + settings.pureline.allowedShortNames.join(","))
+    parts.push("check " + settings.check.mode + " '" + settings.check.novuscPath + "' " + settings.check.timeoutSeconds + " " + settings.check.idleMillis)
+    parts.push("format " + settings.format.tabSize + " " + settings.format.insertSpaces + " " + settings.format.maxBlankLines)
+    parts.push("own=" + settings.ownDiagnostics + " explicit=" + settings.explicitImports + " indent='" + settings.snippetIndent + "' max=" + settings.completionMaxItems)
+    return parts.join("\n    ")
+}
+
+method showSettings(string label, Settings settings) {
+    println(label + ":\n    " + describeSettings(settings))
+}
+
+method runSettingsCases() {
+    println("--- settings defaults and the full set of keys")
+    showSettings("defaults", Settings())
+    showSettings("settingsFromOptions of an empty map", settingsFromOptions({}))
+    var everything = {
+        "pureline": {"enabled": true, "flagPlainElse": true, "functionReviewLines": 20, "functionMaxLines": 40, "maxLinesPerFile": 150, "maxFilesPerFolder": 8, "allowedShortNames": ["i", "n"]},
+        "check": {"mode": "onType", "novuscPath": "/opt/novusc", "timeoutSeconds": 120},
+        "format": {"tabSize": 2, "insertSpaces": false, "maxBlankLines": 2},
+        "diagnostics": {"own": false},
+        "imports": {"explicit": false},
+        "snippets": {"indent": "  "},
+        "completion": {"maxItems": 25}
+    }
+    showSettings("every key", settingsFromOptions(everything))
+    showSettings("the same keys with dots", settingsFromOptions({"novus.pureline.enabled": true, "check.mode": "off", "completion.maxItems": 7}))
+    showSettings("the section wrapped in novus", settingsFromOptions({"novus": {"pureline": {"enabled": true}}}))
+    showSettings("a list of settings is no map", mergeSettings(Settings(), nothing()))
+}
+
+method novuscPathLength(object value): integer {
+    var merged = settingsFromOptions({"check": {"novuscPath": value}})
+    return merged.check.novuscPath.length()
+}
+
+method runTextLimitCases() {
+    println("--- text settings: a path may be as long as PATH_MAX, other texts are short")
+    log.setLevel("error")
+    println("path of 300 bytes: " + novuscPathLength("/" + strings.repeat("x", 299)))
+    println("path of 4096 bytes: " + novuscPathLength("/" + strings.repeat("x", 4095)))
+    println("path of 4097 bytes is ignored: " + novuscPathLength("/" + strings.repeat("x", 4096)))
+    println("executablePath takes the same limit: " + settingsFromOptions({"executablePath": "/" + strings.repeat("y", 999)}).check.novuscPath.length())
+    println("indent of 300 bytes is ignored: " + settingsFromOptions({"snippets": {"indent": strings.repeat(" ", 300)}}).snippetIndent.length())
+}

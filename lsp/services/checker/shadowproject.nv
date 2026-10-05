@@ -1,0 +1,61 @@
+package checker
+
+import path
+
+// project.nv of the shadow tree: a relative `replace` target keeps pointing at the same real directory.
+// An absolute target is left alone (novusc does not support it anyway).
+private final CHECKER_REPLACE_WORD = "replace"
+private final CHECKER_MANIFEST_QUOTE = "\""
+private final CHECKER_LINE_FEED = "\n"
+private final CHECKER_WORD_BOUNDARIES = [" ", "\t", "\""]
+
+method checkerShadowManifest(string manifestText, string realRoot, string shadowDir): string {
+    var rewritten = []
+    for (line in manifestText.split(CHECKER_LINE_FEED)) {
+        rewritten.append(checkerRewriteReplaceLine(line, realRoot, shadowDir))
+    }
+    return rewritten.join(CHECKER_LINE_FEED)
+}
+
+method checkerIsReplaceLine(string line): bool {
+    var trimmed = line.trim()
+    if (trimmed.startsWith(CHECKER_REPLACE_WORD) == false) {
+        return false
+    }
+    var next = checkerCharAt(trimmed, CHECKER_REPLACE_WORD.length())
+    for (boundary in CHECKER_WORD_BOUNDARIES) {
+        if (next == boundary) {
+            return true
+        }
+    }
+    return false
+}
+
+// `replace "module" "target"`: only the text of the second quoted string changes.
+method checkerRewriteReplaceLine(string line, string realRoot, string shadowDir): string {
+    if (checkerIsReplaceLine(line) == false) {
+        return line
+    }
+    var quotes = checkerQuotePositions(line)
+    if (quotes.length() < 4) {
+        return line
+    }
+    var target = line.substring(quotes[2] + 1, quotes[3])
+    if (target == "" || checkerIsAbsolute(target)) {
+        return line
+    }
+    var moved = path.relative(shadowDir, path.join(realRoot, target))
+    return line.substring(0, quotes[2] + 1) + moved + line.substring(quotes[3], line.length())
+}
+
+method checkerQuotePositions(string line): array<integer> {
+    var positions = []
+    var index = 0
+    while (index < line.length()) {
+        if (line.charAt(index) == CHECKER_MANIFEST_QUOTE) {
+            positions.append(index)
+        }
+        index = index + 1
+    }
+    return positions
+}

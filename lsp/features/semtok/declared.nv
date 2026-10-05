@@ -1,0 +1,177 @@
+package semtok
+
+import base/maybe
+import base/model
+import base/text
+import semantics/semantic
+import syntax/lexing
+import syntax/outline
+
+private final SEMTOK_STD_KEY_PREFIX = "std:"
+private final SEMTOK_LOCAL_PARAMETER = "parameter"
+private final SEMTOK_MODIFIER_FINAL = "final"
+private final SEMTOK_MODIFIER_ASYNC = "async"
+private final SEMTOK_ASYNC_ANNOTATION = "Async"
+
+// The token type that a declaration kind gets; members are told from top-level declarations by their container.
+method semtokTypeOfDecl(Decl decl, string container): integer {
+    if (decl.kind == DeclKind.Class || decl.kind == DeclKind.AbstractClass) {
+        return SEMTOK_TYPE_CLASS
+    }
+    if (decl.kind == DeclKind.Enum) {
+        return SEMTOK_TYPE_ENUM
+    }
+    if (decl.kind == DeclKind.Interface) {
+        return SEMTOK_TYPE_INTERFACE
+    }
+    if (decl.kind == DeclKind.Annotation) {
+        return SEMTOK_TYPE_DECORATOR
+    }
+    return semtokTypeOfMember(decl, container)
+}
+
+method semtokTypeOfMember(Decl decl, string container): integer {
+    if (decl.kind == DeclKind.Method || decl.kind == DeclKind.AbstractMethod) {
+        return semtokTypeOfCallable(container)
+    }
+    if (decl.kind == DeclKind.Field) {
+        return SEMTOK_TYPE_PROPERTY
+    }
+    if (decl.kind == DeclKind.EnumConstant) {
+        return SEMTOK_TYPE_ENUM_MEMBER
+    }
+    if (decl.kind == DeclKind.Constructor) {
+        return SEMTOK_TYPE_KEYWORD
+    }
+    if (decl.hasModifier(SEMTOK_LOCAL_PARAMETER)) {
+        return SEMTOK_TYPE_PARAMETER
+    }
+    return SEMTOK_TYPE_VARIABLE
+}
+
+method semtokTypeOfCallable(string container): integer {
+    if (container == "") {
+        return SEMTOK_TYPE_FUNCTION
+    }
+    return SEMTOK_TYPE_METHOD
+}
+
+// The modifiers that follow from the declaration alone.
+method semtokModifiersOfDecl(Decl decl): integer {
+    var modifiers = SEMTOK_MOD_NONE
+    if (decl.kind == DeclKind.AbstractClass || decl.kind == DeclKind.AbstractMethod) {
+        modifiers = modifiers + SEMTOK_MOD_ABSTRACT
+    }
+    if (decl.kind == DeclKind.EnumConstant || decl.kind == DeclKind.Global && decl.hasModifier(SEMTOK_MODIFIER_FINAL)) {
+        modifiers = modifiers + SEMTOK_MOD_READONLY
+    }
+    if (decl.isDeprecated()) {
+        modifiers = modifiers + SEMTOK_MOD_DEPRECATED
+    }
+    if (semtokIsAsync(decl)) {
+        modifiers = modifiers + SEMTOK_MOD_ASYNC
+    }
+    return modifiers
+}
+
+method semtokIsAsync(Decl decl): bool {
+    if (decl.isCallable() == false) {
+        return false
+    }
+    if (decl.hasModifier(SEMTOK_MODIFIER_ASYNC)) {
+        return true
+    }
+    for (annotation in decl.annotations) {
+        if (annotation.name == SEMTOK_ASYNC_ANNOTATION) {
+            return true
+        }
+    }
+    return false
+}
+
+// A name that the resolver knows nothing about stays unclassified, so a typo is not painted like a symbol.
+method semtokIsUnknown(Resolution found): bool {
+    return found.candidates.length() == 0
+}
+
+// A variable, a property or a parameter can be assigned to.
+method semtokIsWritable(integer type): bool {
+    return type == SEMTOK_TYPE_VARIABLE || type == SEMTOK_TYPE_PROPERTY || type == SEMTOK_TYPE_PARAMETER
+}
+
+// What a symbol found by the resolver looks like at a use site; a std symbol is a library symbol.
+//
+// contract-note: the origin of a symbol is told from the `std:` prefix of its file key, because `FileOrigin` lives in
+// `closure`, which semtok may not import (semtok/DESIGN-NOTES.md 4).
+method semtokSymbolSpan(Span span, Symbol symbol): SemanticSpan {
+    var type = semtokTypeOfDecl(symbol.decl, symbol.container)
+    var modifiers = semtokModifiersOfDecl(symbol.decl)
+    if (isSome(symbol.file) && symbol.file.filePath.startsWith(SEMTOK_STD_KEY_PREFIX)) {
+        modifiers = modifiers + SEMTOK_MOD_DEFAULT_LIBRARY
+    }
+    return SemanticSpan(span, type, modifiers)
+}
+
+// The classification of every identifier that declares something in the file: types, functions, members, globals,
+// parameters and the package name. A use of a name is the resolver's business (`SemtokNames`); a declaration is read
+// from the outline, which is exact even where the resolver would find another symbol of the same name.
+define class SemtokDeclarations {
+    map<string, SemanticSpan> byStart
+    SourceFile syntax
+
+    construct(SourceFile syntax) {
+        this.syntax = syntax
+        this.byStart = {}
+        this.registerPackage()
+        for (decl in syntax.decls) {
+            this.register(decl, "")
+            for (member in decl.members) {
+                this.register(member, decl.name)
+            }
+        }
+    }
+
+    method registerPackage() {
+        var span = this.syntax.packageSpan
+        if (span.start >= 0 && span.end > span.start) {
+            this.byStart["" + span.start] = SemanticSpan(span, SEMTOK_TYPE_NAMESPACE, SEMTOK_MOD_DECLARATION)
+        }
+    }
+
+    method register(Decl decl, string container) {
+        this.put(decl.nameSpan, semtokTypeOfDecl(decl, container), SEMTOK_MOD_DECLARATION + semtokModifiersOfDecl(decl))
+        for (param in decl.params) {
+            this.put(param.nameSpan, SEMTOK_TYPE_PARAMETER, SEMTOK_MOD_DECLARATION)
+        }
+    }
+
+    method put(Span span, integer type, integer modifiers) {
+        if (span.start < 0 || span.end <= span.start) {
+            return
+        }
+        this.byStart["" + span.start] = SemanticSpan(span, type, modifiers)
+    }
+
+    // The declaration that the identifier is the name of; the empty span when it declares nothing.
+    method spanAt(Token token): SemanticSpan {
+        var key = "" + token.start
+        if (this.byStart.has(key) == false) {
+            return semtokNoSpan(token.start)
+        }
+        return this.byStart[key]
+    }
+
+    // The path of an import: `import base/maybe` names packages, `import strings` a module of the std library.
+    method insideImportPath(integer offset): bool {
+        return semtokInsideImportPath(this.syntax, offset)
+    }
+}
+
+method semtokInsideImportPath(SourceFile syntax, integer offset): bool {
+    for (declaration in syntax.imports) {
+        if (declaration.kind != ImportKind.Module && declaration.targetSpan.contains(offset)) {
+            return true
+        }
+    }
+    return false
+}

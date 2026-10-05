@@ -1,0 +1,9 @@
+full buffer: 1500000 bytes, 0 not x, first x, last x
+small after large: 0123456789
+short stream: 2500000 bytes, 0 not y, first y, last y
+eof: true
+after eof: 0
+at the limit, nothing left: 0 bytes
+1073741825: failed true, io.readBytes: 1073741825 bytes is more than the limit of 1073741824
+2147483648: failed true, io.readBytes: 2147483648 bytes is more than the limit of 1073741824
+9000000000000: failed true, io.readBytes: 9000000000000 bytes is more than the limit of 1073741824

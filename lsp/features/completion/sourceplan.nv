@@ -1,0 +1,81 @@
+package completion
+
+import features/candidates
+import base/model
+import projects/workspace
+
+// Which sources answer which context kind (8.2 and 8.3); the answer of every source is appended in this order.
+define class SourcePlan {
+    SymbolSources symbols
+    ModuleSources modules
+    LexicalSources lexical
+
+    construct(SymbolSources symbols, ModuleSources modules, LexicalSources lexical) {
+        this.symbols = symbols
+        this.modules = modules
+        this.lexical = lexical
+    }
+
+    method itemsFor(FileContext context, CompletionContext request): array<CompletionItem> {
+        var kind = request.kind
+        var items = []
+        if (kind == CANDIDATES_KIND_MANIFEST) {
+            this.addAll(items, [this.lexical.keywordsAndBuiltins(context, request), this.lexical.snippetItems(context, request), this.modules.manifestItems(context, request)])
+        }
+        if (kind == CANDIDATES_KIND_IMPORT_TARGET) {
+            this.addAll(items, [this.modules.standardModules(context, request), this.modules.importPaths(context, request)])
+        }
+        if (kind == CANDIDATES_KIND_IMPORT_FILE || kind == CANDIDATES_KIND_IMPORT_NESTED || kind == CANDIDATES_KIND_IMPORT_MODULE) {
+            this.addAll(items, [this.modules.importPaths(context, request)])
+        }
+        if (kind == CANDIDATES_KIND_FIELD_NAME) {
+            this.addAll(items, [this.lexical.fieldNames(context, request)])
+        }
+        if (kind == CANDIDATES_KIND_MEMBER) {
+            this.addAll(items, [this.symbols.members(context, request)])
+        }
+        this.addDeclarationItems(items, context, request)
+        this.addBodyItems(items, context, request)
+        return items
+    }
+
+    // `@`, `based`, `define`, `get`/`set`, types, members of a class, declarations of a file.
+    method addDeclarationItems(array<CompletionItem> items, FileContext context, CompletionContext request) {
+        var kind = request.kind
+        if (kind == CANDIDATES_KIND_ANNOTATION) {
+            this.addAll(items, [this.lexical.keywordsAndBuiltins(context, request)])
+        }
+        if (kind == CANDIDATES_KIND_ANNOTATION || kind == CANDIDATES_KIND_BASED) {
+            this.addAll(items, [this.symbols.projectSymbols(context, request), this.symbols.dependencySymbols(context, request)])
+        }
+        if (kind == CANDIDATES_KIND_DEFINE || kind == CANDIDATES_KIND_ACCESSOR || kind == CANDIDATES_KIND_TOP_LEVEL || kind == CANDIDATES_KIND_NVH_HEADER) {
+            this.addAll(items, [this.lexical.keywordsAndBuiltins(context, request), this.lexical.snippetItems(context, request)])
+        }
+        if (kind == CANDIDATES_KIND_TYPE || kind == CANDIDATES_KIND_CLASS_MEMBER) {
+            this.addAll(items, [this.lexical.typeNames(context, request), this.symbols.projectSymbols(context, request), this.symbols.dependencySymbols(context, request)])
+        }
+        if (kind == CANDIDATES_KIND_CLASS_MEMBER || kind == CANDIDATES_KIND_NVH_OUTSIDE) {
+            this.addAll(items, [this.lexical.keywordsAndBuiltins(context, request), this.lexical.snippetItems(context, request)])
+        }
+    }
+
+    method addBodyItems(array<CompletionItem> items, FileContext context, CompletionContext request) {
+        if (candidatesIsValueContext(request.kind) == false) {
+            return
+        }
+        var groups = [this.symbols.locals(context, request), this.symbols.members(context, request), this.symbols.projectSymbols(context, request)]
+        groups.append(this.symbols.dependencySymbols(context, request))
+        groups.append(this.modules.standardModules(context, request))
+        groups.append(this.lexical.keywordsAndBuiltins(context, request))
+        groups.append(this.lexical.snippetItems(context, request))
+        this.addAll(items, groups)
+    }
+
+    method addAll(array<CompletionItem> items, array<array<CompletionItem>> groups) {
+        for (group in groups) {
+            for (item in group) {
+                items.append(item)
+            }
+        }
+    }
+}

@@ -1,0 +1,52 @@
+package main
+
+import "novus/lsp/features/semtok"
+import @support
+
+method runResolvedCases() {
+    println("== the resolved pass: a program with a package, an enum, an interface and locals")
+    var source = stLines([
+        "import geo",
+        "import strings",
+        "",
+        "define enum Kind {",
+        "    Round, Square",
+        "}",
+        "",
+        "define interface Named {",
+        "    method label(): string",
+        "}",
+        "",
+        "define class Box based Named {",
+        "    Shape shape",
+        "    integer size: get, set",
+        "",
+        "    construct(integer size) {",
+        "        this.size = size",
+        "    }",
+        "",
+        "    method label(): string {",
+        "        return strings.repeat(\"b\", this.size)",
+        "    }",
+        "",
+        "    method grow(integer by): integer {",
+        "        var next = this.size + by",
+        "        this.size = next",
+        "        return next",
+        "    }",
+        "}",
+        "",
+        "method main() {",
+        "    var box = Box{size=2}",
+        "    var kind = Kind.Square",
+        "    for (item in [1, 2, 3]) {",
+        "        box.grow(item)",
+        "    }",
+        "    var shape = Shape{name=\"s\", sides=3}",
+        "    println(shape.count() + shape.corners() + SIDES)",
+        "    println(geo.describe(shape) + geo.describe(shape, \"p\") + box.label())",
+        "}"
+    ])
+    var world = StWorld(stGeoProject(source))
+    stShow("main.nv", source, world.spans("/p/main.nv", source))
+}

@@ -1,0 +1,116 @@
+package main
+
+import "novus/lsp/base/platform"
+import "novus/lsp/services/checker"
+
+private final RUNNER_REQUEST_ID = 7772
+
+method writeFake(string dirPath, string name, string body): string {
+    var script = dirPath + "/" + name
+    writeTextFile(script, "#!/bin/sh\n" + body)
+    runCommand("chmod +x " + shellQuote(script), 5)
+    return script
+}
+
+method describeResult(CheckResult result, string root): string {
+    var parts = ["ok=" + result.succeeded, "skipped=" + result.skipped, "detail=[" + result.detail.replace(root, "<root>") + "]"]
+    for (finding in result.findings) {
+        parts.append("finding=[" + finding.filePath.replace(root, "<root>") + ":" + finding.line + " " + finding.hasPosition + " " + finding.message.replace(root, "<root>") + "]")
+    }
+    return parts.join(" ")
+}
+
+method show(string label, CheckResult result, string root) {
+    println("run " + label + ": " + describeResult(result, root))
+}
+
+method newRequest(string novusc, string root, integer timeout): CheckRequest {
+    return CheckRequest(RUNNER_REQUEST_ID, novusc, root + "/main.nv", root, timeout)
+}
+
+method runRealTreeCases(string root, string bin) {
+    var entry = root + "/main.nv"
+    var runner = NovuscRunner()
+    show("success", runner.run(newRequest(writeFake(bin, "ok", "echo \"ok: $2\"\n"), root, 10)), root)
+    show("error with a line", runner.run(newRequest(writeFake(bin, "fail", "echo \"error: $2:2: unknown variable 'y'\"\nexit 1\n"), root, 10)), root)
+    show("error on stderr", runner.run(newRequest(writeFake(bin, "stderr", "echo \"error: $2:4: from stderr\" 1>&2\nexit 1\n"), root, 10)), root)
+    show("position-less error is anchored to the entry", runner.run(newRequest(writeFake(bin, "plain", "echo \"error: class X: duplicate definition of 'X'\"\nexit 1\n"), root, 10)), root)
+    show("exactly two arguments", runner.run(newRequest(writeFake(bin, "args", "echo \"error: $2:1: first=$1 count=$#\"\nexit 1\n"), root, 10)), root)
+    show("stdin is closed", runner.run(newRequest(writeFake(bin, "stdin", "cat > /dev/null\necho \"ok: $2\"\n"), root, 10)), root)
+    show("failure without a message", runner.run(newRequest(writeFake(bin, "silent", "exit 3\n"), root, 10)), root)
+    show("failure with foreign text", runner.run(newRequest(writeFake(bin, "foreign", "echo \"segmentation trouble\"\nexit 139\n"), root, 10)), root)
+    var missing = runner.run(newRequest(bin + "/does-not-exist", root, 10))
+    println("run missing novusc: skipped=" + missing.skipped + " ok=" + missing.succeeded + " findings=" + missing.findings.length() + " detail starts as expected=" + missing.detail.startsWith("novusc exited with code 127"))
+    show("no novusc configured", runner.run(newRequest("", root, 10)), root)
+    println("entry is " + (entry == root + "/main.nv"))
+}
+
+method runBehaviourCases(string root, string bin) {
+    var runner = NovuscRunner()
+    var request = newRequest(writeFake(bin, "ok", "echo \"ok: $2\"\n"), root, 10)
+    request.snapshotVersions["file:///main.nv"] = 3
+    var result = runner.run(request)
+    println("run carries the request id: " + (result.requestId == RUNNER_REQUEST_ID))
+    println("run carries the snapshot versions: " + result.snapshotVersions["file:///main.nv"])
+    println("run measures a duration: " + (result.durationMillis >= 0))
+    var canLimit = commandExists("timeout")
+    var slow = runner.run(newRequest(writeFake(bin, "slow", "sleep 3\necho \"ok: $2\"\n"), root, 1))
+    println("run a timeout is a skipped run without a verdict: " + (slow.skipped == canLimit && slow.succeeded == (canLimit == false) && slow.findings.length() == 0))
+    println("run a timeout names itself in the detail: " + (slow.detail.startsWith("novusc check timed out after 1 seconds") == canLimit))
+}
+
+method runClampCases(string root, string bin) {
+    var zero = NovuscRunner().run(newRequest(writeFake(bin, "ok", "echo \"ok: $2\"\n"), root, 0))
+    println("run a zero timeout still succeeds: " + zero.succeeded)
+    println("clamp: " + checkerClampTimeout(0) + " " + checkerClampTimeout(-5) + " " + checkerClampTimeout(7) + " " + checkerClampTimeout(100000))
+}
+
+method runOutsideOverlayCases(string root, string bin) {
+    var request = newRequest(writeFake(bin, "ok", "echo \"ok: $2\"\n"), root, 10)
+    request.overlays[root + "/main.nv"] = "buffer"
+    request.overlays[root + "/../outside.nv"] = "buffer"
+    show("an unsaved buffer outside the root is reported", NovuscRunner().run(request), root)
+}
+
+method runShadowRunnerCases(string root, string bin) {
+    var record = root + "/seen-dir.txt"
+    var body = "dirname \"$2\" > " + shellQuote(record) + "\necho \"error: $2:1: sees [$(head -n 1 \"$2\")]\"\nexit 1\n"
+    var request = newRequest(writeFake(bin, "sees", body), root, 10)
+    request.overlays[root + "/main.nv"] = "buffer text"
+    var result = NovuscRunner().run(request)
+    show("dirty buffer is what novusc reads, paths come back real", result, root)
+    var shadowDir = readTextFile(record).trim()
+    println("the shadow directory is not the project: " + (shadowDir != "" && shadowDir != root))
+    println("the shadow directory is removed afterwards: " + (DiskTextSource().exists(shadowDir) == false))
+    var plain = NovuscRunner().run(newRequest(writeFake(bin, "sees", body), root, 10))
+    show("without overlays the disk text is read", plain, root)
+}
+
+method runOddPathCases(string container, string bin) {
+    var root = container + "/pro ject's \"dir\""
+    makeDirectories(root)
+    writeTextFile(root + "/main.nv", "disk text\n")
+    var request = newRequest(writeFake(bin, "odd", "echo \"error: $2:1: [$2]\"\nexit 1\n"), root, 10)
+    show("entry path with space and quotes", NovuscRunner().run(request), root)
+}
+
+method runRunnerCases() {
+    println("--- runner")
+    if (operatingSystem() == "windows") {
+        println("runner cases: skipped on windows")
+        return
+    }
+    var container = createTempDirectory("lsp-runner-")
+    var root = container + "/proj"
+    var bin = container + "/bin"
+    makeDirectories(root)
+    makeDirectories(bin)
+    writeTextFile(root + "/main.nv", "disk text\n")
+    runRealTreeCases(root, bin)
+    runBehaviourCases(root, bin)
+    runShadowRunnerCases(root, bin)
+    runOutsideOverlayCases(root, bin)
+    runClampCases(root, bin)
+    runOddPathCases(container, bin)
+    removeTree(container)
+}

@@ -56,20 +56,49 @@ static const char *nv_fmt_float(double f) {
     return nv_strndup(buf, strlen(buf));
 }
 
-/* Containers currently being printed/serialized, to cut reference cycles. */
-static NV_TLS const void *nv_visit_stack[256];
+/* Containers currently being printed/serialized, to cut reference cycles.
+ * The first levels live in a fixed array; deeper nesting spills into a
+ * table that grows, so no depth is ever left untracked. */
+#define NV_VISIT_INLINE 256
+static NV_TLS const void *nv_visit_inline[NV_VISIT_INLINE];
+static NV_TLS const void **nv_visit_extra = 0;
+static NV_TLS int nv_visit_extra_cap = 0;
 static NV_TLS int nv_visit_depth = 0;
+
+static const void **nv_visit_slot(int depth) {
+    if (depth < NV_VISIT_INLINE) {
+        return &nv_visit_inline[depth];
+    }
+    return &nv_visit_extra[depth - NV_VISIT_INLINE];
+}
+
+static void nv_visit_reserve(int depth) {
+    int needed = depth - NV_VISIT_INLINE + 1;
+    int cap = nv_visit_extra_cap ? nv_visit_extra_cap : NV_VISIT_INLINE;
+    const void **grown;
+    if (needed <= nv_visit_extra_cap) {
+        return;
+    }
+    while (cap < needed) {
+        cap *= 2;
+    }
+    grown = (const void **)realloc((void *)nv_visit_extra, sizeof(void *) * (size_t)cap);
+    if (!grown) {
+        nv_error("out of memory");
+    }
+    nv_visit_extra = grown;
+    nv_visit_extra_cap = cap;
+}
 
 static int nv_visit_enter(const void *container) {
     int i;
     for (i = 0; i < nv_visit_depth; i++) {
-        if (nv_visit_stack[i] == container) {
+        if (*nv_visit_slot(i) == container) {
             return 0;
         }
     }
-    if (nv_visit_depth < 256) {
-        nv_visit_stack[nv_visit_depth] = container;
-    }
+    nv_visit_reserve(nv_visit_depth);
+    *nv_visit_slot(nv_visit_depth) = container;
     nv_visit_depth++;
     return 1;
 }
@@ -101,7 +130,7 @@ static void nv_display_into(NvSb *sb, nv v) {
         nv_sb_add(sb, nv_fmt_int(nv_ival(v)));
         break;
     case NV_FLOAT:
-        nv_sb_add(sb, nv_fmt_float(v->f));
+        nv_sb_add(sb, nv_fmt_float(nv_fval(v)));
         break;
     case NV_BOOL:
         nv_sb_add(sb, nv_ival(v) ? "true" : "false");
@@ -126,9 +155,9 @@ static void nv_display_into(NvSb *sb, nv v) {
             if (i > 0) {
                 nv_sb_add(sb, ", ");
             }
-            nv_sb_add(sb, v->m->items[i].key);
+            nv_sb_add(sb, nv_map_nth(v->m, i)->key);
             nv_sb_add(sb, ": ");
-            nv_display_into(sb, v->m->items[i].val);
+            nv_display_into(sb, nv_map_nth(v->m, i)->val);
         }
         nv_sb_addc(sb, '}');
         break;
@@ -175,7 +204,7 @@ static const char *nv_display(nv v) {
         return nv_fmt_int(nv_ival(v));
     }
     if (nv_type_of(v) == NV_FLOAT) {
-        return nv_fmt_float(v->f);
+        return nv_fmt_float(nv_fval(v));
     }
     nv_sb_init(&sb);
     nv_display_into(&sb, v);
@@ -199,6 +228,32 @@ static const char *nv_data(nv v) {
     }
 }
 
+/* The bytes of a value with their length, for code that has to work on the
+ * whole string and not on a C string: a string is used where it lies - no
+ * terminator needed, so a view is never copied and NUL bytes count. Anything
+ * else is its display text (nv_arg_text) or its data (nv_data_text). */
+static const char *nv_arg_text(nv v, size_t *len) {
+    const char *text;
+    if (nv_type_of(v) == NV_STR) {
+        *len = (size_t)v->slen;
+        return v->s;
+    }
+    text = nv_display(v);
+    *len = strlen(text);
+    return text;
+}
+
+static const char *nv_data_text(nv v, size_t *len) {
+    const char *text;
+    if (nv_type_of(v) == NV_STR) {
+        *len = (size_t)v->slen;
+        return v->s;
+    }
+    text = nv_data(v);
+    *len = strlen(text);
+    return text;
+}
+
 static nv nv_to_str(nv v) { return nv_type_of(v) == NV_STR ? v : nv_str(nv_display(v)); }
 
 /* ------------------------------------------------------------------ */
@@ -209,7 +264,7 @@ static int nv_is_num(nv v) { return nv_type_of(v) == NV_INT || nv_type_of(v) == 
 
 static double nv_as_double(nv v) {
     if (nv_type_of(v) == NV_FLOAT) {
-        return v->f;
+        return nv_fval(v);
     }
     if (nv_type_of(v) == NV_INT || nv_type_of(v) == NV_BOOL) {
         return (double)nv_ival(v);
@@ -225,7 +280,7 @@ static long long nv_as_int(nv v) {
         return nv_ival(v);
     }
     if (nv_type_of(v) == NV_FLOAT) {
-        return (long long)v->f;
+        return nv_d2i(nv_fval(v));
     }
     if (nv_type_of(v) == NV_STR) {
         return atoll(nv_cstr(v));
@@ -264,7 +319,7 @@ static nv nv_coerce(nv v, const char *t) {
     t = nv_normalize_type(t);
     if (strcmp(t, "integer") == 0) {
         if (nv_type_of(v) == NV_FLOAT) {
-            return nv_int((long long)v->f);
+            return nv_int(nv_d2i(nv_fval(v)));
         }
         return v;
     }
@@ -283,7 +338,7 @@ static nv nv_coerce(nv v, const char *t) {
     return v;
 }
 
-static nv nv_coerce_int(nv v) { return nv_type_of(v) == NV_FLOAT ? nv_int((long long)v->f) : v; }
+static nv nv_coerce_int(nv v) { return nv_type_of(v) == NV_FLOAT ? nv_int(nv_d2i(nv_fval(v))) : v; }
 
 static nv nv_coerce_float(nv v) { return nv_is_tagged(v) || nv_type_of(v) == NV_INT ? nv_float((double)nv_ival(v)) : v; }
 

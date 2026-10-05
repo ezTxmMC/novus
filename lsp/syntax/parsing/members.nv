@@ -1,0 +1,189 @@
+package parsing
+
+import base/maybe
+import base/text
+import syntax/lexing
+import syntax/outline
+
+// The member grammar of class, enum and interface bodies (GRAMMAR 2.6) and of an `.nvh` header island.
+define class ParsingMembers {
+    ParsingCursor cursor
+    ParsingSignatures signatures
+    ParsingDeclFactory factory
+    ParsingFields fields
+    bool stopAtBrace
+    Decl lastConstructor
+
+    construct(ParsingCursor cursor, ParsingSignatures signatures, ParsingDeclFactory factory) {
+        this.cursor = cursor
+        this.signatures = signatures
+        this.factory = factory
+        this.fields = ParsingFields(cursor)
+        this.stopAtBrace = true
+        this.lastConstructor = nothing()
+    }
+
+    // Parses members into `sink` until the closing brace (or the end of the tokens when `stopAtBrace` is false).
+    method parseInto(array<Decl> sink, string ownerName, bool stopAtBrace) {
+        this.stopAtBrace = stopAtBrace
+        this.lastConstructor = nothing()
+        while (this.cursor.atEnd() == false) {
+            if (stopAtBrace && (this.cursor.punctAt(this.cursor.pos, "}") || parsingIsClassKiller(this.cursor, this.cursor.pos))) {
+                return
+            }
+            var start = this.cursor.pos
+            this.parseMember(sink, ownerName)
+            if (this.cursor.pos == start) {
+                parsingSkipToMemberStart(this.cursor, stopAtBrace)
+            }
+        }
+    }
+
+    method parseMember(array<Decl> sink, string ownerName) {
+        var token = this.cursor.current()
+        if (token.isPunct(";") || (token.isPunct("}") && this.stopAtBrace == false)) {
+            this.cursor.advance()
+            return
+        }
+        if (token.isPunct("@")) {
+            this.factory.readAnnotation()
+            return
+        }
+        var firstIndex = this.factory.firstIndexOr(this.cursor.pos)
+        var modifiers = []
+        while (this.cursor.keywordAt(this.cursor.pos, "private") || this.cursor.keywordAt(this.cursor.pos, "final")) {
+            modifiers.append(this.cursor.current().text)
+            this.cursor.advance()
+        }
+        this.parseCore(sink, ownerName, firstIndex, modifiers)
+        this.factory.reset()
+    }
+
+    method parseCore(array<Decl> sink, string ownerName, integer firstIndex, array<string> modifiers) {
+        var at = this.cursor.pos
+        if (this.cursor.identWordAt(at, "abstract") && this.cursor.keywordAt(at + 1, "method")) {
+            this.parseMethod(sink, ownerName, firstIndex, modifiers, true)
+            return
+        }
+        if (parsingStartsAsyncMethod(this.cursor, at)) {
+            this.cursor.reportAtToken(this.cursor.current(), "unexpected-token", "'async' marks a method outside a class; inside one, start the call instead: virtual object.method(...)")
+            this.cursor.advance()
+            modifiers.append("async")
+            this.parseMethod(sink, ownerName, firstIndex, modifiers, false)
+            return
+        }
+        if (this.cursor.keywordAt(at, "method")) {
+            this.parseMethod(sink, ownerName, firstIndex, modifiers, false)
+            return
+        }
+        this.parseOther(sink, ownerName, firstIndex, modifiers)
+    }
+
+    method parseOther(array<Decl> sink, string ownerName, integer firstIndex, array<string> modifiers) {
+        var at = this.cursor.pos
+        if (this.cursor.identWordAt(at, "construct") && this.cursor.punctAt(at + 1, "(")) {
+            this.parseConstructor(sink, ownerName, firstIndex, modifiers)
+            return
+        }
+        if (this.cursor.identAt(at) && this.cursor.punctAt(at + 1, "(")) {
+            this.parseKeywordless(sink, ownerName, firstIndex, modifiers)
+            return
+        }
+        this.parseField(sink, ownerName, firstIndex, modifiers)
+    }
+
+    // `[abstract] method name [params] [: Type] [body]`; the cursor stands on `abstract` or on `method`.
+    method parseMethod(array<Decl> sink, string ownerName, integer firstIndex, array<string> modifiers, bool isAbstract) {
+        if (isAbstract) {
+            this.cursor.advance()
+            modifiers.append("abstract")
+        }
+        this.cursor.advance()
+        var name = this.signatures.readName("method name")
+        if (isNone(name)) {
+            return
+        }
+        var kind = DeclKind.Method
+        if (isAbstract) {
+            kind = DeclKind.AbstractMethod
+        }
+        var decl = this.factory.make(kind, name, firstIndex, modifiers, ownerName)
+        this.signatures.readMethodTail(decl, isAbstract == false)
+        this.factory.complete(decl, sink, firstIndex)
+    }
+
+    // `name(params)[: Type] [{ body }]`: without a body the method is abstract.
+    method parseKeywordless(array<Decl> sink, string ownerName, integer firstIndex, array<string> modifiers) {
+        var name = this.cursor.current()
+        this.cursor.advance()
+        var decl = this.factory.make(DeclKind.Method, name, firstIndex, modifiers, ownerName)
+        this.signatures.readMethodTail(decl, false)
+        if (decl.bodySpan.start < 0) {
+            decl.kind = DeclKind.AbstractMethod
+        }
+        this.factory.complete(decl, sink, firstIndex)
+    }
+
+    // Only the last `construct` counts: an earlier one is removed from the sink and reported.
+    method parseConstructor(array<Decl> sink, string ownerName, integer firstIndex, array<string> modifiers) {
+        var name = this.cursor.current()
+        this.cursor.advance()
+        var decl = this.factory.make(DeclKind.Constructor, name, firstIndex, modifiers, ownerName)
+        this.signatures.readMethodTail(decl, true)
+        this.fields.dropEarlierConstructor(sink, this.lastConstructor)
+        this.lastConstructor = decl
+        this.factory.complete(decl, sink, firstIndex)
+    }
+
+    // `Type name [: get[, set]]`.
+    method parseField(array<Decl> sink, string ownerName, integer firstIndex, array<string> modifiers) {
+        var typeText = this.signatures.readType()
+        if (typeText == "") {
+            return
+        }
+        if (this.cursor.current().firstOnLine && parsingLooksLikeMember(this.cursor, this.cursor.pos)) {
+            this.cursor.reportAtToken(this.cursor.current(), "expected-token", "expected field name but found " + this.cursor.describe(this.cursor.pos))
+            return
+        }
+        var name = this.signatures.readName("field name")
+        if (isNone(name)) {
+            return
+        }
+        var decl = this.factory.make(DeclKind.Field, name, firstIndex, modifiers, ownerName)
+        decl.typeText = typeText
+        this.fields.readAccessors(decl)
+        this.fields.skipInitializer()
+        decl.fullSpan.end = this.cursor.lastEnd()
+        this.factory.complete(decl, sink, firstIndex)
+    }
+}
+
+// Skips to the next token that can start a member, always consuming at least one token; blocks are skipped whole.
+method parsingSkipToMemberStart(ParsingCursor cursor, bool stopAtBrace) {
+    var depth = parsingDepthAfter(cursor.current(), 0)
+    cursor.advance()
+    while (cursor.atEnd() == false) {
+        if (depth == 0 && stopAtBrace && (cursor.punctAt(cursor.pos, "}") || parsingIsClassKiller(cursor, cursor.pos))) {
+            return
+        }
+        if (depth == 0 && cursor.current().firstOnLine && parsingLooksLikeMember(cursor, cursor.pos)) {
+            return
+        }
+        depth = parsingDepthAfter(cursor.current(), depth)
+        cursor.advance()
+    }
+}
+
+method parsingLooksLikeMember(ParsingCursor cursor, integer index): bool {
+    var token = cursor.tokenAt(index)
+    if (token.kind == TokenKind.Keyword) {
+        return token.text == "private" || token.text == "final" || token.text == "method"
+    }
+    if (token.isPunct("@")) {
+        return true
+    }
+    if (token.kind != TokenKind.Ident) {
+        return false
+    }
+    return cursor.punctAt(index + 1, "(") || (cursor.identAt(index + 1) && cursor.tokenAt(index + 1).line == token.line)
+}

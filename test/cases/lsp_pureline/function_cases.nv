@@ -1,0 +1,43 @@
+package main
+
+import "novus/lsp/base/model"
+
+method runFunctionLimitCases() {
+    showText("a method of exactly thirty lines", methodWithLines("thirty", 30))
+    showText("a method of thirty one lines is a hint", methodWithLines("thirtyOne", 31))
+    showText("a method of exactly fifty lines is a hint", methodWithLines("fifty", 50))
+    showText("a method of fifty one lines is a warning", methodWithLines("fiftyOne", 51))
+    showText("a one line method", "method tiny() { return 1 }\n")
+    showText("a method without braces", "method f(): integer native \"nv_x\"\n")
+}
+
+method runFunctionMemberCases() {
+    var members = "define class Big {\n    method long() {\n" + bodyOf(35) + "    }\n    construct(a) {\n" + bodyOf(55) + "    }\n    method short() {\n        x = 1\n    }\n}\n"
+    showText("methods and constructors of a class", members)
+    showText("an abstract method has no body", "define abstract Shape {\n    abstract method area(): float\n}\n")
+    showText("an interface method", "define interface Shape {\n    area(): float\n}\n")
+}
+
+method runFunctionSettingCases() {
+    var strict = PurelineSettings()
+    strict.functionReviewLines = 3
+    strict.functionMaxLines = 5
+    showWith("lower limits", strict, methodWithLines("four", 4) + methodWithLines("six", 6) + methodWithLines("three", 3))
+    var lax = PurelineSettings()
+    lax.functionReviewLines = 100
+    lax.functionMaxLines = 200
+    showWith("higher limits", lax, methodWithLines("long", 60))
+}
+
+method runFunctionRecoveryCases() {
+    showText("a body that never closes is skipped", "method open() {\n" + bodyOf(60))
+    showText("a method of a class that never closes is still measured", "define class Open {\n    method long() {\n" + bodyOf(60) + "    }\n")
+}
+
+method runFunctionCases() {
+    println("--- PL-FN-001")
+    runFunctionLimitCases()
+    runFunctionMemberCases()
+    runFunctionSettingCases()
+    runFunctionRecoveryCases()
+}

@@ -1,0 +1,26 @@
+package main
+
+import bytes
+import @check
+import @mutation
+import @subject
+import "novus/lsp/base/text"
+
+// textHashOf hashes the whole text, also behind a NUL byte (NG30): a text with a NUL differs from its prefix before it.
+define class FuzzToolHashCheck based FuzzToolCheck {
+    construct() {
+    }
+
+    method check(FuzzToolSubject subject): array<string> {
+        var found = []
+        var hash = textHashOf(subject.source)
+        if (hash < 0) {
+            found.append("textHashOf is negative: " + hash)
+        }
+        var nul = bytes.indexOf(subject.source, chr(FUZZ_TOOL_NUL_CODE), 0)
+        if (nul >= 0 && textHashOf(subject.source.substring(0, nul)) == hash) {
+            found.append("textHashOf ignores the text behind the NUL byte at " + nul)
+        }
+        return found
+    }
+}

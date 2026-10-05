@@ -1,0 +1,20 @@
+package main
+
+import io
+import thread
+
+// An uncaught runtime error ends the program while another OS thread is
+// blocked reading stdin (exit_open_stdin_error.stdin.open): exit code 1, the
+// output flushed, no hang.
+
+method readerLoop(): bool {
+    return io.eof()
+}
+
+method main {
+    var reader = thread readerLoop()
+    thread.sleep(100)
+    println "before the error"
+    var items = [1]
+    println items[3]
+}

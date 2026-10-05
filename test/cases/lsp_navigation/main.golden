@@ -1,0 +1,128 @@
+== definition
+constructor call goes to the class: /p/geo/shape.nv:11:14 "Circle"
+method of a typed local: /p/geo/shape.nv:18:12 "area"
+module function: /p/geo/shape.nv:28:8 "describe"
+std function: std:strings (6 bytes)
+enum constant: /p/main.nv:6:5 "Red"
+root helper function: /p/helper.nv:1:8 "helper"
+local variable use: /p/main.nv:16:9 "total"
+local declaration: /p/main.nv:11:9 "circle"
+end of the identifier: /p/main.nv:11:9 "circle"
+field through implicit this: /p/geo/shape.nv:12:11 "radius"
+field through this: /p/geo/shape.nv:12:11 "radius"
+parameter: /p/geo/shape.nv:22:23 "by"
+base class method through an abstract type: /p/geo/shape.nv:6:12 "label"
+based clause: /p/geo/shape.nv:3:17 "Shape"
+parameter type: /p/geo/shape.nv:3:17 "Shape"
+overloaded function with a wrong arity: /p/geo/shape.nv:3:8 "scaled"; /p/geo/shape.nv:7:8 "scaled"
+whitespace: (none)
+keyword: (none)
+== references
+class from a constructor call: /p/main.nv:11:18 "Circle"; /p/geo/shape.nv:11:14 "Circle"
+class without its declaration: /p/main.nv:11:18 "Circle"
+local variable is scope-exact: /p/main.nv:16:9 "total"; /p/main.nv:17:5 "total"; /p/main.nv:17:13 "total"
+override family from a call: /p/main.nv:12:23 "area"; /p/geo/shape.nv:4:21 "area"; /p/geo/shape.nv:18:12 "area"
+override family without declarations: /p/main.nv:12:23 "area"
+field, the parameter of the same name is another symbol: /p/geo/shape.nv:12:11 "radius"; /p/geo/shape.nv:15:14 "radius"; /p/geo/shape.nv:19:16 "radius"; /p/geo/shape.nv:19:25 "radius"; /p/geo/shape.nv:23:20 "radius"
+parameter: /p/geo/shape.nv:14:21 "radius"; /p/geo/shape.nv:15:23 "radius"
+root function: /p/main.nv:16:17 "helper"; /p/main.nv:17:21 "helper"; /p/helper.nv:1:8 "helper"
+overload by arity, from the call: /p/main.nv:19:13 "scaled"; /p/geo/shape.nv:32:8 "scaled"
+overload by arity, from the declaration: /p/main.nv:19:27 "scaled"; /p/geo/shape.nv:36:8 "scaled"
+a call with the wrong arity has no exact target: (none)
+enum constant: /p/main.nv:6:5 "Red"; /p/main.nv:15:23 "Red"
+std function: /p/main.nv:14:21 "repeat"; std:strings (6 bytes)
+class used as a base and as a type: /p/geo/shape.nv:3:17 "Shape"; /p/geo/shape.nv:11:27 "Shape"; /p/geo/shape.nv:28:17 "Shape"
+keyword: (none)
+a cancelled search stops at once: (none)
+== highlights
+local variable: 16:9 kind 3; 17:5 kind 3; 17:13 kind 2
+class: 11:18 kind 2
+no symbol: 
+== rename
+local variable: span total | refusal '' | problem '' | /p/main.nv [16:9 17:5 17:13] -> sum
+class: span Circle | refusal '' | problem '' | /p/main.nv [11:18] -> Disc; /p/geo/shape.nv [11:14] -> Disc
+function by name and arity: span scaled | refusal '' | problem '' | /p/main.nv [19:13] -> scaledBy; /p/geo/shape.nv [32:8] -> scaledBy
+function used qualified: span describe | refusal '' | problem '' | /p/main.nv [13:17] -> summarize; /p/geo/shape.nv [28:8] -> summarize
+field of a class: span radius | refusal '' | problem '' | /p/geo/shape.nv [12:11 15:14 19:16 19:25 23:20] -> size
+method with its override: span area | refusal '' | problem '' | /p/main.nv [12:23] -> surface; /p/geo/shape.nv [4:21 18:12] -> surface
+parameter: span radius | refusal '' | problem '' | /p/geo/shape.nv [14:21 15:23] -> extent
+enum constant: span Red | refusal '' | problem '' | /p/main.nv [6:5 15:23] -> Crimson
+std function is refused: span repeat | refusal 'standard library declarations cannot be renamed' | problem '' | (none)
+keyword as new name: span total | refusal '' | problem ''while' is a keyword' | (none)
+invalid new name: span total | refusal '' | problem ''1abc' is not a valid identifier' | (none)
+conflict with a visible variable: span total | refusal '' | problem 'a variable named 'area' is already visible here' | (none)
+conflict with an existing type: span Circle | refusal '' | problem 'a type named 'Shape' already exists' | (none)
+conflict with the same arity: span scaled | refusal '' | problem 'a declaration named 'describe' already exists' | (none)
+nothing under the cursor: no span | refusal '' | problem '' | (none)
+== imports
+std module: std:strings (module)
+package folder: /q/geo/extra.nv:1:1 ""
+root file: /q/helper.nv:1:1 ""
+dependency entry: /q/lib/lib.nv:1:1 ""
+dependency package: /q/lib/sub/part.nv:1:1 ""
+import that leads nowhere: (none)
+the import keyword itself: /q/geo/extra.nv:1:1 ""
+== members
+a member name declared by two types: the typed receivers only: /m/main.nv:2:11 "width"; /m/main.nv:6:16 "width"; /m/main.nv:20:16 "width"; /m/main.nv:29:16 "width"; /m/main.nv:43:16 "width"
+a member declared once: unresolved receivers count: /m/main.nv:3:11 "height"; /m/main.nv:6:24 "height"; /m/main.nv:25:28 "height"; /m/main.nv:43:29 "height"
+override family: /m/main.nv:5:12 "area"; /m/main.nv:19:12 "area"; /m/main.nv:29:28 "area"
+member of a built-in type is not the user's field: /m/main.nv:15:13 "length"
+local that a literal key shares its name with: /m/main.nv:42:9 "width"; /m/main.nv:43:22 "width"
+ambiguous member name is refused: span width | refusal 'ambiguous member name' | problem '' | (none)
+member declared once: span height | refusal '' | problem '' | /m/main.nv [3:11 6:24 25:28 43:29] -> tall
+member with its override and the literal key: span area | refusal '' | problem '' | /m/main.nv [5:12 19:12 29:28] -> surface
+field that a string method shares its name with: span length | refusal '' | problem '' | /m/main.nv [15:13] -> size
+local next to a literal key: span width | refusal '' | problem '' | /m/main.nv [42:9 43:22] -> wide
+built-in member is refused: span length | refusal 'built-in names cannot be renamed' | problem '' | (none)
+conflict with a member of the family: span height | refusal '' | problem ''Box' already has a member named 'width'' | (none)
+conflict with a name used in the scope: span width | refusal '' | problem 'the name 'Box' is already used in this scope' | (none)
+== shadowing
+outer variable: /s/main.nv:2:9 "count"; /s/main.nv:3:9 "count"; /s/main.nv:7:13 "count"
+inner variable shadows the outer one: /s/main.nv:4:13 "count"; /s/main.nv:5:17 "count"
+loop variable: /s/main.nv:11:10 "item"; /s/main.nv:12:17 "item"
+parameter: /s/main.nv:10:19 "items"; /s/main.nv:11:18 "items"; /s/main.nv:14:12 "items"
+assignment in the body of a method without parentheses: /s/main.nv:18:9 "total"; /s/main.nv:19:5 "total"; /s/main.nv:20:13 "total"
+outer variable: span count | refusal '' | problem '' | /s/main.nv [2:9 3:9 7:13] -> total
+inner variable: span count | refusal '' | problem '' | /s/main.nv [4:13 5:17] -> inner
+== string interpolation
+local inside an interpolation: /m/main.nv:51:9 "count"
+member inside an interpolation: /m/main.nv:2:11 "width"
+local used in a string: /m/main.nv:51:9 "count"; /m/main.nv:52:21 "count"
+method used in a string: /m/main.nv:5:12 "area"; /m/main.nv:19:12 "area"; /m/main.nv:29:28 "area"; /m/main.nv:52:58 "area"
+local used in a string: span count | refusal '' | problem '' | /m/main.nv [51:9 52:21] -> total
+method used in a string: span area | refusal '' | problem '' | /m/main.nv [5:12 19:12 29:28 52:58] -> surface
+conflict with a name used in a string: span count | refusal '' | problem 'a variable named 'box' is already visible here' | (none)
+local used in a string: 51:9 kind 3; 52:21 kind 2
+== tags
+component tag: /n/components/Button.nvh:1:1 ""
+tag without a component: (none)
+a header member of the component: /n/pages/Home.nvh:2:8 "title"
+== scratch buffer
+definition inside a scratch buffer: 1 location, path '', name helper
+references inside a scratch buffer: 2 locations
+== manifest and non-source documents
+definition in a manifest: (none)
+references in a manifest: (none)
+rename in a manifest: span false refusal '' edits 0
+highlights in a manifest: 0
+== assignments in blocks with a return type
+local in a method returning integer: /t/main.nv:2:9 "count"; /t/main.nv:3:5 "count"; /t/main.nv:4:12 "count"
+assignment target in a method returning integer: /t/main.nv:2:9 "count"
+local in a method returning string: /t/main.nv:8:9 "text"; /t/main.nv:9:5 "text"; /t/main.nv:10:12 "text"
+local assigned inside a try block: /t/main.nv:14:9 "total"; /t/main.nv:16:9 "total"
+assignment inside a try block: 14:9 kind 3; 16:9 kind 3
+local in a method returning a class: /t/main.nv:6:9 "item"; /t/main.nv:7:5 "item"; /t/main.nv:8:12 "item"
+assignment target in a method returning a class: /t/main.nv:13:13 "made"
+local in a method of a class returning a class: /t/main.nv:13:13 "made"; /t/main.nv:14:9 "made"; /t/main.nv:15:16 "made"
+local in a method returning integer: span count | refusal '' | problem '' | /t/main.nv [2:9 3:5 4:12] -> zzz
+local assigned inside a try block: span total | refusal '' | problem '' | /t/main.nv [14:9 16:9] -> sum
+== rename that a variable would hide
+field to the name of a parameter used in another method: span radius | refusal '' | problem 'a variable named 'by' would hide 'radius' where it is used' | (none)
+field to a name that no variable has: span radius | refusal '' | problem '' | /t/main.nv [2:11 5:16 5:25 9:16] -> extent
+global to the name of a local of a user: span TOTAL | refusal '' | problem 'a variable named 'count' would hide 'TOTAL' where it is used' | (none)
+enum constant to another constant: span Red | refusal '' | problem ''Color' already has a member named 'Green'' | (none)
+field to a primitive type name: span radius | refusal '' | problem ''integer' is a reserved word' | (none)
+field to a contextual word: span radius | refusal '' | problem ''sync' is a reserved word' | (none)
+class to a primitive type name: span Circle | refusal '' | problem ''string' is a reserved word' | (none)
+local to nil: span count | refusal '' | problem ''nil' is a reserved word' | (none)
+member whose namesake belongs to a std value: span size | refusal '' | problem '' | /t/main.nv [4:13 11:15] -> width

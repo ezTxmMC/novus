@@ -1,0 +1,75 @@
+package lifecycle
+
+import base/maybe
+import base/platform
+import base/text
+import server/protocol
+import server/session
+
+private final LIFECYCLE_MAX_DETAIL_BYTES = 400
+
+// `novusc deps` takes no path, so it runs in the project root. It is the only command that may use the network.
+method lifecycleFetchOutcome(string projectRoot, string novuscPath, integer timeoutSeconds): CommandOutcome {
+    var quoted = shellQuote(novuscPath)
+    if (quoted == "") {
+        return CommandOutcome(LIFECYCLE_COMMAND_FETCH, false, "novus: the path of novusc cannot be quoted", projectRoot)
+    }
+    var finished = runCommandIn(projectRoot, quoted + " deps 2>&1", timeoutSeconds)
+    return CommandOutcome(LIFECYCLE_COMMAND_FETCH, finished.exitCode == 0 && finished.started, lifecycleFetchMessage(finished), projectRoot)
+}
+
+method lifecycleFetchMessage(CommandResult finished): string {
+    if (finished.started == false) {
+        return "novus: novusc could not be started"
+    }
+    if (finished.timedOut) {
+        return "novus: fetching dependencies timed out"
+    }
+    var detail = truncateUtf8(finished.output.trim(), LIFECYCLE_MAX_DETAIL_BYTES)
+    if (finished.exitCode == 0) {
+        return "novus: dependencies fetched" + lifecycleDetailSuffix(detail)
+    }
+    return "novus: fetching dependencies failed (exit code " + finished.exitCode + ")" + lifecycleDetailSuffix(detail)
+}
+
+method lifecycleDetailSuffix(string detail): string {
+    if (detail == "") {
+        return ""
+    }
+    return ": " + detail
+}
+
+// The project of the first argument (a uri or a path), else every project that has unfetched dependencies, else all.
+method lifecycleFetchRoots(Session session, CommandCall call): array<string> {
+    var roots = {}
+    for (project in lifecycleFetchProjects(session, call)) {
+        if (project.layout.root != "") {
+            roots[project.layout.root] = true
+        }
+    }
+    return roots.keys()
+}
+
+method lifecycleFetchProjects(Session session, CommandCall call): array<object> {
+    var projects = []
+    if (call.arguments.length() > 0) {
+        var named = session.workspace.projectFor(lifecycleArgumentPath(call.arguments[0]))
+        if (isSome(named)) {
+            projects.push(named)
+        }
+        return projects
+    }
+    for (project in session.workspace.allProjects()) {
+        if (project.hasUnfetchedDependencies()) {
+            projects.push(project)
+        }
+    }
+    return projects
+}
+
+method lifecycleArgumentPath(string argument): string {
+    if (argument.startsWith("file:")) {
+        return uriToFilePath(argument)
+    }
+    return argument
+}

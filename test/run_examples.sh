@@ -10,6 +10,13 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 NOVUSC="${NOVUSC:-$ROOT/build/novusc}"
 JOBS="${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)}"
 export NOVUS_CFLAGS="${NOVUS_CFLAGS:--O0}"
+# a cache of its own: the run does not fill the user's, and the examples that
+# run at the same time share it (the compiler is safe under concurrent runs)
+if [ -z "${NOVUS_CACHE:-}" ]; then
+    NOVUS_CACHE="$(mktemp -d)"
+    trap 'rm -rf "$NOVUS_CACHE"' EXIT
+fi
+export NOVUS_CACHE
 UPDATE=0
 FILTER=""
 for arg in "$@"; do

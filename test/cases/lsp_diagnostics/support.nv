@@ -1,0 +1,111 @@
+package main
+
+import "novus/lsp/base/maybe"
+import "novus/lsp/base/model"
+import "novus/lsp/base/platform"
+import "novus/lsp/base/text"
+import "novus/lsp/projects/stdlib"
+import "novus/lsp/projects/workspace"
+import "novus/lsp/services/diagnostics"
+
+// A workspace over files in memory (absolute roots, NG35) and the two producers of the package under test.
+define class DgWorld {
+    map<string, string> files
+    FileCache cache
+    Workspace space
+    Settings settings
+    OwnDiagnostics own
+    ManifestDiagnostics manifest
+
+    construct(map<string, string> files) {
+        this.files = files
+        this.cache = FileCache(MemoryTextSource(files))
+        this.space = Workspace(this.cache, standardLibrary())
+        this.settings = Settings()
+        this.own = OwnDiagnostics(this.space, this.settings)
+        this.manifest = ManifestDiagnostics(this.space)
+        this.manifest.settings = this.settings
+    }
+
+    method document(string filePath): Document {
+        return Document(filePathToUri(filePath), "novus", 1, this.cache.textOf(filePath))
+    }
+
+    method context(string filePath): FileContext {
+        return this.space.contextFor(this.document(filePath))
+    }
+
+    // The own layer for one file of the workspace, one line per finding.
+    method ownOf(string filePath): array<string> {
+        var document = this.document(filePath)
+        return dgLines(document, this.own.produce(document))
+    }
+
+    method manifestOf(string filePath): array<string> {
+        var document = this.document(filePath)
+        return dgLines(document, this.manifest.produce(document))
+    }
+}
+
+method dgLines(Document document, array<Diagnostic> findings): array<string> {
+    var lines = []
+    for (finding in findings) {
+        lines.append(dgLine(document, finding))
+    }
+    return lines
+}
+
+// `line:column severity code: message [data]`, 1-based, byte columns.
+method dgLine(Document document, Diagnostic finding): string {
+    var line = document.lines.lineOf(finding.span.start) + 1
+    var column = document.lines.byteColumn(finding.span.start) + 1
+    var text = line + ":" + column + " " + dgSeverity(finding.severity) + " " + finding.code + ": " + finding.message
+    if (finding.data != "") {
+        text = text + " [" + finding.data + "]"
+    }
+    if (finding.unnecessary) {
+        text = text + " (unnecessary)"
+    }
+    for (related in finding.related) {
+        text = text + " (related " + related.filePath + " " + related.span.start + ": " + related.message + ")"
+    }
+    return text
+}
+
+method dgSeverity(Severity severity): string {
+    if (severity == Severity.Error) {
+        return "error"
+    }
+    if (severity == Severity.Warning) {
+        return "warning"
+    }
+    if (severity == Severity.Information) {
+        return "information"
+    }
+    return "hint"
+}
+
+method dgShow(string label, array<string> lines) {
+    println(label)
+    if (lines.length() == 0) {
+        println("  (none)")
+    }
+    for (line in lines) {
+        println("  " + line)
+    }
+}
+
+method dgCheck(string label, string actual, string expected) {
+    if (actual == expected) {
+        println("ok   " + label)
+        return
+    }
+    println("FAIL " + label)
+    println("  expected: " + expected)
+    println("  actual:   " + actual)
+}
+
+// The opener of an interpolation, built at run time: a literal "$" + "{" in a test source would be one (NG02).
+method dgInterp(): string {
+    return "$" + "{"
+}

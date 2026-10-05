@@ -1,0 +1,175 @@
+package navigation
+
+import base/maybe
+import bytes
+import base/model
+import base/text
+import projects/closure
+import projects/workspace
+import semantics/semantic
+import semantics/targets
+import syntax/outline
+
+private final NAVIGATION_HIGHLIGHT_READ = 2
+private final NAVIGATION_HIGHLIGHT_WRITE = 3
+
+// The program files that can hold references: every file of the closure except the std sources (their own uses of
+// a std name are not the user's business and parsing them with tokens would fill the token cache).
+method navigationReferenceFiles(FileContext context): array<ClosureFile> {
+    var files = []
+    if (isNone(context.closureFile)) {
+        return files
+    }
+    for (file in context.project.closure.files) {
+        if (file.origin != FileOrigin.Standard) {
+            files.append(file)
+        }
+    }
+    return files
+}
+
+// Whether the text of the file contains the name at all: a file that does not is skipped before it is parsed with
+// tokens. The search is NUL-safe (NG30); a context without a text source cannot tell and says yes.
+method navigationMayMention(FileContext context, ClosureFile file, string name): bool {
+    if (isNone(context.source) || file.filePath == context.document.filePath) {
+        return true
+    }
+    return bytes.indexOf(context.source.textOf(file.filePath), name, 0) >= 0
+}
+
+// The parse of a closure file that keeps its tokens: the editor parse of the open file, the cached token parse of a
+// file nobody opened (V100, 6.13); a context without a source falls back to the token-less parse.
+method navigationTokenSyntax(FileContext context, ClosureFile file): SourceFile {
+    var syntax = context.syntaxWithTokens(file.filePath)
+    if (isNone(syntax)) {
+        return file.syntax
+    }
+    return syntax
+}
+
+// References over the whole closure and highlights inside one document. The target is the declaration under the
+// cursor, or the one that the identifier refers to; a built-in, a package name and an unresolved member have none.
+define class ReferenceFinder {
+    OccurrenceScanner scanner
+
+    construct() {
+        this.scanner = OccurrenceScanner()
+    }
+
+    method find(FileContext context, integer offset, bool includeDeclaration): array<Location> {
+        return this.find(context, offset, includeDeclaration, NeverCancelled())
+    }
+
+    method find(FileContext context, integer offset, bool includeDeclaration, CancelCheck cancel): array<Location> {
+        var target = this.targetAt(context, offset)
+        if (isNone(target)) {
+            return []
+        }
+        var found = this.occurrencesOf(context, target.first(), cancel)
+        this.addStandardDeclaration(found, target.first(), includeDeclaration)
+        return this.withoutDeclaration(context, found, target.first(), includeDeclaration)
+    }
+
+    // Additive: every occurrence of the symbol in the files of the closure, declarations included.
+    method occurrencesOf(FileContext context, Symbol symbol, CancelCheck cancel): array<Location> {
+        var found = []
+        var visited = 0
+        for (file in navigationReferenceFiles(context)) {
+            if (visited % CANCEL_POLL_INTERVAL == 0 && cancel.isCancelled()) {
+                return found
+            }
+            visited = visited + 1
+            this.collect(context, symbol, file, found)
+        }
+        return found
+    }
+
+    // Additive: the symbol target under the cursor (exact resolution, no leniency); nil for anything else.
+    method targetAt(FileContext context, integer offset): IdentifierTarget {
+        var target = TargetFinder(context.resolver()).targetAt(context.closureFile, context.syntax, offset, false)
+        if (isNone(target) || target.isSymbol() == false) {
+            return nothing()
+        }
+        return target
+    }
+
+    method collect(FileContext context, Symbol symbol, ClosureFile file, array<Location> found) {
+        if (symbol.isLocal() && file.filePath != context.document.filePath) {
+            return
+        }
+        if (navigationMayMention(context, file, symbol.name()) == false) {
+            return
+        }
+        var syntax = navigationTokenSyntax(context, file)
+        for (span in this.scanner.occurrences(context, symbol, syntax)) {
+            found.append(Location(file.filePath, span))
+        }
+    }
+
+    // The std sources are not scanned, so a std declaration is added by hand (its logical key, converted by the handler).
+    method addStandardDeclaration(array<Location> found, Symbol symbol, bool includeDeclaration) {
+        var location = navigationLocationOf(symbol)
+        if (includeDeclaration && symbol.origin() == FileOrigin.Standard && isSome(location)) {
+            found.append(location)
+        }
+    }
+
+    method withoutDeclaration(FileContext context, array<Location> found, Symbol symbol, bool includeDeclaration): array<Location> {
+        if (includeDeclaration) {
+            return found
+        }
+        var declared = navigationDeclarationsOf(context.resolver(), symbol)
+        var kept = []
+        for (location in found) {
+            if (declared.has(location.filePath + "@" + location.span.start) == false) {
+                kept.append(location)
+            }
+        }
+        return kept
+    }
+
+    method highlights(FileContext context, integer offset): array<HighlightEntry> {
+        var target = this.targetAt(context, offset)
+        if (isNone(target)) {
+            return []
+        }
+        var entries = []
+        var tokens = context.syntax.tokens
+        for (span in this.scanner.occurrences(context, target.first(), context.syntax)) {
+            entries.append(HighlightEntry(span, this.kindAt(tokens, span)))
+        }
+        return entries
+    }
+
+    // A declaration or the target of an assignment writes; everything else reads.
+    method kindAt(array<Token> tokens, Span span): integer {
+        var index = targetsFirstTokenEndingAfter(tokens, span.start)
+        if (index + 1 < tokens.length() && tokens[index].start == span.start && tokens[index + 1].isPunct("=")) {
+            return NAVIGATION_HIGHLIGHT_WRITE
+        }
+        return NAVIGATION_HIGHLIGHT_READ
+    }
+}
+
+// The `file@offset` keys of the declarations of the symbol's family, for `includeDeclaration == false`.
+method navigationDeclarationsOf(Resolver resolver, Symbol symbol): map<string, bool> {
+    var declared = {}
+    navigationMarkDeclaration(declared, symbol)
+    if (symbol.isLocal() || symbol.isMember() == false) {
+        return declared
+    }
+    var family = navigationFamilyOf(resolver, symbol)
+    for (member in resolver.index.declarersOfMember(symbol.name())) {
+        if (family.keys.has(member.key)) {
+            navigationMarkDeclaration(declared, member)
+        }
+    }
+    return declared
+}
+
+method navigationMarkDeclaration(map<string, bool> declared, Symbol symbol) {
+    var location = navigationLocationOf(symbol)
+    if (isSome(location)) {
+        declared[location.filePath + "@" + location.span.start] = true
+    }
+}

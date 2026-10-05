@@ -1,0 +1,170 @@
+package main
+
+import "novus/lsp/projects/closure"
+import "novus/lsp/semantics/semantic"
+import @fixtures_more
+import @support
+
+method fixtureWorld(string name): SemWorld {
+    return SemWorld(semFixtureNamed(name).files, "/proj/main.nv")
+}
+
+// Rule 7, calls: own package, enclosing class, root level wins over a unique package function, unique package
+// function, ambiguity, class constructor, built-in functions.
+method runCallRules() {
+    println("== rule 7: call resolution")
+    var own = fixtureWorld("own-package-wins")
+    semCheckCall(own, "own package first (inside geo)", "/proj/geo/a.nv", "hello()\n}", "hello", 0, "resolved [geo.hello/0]")
+    semCheckCall(own, "root level from main", "/proj/main.nv", "println(hello())", "hello", 0, "resolved [hello/0]")
+    var root = fixtureWorld("root-wins-over-package-function")
+    semCheckCall(root, "root wins over the package function (inside util)", "/proj/util/b.nv", "area(2.0)", "area", 1, "resolved [area/1]")
+    var unique = fixtureWorld("unique-package-function")
+    semCheckCall(unique, "unique package function is callable unqualified", "/proj/main.nv", "println(unique())", "unique", 0, "resolved [geo.unique/0]")
+    var ambiguous = fixtureWorld("ambiguous-package-function")
+    semCheckCall(ambiguous, "two packages: ambiguous", "/proj/main.nv", "println(shared())", "shared", 0, "ambiguous [geo.shared/0, draw.shared/0]")
+    var qualified = fixtureWorld("qualified-resolves-ambiguity")
+    println("  qualified " + semShow(qualified.resolver.lookupQualified("geo", "shared", 0)) + " " + semShow(qualified.resolver.lookupQualified("draw", "shared", 0)))
+    runClassRules()
+    runBuiltinRules()
+}
+
+method runClassRules() {
+    var wins = fixtureWorld("class-method-wins-over-package-function")
+    semCheckCall(wins, "enclosing class method wins over the package function", "/proj/main.nv", "return helper()", "helper", 0, "resolved [Tool.helper/0]")
+    semCheckCall(wins, "outside the class the package function is reached", "/proj/main.nv", "println(Tool().run())", "helper", 0, "resolved [geo.helper/0]")
+    var beats = fixtureWorld("class-beats-root-function")
+    semCheckCall(beats, "a class beats a root function of the same name and arity", "/proj/main.nv", "println(typeOf(Thing(1)))", "Thing", 1, "resolved [Thing]")
+}
+
+method runBuiltinRules() {
+    var world = fixtureWorld("core-builtin-beats-user-function")
+    var scope = world.scopeAt("/proj/main.nv", "println(parseInt")
+    semCheck("core built-in beats the user function", semShow(world.resolver.lookupCall(scope, "parseInt", 1)) + " builtin=" + world.resolver.isBuiltinCall("parseInt"), "unknown [] builtin=true")
+    semCheck("other built-in yields to the user function", semShow(world.resolver.lookupCall(scope, "env", 1)) + " builtin=" + world.resolver.isBuiltinCall("env"), "resolved [env/1] builtin=false")
+    semCheck("a built-in without a user function", semShow(world.resolver.lookupCall(scope, "chr", 1)) + " builtin=" + world.resolver.isBuiltinCall("chr"), "unknown [] builtin=true")
+    semCheck("not a built-in", semShow(world.resolver.lookupCall(scope, "nothing", 0)) + " builtin=" + world.resolver.isBuiltinCall("nothing"), "unknown [] builtin=false")
+}
+
+// Rule 7, variables: local, this, own-package global, root global, field, unique package global, ambiguity.
+method runVariableRules() {
+    println("== rule 7: variable resolution")
+    var world = fixtureWorld("variables-in-loader-order")
+    semCheckName(world, "root global beats a field of the same name", "/proj/main.nv", "return LEVEL\n    }\n\n    method only", "LEVEL", "resolved [LEVEL]")
+    semCheckName(world, "field beats a package global", "/proj/main.nv", "return ONLY", "ONLY", "resolved [Box.ONLY]")
+    var localOffset = world.files["/proj/main.nv"].indexOf("var LEVEL") + 4
+    semCheckName(world, "local beats everything", "/proj/main.nv", "return LEVEL\n}\n\nmethod main", "LEVEL", "resolved [local:LEVEL@" + localOffset + "]")
+    semCheckName(world, "unique package global from the root", "/proj/main.nv", "println(ONLY)", "ONLY", "resolved [geo.ONLY]")
+    semCheckName(world, "own package global inside geo", "/proj/geo/a.nv", "return LEVEL", "LEVEL", "resolved [geo.LEVEL]")
+    var both = fixtureWorld("ambiguous-package-global")
+    semCheckName(both, "global of two packages: ambiguous", "/proj/main.nv", "println(BOTH)", "BOTH", "ambiguous [geo.BOTH, draw.BOTH]")
+    var scope = both.scopeAt("/proj/main.nv", "println(BOTH)")
+    semCheck("a function name is no variable", semShow(both.resolver.lookupName(scope, "shared")), "unknown []")
+    semCheck("a std module is no variable", semShow(both.resolver.lookupName(scope, "strings")), "unknown []")
+}
+
+method runThisRule() {
+    var world = fixtureWorld("class-method-wins-over-package-function")
+    var scope = world.scopeAt("/proj/main.nv", "return helper()")
+    semCheck("this is the enclosing class", semShow(world.resolver.lookupName(scope, "this")), "resolved [Tool]")
+    var outside = world.scopeAt("/proj/main.nv", "println(Tool().run())")
+    semCheck("this outside a class", semShow(world.resolver.lookupName(outside, "this")), "unknown []")
+    semCheck("thisType", world.resolver.thisType(scope).display() + " / " + world.resolver.thisType(outside).display(), "Tool / unknown")
+}
+
+// Rule 3: packages and qualifiers.
+method runPackageRules() {
+    println("== rules 3 and 4: packages, qualifiers, package line")
+    var collision = fixtureWorld("qualifier-is-the-last-segment")
+    var members = collision.resolver.qualifierMembers("shapes")
+    semCheck("geo/shapes and draw/shapes share the qualifier shapes", semKeys(members), "shapes.f/0, shapes.f/0")
+    semCheck("lookupQualified merges both", semShow(collision.resolver.lookupQualified("shapes", "f", 0)) + " " + collision.index.hasQualifier("shapes"), "resolved [shapes.f/0, shapes.f/0] true")
+    var packageMain = fixtureWorld("package-main-folder-is-root-level")
+    semCheck("package main in a folder means unqualified", semShow(packageMain.resolver.lookupCall(packageMain.scopeAt("/proj/main.nv", "println(xhelp"), "xhelp", 0)), "resolved [xhelp/0]")
+    var mismatch = fixtureWorld("package-line-must-match-the-folder")
+    semCheck("package line against the folder", mismatch.closure.issues[0].code, "package-folder-mismatch")
+}
+
+// Rules 2 and 5 to 6: files come from imports, std modules are qualified, a local folder wins, dependencies.
+method runLoaderRules() {
+    println("== rules 2, 5, 6: closure, std, dependencies")
+    var unreachable = fixtureWorld("files-are-found-only-through-imports")
+    var scope = unreachable.scopeAt("/proj/main.nv", "gone()")
+    semCheck("a file nobody imports is no part of the program", semShow(unreachable.resolver.lookupCall(scope, "gone", 0)) + " files=" + unreachable.index.symbolsInFile("/proj/extra/e.nv").length(), "unknown [] files=0")
+    var shadow = fixtureWorld("local-folder-shadows-std")
+    semCheck("local json folder wins over std json", semShow(shadow.resolver.lookupQualified("json", "stringify", 1)) + " one std module less=" + (shadow.index.stdModuleNames().length() == standardLibrary().moduleNames().length() - 1), "resolved [json.stringify/1] one std module less=true")
+    semCheck("the shadowed module is no std qualifier", shadow.index.stdModuleNames().contains("json"), "false")
+    runStdRules()
+    var dependency = fixtureWorld("dependency-root-level-is-unqualified")
+    var depScope = dependency.scopeAt("/proj/main.nv", "println(libHello")
+    semCheck("dependency entry: empty qualifier", semShow(dependency.resolver.lookupCall(depScope, "libHello", 0)), "resolved [libHello/0]")
+    semCheck("dependency package: its qualifier", semShow(dependency.resolver.lookupQualified("util", "utilHello", 0)), "resolved [util.utilHello/0]")
+    semCheck("the entry's own package name is no qualifier", dependency.resolver.isModuleQualifier("lib"), "false")
+    semCheck("origin of the dependency functions", dependency.index.functionsNamed("libHello")[0].origin() + " " + dependency.index.functionsNamed("libHello")[0].file.moduleName, "Dependency ext.example/lib")
+}
+
+method runStdRules() {
+    var missing = fixtureWorld("std-module-not-imported")
+    semCheck("std without any import: known as a qualifier, not loaded", missing.resolver.isModuleQualifier("strings") + " loaded=" + missing.closure.loadedStdModules, "true loaded=[]")
+    var flat = fixtureWorld("visibility-is-flat")
+    semCheck("visibility is flat: one import anywhere loads the module", flat.resolver.isModuleQualifier("strings") + " loaded=" + flat.closure.loadedStdModules, "true loaded=[strings]")
+    semCheck("std members are qualified", semShow(flat.resolver.lookupQualified("strings", "repeat", 2)), "resolved [strings.repeat/2]")
+    var scope = flat.scopeAt("/proj/main.nv", "println(strings")
+    semCheck("std functions are never reached unqualified", semShow(flat.resolver.lookupCall(scope, "repeat", 2)), "unknown []")
+}
+
+// Rule 8: overloads by name and arity; same-arity overloads stay together (the compiler dispatches at run time).
+method runOverloadRules() {
+    println("== rule 8: overloads")
+    var world = fixtureWorld("overloads-by-name-and-arity")
+    semCheckCall(world, "arity 1: both files' overloads", "/proj/main.nv", "println(f(1))", "f", 1, "resolved [f/1, f/1]")
+    semCheckCall(world, "arity 2", "/proj/main.nv", "println(f(1, 2))", "f", 2, "resolved [f/2]")
+    semCheckCall(world, "no overload of arity 3", "/proj/main.nv", "println(f(1))", "f", 3, "unknown []")
+}
+
+// Rule 7: classes are global and not namespaced; a repeated name is a duplicate definition.
+method runTypeRules() {
+    println("== rule 7: types are global")
+    var world = fixtureWorld("duplicate-class-definition")
+    semCheck("first declaration wins", world.resolver.lookupType("Circle").file.filePath, "/proj/geo/a.nv")
+    semCheck("both declarations are listed", world.index.typeDeclarationsNamed("Circle").length(), "2")
+    semCheck("the repeated one", semKeys(world.index.duplicateTypeDeclarations()) + " in " + world.index.duplicateTypeDeclarations()[0].file.filePath, "Circle in /proj/geo/b.nv")
+    semCheck("unknown type", world.resolver.lookupType("Nope"), "")
+}
+
+method runAllRules() {
+    runCallRules()
+    runVariableRules()
+    runThisRule()
+    runPackageRules()
+    runLoaderRules()
+    runOverloadRules()
+    runTypeRules()
+}
+
+// Every numbered rule of DESIGN 5.6 and the fixtures that pin it (each one is also run by novusc, see
+// verify_compiler.sh); rule 1 is the layout walk of `manifest` and is pinned by lsp_workspace.
+method runRuleIndex() {
+    println("== DESIGN 5.6: rule to fixtures")
+    var rules = [
+        "1 project and root|(lsp_workspace: ProjectModel.key and a program without a manifest)",
+        "2 closure through imports|files-are-found-only-through-imports",
+        "3 packages and qualifiers|qualifier-is-the-last-segment,package-main-folder-is-root-level",
+        "4 the package line|package-line-must-match-the-folder",
+        "5 std modules|local-folder-shadows-std,std-module-not-imported",
+        "6 dependency imports|dependency-root-level-is-unqualified",
+        "7 names|own-package-wins,root-wins-over-package-function,unique-package-function,ambiguous-package-function,ambiguous-package-global,class-method-wins-over-package-function,class-beats-root-function,core-builtin-beats-user-function,duplicate-class-definition,variables-in-loader-order",
+        "8 overloads|overloads-by-name-and-arity",
+        "9 flat visibility|visibility-is-flat",
+        "10 main package wins|root-wins-over-package-function"
+    ]
+    for (rule in rules) {
+        var parts = rule.split("|")
+        var names = []
+        for (name in parts[1].split(",")) {
+            if (name.startsWith("(") || semFixtureNamed(name).name == name) {
+                names.append(name)
+            }
+        }
+        println("  rule " + parts[0] + ": " + names.length() + " of " + parts[1].split(",").length() + " pinned: " + parts[1])
+    }
+}

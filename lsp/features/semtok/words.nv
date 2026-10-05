@@ -1,0 +1,189 @@
+package semtok
+
+import base/maybe
+import base/model
+import base/text
+import syntax/lexing
+
+private final SEMTOK_DEFINE_KINDS = { "class": true, "abstract": true, "enum": true, "interface": true,
+    "annotation": true }
+private final SEMTOK_CONTEXTUAL_WORDS = { "define": true, "class": true, "abstract": true, "enum": true,
+    "interface": true, "annotation": true, "based": true, "construct": true, "async": true, "native": true,
+    "variadic": true, "get": true, "set": true, "sync": true, "await": true, "thread": true, "virtual": true,
+    "this": true }
+private final SEMTOK_BOOLEAN_WORDS = { "true": true, "false": true }
+private final SEMTOK_EXPRESSION_STARTS = ["(", "[", "{", "-", "!"]
+private final SEMTOK_STATEMENT_ENDS = ["{", "}", ";"]
+private final SEMTOK_HEADER_LOOKBACK = 8
+private final SEMTOK_NO_WORD = -1
+
+// The words that the lexer calls identifiers and the grammar gives a meaning by position (GRAMMAR 1.2): the answer is
+// the token type, or -1 when the word is an ordinary name at this place. `var define = 1` therefore stays a name.
+define class SemtokWords {
+    construct() {
+    }
+
+    method classify(SemtokStream stream, integer index): SemanticSpan {
+        var token = stream.tokenAt(index)
+        var type = this.typeFor(stream, index, token.text)
+        if (type == SEMTOK_NO_WORD) {
+            return semtokNoSpan(token.start)
+        }
+        return SemanticSpan(token.span(), type, SEMTOK_MOD_NONE)
+    }
+
+    method typeFor(SemtokStream stream, integer index, string word): integer {
+        if (stream.isPunct(index - 1, ".")) {
+            return SEMTOK_NO_WORD
+        }
+        if (this.isAnnotationName(stream, index)) {
+            return SEMTOK_TYPE_DECORATOR
+        }
+        if (SEMTOK_CONTEXTUAL_WORDS.has(word) == false) {
+            return SEMTOK_NO_WORD
+        }
+        var type = this.declarationWord(stream, index, word)
+        if (type == SEMTOK_NO_WORD) {
+            type = this.memberWord(stream, index, word)
+        }
+        if (type == SEMTOK_NO_WORD) {
+            type = this.expressionWord(stream, index, word)
+        }
+        return type
+    }
+
+    // The name after `@`, except in `import @file`, where the `@` marks a file import.
+    method isAnnotationName(SemtokStream stream, integer index): bool {
+        if (stream.isPunct(index - 1, "@") == false) {
+            return false
+        }
+        return stream.isWord(stream.beforePrevious(index), SEMTOK_WORD_IMPORT) == false
+    }
+
+    method declarationWord(SemtokStream stream, integer index, string word): integer {
+        if (this.opensDefine(stream, index)) {
+            return SEMTOK_TYPE_KEYWORD
+        }
+        if (SEMTOK_DEFINE_KINDS.has(word) && this.followsDefine(stream, index, word)) {
+            return SEMTOK_TYPE_KEYWORD
+        }
+        if (word == SEMTOK_WORD_BASED && this.inDefineHeader(stream, index)) {
+            return SEMTOK_TYPE_KEYWORD
+        }
+        return SEMTOK_NO_WORD
+    }
+
+    // `define class`, `define abstract` and the long form `define abstract class`.
+    method followsDefine(SemtokStream stream, integer index, string word): bool {
+        if (stream.isWord(index - 1, SEMTOK_WORD_DEFINE)) {
+            return true
+        }
+        if (word != SEMTOK_WORD_CLASS || stream.isWord(index - 1, SEMTOK_WORD_ABSTRACT) == false) {
+            return false
+        }
+        return stream.isWord(stream.beforePrevious(index), SEMTOK_WORD_DEFINE)
+    }
+
+    // True when a `define` opens the header that this token sits in: no brace has been seen since.
+    method inDefineHeader(SemtokStream stream, integer index): bool {
+        var back = index - 1
+        while (back >= 0 && back >= index - SEMTOK_HEADER_LOOKBACK) {
+            if (stream.isPunct(back, "{") || stream.isPunct(back, "}")) {
+                return false
+            }
+            if (this.opensDefine(stream, back)) {
+                return true
+            }
+            back = back - 1
+        }
+        return false
+    }
+
+    method opensDefine(SemtokStream stream, integer index): bool {
+        return stream.isWord(index, SEMTOK_WORD_DEFINE) && SEMTOK_DEFINE_KINDS.has(stream.textAt(index + 1))
+    }
+
+    method memberWord(SemtokStream stream, integer index, string word): integer {
+        if (word == SEMTOK_WORD_CONSTRUCT && stream.isPunct(index + 1, "(") && this.startsStatement(stream, index)) {
+            return SEMTOK_TYPE_KEYWORD
+        }
+        if ((word == SEMTOK_WORD_ABSTRACT || word == SEMTOK_WORD_ASYNC) && stream.isWord(index + 1, SEMTOK_WORD_METHOD)) {
+            return SEMTOK_TYPE_MODIFIER
+        }
+        if (word == SEMTOK_WORD_NATIVE && stream.isKind(index + 1, TokenKind.String)) {
+            return SEMTOK_TYPE_MODIFIER
+        }
+        if (word == SEMTOK_WORD_VARIADIC && (stream.isKind(index - 1, TokenKind.String) || stream.isWord(index - 1, SEMTOK_WORD_NATIVE))) {
+            return SEMTOK_TYPE_MODIFIER
+        }
+        if ((word == SEMTOK_WORD_GET || word == SEMTOK_WORD_SET) && this.isAccessorWord(stream, index)) {
+            return SEMTOK_TYPE_MODIFIER
+        }
+        return SEMTOK_NO_WORD
+    }
+
+    // `name: get, set` after a field.
+    method isAccessorWord(SemtokStream stream, integer index): bool {
+        if (stream.isPunct(index - 1, ":")) {
+            return true
+        }
+        var earlier = stream.beforePrevious(index)
+        return stream.isPunct(index - 1, ",") && (stream.isWord(earlier, SEMTOK_WORD_GET) || stream.isWord(earlier, SEMTOK_WORD_SET))
+    }
+
+    method expressionWord(SemtokStream stream, integer index, string word): integer {
+        if (word == SEMTOK_WORD_THIS) {
+            return SEMTOK_TYPE_KEYWORD
+        }
+        if (word == SEMTOK_WORD_SYNC && this.isSyncStatement(stream, index)) {
+            return SEMTOK_TYPE_KEYWORD
+        }
+        if (word == SEMTOK_WORD_AWAIT && this.startsExpression(stream, index + 1)) {
+            return SEMTOK_TYPE_KEYWORD
+        }
+        if ((word == SEMTOK_WORD_THREAD || word == SEMTOK_WORD_VIRTUAL) && stream.isIdent(index + 1)) {
+            return SEMTOK_TYPE_KEYWORD
+        }
+        return SEMTOK_NO_WORD
+    }
+
+    // `sync { }` and `sync (lock) { }` at the start of a statement (NG37: elsewhere it is a call of a function `sync`).
+    method isSyncStatement(SemtokStream stream, integer index): bool {
+        if (stream.isPunct(index + 1, "{") == false && stream.isPunct(index + 1, "(") == false) {
+            return false
+        }
+        return this.startsStatement(stream, index)
+    }
+
+    method startsStatement(SemtokStream stream, integer index): bool {
+        if (this.startsLine(stream, index) || stream.inRun(index - 1) == false) {
+            return true
+        }
+        for (end in SEMTOK_STATEMENT_ENDS) {
+            if (stream.isPunct(index - 1, end)) {
+                return true
+            }
+        }
+        return false
+    }
+
+    method startsLine(SemtokStream stream, integer index): bool {
+        var token = stream.tokenAt(index)
+        return isSome(token) && token.firstOnLine
+    }
+
+    // `await` is an operator only when an expression can follow; `await + 1` is an addition.
+    method startsExpression(SemtokStream stream, integer index): bool {
+        var token = stream.tokenAt(index)
+        if (isNone(token)) {
+            return false
+        }
+        if (token.kind == TokenKind.Ident || token.kind == TokenKind.Integer || token.kind == TokenKind.Float || token.kind == TokenKind.String) {
+            return true
+        }
+        if (token.kind == TokenKind.Keyword) {
+            return SEMTOK_BOOLEAN_WORDS.has(token.text)
+        }
+        return token.kind == TokenKind.Punct && SEMTOK_EXPRESSION_STARTS.contains(token.value)
+    }
+}

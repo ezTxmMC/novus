@@ -1,0 +1,124 @@
+package lifecycle
+
+import base/maybe
+import server/jobs
+import server/protocol
+import server/rpc
+import server/session
+
+// textDocumentSync.change of the capabilities: 2 is incremental, 1 whole text; the document handlers accept both (5.2).
+private final SYNC_KIND = 2
+private final LIFECYCLE_SYNC_KEY = "textDocumentSync"
+private final LIFECYCLE_CHANGE_KEY = "change"
+private final LIFECYCLE_OPTIONS_KEY = "initializationOptions"
+private final LIFECYCLE_NOVUS_KEY = "novus"
+private final LIFECYCLE_CLEAN_EXIT = 0
+private final LIFECYCLE_UNCLEAN_EXIT = 1
+
+define class InitializeHandler based RequestHandler {
+    Session session
+
+    construct(Session session) {
+        this.session = session
+    }
+
+    // The client object and the codec are filled in place: the encoders hold these very objects (6.28, 6.32).
+    method handle(Request request): object {
+        var params = request.params
+        lifecycleFillClient(this.session.client, parseClientInfo(params))
+        this.session.codec.encoding = negotiatePositionEncoding(this.session.client.positionEncodings)
+        this.applyOptions(params)
+        this.session.workspace.setFolders(decodeWorkspaceFolders(params))
+        var capabilities = this.capabilities()
+        this.session.initialized = true
+        return buildInitializeResult(capabilities)
+    }
+
+    method applyOptions(map<string, object> params) {
+        var options = protocolField(params, LIFECYCLE_OPTIONS_KEY)
+        var novus = protocolField(options, LIFECYCLE_NOVUS_KEY)
+        if (protocolIsMap(novus)) {
+            mergeSettings(this.session.settings, novus)
+        }
+    }
+
+    method capabilities(): map<string, object> {
+        var session = this.session
+        var found = buildServerCapabilities(session.client, session.codec, session.registeredMethods, session.tokenTypes, session.tokenModifiers, session.commandIds)
+        var sync = protocolField(found, LIFECYCLE_SYNC_KEY)
+        if (protocolIsMap(sync)) {
+            sync[LIFECYCLE_CHANGE_KEY] = SYNC_KIND
+        }
+        return found
+    }
+}
+
+// Pulls the configuration and registers the file watchers, as far as the client can do either.
+define class InitializedHandler based RequestHandler {
+    Session session
+    MessageWriter writer
+    Router router
+    // contract-note: additive. ConfigurationResponse needs the scheduler and the contract constructor has none;
+    // wiring assigns it right after construction (lifecycle/DESIGN-NOTES.md).
+    DiagnosticScheduler scheduler
+    bool handled
+
+    construct(Session session, MessageWriter writer, Router router) {
+        this.session = session
+        this.writer = writer
+        this.router = router
+        this.scheduler = nothing()
+        this.handled = false
+    }
+
+    // A client that sends initialized twice gets one pull and one registration.
+    method handle(Request request): object {
+        if (this.handled) {
+            return nothing()
+        }
+        this.handled = true
+        if (this.session.client.configurationPull) {
+            lifecyclePullConfiguration(this.session, this.writer, this.router, this.scheduler)
+        }
+        if (this.session.client.dynamicWatchers) {
+            lifecycleRegisterWatchers(this.writer, this.router)
+        }
+        return nothing()
+    }
+}
+
+define class ShutdownHandler based RequestHandler {
+    Session session
+
+    construct(Session session) {
+        this.session = session
+    }
+
+    method handle(Request request): object {
+        this.session.shutdownRequested = true
+        return nothing()
+    }
+}
+
+define class ExitHandler based RequestHandler {
+    Session session
+    MainLoop loop
+
+    construct(Session session, MainLoop loop) {
+        this.session = session
+        this.loop = loop
+    }
+
+    method handle(Request request): object {
+        this.loop.stop(lifecycleExitCode(this.session))
+        return nothing()
+    }
+}
+
+// 0 only after shutdown, 1 otherwise (5.10).
+method lifecycleExitCode(Session session): integer {
+    if (session.shutdownRequested) {
+        return LIFECYCLE_CLEAN_EXIT
+    }
+    return LIFECYCLE_UNCLEAN_EXIT
+}

@@ -1,0 +1,84 @@
+package session
+
+import base/model
+import server/protocol
+
+private final SESSION_CHECK_MODES = ["off", "onSave", "onType"]
+private final SESSION_LINE_LIMIT = 1000000
+private final SESSION_TIMEOUT_LIMIT = 86400
+private final SESSION_MAX_TAB_SIZE = 64
+private final SESSION_MAX_BLANK_LINES = 100
+private final SESSION_MAX_COMPLETION_ITEMS = 100000
+
+method settingsFromOptions(map<string, object> options): Settings {
+    return mergeSettings(Settings(), options)
+}
+
+// Writes every recognised key into current and returns current itself: nobody replaces session.settings (6.30).
+method mergeSettings(Settings current, map<string, object> changes): Settings {
+    if (protocolIsMap(changes) == false) {
+        return current
+    }
+    var root = sessionRoot(changes)
+    sessionMergePureline(current.pureline, root)
+    sessionMergeCheck(current.check, root)
+    sessionMergeFormat(current.format, root)
+    sessionMergeGeneral(current, root)
+    return current
+}
+
+method sessionMergePureline(PurelineSettings pureline, object root) {
+    pureline.enabled = sessionFlag(sessionLookup(root, ["pureline", "enabled"]), pureline.enabled)
+    pureline.flagPlainElse = sessionFlag(sessionLookup(root, ["pureline", "flagPlainElse"]), pureline.flagPlainElse)
+    var review = sessionLookup(root, ["pureline", "functionReviewLines"])
+    pureline.functionReviewLines = sessionBoundedWhole(review, pureline.functionReviewLines, 1, SESSION_LINE_LIMIT)
+    var longest = sessionLookup(root, ["pureline", "functionMaxLines"])
+    pureline.functionMaxLines = sessionBoundedWhole(longest, pureline.functionMaxLines, 1, SESSION_LINE_LIMIT)
+    var fileLines = sessionLookup(root, ["pureline", "maxLinesPerFile"])
+    pureline.maxLinesPerFile = sessionBoundedWhole(fileLines, pureline.maxLinesPerFile, 1, SESSION_LINE_LIMIT)
+    var folderFiles = sessionLookup(root, ["pureline", "maxFilesPerFolder"])
+    pureline.maxFilesPerFolder = sessionBoundedWhole(folderFiles, pureline.maxFilesPerFolder, 1, SESSION_LINE_LIMIT)
+    var names = sessionLookup(root, ["pureline", "allowedShortNames"])
+    pureline.allowedShortNames = sessionTexts(names, pureline.allowedShortNames)
+}
+
+method sessionMergeCheck(CheckSettings check, object root) {
+    check.mode = sessionChoice(sessionLookup(root, ["check", "mode"]), SESSION_CHECK_MODES, check.mode)
+    var timeout = sessionLookup(root, ["check", "timeoutSeconds"])
+    check.timeoutSeconds = sessionBoundedWhole(timeout, check.timeoutSeconds, 0, SESSION_TIMEOUT_LIMIT)
+    check.novuscPath = sessionNovuscPath(root, check.novuscPath)
+}
+
+// novus.check.novuscPath wins when it is non-empty, novus.executablePath is used otherwise (5.11, V103).
+method sessionNovuscPath(object root, string current): string {
+    var primary = sessionLookup(root, ["check", "novuscPath"])
+    var secondary = sessionLookup(root, ["executablePath"])
+    var primaryText = sessionPathText(primary, "")
+    if (primaryText != "") {
+        return primaryText
+    }
+    var secondaryText = sessionPathText(secondary, "")
+    if (secondaryText != "") {
+        return secondaryText
+    }
+    if (typeOf(primary) == "string" || typeOf(secondary) == "string") {
+        return ""
+    }
+    return current
+}
+
+method sessionMergeFormat(FormatSettings format, object root) {
+    var tabs = sessionLookup(root, ["format", "tabSize"])
+    format.tabSize = sessionBoundedWhole(tabs, format.tabSize, 1, SESSION_MAX_TAB_SIZE)
+    format.insertSpaces = sessionFlag(sessionLookup(root, ["format", "insertSpaces"]), format.insertSpaces)
+    var blanks = sessionLookup(root, ["format", "maxBlankLines"])
+    format.maxBlankLines = sessionBoundedWhole(blanks, format.maxBlankLines, 0, SESSION_MAX_BLANK_LINES)
+}
+
+method sessionMergeGeneral(Settings current, object root) {
+    current.ownDiagnostics = sessionFlag(sessionLookup(root, ["diagnostics", "own"]), current.ownDiagnostics)
+    current.explicitImports = sessionFlag(sessionLookup(root, ["imports", "explicit"]), current.explicitImports)
+    current.snippetIndent = sessionText(sessionLookup(root, ["snippets", "indent"]), current.snippetIndent)
+    var items = sessionLookup(root, ["completion", "maxItems"])
+    current.completionMaxItems = sessionBoundedWhole(items, current.completionMaxItems, 1, SESSION_MAX_COMPLETION_ITEMS)
+}

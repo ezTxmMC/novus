@@ -1,0 +1,43 @@
+package main
+
+import "novus/lsp/base/platform"
+import "novus/lsp/base/text"
+import "novus/lsp/projects/stdlib"
+import "novus/lsp/projects/workspace"
+import "novus/lsp/server/session"
+
+private final FIXTURE_PROJECT = "project \"p\"\nversion \"0.1.0\"\nmain \"main.nv\"\n"
+private final FIXTURE_MAIN = "package main\n\nmethod main() {\n    return\n}\n"
+private final FIXTURE_UTIL = "package main\n\nmethod helper() {\n    return\n}\n"
+private final FIXTURE_LIBRARY = "package lib\n\nmethod helper() {\n    return\n}\n"
+
+// A project in memory below the absolute root /proj, and a second one without a main method.
+method fixtureFiles(): map<string, string> {
+    return {
+        "/proj/project.nv": FIXTURE_PROJECT,
+        "/proj/main.nv": FIXTURE_MAIN,
+        "/proj/util.nv": FIXTURE_UTIL,
+        "/lib/project.nv": "project \"l\"\nversion \"0.1.0\"\nmain \"lib.nv\"\n",
+        "/lib/lib.nv": FIXTURE_LIBRARY
+    }
+}
+
+method fixtureSession(): Session {
+    var files = FileCache(MemoryTextSource(fixtureFiles()))
+    var state = Session(DocumentStore(), Workspace(files, standardLibrary()))
+    state.settings.check.novuscPath = "./main.nv"
+    return state
+}
+
+// Opens the document the way DidOpenHandler does, with the text of the disk unless another is given.
+method fixtureOpen(Session state, string filePath, integer version, string text): string {
+    var uri = filePathToUri(filePath)
+    var document = Document(uri, "novus", version, text)
+    state.documents.open(document)
+    state.workspace.onDocumentChanged(document)
+    return uri
+}
+
+method fixtureDiskText(string filePath): string {
+    return fixtureFiles()[filePath]
+}

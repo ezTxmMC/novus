@@ -1,0 +1,162 @@
+package main
+
+import hash
+import strings
+import arrays
+
+// The string builtins on substring views (which share their parent's bytes
+// and carry no terminator of their own) and on the edge cases of their
+// arguments: results must be the ones the C-string based versions gave.
+
+final TEXT = "alpha,beta,,gamma;alpha,delta"
+
+method describe(array<string> parts): string {
+    return "${parts.length()}: " + parts.join("|")
+}
+
+method printSearches(string text) {
+    println text.indexOf("alpha")
+    println text.indexOf("alpha", 1)
+    println text.indexOf("alpha", 100)
+    println text.indexOf("alpha", -5)
+    println text.indexOf("")
+    println text.indexOf("", 4)
+    println text.indexOf("", text.length())
+    println text.indexOf("", text.length() + 1)
+    println text.indexOf("zzz")
+    println text.indexOf("delta")
+    println text.indexOf("deltaX")
+    println text.indexOf(",,")
+    println text.contains("gamma;")
+    println text.contains("")
+    println text.contains("Gamma")
+    println text.startsWith("alpha")
+    println text.startsWith("")
+    println text.startsWith(text)
+    println text.startsWith(text + "x")
+    println text.endsWith("delta")
+    println text.endsWith("")
+    println text.endsWith(text)
+    println text.endsWith("x" + text)
+}
+
+method printSplits(string text) {
+    println describe(text.split(","))
+    println describe(text.split(",,"))
+    println describe(text.split(";alpha,"))
+    println describe(text.split("alpha"))
+    println text.split("zzz").length()
+    println describe(text.split(text))
+    println describe("".split(","))
+    println describe(",".split(","))
+    println describe("a,b".split(""))
+    println describe("aaa".split("aa"))
+}
+
+method printReplacements(string text) {
+    println text.replace("alpha", "A")
+    println text.replace("a", "")
+    println text.replace("", "x")
+    println text.replace("zzz", "y")
+    println text.replace(",", ", ")
+    println text.replace("aa", "b")
+    println "aaaa".replace("aa", "b")
+    println "abcabc".replace("bc", "bcbc")
+    println text.replace(text, "whole")
+}
+
+method printTrims() {
+    println "[" + "  padded  ".trim() + "]"
+    println "[" + "\t\n x \r\n".trim() + "]"
+    println "[" + "   ".trim() + "]"
+    println "[" + "".trim() + "]"
+    println "[" + "x".trim() + "]"
+    println "[" + " x".trim() + "]"
+    println "[" + "no pad".trim() + "]"
+    var view = "<<   inner text   >>".substring(2, 17)
+    println "[" + view.trim() + "]"
+    println view.trim().length()
+}
+
+method printWords() {
+    println describe(strings.words("  the quick\tbrown\n\nfox  "))
+    println describe(strings.words(""))
+    println describe(strings.words("   "))
+    println describe(strings.words("one"))
+    var view = "xx one two three xx".substring(2, 17)
+    println describe(strings.words(view))
+}
+
+method printComparisons() {
+    println "a" == "a"
+    println "a" == "b"
+    println "a" != "b"
+    println "" == ""
+    println "abc" == "abcd"
+    println "abcd" == "abc"
+    println "abc" < "abd"
+    println "abc" < "abcd"
+    println "abcd" < "abc"
+    println "b" > "abc"
+    println "Z" < "a"
+    println "abc" <= "abc"
+    println "abc" >= "abd"
+    var left = "xxabcxx".substring(2, 5)
+    println left == "abc"
+    println "abc" == left
+    println left < "abd"
+    println 5 == "5"
+    println "5" == 5
+    println 1.5 == "1.5"
+    println true == "true"
+    println "é" > "z"
+}
+
+method printHashes() {
+    println hash.fnv1a("")
+    println hash.fnv1a("a")
+    println hash.fnv1a("hello world")
+    println hash.crc32("")
+    println hash.crc32("a")
+    println hash.crc32("hello world")
+    println hash.fnv1a("xxhello worldxx".substring(2, 13))
+    println hash.crc32("xxhello worldxx".substring(2, 13))
+    println hash.fnv1a(12345)
+}
+
+method printSorts() {
+    var words = ["pear", "apple", "fig", "applesauce", "Apple", "", "fig2"]
+    println describe(arrays.sort(words))
+    var views = []
+    var source = "mango|kiwi|banana"
+    views.append(source.substring(0, 5))
+    views.append(source.substring(6, 10))
+    views.append(source.substring(11, 17))
+    println describe(arrays.sort(views))
+}
+
+method printJoins() {
+    println ["a", "b", "c"].join("")
+    println ["a", "b", "c"].join(", ")
+    println ["a", "b", "c"].join(",,")
+    println [1, 2, 3].join("-")
+    println [].join(",")
+    println ["x"].join(",")
+}
+
+method main {
+    var view = TEXT.substring(0, 24)
+    println view
+    printSearches(TEXT)
+    printSearches(view)
+    printSplits(TEXT)
+    printSplits(view)
+    printReplacements(TEXT)
+    printReplacements(view)
+    printTrims()
+    printWords()
+    printComparisons()
+    printHashes()
+    printSorts()
+    printJoins()
+}

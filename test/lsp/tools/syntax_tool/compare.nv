@@ -1,0 +1,226 @@
+package main
+
+import path
+import "novus/lsp/base/maybe"
+import "novus/lsp/base/platform"
+import "novus/lsp/base/text"
+import @compilererror
+import @corpus
+import @issues
+import @mainfinder
+import @semantic
+import @tally
+
+private final SYNTAX_TOOL_CHECK_TIMEOUT = 120
+private final SYNTAX_TOOL_SHELL_NOT_EXECUTABLE = 126
+private final SYNTAX_TOOL_SHELL_NOT_FOUND = 127
+private final SYNTAX_TOOL_FIRST_SIGNAL_EXIT = 128
+private final SYNTAX_TOOL_UNTERMINATED_PREFIX = "unterminated"
+private final SYNTAX_TOOL_FETCH_FAILURE = "could not fetch"
+private final SYNTAX_TOOL_SOURCE_SUFFIX = ".nv"
+private final SYNTAX_TOOL_COMPARE_KEYS = ["compare.checked", "compare.accepted", "compare.accepted-with-own-error", "compare.rejected-syntax", "compare.rejected-syntax-missed", "compare.different-line-exempt", "compare.rejected-other", "compare.accepted-with-own-warning", "compare.closure-files", "compare.semantic-compared", "compare.semantic-missed", "compare.needs-network", "compare.failed-to-run"]
+
+// What the comparison of one `build/novusc check` run with the own syntax layer needs (DESIGN 9.5-4 (b)).
+define class SyntaxToolComparison {
+    string root
+    string novusc
+    map<string, bool> differentLine
+    map<string, bool> semanticFixtures
+    SyntaxToolTally tally
+    SyntaxToolSemantic semantic
+
+    construct(string root, string novusc, map<string, bool> differentLine, map<string, bool> semanticFixtures, SyntaxToolTally tally) {
+        this.root = root
+        this.novusc = novusc
+        this.differentLine = differentLine
+        this.semanticFixtures = semanticFixtures
+        this.tally = tally
+        this.semantic = SyntaxToolSemantic(root)
+    }
+
+    method compareFile(string relative) {
+        var result = this.runCheck(relative)
+        if (isNone(result)) {
+            this.problem(relative + ": novusc check did not run to the end")
+            this.tally.add("compare.failed-to-run", 1)
+            return
+        }
+        if (result.output.contains(SYNTAX_TOOL_FETCH_FAILURE)) {
+            this.tally.add("compare.needs-network", 1)
+            return
+        }
+        this.tally.add("compare.checked", 1)
+        this.classify(relative, result)
+    }
+
+    // nil when the command could not be started, ran into the timeout or died (a signal, or a failure without a single
+    // `error:` line, which is a crash and not a rejection); stderr is part of the output.
+    method runCheck(string relative): CommandResult {
+        var command = shellQuote(this.novusc) + " check " + shellQuote(relative) + " 2>&1"
+        var result = runCommandIn(this.root, command, SYNTAX_TOOL_CHECK_TIMEOUT)
+        if (result.started == false || result.timedOut) {
+            return nothing()
+        }
+        if (result.exitCode == SYNTAX_TOOL_SHELL_NOT_EXECUTABLE || result.exitCode == SYNTAX_TOOL_SHELL_NOT_FOUND) {
+            return nothing()
+        }
+        if (result.exitCode >= SYNTAX_TOOL_FIRST_SIGNAL_EXIT) {
+            return nothing()
+        }
+        if (result.exitCode != 0 && syntaxToolHasErrorLine(result.output) == false && result.output.contains(SYNTAX_TOOL_FETCH_FAILURE) == false) {
+            return nothing()
+        }
+        return result
+    }
+
+    method classify(string relative, CommandResult result) {
+        if (result.exitCode == 0) {
+            this.checkAccepted(relative)
+            return
+        }
+        if (this.semanticFixtures.has(relative)) {
+            this.checkFixture(relative, result.output)
+            return
+        }
+        this.checkRejected(relative, result.output)
+    }
+
+    // The compiler accepts the file, so the own layer must not report an error in it.
+    method checkAccepted(string relative) {
+        this.tally.add("compare.accepted", 1)
+        var errors = this.ownErrors(relative)
+        for (issue in errors) {
+            this.problem(issue.describe(relative) + " (novusc check accepts the file)")
+        }
+        this.tally.add("compare.accepted-with-own-error", errors.length())
+        this.checkSemantic(relative)
+    }
+
+    // Wave 4: the own semantic layer over every user file of the accepted program. The compiler accepts all of them, so not
+    // one error and not one warning of a semantic rule may appear (the warnings are stricter than DESIGN 9.5-4 asks for).
+    method checkSemantic(string relative) {
+        this.tally.add("compare.closure-files", this.semantic.filesOf(relative).length())
+        for (finding in this.semantic.programFindings(relative)) {
+            this.problem(finding.describe() + " (novusc check accepts the program)")
+            if (finding.isError()) {
+                this.tally.add("compare.accepted-with-own-error", 1)
+            }
+            if (finding.isError() == false) {
+                this.tally.add("compare.accepted-with-own-warning", 1)
+            }
+        }
+    }
+
+    // A program that is rejected for a semantic reason needs an own semantic finding at the line that the compiler names.
+    method checkFixture(string relative, string output) {
+        var error = syntaxToolParseCompilerError(output)
+        if (isNone(error)) {
+            this.problem(relative + ": novusc rejects it without naming a line")
+            this.tally.add("compare.semantic-missed", 1)
+            return
+        }
+        for (finding in this.semantic.programFindings(relative)) {
+            if (finding.file == error.file && finding.line == error.line) {
+                this.tally.add("compare.semantic-compared", 1)
+                return
+            }
+        }
+        this.problem(error.file + ":" + error.line + ": novusc says '" + error.message + "' but the own semantic layer reports nothing on that line")
+        this.tally.add("compare.semantic-missed", 1)
+    }
+
+    method checkRejected(string relative, string output) {
+        var error = syntaxToolParseCompilerError(output)
+        if (isNone(error) || error.isSyntaxClass() == false) {
+            println(relative + ": rejected for a reason that is not a syntax error: " + syntaxToolFirstLine(output))
+            this.tally.add("compare.rejected-other", 1)
+            return
+        }
+        this.tally.add("compare.rejected-syntax", 1)
+        this.checkOwnIssue(error)
+    }
+
+    method checkOwnIssue(SyntaxToolCompilerError error) {
+        var issues = syntaxToolIssuesOf(error.file, readTextFile(path.join(this.root, error.file)))
+        if (this.differentLine.has(error.file)) {
+            this.tally.add("compare.different-line-exempt", 1)
+            this.requireAny(error, issues)
+            return
+        }
+        if (error.message.startsWith(SYNTAX_TOOL_UNTERMINATED_PREFIX)) {
+            this.requireUnterminated(error, issues)
+            return
+        }
+        this.requireOnLine(error, issues)
+    }
+
+    // The compiler reports an unclosed block or string where its lexer gave up (often the end of the file), the own
+    // recovery where the construct begins (5.3), so only the existence of an `unterminated-*` issue is compared.
+    method requireUnterminated(SyntaxToolCompilerError error, array<SyntaxToolIssue> issues) {
+        for (issue in issues) {
+            if (issue.code.startsWith(SYNTAX_TOOL_UNTERMINATED_PREFIX)) {
+                return
+            }
+        }
+        this.problem(error.file + ":" + error.line + ": novusc says '" + error.message + "' but the own layer reports no unterminated issue")
+        this.tally.add("compare.rejected-syntax-missed", 1)
+    }
+
+    method requireAny(SyntaxToolCompilerError error, array<SyntaxToolIssue> issues) {
+        if (issues.length() > 0) {
+            return
+        }
+        this.problem(error.file + ":" + error.line + ": novusc says '" + error.message + "' but the own layer reports no issue")
+        this.tally.add("compare.rejected-syntax-missed", 1)
+    }
+
+    method requireOnLine(SyntaxToolCompilerError error, array<SyntaxToolIssue> issues) {
+        for (issue in issues) {
+            if (issue.line == error.line) {
+                return
+            }
+        }
+        this.problem(error.file + ":" + error.line + ": novusc says '" + error.message + "' but the own layer reports no issue on that line")
+        this.tally.add("compare.rejected-syntax-missed", 1)
+    }
+
+    method ownErrors(string relative): array<SyntaxToolIssue> {
+        var errors = []
+        for (issue in syntaxToolIssuesOf(relative, readTextFile(path.join(this.root, relative)))) {
+            if (issue.isError()) {
+                errors.append(issue)
+            }
+        }
+        return errors
+    }
+
+    method problem(string message) {
+        println(message)
+    }
+}
+
+// DESIGN 9.5-4 (b): every single-file program (a `.nv` file with a `method main` at the start of a line) is run through
+// `<novusc> check` and compared with the own layer. Prints the summary counters and returns the exit code.
+method syntaxToolCompare(string root, string novusc, string differentLineFile, string semanticFile): integer {
+    var tally = SyntaxToolTally()
+    tally.declare(SYNTAX_TOOL_COMPARE_KEYS)
+    var comparison = SyntaxToolComparison(root, novusc, syntaxToolLoadNames(differentLineFile), syntaxToolLoadNames(semanticFile), tally)
+    for (file in syntaxToolCorpusFiles(root)) {
+        syntaxToolCompareCandidate(comparison, path.relative(root, file), file)
+    }
+    tally.printSummary()
+    return syntaxToolExitCode(syntaxToolCompareProblems(tally))
+}
+
+method syntaxToolCompareProblems(SyntaxToolTally tally): integer {
+    return tally.valueOf("compare.failed-to-run") + tally.valueOf("compare.accepted-with-own-error") + tally.valueOf("compare.accepted-with-own-warning") + tally.valueOf("compare.rejected-syntax-missed") + tally.valueOf("compare.semantic-missed")
+}
+
+method syntaxToolCompareCandidate(SyntaxToolComparison comparison, string relative, string file) {
+    if (relative.endsWith(SYNTAX_TOOL_SOURCE_SUFFIX) == false || fileKindOf(relative) != FILE_KIND_NV) {
+        return
+    }
+    if (syntaxToolDeclaresMain(readTextFile(file))) {
+        comparison.compareFile(relative)
+    }
+}

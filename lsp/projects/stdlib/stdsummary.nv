@@ -1,0 +1,64 @@
+package stdlib
+
+private final STDLIB_LINE_BREAK = "\n"
+private final STDLIB_COMMENT_MARK = "//"
+private final STDLIB_SKIPPED_STARTS = ["package ", "import "]
+
+// The first paragraph of the comment block that opens a std source (after `package` and the imports), joined to
+// one line. A block that runs straight into a declaration documents that declaration and is no summary.
+method stdlibSummaryOf(string source): string {
+    var lines = source.split(STDLIB_LINE_BREAK)
+    var index = stdlibFirstContentLine(lines)
+    var words = []
+    while (index < lines.length() && stdlibIsComment(lines[index])) {
+        var text = stdlibCommentText(lines[index])
+        if (text == "" && words.length() > 0) {
+            return stdlibSummaryIfBlockEnds(lines, index, words)
+        }
+        if (text != "") {
+            words.append(text)
+        }
+        index = index + 1
+    }
+    return stdlibSummaryIfBlockEnds(lines, index, words)
+}
+
+method stdlibSummaryIfBlockEnds(array<string> lines, integer index, array<string> words): string {
+    var end = index
+    while (end < lines.length() && stdlibIsComment(lines[end])) {
+        end = end + 1
+    }
+    if (end < lines.length() && lines[end].trim() != "") {
+        return ""
+    }
+    return words.join(" ")
+}
+
+method stdlibFirstContentLine(array<string> lines): integer {
+    var index = 0
+    while (index < lines.length() && stdlibIsSkipped(lines[index].trim())) {
+        index = index + 1
+    }
+    return index
+}
+
+method stdlibIsSkipped(string line): bool {
+    if (line == "") {
+        return true
+    }
+    for (start in STDLIB_SKIPPED_STARTS) {
+        if (line.startsWith(start)) {
+            return true
+        }
+    }
+    return false
+}
+
+method stdlibIsComment(string line): bool {
+    return line.trim().startsWith(STDLIB_COMMENT_MARK)
+}
+
+method stdlibCommentText(string line): string {
+    var trimmed = line.trim()
+    return trimmed.substring(STDLIB_COMMENT_MARK.length(), trimmed.length()).trim()
+}

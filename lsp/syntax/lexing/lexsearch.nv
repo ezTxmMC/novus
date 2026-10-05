@@ -1,0 +1,68 @@
+package lexing
+
+import bytes
+
+private final LEXING_NUL = chr(0)
+
+// Substring search that survives NUL bytes: the string builtin is fast but stops at the first NUL, so a search that
+// finds nothing continues behind every NUL of the text (their offsets are collected once, with the slow byte-exact
+// search, and only when a search failed).
+define class LexingSearch {
+    string text
+    array<integer> nulOffsets
+    bool nulsKnown
+
+    construct(string text) {
+        this.text = text
+        this.nulOffsets = []
+        this.nulsKnown = false
+    }
+
+    method find(string needle, integer from): integer {
+        var found = this.text.indexOf(needle, from)
+        if (found >= 0) {
+            return found
+        }
+        this.collectNuls()
+        return this.findBehindNul(needle, from)
+    }
+
+    method collectNuls() {
+        if (this.nulsKnown) {
+            return
+        }
+        this.nulsKnown = true
+        var at = bytes.indexOf(this.text, LEXING_NUL, 0)
+        while (at >= 0) {
+            this.nulOffsets.append(at)
+            at = bytes.indexOf(this.text, LEXING_NUL, at + 1)
+        }
+    }
+
+    method findBehindNul(string needle, integer from): integer {
+        var index = this.firstNulFrom(from)
+        while (index < this.nulOffsets.length()) {
+            var found = this.text.indexOf(needle, this.nulOffsets[index] + 1)
+            if (found >= 0) {
+                return found
+            }
+            index = index + 1
+        }
+        return -1
+    }
+
+    // Index into `nulOffsets` of the first NUL at or after `from` (binary search).
+    method firstNulFrom(integer from): integer {
+        var low = 0
+        var high = this.nulOffsets.length()
+        while (low < high) {
+            var middle = (low + high) / 2
+            if (this.nulOffsets[middle] < from) {
+                low = middle + 1
+                continue
+            }
+            high = middle
+        }
+        return low
+    }
+}

@@ -1,0 +1,131 @@
+package structure
+
+import arrays
+import base/maybe
+import base/model
+import base/text
+import projects/workspace
+import strings
+import syntax/lexing
+import syntax/outline
+
+private final STRUCTURE_COMPONENT_BASE = "NvhComponent"
+private final STRUCTURE_FOLD_IMPORTS = "imports"
+private final STRUCTURE_LINE_WIDTH = 8
+private final STRUCTURE_FAR_LINE = 99999999
+
+method structureLineKey(integer number): string {
+    return strings.padLeftWith("" + number, STRUCTURE_LINE_WIDTH, "0")
+}
+
+// Folding ranges of a file: every multi-line `{ }` block (declarations and statement bodies; the closing brace line
+// stays visible), multi-line globals, runs of own-line `//` comments, block comments, `// region` markers and
+// groups of adjacent import lines. A range starts on the line that opens it; of several that start on one line the
+// largest is kept.
+define class FoldingBuilder {
+    construct() {
+    }
+
+    method ranges(FileContext context): array<FoldingEntry> {
+        if (isNone(context.syntax)) {
+            return []
+        }
+        var found = []
+        var lines = context.document.lines
+        this.blocks(context.syntax.tokens, found)
+        this.globals(context.syntax.decls, lines, found, 0)
+        this.imports(context.syntax.imports, lines, found)
+        StructureCommentFolds(lines, found).collect(context.syntax.comments)
+        return this.ordered(found)
+    }
+
+    // A stack of openers, not a recursion: it needs no depth cap, and every opener must be pushed or the closers of a
+    // deeply nested file would pair with the wrong braces.
+    method blocks(array<Token> tokens, array<FoldingEntry> found) {
+        var open = []
+        for (token in tokens) {
+            if (token.isPunct("{")) {
+                open.append(token)
+            }
+            if (token.isPunct("}") && open.length() > 0) {
+                var opener = open.pop()
+                this.addBlock(opener.line, token, found)
+            }
+        }
+    }
+
+    method addBlock(integer startLine, Token close, array<FoldingEntry> found) {
+        var endLine = close.line
+        if (close.firstOnLine) {
+            endLine = close.line - 1
+        }
+        if (endLine > startLine) {
+            found.append(FoldingEntry(startLine, endLine, ""))
+        }
+    }
+
+    // A multi-line global, field or constant list has no braces of its own: it folds up to its last line.
+    method globals(array<Decl> decls, LineIndex lines, array<FoldingEntry> found, integer depth) {
+        if (depth >= MAX_NESTING_DEPTH) {
+            return
+        }
+        for (decl in decls) {
+            var startLine = lines.lineOf(decl.fullSpan.start)
+            var endLine = lines.lineOf(decl.fullSpan.end - 1)
+            if (this.foldsWholeDeclaration(decl) && endLine > startLine) {
+                found.append(FoldingEntry(startLine, endLine, ""))
+            }
+            this.globals(decl.members, lines, found, depth + 1)
+        }
+    }
+
+    // A global without a body, and the header of a component, which is a region of its own with no braces.
+    method foldsWholeDeclaration(Decl decl): bool {
+        if (decl.baseName == STRUCTURE_COMPONENT_BASE) {
+            return true
+        }
+        return decl.bodySpan.start < 0 && decl.members.length() == 0
+    }
+
+    method imports(array<ImportDecl> imports, LineIndex lines, array<FoldingEntry> found) {
+        var groupStart = -1
+        var groupEnd = -1
+        for (declaration in imports) {
+            var startLine = lines.lineOf(declaration.span.start)
+            if (groupStart >= 0 && startLine > groupEnd + 1) {
+                this.addImportGroup(groupStart, groupEnd, found)
+                groupStart = -1
+            }
+            if (groupStart < 0) {
+                groupStart = startLine
+            }
+            groupEnd = lines.lineOf(declaration.span.end - 1)
+        }
+        this.addImportGroup(groupStart, groupEnd, found)
+    }
+
+    method addImportGroup(integer startLine, integer endLine, array<FoldingEntry> found) {
+        if (startLine >= 0 && endLine > startLine) {
+            found.append(FoldingEntry(startLine, endLine, STRUCTURE_FOLD_IMPORTS))
+        }
+    }
+
+    method ordered(array<FoldingEntry> found): array<FoldingEntry> {
+        var keys = []
+        var i = 0
+        while (i < found.length()) {
+            keys.append(structureLineKey(found[i].startLine) + chr(1) + structureLineKey(STRUCTURE_FAR_LINE - found[i].endLine) + chr(1) + structureLineKey(i))
+            i = i + 1
+        }
+        var result = []
+        var lastStart = -1
+        for (key in arrays.sort(keys)) {
+            var entry = found[parseInt(key.split(chr(1))[2])]
+            if (entry.startLine != lastStart) {
+                result.append(entry)
+                lastStart = entry.startLine
+            }
+        }
+        return result
+    }
+}

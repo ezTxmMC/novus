@@ -1,0 +1,214 @@
+package codegen
+
+import ast
+import parser
+
+// The operands of an expression in the order they are evaluated (see
+// ordering.nv), addressed by their path: the child indexes from the node
+// down, so [1, 2] is the second child of the first child. One path per
+// operand serves both ways - reading the operand and putting a temporary in
+// its place - which keeps the two from drifting apart.
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+// The node of an enum constant, `(c NAME arg...)`: its arguments go to the
+// constructor the way a call's do.
+final ENUM_CONSTANT = "c"
+
+// How many operands of a `+` chain nv_add_chain takes at once.
+final MAX_CHAIN_PARTS = 15
+
+method pathBelow(array<integer> base, integer index): array<integer> {
+    var path = []
+    for (step in base) {
+        path.append(step)
+    }
+    path.append(index)
+    return path
+}
+
+method pathsBelow(array<integer> base, array<array<integer>> relative): array<array<integer>> {
+    var paths = []
+    for (path in relative) {
+        var absolute = []
+        for (step in base) {
+            absolute.append(step)
+        }
+        for (step in path) {
+            absolute.append(step)
+        }
+        paths.append(absolute)
+    }
+    return paths
+}
+
+method nodeAt(string node, array<integer> path): string {
+    var current = node
+    for (index in path) {
+        current = nodeChild(current, index)
+    }
+    return current
+}
+
+// The node with the one operand at `path` (from step `depth` on) swapped for
+// `replacement`; everything else is kept as it was.
+method replaceAt(string node, array<integer> path, integer depth, string replacement): string {
+    if (depth == path.length()) {
+        return replacement
+    }
+    var pieces = ["(" + nodeHead(node)]
+    var i = 1
+    var count = nodeCount(node)
+    while (i < count) {
+        var child = nodeChild(node, i)
+        if (i == path[depth]) {
+            child = replaceAt(child, path, depth + 1, replacement)
+        }
+        pieces.append(child)
+        i = i + 1
+    }
+    return pieces.join(" ") + ")"
+}
+
+// A child per index from `from` on: the argument list of a call, the elements
+// of an array.
+method childPaths(string node, integer from): array<array<integer>> {
+    var paths = []
+    var i = from
+    var count = nodeCount(node)
+    while (i < count) {
+        paths.append([i])
+        i = i + 1
+    }
+    return paths
+}
+
+// The value of each field of an object literal `(obj Class (field name value) ...)`.
+method fieldValuePaths(string node): array<array<integer>> {
+    var paths = []
+    var i = 2
+    var count = nodeCount(node)
+    while (i < count) {
+        paths.append([i, 2])
+        i = i + 1
+    }
+    return paths
+}
+
+// The `+` operands of a chain, left to right: `((a + b) + c) + d` has the
+// parts a, b, c and d. A chain longer than nv_add_chain takes ends in a part
+// that is a chain itself.
+method chainPaths(string node): array<array<integer>> {
+    var reversed = []
+    var spine = []
+    var walk = node
+    while (isList(walk) && nodeHead(walk) == "+" && nodeCount(walk) == 3 && reversed.length() < MAX_CHAIN_PARTS) {
+        reversed.append(pathBelow(spine, 2))
+        spine = pathBelow(spine, 1)
+        walk = nodeChild(walk, 1)
+    }
+    reversed.append(spine)
+    var paths = []
+    var i = reversed.length()
+    while (i > 0) {
+        paths.append(reversed[i - 1])
+        i = i - 1
+    }
+    return paths
+}
+
+method childrenFrom(string node, integer from): array<string> {
+    var children = []
+    var i = from
+    var count = nodeCount(node)
+    while (i < count) {
+        children.append(nodeChild(node, i))
+        i = i + 1
+    }
+    return children
+}
+
+// The `+` operands of a chain as nodes, left to right.
+method chainParts(string node): array<string> {
+    var parts = []
+    for (path in chainPaths(node)) {
+        parts.append(nodeAt(node, path))
+    }
+    return parts
+}
+
+method isBinaryOperator(string head): bool {
+    if (head == "+" || head == "-" || head == "*" || head == "/" || head == "%") {
+        return true
+    }
+    if (head == "==" || head == "!=" || head == "<" || head == ">" || head == "<=" || head == ">=") {
+        return true
+    }
+    return head == "&" || head == "|" || head == "^" || head == "<<" || head == ">>"
+}
+
+// A call target that is a value (a variable, a field, an expression) and not
+// the name of a module, an enum or a class.
+method isValueTarget(string target, map<string, string> prog, map<string, string> ctx, map<string, string> locals): bool {
+    if (isIdentAtom(target) == false) {
+        return true
+    }
+    return resolveVar(target, prog, ctx, locals) != "" || isImplicitField(target, prog, ctx, locals)
+}
+
+method methodCallPaths(string node, map<string, string> prog, map<string, string> ctx, map<string, string> locals): array<array<integer>> {
+    var paths = []
+    if (isValueTarget(nodeChild(node, 1), prog, ctx, locals)) {
+        paths.append([1])
+    }
+    for (path in childPaths(node, 3)) {
+        paths.append(path)
+    }
+    return paths
+}
+
+// `a[i] = v` evaluates a, then i, then v; `o.f = v` evaluates o, then v.
+method assignmentPaths(string node, map<string, string> prog, map<string, string> ctx, map<string, string> locals): array<array<integer>> {
+    var target = nodeChild(node, 1)
+    if (nodeHead(target) == "idx") {
+        return [[1, 1], [1, 2], [2]]
+    }
+    if (nodeHead(target) == "mget" && isValueTarget(nodeChild(target, 1), prog, ctx, locals)) {
+        return [[1, 1], [2]]
+    }
+    return []
+}
+
+// The paths of the operands of the node, in evaluation order; empty for a node
+// that has no operand list (and for `&&` and `||`, whose right side only
+// runs when the left side asks for it - C orders those itself). A node kind
+// that is not listed here is evaluated in whatever order C picks.
+method operandPaths(string node, map<string, string> prog, map<string, string> ctx, map<string, string> locals): array<array<integer>> {
+    var head = nodeHead(node)
+    if (head == "call" || head == ENUM_CONSTANT) {
+        return childPaths(node, 2)
+    }
+    if (head == "mcall") {
+        return methodCallPaths(node, prog, ctx, locals)
+    }
+    if (head == "arr" || head == "mapl" || head == "idx") {
+        return childPaths(node, 1)
+    }
+    if (head == "obj") {
+        return fieldValuePaths(node)
+    }
+    if (head == "spawn") {
+        return pathsBelow([2], operandPaths(nodeChild(node, 2), prog, ctx, locals))
+    }
+    if (head == "setexpr") {
+        return assignmentPaths(node, prog, ctx, locals)
+    }
+    if (head == "+" && nodeCount(node) == 3) {
+        return chainPaths(node)
+    }
+    if (isBinaryOperator(head) && nodeCount(node) == 3) {
+        return [[1], [2]]
+    }
+    return []
+}

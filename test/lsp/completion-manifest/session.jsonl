@@ -1,0 +1,11 @@
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"rootUri":"@ROOTURI@","capabilities":{"textDocument":{"completion":{"completionItem":{"snippetSupport":true,"labelDetailsSupport":true,"documentationFormat":["markdown","plaintext"],"insertTextModeSupport":{"valueSet":[1,2]}}}}},"initializationOptions":{"novus":{"diagnostics":{"own":false}}}}}
+{"jsonrpc":"2.0","method":"initialized","params":{}}
+{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"@ROOTURI@/project.nv","languageId":"novus","version":1,"text":"project \"demo\"\nversion \"0.1.0\"\nmain \"main.nv\"\n\nrequire \"github.com/acme/geo\" \"v1.0.0\"\nreplace \"github.com/acme/geo\" \"deps\"\nreplace \"github.com/acme/geo\" \"deps/\"\nversion \"0.1.1\"\n\n"}}}
+{"jsonrpc":"2.0","id":2,"method":"textDocument/completion","params":{"textDocument":{"uri":"@ROOTURI@/project.nv"},"position":{"line":7,"character":3},"context":{"triggerKind":1}}}
+{"jsonrpc":"2.0","id":3,"method":"textDocument/completion","params":{"textDocument":{"uri":"@ROOTURI@/project.nv"},"position":{"line":8,"character":0},"context":{"triggerKind":1}}}
+{"jsonrpc":"2.0","id":4,"method":"textDocument/completion","params":{"textDocument":{"uri":"@ROOTURI@/project.nv"},"position":{"line":4,"character":9},"context":{"triggerKind":1}}}
+{"jsonrpc":"2.0","id":5,"method":"textDocument/completion","params":{"textDocument":{"uri":"@ROOTURI@/project.nv"},"position":{"line":5,"character":9},"context":{"triggerKind":1}}}
+{"jsonrpc":"2.0","id":6,"method":"textDocument/completion","params":{"textDocument":{"uri":"@ROOTURI@/project.nv"},"position":{"line":5,"character":31},"context":{"triggerKind":1}}}
+{"jsonrpc":"2.0","id":7,"method":"textDocument/completion","params":{"textDocument":{"uri":"@ROOTURI@/project.nv"},"position":{"line":6,"character":36},"context":{"triggerKind":1}}}
+{"jsonrpc":"2.0","id":99,"method":"shutdown"}
+{"jsonrpc":"2.0","method":"exit"}

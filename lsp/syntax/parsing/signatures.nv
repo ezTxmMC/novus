@@ -1,0 +1,184 @@
+package parsing
+
+import base/maybe
+import base/text
+import syntax/lexing
+import syntax/outline
+import syntax/scanning
+
+// The pieces that top-level declarations and members share: names, types, parameter lists, annotations, method tails.
+define class ParsingSignatures {
+    ParsingCursor cursor
+    ParsingBodies bodies
+
+    construct(ParsingCursor cursor, ParsingBodies bodies) {
+        this.cursor = cursor
+        this.bodies = bodies
+    }
+
+    // The name token (consumed). A keyword on the same line is reported but still used, so the declaration is recorded;
+    // one that starts a line is the next declaration and stays.
+    method readName(string what): Token {
+        var token = this.cursor.current()
+        if (token.kind == TokenKind.Ident) {
+            this.cursor.advance()
+            return token
+        }
+        if (token.kind == TokenKind.Keyword && token.firstOnLine == false) {
+            this.cursor.reportAtToken(token, "keyword-as-name", "expected " + what + " but found keyword '" + token.text + "'")
+            this.cursor.advance()
+            return token
+        }
+        this.cursor.reportAtToken(token, "expected-token", "expected " + what + " but found " + this.cursor.describe(this.cursor.pos))
+        return nothing()
+    }
+
+    // The text of the type at the cursor, "" after reporting when there is none.
+    method readType(): string {
+        var start = this.cursor.pos
+        var end = this.cursor.types.endOf(start)
+        if (end == start) {
+            this.cursor.reportAtToken(this.cursor.current(), "expected-token", "expected a type but found " + this.cursor.describe(start))
+            return ""
+        }
+        this.cursor.pos = end
+        return this.cursor.types.textOf(start, end)
+    }
+
+    // Tokens that end a list that was never closed: a block, or a declaration that starts a line.
+    method isListBreak(): bool {
+        var token = this.cursor.current()
+        if (token.isPunct("{") || token.isPunct("}") || token.isPunct("@")) {
+            return true
+        }
+        return parsingIsBodyKiller(this.cursor, this.cursor.pos)
+    }
+
+    // `( Type name [,] ... )`: the comma is optional, a missing comma is never reported.
+    method readParams(): array<Param> {
+        var openToken = this.cursor.current()
+        this.cursor.advance()
+        var params = []
+        while (this.cursor.punctAt(this.cursor.pos, ")") == false) {
+            if (this.cursor.atEnd() || this.isListBreak()) {
+                this.cursor.reportAtToken(openToken, "unterminated-list", "unterminated parameter list: the closing ')' is missing")
+                return params
+            }
+            this.readParam(params)
+        }
+        this.cursor.advance()
+        return params
+    }
+
+    method readParam(array<Param> params) {
+        var start = this.cursor.pos
+        var typeText = this.readType()
+        if (typeText != "") {
+            var name = this.readName("parameter name")
+            if (isSome(name)) {
+                params.append(Param(typeText, name.text, name.span()))
+            }
+        }
+        if (this.cursor.punctAt(this.cursor.pos, ",")) {
+            this.cursor.advance()
+        }
+        if (this.cursor.pos == start) {
+            this.cursor.advance()
+        }
+    }
+
+    // After the name: parameters, return type, `native "name" [variadic]` or the body; a keyword method needs a body.
+    method readMethodTail(Decl decl, bool bodyRequired) {
+        if (this.cursor.punctAt(this.cursor.pos, "(")) {
+            decl.params = this.readParams()
+        }
+        if (this.cursor.punctAt(this.cursor.pos, ":")) {
+            this.cursor.advance()
+            decl.typeText = this.readType()
+        }
+        decl.fullSpan.end = this.cursor.lastEnd()
+        if (this.cursor.identWordAt(this.cursor.pos, "native")) {
+            this.readNative(decl)
+            return
+        }
+        if (this.cursor.punctAt(this.cursor.pos, "{")) {
+            this.bodies.parseBody(decl)
+            return
+        }
+        if (bodyRequired) {
+            this.cursor.reportAtToken(this.cursor.current(), "expected-token", "expected '{' but found " + this.cursor.describe(this.cursor.pos))
+        }
+    }
+
+    method readNative(Decl decl) {
+        this.cursor.advance()
+        decl.modifiers.append("native")
+        var nameToken = this.cursor.current()
+        if (nameToken.kind == TokenKind.String) {
+            decl.nativeName = nameToken.value
+            this.cursor.advance()
+        }
+        if (nameToken.kind != TokenKind.String) {
+            this.cursor.reportAtToken(nameToken, "expected-token", "expected the C function name after 'native'")
+        }
+        if (this.cursor.identWordAt(this.cursor.pos, "variadic")) {
+            decl.modifiers.append("variadic")
+            this.cursor.advance()
+        }
+        decl.fullSpan.end = this.cursor.lastEnd()
+    }
+}
+
+// The remainder of a field declaration: `Type name [: get[, set]]` and the initialiser the compiler does not allow.
+define class ParsingFields {
+    ParsingCursor cursor
+
+    construct(ParsingCursor cursor) {
+        this.cursor = cursor
+    }
+
+    // After `:` the loop eats `get` and `set`; a comma is consumed only after one (so `: get set` ends at `get`).
+    method readAccessors(Decl decl) {
+        if (this.cursor.punctAt(this.cursor.pos, ":") == false) {
+            return
+        }
+        this.cursor.advance()
+        while (this.cursor.identWordAt(this.cursor.pos, "get") || this.cursor.identWordAt(this.cursor.pos, "set")) {
+            decl.accessors.append(this.cursor.current().text)
+            this.cursor.advance()
+            if (this.cursor.punctAt(this.cursor.pos, ",") == false) {
+                return
+            }
+            this.cursor.advance()
+        }
+    }
+
+    // `integer x = 3` is rejected by the compiler ("expected a type but found '='"); the initialiser is skipped.
+    method skipInitializer() {
+        if (this.cursor.punctAt(this.cursor.pos, "=") == false) {
+            return
+        }
+        this.cursor.reportAtToken(this.cursor.current(), "expected-token", "expected a type but found '=': fields have no initialiser")
+        var end = this.cursor.expressions.endOf(this.cursor.pos + 1)
+        this.cursor.pos = this.cursor.pos + 1
+        if (end > this.cursor.pos) {
+            this.cursor.pos = end
+        }
+    }
+
+    // Only the last `construct` of a class counts: the earlier one is reported and removed from the members.
+    method dropEarlierConstructor(array<Decl> sink, Decl previous) {
+        if (isNone(previous)) {
+            return
+        }
+        this.cursor.report(previous.nameSpan, "duplicate-constructor", "only the last 'construct' of a class is used", true)
+        var index = 0
+        while (index < sink.length()) {
+            if (sink[index] == previous) {
+                sink.remove(index)
+                return
+            }
+            index = index + 1
+        }
+    }
+}

@@ -1,0 +1,190 @@
+package candidates
+
+import path
+import base/maybe
+import base/model
+import base/platform
+import projects/closure
+import projects/modules
+import projects/workspace
+
+private final CANDIDATES_STD_DESCRIPTION = "std"
+private final CANDIDATES_MODULE_KIND_NAME = "Module"
+private final CANDIDATES_PARENT_DIRECTORY = ".."
+private final CANDIDATES_CACHE_VERSION_MARK = "@"
+private final CANDIDATES_CACHE_LEVEL_LIMIT = 500
+
+// Std modules, import paths and manifest items.
+define class ModuleSources {
+    Workspace workspace
+    Settings settings
+
+    construct(Workspace workspace, Settings settings) {
+        this.workspace = workspace
+        this.settings = settings
+    }
+
+    // The std modules (`import` target: those that the file does not import yet; a value context: all of them, the
+    // unloaded ones with their import edit) and the packages of the program as qualifiers.
+    method standardModules(FileContext context, CompletionContext request): array<CompletionItem> {
+        var isTarget = request.kind == CANDIDATES_KIND_IMPORT_TARGET
+        if (isTarget == false && candidatesIsValueContext(request.kind) == false) {
+            return []
+        }
+        var imports = CandidatesImports(context, request.replaceSpan.start)
+        var shadowed = this.shadowedNames(context)
+        var items = []
+        for (name in context.index().stdModuleNames()) {
+            var isImported = imports.importsStandard(name)
+            if (shadowed.has(name) == false && (isTarget == false || isImported == false)) {
+                items.append(this.moduleItem(context, name, isImported || isTarget))
+            }
+        }
+        if (isTarget == false) {
+            this.addPackageQualifiers(context, items)
+        }
+        return items
+    }
+
+    // A folder of the project root with the name of a std module wins over the module (5.6).
+    method shadowedNames(FileContext context): map<string, bool> {
+        var names = {}
+        var root = context.project.layout.root
+        if (root == "") {
+            return names
+        }
+        for (folder in context.project.scanFor(this.workspace.files, nowMillis()).packageFolders) {
+            if (path.dirname(folder) == root) {
+                names[path.basename(folder)] = true
+            }
+        }
+        return names
+    }
+
+    method moduleItem(FileContext context, string name, bool loaded): CompletionItem {
+        var bucket = CANDIDATES_BUCKET_STANDARD
+        if (loaded == false) {
+            bucket = CANDIDATES_BUCKET_IMPORT
+        }
+        var item = candidatesItem(name, CompletionKind.Module, "std module", bucket)
+        item.labelDescription = CANDIDATES_STD_DESCRIPTION
+        item.resolveKey = [context.document.uri, CANDIDATES_MODULE_KIND_NAME, stdFileKey(name), "0"].join(CANDIDATES_KEY_SEPARATOR)
+        var edit = nothing()
+        if (loaded == false) {
+            edit = importEditFor(context.syntax, context.document.text, CANDIDATES_IMPORT_PREFIX + name, true)
+        }
+        if (isSome(edit)) {
+            item.additionalEdits = [edit]
+            item.detail = CANDIDATES_IMPORT_PREFIX + name
+        }
+        return item
+    }
+
+    method addPackageQualifiers(FileContext context, array<CompletionItem> items) {
+        var index = context.index()
+        for (qualifier in index.qualifiers()) {
+            if (qualifier != "" && index.isStandardQualifier(qualifier) == false) {
+                items.append(candidatesItem(qualifier, CompletionKind.Module, "package", CANDIDATES_BUCKET_PROJECT))
+            }
+        }
+    }
+
+    method importPaths(FileContext context, CompletionContext request): array<CompletionItem> {
+        return CandidatesImportPaths(context, this.workspace).itemsFor(request)
+    }
+
+    method manifestItems(FileContext context, CompletionContext request): array<CompletionItem> {
+        return CandidatesManifestItems(context, this.workspace).itemsFor(request)
+    }
+}
+
+// Inside `project.nv`: module names for `require` and `replace`, and the directories next to the manifest.
+define class CandidatesManifestItems {
+    FileContext context
+    Workspace workspace
+
+    construct(FileContext context, Workspace workspace) {
+        this.context = context
+        this.workspace = workspace
+    }
+
+    method itemsFor(CompletionContext request): array<CompletionItem> {
+        var form = candidatesDetailForm(request)
+        if (form == CANDIDATES_DETAIL_REQUIRE) {
+            return this.moduleItems(true)
+        }
+        if (form == CANDIDATES_DETAIL_REPLACE_MODULE) {
+            return this.moduleItems(false)
+        }
+        if (form == CANDIDATES_DETAIL_REPLACE_DIRECTORY) {
+            return this.directories(request)
+        }
+        return []
+    }
+
+    // The modules the manifest requires already and, for `require`, the module directories of the dependency cache.
+    method moduleItems(bool withCache): array<CompletionItem> {
+        var keys = {}
+        var items = []
+        for (requirement in this.context.project.layout.manifest.requires) {
+            this.addModule(items, keys, requirement.module, "required")
+        }
+        if (withCache) {
+            for (key in this.cachedModules()) {
+                this.addModule(items, keys, key, "cached")
+            }
+        }
+        return items
+    }
+
+    // A key with a line break is a string that is still open in the manifest, not a module.
+    method addModule(array<CompletionItem> items, map<string, bool> keys, string key, string detail) {
+        if (keys.has(key) == false && key.indexOf(CANDIDATES_LINE_FEED) < 0) {
+            keys[key] = true
+            items.append(candidatesItem(key, CompletionKind.Module, detail, CANDIDATES_BUCKET_DEPENDENCY))
+        }
+    }
+
+    // `<cache>/<host>/<owner>/<repo>@<version>` gives the module `<host>/<owner>/<repo>`.
+    method cachedModules(): array<string> {
+        var files = this.workspace.files
+        var cache = dependencyCacheDirectory()
+        var found = []
+        for (host in this.directoriesIn(cache)) {
+            for (owner in this.directoriesIn(path.join(cache, host))) {
+                for (entry in files.entriesOf(path.join(cache, host, owner))) {
+                    var mark = entry.indexOf(CANDIDATES_CACHE_VERSION_MARK)
+                    if (mark > 0) {
+                        found.append(host + "/" + owner + "/" + entry.substring(0, mark))
+                    }
+                }
+            }
+        }
+        return found
+    }
+
+    method directoriesIn(string directory): array<string> {
+        var found = []
+        for (name in this.workspace.files.entriesOf(directory)) {
+            if (found.length() < CANDIDATES_CACHE_LEVEL_LIMIT && this.workspace.files.isDirectory(path.join(directory, name))) {
+                found.append(name)
+            }
+        }
+        return found
+    }
+
+    // The directories below the manifest's folder that the typed relative path (`../`, `libs/`) leads to.
+    method directories(CompletionContext request): array<CompletionItem> {
+        var manifestPath = this.context.project.layout.manifestPath
+        if (manifestPath == "") {
+            manifestPath = this.context.document.filePath
+        }
+        var items = [candidatesItem(CANDIDATES_PARENT_DIRECTORY, CompletionKind.Folder, "parent directory", CANDIDATES_BUCKET_PROJECT)]
+        for (name in this.directoriesIn(path.join(path.dirname(manifestPath), request.typeName))) {
+            if (isSkippedDirectoryName(name) == false) {
+                items.append(candidatesItem(name, CompletionKind.Folder, "directory", CANDIDATES_BUCKET_PROJECT))
+            }
+        }
+        return items
+    }
+}

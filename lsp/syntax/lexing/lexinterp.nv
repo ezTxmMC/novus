@@ -1,0 +1,109 @@
+package lexing
+
+import base/text
+
+// Finds `${...}` in string content. The decoded text is walked through the raw offsets, so no offset map is needed
+// (an escape is two raw bytes and decodes to one character).
+define class LexingInterpolations {
+    string text
+
+    construct(string text) {
+        this.text = text
+    }
+
+    method spansIn(integer from, integer to): array<Span> {
+        var spans = []
+        var resume = from
+        for (candidate in this.candidatesIn(from, to)) {
+            if (candidate.close >= 0 && candidate.at >= resume) {
+                spans.append(Span(candidate.inner, candidate.close))
+                resume = candidate.close + this.widthAt(candidate.close, to)
+            }
+        }
+        return spans
+    }
+
+    // One pass: every `${` is a candidate that stays open until the brace level falls back to the level in front of it,
+    // so the closing brace of all candidates is known without rescanning the text for each of them.
+    method candidatesIn(integer from, integer to): array<LexingCandidate> {
+        var found = []
+        var pending = []
+        var level = 0
+        var at = from
+        while (at < to) {
+            var code = this.decodedAt(at, to)
+            if (code == LEXING_DOLLAR_BYTE) {
+                this.openCandidate(at, to, level, found, pending)
+            }
+            if (code == LEXING_OPEN_BRACE_BYTE) {
+                level = level + 1
+            }
+            if (code == LEXING_CLOSE_BRACE_BYTE) {
+                level = level - 1
+                this.closePending(pending, level, at)
+            }
+            at = at + this.widthAt(at, to)
+        }
+        return found
+    }
+
+    method openCandidate(integer at, integer to, integer level, array<LexingCandidate> found, array<LexingCandidate> pending) {
+        var inner = this.interpolationStart(at, to)
+        if (inner < 0) {
+            return
+        }
+        var candidate = LexingCandidate(at, inner, level)
+        found.append(candidate)
+        pending.append(candidate)
+    }
+
+    // The levels of the pending candidates never decrease towards the top, so only the top ones can close.
+    method closePending(array<LexingCandidate> pending, integer level, integer at) {
+        while (pending.length() > 0 && pending[pending.length() - 1].level == level) {
+            var closed = pending.pop()
+            closed.close = at
+        }
+    }
+
+    // Offset of the first character after `${` when the (decoded) `$` is at `at`, else -1.
+    method interpolationStart(integer at, integer to): integer {
+        if (this.decodedAt(at, to) != LEXING_DOLLAR_BYTE) {
+            return -1
+        }
+        var brace = at + this.widthAt(at, to)
+        if (brace >= to || this.decodedAt(brace, to) != LEXING_OPEN_BRACE_BYTE) {
+            return -1
+        }
+        return brace + this.widthAt(brace, to)
+    }
+
+    method widthAt(integer at, integer to): integer {
+        if (at + 1 < to && ord(this.text.charAt(at)) == LEXING_BACKSLASH_BYTE) {
+            return 2
+        }
+        return 1
+    }
+
+    method decodedAt(integer at, integer to): integer {
+        if (this.widthAt(at, to) == 2) {
+            return ord(this.text.charAt(at + 1))
+        }
+        return ord(this.text.charAt(at))
+    }
+}
+
+// A `${` that may or may not turn out to be closed: `level` is the brace level in front of it, `close` the offset of
+// its closing brace (-1 as long as there is none).
+define class LexingCandidate {
+    integer at
+    integer inner
+    integer level
+    integer close
+
+    construct(integer at, integer inner, integer level) {
+        this.at = at
+        this.inner = inner
+        this.level = level
+        this.close = -1
+    }
+}

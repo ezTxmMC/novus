@@ -1,0 +1,51 @@
+package closure
+
+import base/platform
+import projects/manifest
+import projects/modules
+import projects/stdlib
+
+// The program of a project as the loader sees it. The walk starts at the manifest's main file and at every extra
+// entry in `entryFiles` (an open file that no import reaches: an orphan still gets features), so a caller that
+// passes only the orphan still gets the program of the project. A main file that does not exist is skipped when
+// there are extra entries; without entries it is walked anyway and reported. Every problem is data
+// (`ProgramClosure.issues`); nothing here can fail.
+define class ClosureBuilder {
+    ProjectLayout layout
+    ModuleTable modules
+    TextSource source
+    SourceProvider provider
+    StdLibrary library
+
+    construct(ProjectLayout layout, ModuleTable modules, TextSource source, SourceProvider provider, StdLibrary library) {
+        this.layout = layout
+        this.modules = modules
+        this.source = source
+        this.provider = provider
+        this.library = library
+    }
+
+    method build(array<string> entryFiles): ProgramClosure {
+        var walk = ClosureWalk(this.layout, this.modules, this.source, this.provider, this.library)
+        return walk.run(this.entriesOrMain(entryFiles))
+    }
+
+    method entriesOrMain(array<string> entryFiles): array<string> {
+        var main = this.layout.mainFile
+        if (main == "" || entryFiles.contains(main)) {
+            return entryFiles
+        }
+        if (entryFiles.length() > 0 && this.isMissing(main)) {
+            return entryFiles
+        }
+        var entries = [main]
+        for (entry in entryFiles) {
+            entries.append(entry)
+        }
+        return entries
+    }
+
+    method isMissing(string filePath): bool {
+        return this.source.exists(filePath) == false || this.source.isDirectory(filePath)
+    }
+}

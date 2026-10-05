@@ -1,0 +1,20 @@
+package main
+
+import @support
+import @fixtures
+import @hover_cases
+import @import_cases
+import @signature_cases
+import @assign_cases
+
+method main() {
+    runSymbolHoverCases()
+    runWordHoverCases()
+    runAmbiguityCases()
+    runInterpolationHoverCases()
+    runImportHoverCases()
+    runSignatureCases()
+    runManifestHoverCases()
+    runAssignmentHoverCases()
+    runDeclarationLineCases()
+}

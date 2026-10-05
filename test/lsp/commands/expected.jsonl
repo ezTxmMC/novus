@@ -1,0 +1,16 @@
+{"id":1,"jsonrpc":"2.0","result":{"capabilities":"@CAPABILITIES@","serverInfo":{"name":"novus-lsp","version":"0.1.0"}}}
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@ROOTURI@/main.nv","version":1}}
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[{"code":"compile-error","message":"expected '}' but found 'BROKEN'","range":{"end":{"character":13,"line":3},"start":{"character":7,"line":3}},"severity":1,"source":"novusc"}],"uri":"@ROOTURI@/main.nv","version":1}}
+{"id":2,"jsonrpc":"2.0","result":null}
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[{"code":"compile-error","message":"expected '}' but found 'BROKEN'","range":{"end":{"character":13,"line":3},"start":{"character":7,"line":3}},"severity":1,"source":"novusc"}],"uri":"@ROOTURI@/main.nv","version":1}}
+{"id":3,"jsonrpc":"2.0","result":null}
+{"jsonrpc":"2.0","method":"window/showMessage","params":{"message":"novus: dependencies fetched: fetched 2 modules","type":3}}
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[{"code":"compile-error","message":"expected '}' but found 'BROKEN'","range":{"end":{"character":13,"line":3},"start":{"character":7,"line":3}},"severity":1,"source":"novusc"}],"uri":"@ROOTURI@/main.nv","version":1}}
+{"id":4,"jsonrpc":"2.0","result":null}
+{"jsonrpc":"2.0","method":"window/showMessage","params":{"message":"novus: fetching dependencies failed (exit code 1): error: cannot fetch dependencies","type":1}}
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[{"code":"compile-error","message":"expected '}' but found 'BROKEN'","range":{"end":{"character":13,"line":3},"start":{"character":7,"line":3}},"severity":1,"source":"novusc"}],"uri":"@ROOTURI@/main.nv","version":1}}
+{"id":5,"jsonrpc":"2.0","result":null}
+{"error":{"code":-32602,"message":"unknown command: novus.nope"},"id":6,"jsonrpc":"2.0"}
+{"error":{"code":-32602,"message":"unknown command: "},"id":7,"jsonrpc":"2.0"}
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@ROOTURI@/main.nv"}}
+{"id":99,"jsonrpc":"2.0","result":null}

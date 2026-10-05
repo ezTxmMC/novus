@@ -1,0 +1,24 @@
+package main
+
+import @maybe_cases
+import @source_cases
+import @file_cases
+import @walker_cases
+import @process_cases
+import @system_cases
+import @stdio_cases
+import @hardening_cases
+
+// lsp/base/maybe and lsp/base/platform: the optional-result helpers, the TextSource rules, guarded files,
+// the source walker, external commands, clock, environment and stdio. Paths of temp trees are printed
+// relative to their root so the output is the same everywhere.
+method main() {
+    runMaybeCases()
+    runSourceCases()
+    runFileCases()
+    runWalkerCases()
+    runProcessCases()
+    runSystemCases()
+    runStdioCases()
+    runHardeningCases()
+}

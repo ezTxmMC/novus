@@ -1,0 +1,36 @@
+package main
+
+import "novus/lsp/services/snippets"
+
+// Command line front end of the snippet catalogue for scripts/lsp_snippets.sh:
+//   snippets_tool verify <dir>   write one verification project per snippet (DESIGN 7.5)
+//   snippets_tool export <file>  write the VS Code snippet file (DESIGN 7.6)
+
+private final EXIT_FAILED = 1
+private final EXIT_USAGE = 2
+
+method main(array<string> args): integer {
+    if (args.length() == 2 && args[0] == "verify") {
+        return verifyCatalogue(args[1])
+    }
+    if (args.length() == 2 && args[0] == "export") {
+        return exportCatalogue(args[1])
+    }
+    eprintln "usage: snippets_tool verify <dir> | export <file>"
+    return EXIT_USAGE
+}
+
+method verifyCatalogue(string outputDir): integer {
+    var catalogue = loadSnippetCatalogue()
+    var written = writeVerificationFiles(catalogue, outputDir)
+    println "${written} of ${catalogue.all.length()} verification projects written to ${outputDir}"
+    if (written != catalogue.all.length()) {
+        return EXIT_FAILED
+    }
+    return 0
+}
+
+method exportCatalogue(string target): integer {
+    writeFile(target, exportVsCodeSnippets(loadSnippetCatalogue()))
+    return 0
+}

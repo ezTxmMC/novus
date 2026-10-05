@@ -1,0 +1,24 @@
+package platform
+
+import os
+
+// An unset variable and an empty one are the same to os.env, so both give the fallback.
+method environmentValue(string name, string fallback): string {
+    var value = os.env(name)
+    if (value == "") {
+        return fallback
+    }
+    return value
+}
+
+method homeDirectory(): string {
+    return os.home()
+}
+
+method temporaryDirectory(): string {
+    return os.temp()
+}
+
+method operatingSystem(): string {
+    return os.platform()
+}

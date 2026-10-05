@@ -1,0 +1,80 @@
+package structure
+
+import arrays
+import base/model
+import strings
+
+private final STRUCTURE_RANK_SEPARATOR = chr(1)
+private final STRUCTURE_INDEX_WIDTH = 8
+private final STRUCTURE_NO_MATCH = -1
+
+// How well a symbol name matches the query: 0 for an empty query, then 1 exact, 2 prefix, 3 substring, 4 subsequence
+// (case-insensitive), -1 for no match.
+method structureMatchScore(string name, string needle): integer {
+    if (needle == "") {
+        return 0
+    }
+    var lowered = name.toLower()
+    if (lowered == needle) {
+        return 1
+    }
+    if (lowered.startsWith(needle)) {
+        return 2
+    }
+    if (lowered.contains(needle)) {
+        return 3
+    }
+    if (structureIsSubsequence(lowered, needle)) {
+        return 4
+    }
+    return STRUCTURE_NO_MATCH
+}
+
+method structureIsSubsequence(string name, string needle): bool {
+    var matched = 0
+    var i = 0
+    while (i < name.length() && matched < needle.length()) {
+        if (name.charAt(i) == needle.charAt(matched)) {
+            matched = matched + 1
+        }
+        i = i + 1
+    }
+    return matched == needle.length()
+}
+
+// The collected matches of one search, ranked by score and then by name.
+define class StructureHits {
+    array<WorkspaceSymbolEntry> entries
+    array<string> keys
+    map<string, bool> seen
+
+    construct() {
+        this.entries = []
+        this.keys = []
+        this.seen = {}
+    }
+
+    method add(WorkspaceSymbolEntry entry, integer score) {
+        var identity = entry.location.filePath + "@" + entry.location.span.start + "@" + entry.name
+        if (this.seen.has(identity)) {
+            return
+        }
+        this.seen[identity] = true
+        var position = strings.padLeftWith(this.entries.length() + "", STRUCTURE_INDEX_WIDTH, "0")
+        this.keys.append("" + score + STRUCTURE_RANK_SEPARATOR + entry.name.toLower() + STRUCTURE_RANK_SEPARATOR + position)
+        this.entries.append(entry)
+    }
+
+    method ranked(integer limit): array<WorkspaceSymbolEntry> {
+        var order = arrays.sort(this.keys)
+        var result = []
+        for (key in order) {
+            if (result.length() >= limit) {
+                break
+            }
+            var parts = key.split(STRUCTURE_RANK_SEPARATOR)
+            result.append(this.entries[parseInt(parts[2])])
+        }
+        return result
+    }
+}

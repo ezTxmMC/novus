@@ -1,0 +1,5 @@
+# Files whose syntax error the compiler and the own layer place on different lines (DESIGN 9.5-4 (b), V62): for them only
+# the existence of an own syntax issue is compared. One repository-relative path per line.
+# The compiler's lexer lets the unterminated string of line 6 swallow the rest of the file and reports `unterminated block`
+# at line 15; the own recovery (5.3) ends the string at the end of line 6 and reports unterminated-string there.
+vscode-novus/test/fixtures/errors.nv

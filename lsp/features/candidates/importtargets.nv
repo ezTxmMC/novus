@@ -1,0 +1,198 @@
+package candidates
+
+import os
+import path
+import base/maybe
+import base/platform
+import projects/closure
+import projects/workspace
+import semantics/semantic
+import syntax/outline
+
+
+// What the imports of one file reach, and which import line would reach a file that it does not reach yet.
+define class CandidatesImports {
+    FileContext context
+    map<string, bool> reached
+    map<string, bool> standardNames
+    string folder
+
+    // The import statement that contains `skipOffset` is the one being written: it does not count as an import.
+    construct(FileContext context, integer skipOffset) {
+        this.context = context
+        this.reached = {}
+        this.standardNames = {}
+        this.folder = ""
+        if (isSome(context.closureFile)) {
+            this.folder = path.dirname(context.closureFile.filePath)
+        }
+        for (declaration in context.syntax.imports) {
+            if (skipOffset < declaration.span.start || skipOffset > declaration.span.end) {
+                this.note(declaration)
+            }
+        }
+    }
+
+    method note(ImportDecl declaration) {
+        var resolution = this.context.lookupImport(declaration)
+        if (resolution.found == false) {
+            return
+        }
+        this.reached[resolution.target] = true
+        if (resolution.isStandard()) {
+            this.standardNames[resolution.target] = true
+        }
+    }
+
+    method importsStandard(string moduleName): bool {
+        return this.standardNames.has(moduleName)
+    }
+
+    // True for the file itself, the root level of the project, its own package folder and whatever its imports load.
+    method reaches(ClosureFile file): bool {
+        if (isNone(this.context.closureFile) || file.filePath == this.context.closureFile.filePath) {
+            return true
+        }
+        if (file.origin == FileOrigin.Standard) {
+            return this.importsStandard(file.moduleName)
+        }
+        if (file.origin == FileOrigin.Project && file.packageName == "") {
+            return true
+        }
+        if (file.packageName != "") {
+            var fileFolder = path.dirname(file.filePath)
+            return this.reached.has(fileFolder) || fileFolder == this.folder
+        }
+        return this.reached.has(file.filePath)
+    }
+
+    method targetOf(ClosureFile file): ImportTarget {
+        if (file.origin == FileOrigin.Standard) {
+            return ImportTarget(ImportKind.Package, file.moduleName, file.filePath, file.origin)
+        }
+        if (file.origin == FileOrigin.Dependency) {
+            return this.dependencyTarget(file)
+        }
+        if (file.packageName != "") {
+            return ImportTarget(ImportKind.Package, file.packageName, path.dirname(file.filePath), file.origin)
+        }
+        return ImportTarget(ImportKind.File, path.stem(file.filePath), file.filePath, file.origin)
+    }
+
+    method dependencyTarget(ClosureFile file): ImportTarget {
+        var text = file.moduleName
+        if (file.packageName != "") {
+            text = file.moduleName + CANDIDATES_SEGMENT_SEPARATOR + file.packageName
+        }
+        if (file.packageName == "" && this.isEntryFile(file) == false) {
+            text = file.moduleName + CANDIDATES_SEGMENT_SEPARATOR + path.stem(file.filePath)
+        }
+        return ImportTarget(ImportKind.Module, text, file.filePath, file.origin)
+    }
+
+    method isEntryFile(ClosureFile file): bool {
+        var modules = this.context.project.modules
+        if (modules.has(file.moduleName) == false) {
+            return false
+        }
+        return modules.byModule[file.moduleName].entryFile == file.filePath
+    }
+}
+
+// The files of the project and of the ready dependencies that the closure does not hold yet (8.6 items 2 and 3).
+define class CandidatesUnloaded {
+    FileContext context
+    Workspace workspace
+    DependencyIndex dependencies
+    map<string, ClosureFile> memo
+
+    construct(FileContext context, Workspace workspace, DependencyIndex dependencies, map<string, ClosureFile> memo) {
+        this.context = context
+        this.workspace = workspace
+        this.dependencies = dependencies
+        this.memo = memo
+    }
+
+    method projectFiles(): array<ClosureFile> {
+        var layout = this.context.project.layout
+        if (layout.root == "") {
+            return []
+        }
+        var scan = this.context.project.scanFor(this.workspace.files, nowMillis())
+        var loaded = candidatesLoadedFolders(this.context)
+        var files = []
+        for (folder in scan.packageFolders) {
+            if (loaded.has(folder) == false && this.isImportableFolder(layout.root, folder)) {
+                this.addFolder(files, layout.root, folder)
+            }
+        }
+        for (filePath in scan.rootFiles) {
+            this.addFile(files, layout.root, "", filePath)
+        }
+        return files
+    }
+
+    // Not a project package: a name that is no identifier, the directory of a dependency.
+    method isImportableFolder(string root, string folder): bool {
+        for (entry in this.context.project.modules.entries) {
+            if (folder == entry.dir || folder.startsWith(entry.dir + CANDIDATES_SEGMENT_SEPARATOR)) {
+                return false
+            }
+        }
+        return candidatesIsImportablePath(path.relative(root, folder))
+    }
+
+    method addFolder(array<ClosureFile> files, string root, string folder) {
+        for (entry in this.workspace.files.entriesOf(folder)) {
+            this.addFile(files, root, path.relative(root, folder), path.join(folder, entry))
+        }
+    }
+
+    // A source that the closure does not hold: a file of a package folder (`relative` is its folder) or one of the root.
+    // A source of size 0 holds no symbol and may be a named pipe, which blocks the thread that reads it.
+    method addFile(array<ClosureFile> files, string root, string relative, string filePath) {
+        var isSource = filePath.endsWith(CANDIDATES_NOVUS_EXTENSION) && path.basename(filePath) != CANDIDATES_PROJECT_MANIFEST
+        var isImportable = relative != "" || candidatesIsIdentifier(path.stem(filePath))
+        var isReadable = this.workspace.files.hasOverlay(filePath) || os.fileSize(filePath) != 0
+        if (isSource && isImportable && isReadable && this.context.project.closure.has(filePath) == false) {
+            files.append(this.parsedFile(filePath, root, relative))
+        }
+    }
+
+    // Kept by path and modification time, so that a request costs one `stat` per file instead of reading and hashing it;
+    // a file that is open in the editor, or a source without a time, is parsed again every time.
+    method parsedFile(string filePath, string root, string packageFolder): ClosureFile {
+        var stamp = 0
+        if (this.workspace.files.hasOverlay(filePath) == false) {
+            stamp = this.workspace.files.modifiedMillis(filePath)
+        }
+        var key = root + CANDIDATES_MEMO_SEPARATOR + filePath + CANDIDATES_MEMO_SEPARATOR + stamp
+        if (stamp > 0 && this.memo.has(key)) {
+            return this.memo[key]
+        }
+        var syntax = this.workspace.files.syntaxOf(filePath)
+        var qualifier = ""
+        if (packageFolder != "" && syntax.packageName != CANDIDATES_MAIN_PACKAGE) {
+            qualifier = path.basename(packageFolder)
+        }
+        var file = ClosureFile(filePath, FileOrigin.Project, root, qualifier, syntax)
+        file.packageName = packageFolder
+        if (stamp > 0 && this.memo.length() < CANDIDATES_MEMO_LIMIT) {
+            this.memo[key] = file
+        }
+        return file
+    }
+
+    method dependencyFiles(): array<ClosureFile> {
+        var files = []
+        var closure = this.context.project.closure
+        for (entry in this.context.project.modules.readyEntries()) {
+            for (file in this.dependencies.filesOfModule(this.workspace.files, entry)) {
+                if (closure.has(file.filePath) == false && candidatesIsImportableDependencyFile(file)) {
+                    files.append(file)
+                }
+            }
+        }
+        return files
+    }
+}

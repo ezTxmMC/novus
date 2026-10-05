@@ -46,11 +46,12 @@ and run `scripts/cross.sh` (output in `dist/`).
 ## Using novusc
 
 ```
-novusc run <file.nv> [args...]     compile to a temporary binary and run it
+novusc run <file.nv> [args...]     compile (cached) and run it
 novusc build <file.nv> [options]   compile to a native executable
 novusc emit <file.nv> [-o out.c]   write the generated C (single file, runtime included)
-novusc check <file.nv>             parse and analyze only
+novusc check <file.nv> [--offline] parse and analyze only (starts no C compiler)
 novusc nvh <file.nvh>              the Novus code a .nvh component compiles to
+novusc cache [dir | clear]         the cache of compiled programs
 novusc version
 ```
 
@@ -59,14 +60,81 @@ novusc version
 
 Build options: `-o <path>`, `--cc <compiler>`, `--cflags <flags>`,
 `--target <triple>` (cross compile through `zig cc -target`, e.g.
-`--target x86_64-windows-gnu`), `--keep-c`, `--no-runtime`. The C compiler
+`--target x86_64-windows-gnu`), `--keep-c`, `--no-runtime`, `--cache` (take the
+executable from the cache of `run`, see below) and `--offline`. The C compiler
 defaults to `$NOVUS_CC`, then `cc` (`gcc` on Windows); `$NOVUS_CFLAGS` adds
-flags. Programs are single, self-contained C files: `novusc emit` output can
+flags to the default `-O2 -ffp-contract=off` (no fused multiply-add: floats
+print the same everywhere). Programs are single, self-contained C files: `novusc emit` output can
 be handed to any C compiler on any platform.
 
 Which C compiler is used matters: `gcc -O2` optimizes the generated code
 noticeably better than clang (8 ms vs 25 ms on a ten million iteration loop),
 so `novusc` picks `gcc` when it is installed. Override with `NOVUS_CC`.
+
+### Build latency: the cache of `run`
+
+The C compiler is what takes the time (about 0.2-0.3 s even for a hello
+world, the runtime is compiled with every program). `novusc run` therefore
+
+- keeps what it compiled: the executable is stored under a key that is the
+  hash of the generated C, the C compiler and its `--version`, the flags and
+  the novusc version, and the next `run` of the same program starts it
+  directly - a hello world takes 4 ms instead of 190 ms. Any change to the
+  program, a standard module, a dependency, the compiler or the flags is a
+  different key, so a stale executable is never run;
+- optimizes with `-O1` instead of `-O2` (`build` keeps `-O2`). `NOVUS_RUN_OPT`
+  (`0`, `1`, `2`, `3` or `s`) changes it.
+
+Measured on the benchmark programs (`benchmarks/novus`, Linux, gcc), the time
+of `novusc build` plus one run of the result, best of three:
+
+| `-O` | C compiler time | run time | together |
+| ---- | --------------- | -------- | -------- |
+| 0    | 4.4 s           | 3.63 s   | 8.0 s    |
+| 1    | 3.6 s           | 0.64 s   | 4.3 s    |
+| 2    | 7.0 s           | 0.55 s   | 7.6 s    |
+
+(sums over the twelve programs; `-O0` does not even compile faster than `-O1`
+here, and nbody alone takes 3 s with it). `-O1` costs the compute-heavy programs at most about 20%
+over `-O2` (nbody 459 ms against 387 ms) and halves the compile time, which
+is what `run` is waiting for; a program that runs for many seconds should be
+`build`t, or run with `NOVUS_RUN_OPT=2`.
+
+The cache lives in `$NOVUS_CACHE`, default `$XDG_CACHE_HOME/novus` or
+`~/.cache/novus` (`~/Library/Caches/novus` on macOS,
+`%LOCALAPPDATA%\novus\cache` on Windows); `NOVUS_CACHE=off` (in any case)
+switches it off (then every run compiles to a temporary file, as before). It
+is capped at `$NOVUS_CACHE_LIMIT`, default `256M` (`K`, `M`, `G` or plain
+bytes, at most 1 PiB; a bad value is reported before anything is compiled):
+when a new program does not fit, the least recently used ones are deleted
+first. Executables are written under a temporary name and renamed into
+place, so several `novusc` processes can use one cache at the same time (the
+same program compiled twice at once is harmless). Only files named like a
+cache entry (a 32 digit hex key, `.exe` on Windows, and its `.use` stamp) or
+like a leftover of a killed compile (`tmp-<pid>-<key>`, with `.c` or `.exe`,
+removed when over an hour old) are ever deleted, and never a folder -
+`NOVUS_CACHE` can point at any folder. `novusc cache` shows what is in it
+(a folder that does not exist yet is an empty cache), `novusc cache dir` the
+folder and `novusc cache clear` empties it. `build --cache` takes the
+executable from the same cache and replaces `-o` with a copy of it (not
+combinable with `--keep-c` or `--no-runtime`). A cache folder that cannot be
+created or written is ignored: the program is compiled to a temporary file as
+without a cache, and a program that is cached already still runs from a read
+only folder.
+
+The cache runs what it finds: there is no check of who wrote a file there.
+Keep it in a folder only you can write (the default is below your home);
+pointing `NOVUS_CACHE` at a shared writable folder such as `/tmp` lets
+anyone who can compute a program's key plant an executable for it.
+
+`check` only parses and analyzes; it never starts a C compiler (it needs
+neither `cc` nor `gcc` to be installed). A tool that checks files of a
+project without side effects (a language server) passes `--offline` (`check`
+ignores arguments it does not know): a dependency that is not in `$NOVUS_DEPS` yet is then an error
+(`novusc: dependency <module> is not fetched ...`, exit code 1) instead of a
+`git clone`. The `fetching <module> @ <version>` progress line of a clone goes
+to stderr, so the standard output of `check`, `emit` and `deps` stays the
+result.
 
 ## Projects and dependencies
 
@@ -140,16 +208,157 @@ constructors, annotations (`@Deprecated{...}` warns at call time), top-level
 constants, concurrency (`thread`, `virtual`, `async`, `await`, `sync`) and
 the stdlib modules `os`, `path`, `json` and `http`.
 
-Values are dynamically typed at run time, but the compiler proves which
-locals are always integers and generates them as unboxed 64-bit values, so
-counting loops and numeric code compile to plain C. Arrays, maps and objects
-are passed by reference. Integers are 64 bit and never allocated (tagged
-pointers), a boxed value is 16 bytes, objects are one block of value, header
-and field slots (32 bytes for a one-field class), string literals are static
-values the compiler lays down rather than something the runtime boxes, and
-maps are hash indexed but always iterate in key order. Missing
+Top-level constants and enum constants are initialised before `main`, each
+after the ones it uses: a global may use a global declared later (in the same
+or another file), enum constants (`final DEFAULT = Mode.FAST`) and functions
+that do; an enum constant may be built from a global. What a unit uses is read
+off the generated C, so it covers calls through free functions and the
+constructors and methods of the classes it mentions, base classes included
+(not calls through a value's method name). Units that do not depend on each other keep the order of
+the source. Two initialisers that use each other (or a global that uses itself)
+are a compile error that names the cycle: `error: constant A: initialisers use
+each other: global A -> global B -> global A`. A cycle that only exists through
+a function body is ordered by source position; the global it reads early is
+`null` until its own initialiser has run.
+
+### Evaluation order
+
+Operands are evaluated **left to right**, whatever C compiler builds the
+program (gcc evaluates the arguments of a C call right to left, clang left to
+right - the generated code does not leave it to either):
+
+- `a() + b()` and every other binary operator: `a()` before `b()`; in a chain
+  `a() + b() + c()` all operands in that order, then the additions.
+- Calls: the arguments in order; for `x.m(a(), b())` the receiver `x` first,
+  then `a()`, then `b()`. The same holds for constructors, module functions
+  and `thread`/`virtual` calls (their arguments are evaluated by the thread
+  that starts them).
+- Array literals element by element, map literals key then value, entry by
+  entry, object literals field by field.
+- `a[i]` evaluates `a`, then `i`; `a[i] = v` evaluates `a`, `i`, then `v`;
+  `o.f = v` evaluates `o`, then `v`. `return f(g(), h())` is `g`, `h`, `f`.
+- `&&` and `||` evaluate the right operand only when the left one asks for it.
+- Enum constants: the constructor arguments of `RED(a(), b())` in order.
+- A module member written without parentheses (`io.readLine`, `os.args`) is a
+  call of a parameterless function, and ordered like one; a module's global is
+  a plain read.
+- An operand that reads a global, a field or an element is evaluated before a
+  later operand that calls code, so it sees the value from before that call:
+  after `n = 0`, `n + bump()` adds the old `n`. (Two operands that only read
+  have nothing to order: no code runs between them.)
+
+There are no assignment expressions and no compound assignment (`+=`), so a
+statement `x = e` has nothing else to order. Operands that cannot have an effect
+(literals, locals, arithmetic on them) are not ordered and cost nothing: the
+compiler only splits an operand list up when an operand contains a call, a
+method call, `await` or `thread`/`virtual` and another operand is not a
+literal or a local. When several operands that have no effect fail at run time
+(`a[9] + b[9]`, both out of range), which of the errors is reported is not
+defined.
+
+Values are dynamically typed at run time. Integers are 64 bit and wrap around
+on overflow; a small one (62 bit) is a tagged pointer and never allocated, and
+so is a float whose magnitude lies between 2^-126 and 2^127 (it sits in the word
+of the value itself; NaN, the infinities, `-0.0` and the extreme magnitudes are
+16 byte heap cells, and both forms behave the same). Arrays, maps and objects
+are passed by reference. Objects are one block of value, header and field slots
+(32 bytes for a one-field class), string literals are static values the
+compiler lays down rather than something the runtime boxes, and
+maps are hash indexed but always iterate in key order (`remove` is O(1);
+adding a key out of order to a map that was already iterated costs a binary
+search at the next iteration, not a sort of the map; removing a key from a
+map with a pending order sorts again at the next iteration). Missing
 interface/abstract implementations, unknown names and unknown fields are
-errors.
+errors. Array `remove(i)`/`insert` shift the tail (O(n), so `remove(0)` in a
+loop is quadratic) and `contains`/`indexOf` scan.
+
+### Numbers
+
+The same rules hold whether the compiler computes with boxed values or - see
+the next section - with plain C numbers:
+
+- `integer` is 64 bit two's complement and wraps around (`max + 1` is the
+  lowest integer). Integer `/` truncates toward zero; `x / 0` and `x % 0` are
+  `0` (and so are `/ 0.0` and `% 0.0` for floats); dividing the lowest integer
+  by `-1` gives the lowest integer and `% -1` gives `0`.
+- An integer next to a float is converted to a float first: `7 / 2` is `3`,
+  `7 / 2.0` is `3.5`, and `float x = 7 / 2` is `3.0` - the division is the
+  integer one, the conversion comes after.
+- A float converted to an integer (`integer n = 2.9`, a setter) is truncated
+  toward zero, and `math.floor`, `ceil` and `round` give integers; NaN and a
+  float that does not fit give the lowest integer, on every platform.
+- NaN is neither smaller than, larger than nor equal to anything, itself
+  included: every comparison but `!=` is `false`. Two integers are compared as
+  integers (exactly, also beyond 2^53), an integer and a float as doubles.
+- A field declared `integer` or `float` converts what is stored into it like
+  the constructor and the setter do, whichever way it is stored: `this.f = v`,
+  a bare `f = v` inside the class, `p.f = v` from outside, `p.f(v)` and an
+  object literal `P{f = v}`. A value that is not a number (a string, `null`) is
+  kept as it is.
+
+### Typed code
+
+Where the compiler can tell what an expression is, it computes it as a C
+`long long` or `double` and boxes the result once, where a boxed value is
+needed - no tag tests, no allocation, plain registers. An expression has a
+kind (`codegen/kinds.nv`) when it is
+
+- a number literal, or a local that only ever holds integers (every
+  declaration and assignment is an integer expression) or only floats - this
+  includes parameters declared `integer` and `float` that the body does not
+  assign something else;
+- `+ - * / % & | ^ << >>` on integers, `+ - * / %` on floats, an integer
+  mixed with a float (the integer is converted), and a float with *any* value
+  on the other side of `- * / %`: the value is checked when it is read, and a
+  string or `null` there is the same runtime error the boxed operator reports;
+- a call of a method with an unboxed worker (below), or of the numeric natives
+  of `math` (`sqrt pow sin cos tan atan2 log exp floor ceil round toFloat32`);
+- a field declared `integer` or `float`, read from `this` or from an object
+  whose class the compiler can tell: a parameter declared `Body`, an element of
+  a parameter declared `array<Body>`, a local assigned only from those or from
+  `Body(...)`. The class of the object is checked when the field is read; an
+  object of another class, a subclass included, is asked the ordinary way.
+
+A method with numbers in its signature is compiled twice: an unboxed worker
+takes its `integer`/`float` parameters as `long long`/`double` (the ones its
+body does not reassign) and returns a number as one when everything it returns
+is an expression of known kind, and the method every other call reaches
+converts boxed arguments exactly as the body always did, calls the worker and
+boxes the result. `fib(n - 1) + fib(n - 2)` in `fib(integer n): integer` is
+two C calls and an addition.
+
+The types written in a signature are *trusted for fields only where every store
+converts* (see above); a field that holds a value that is no number of its
+declared kind (a string, `null`) is reported when typed code *computes with it*
+- `error: expected a float but found string` - instead of being treated as a
+number. Where the field is only read as it is, nothing is checked and the value
+is the one that was stored: passed as an argument, printed, compared with `==`
+or `!=`, returned, kept in a local (`var v = n.value()`) or handed to a method
+with number parameters (which convert it as they always did) - the same with or
+without a neighbouring operand that has effects. Arithmetic and `<` `>` `<=`
+`>=` on such a field are the computing: `total + n.value()` with an integer
+`total` and a field that holds `"7"` is the type error, not the string `"07"`. Parameters and returns are
+not trusted: an argument that is not what the parameter says is converted by
+the entry of the method as before, and a method that can return something
+else than a number has no unboxed result. `array<float>` says nothing about
+the elements: reading one is an ordinary value.
+
+Two more promises hold in typed code. Operands are evaluated left to right
+even when they are unboxed temporaries (and the field of an object whose class
+is only a guess is read in order too, because an object of another class runs
+that class's method). Of two operands that both fail, which reports first is
+not specified. And floating point is one IEEE operation at a time: the
+generated C is compiled with `-ffp-contract=off`, because a C compiler may
+otherwise fuse `a * b + c` into one multiply-add (clang does by default, gcc on
+processors that have one) and print other last digits than the boxed
+arithmetic and other platforms do.
+
+Floats in `array<float>` loops, vector math over objects and recursive integer
+code are where this shows: `benchmarks/novus/nbody.nv` takes 0.38 s instead of
+3.4 s, `spectral.nv` 22 ms instead of 141 ms (see the table in
+[benchmarks/README.md](benchmarks/README.md)). Call sites cache what a member
+name resolved to (a field slot or a method) per class, so method calls on
+objects, getters and setters cost a compare instead of a lookup.
 
 Memory is managed by a mark-sweep garbage collector built into the runtime
 (`runtime/nv_memory.h`): allocation is a pointer increment in a per-thread
@@ -168,6 +377,19 @@ Strings: `length`, `charAt`, `substring`, `indexOf`, `contains`,
 Arrays: `length`, `append`, `pop`, `insert`, `remove`, `contains`,
 `indexOf`, `join`, `clear`. Maps: `length`, `has`, `keys`, `values`,
 `remove`, `get`.
+
+Strings are byte strings and every string builtin works on their length, not on
+a C string: `==`, `<`, `indexOf`, `contains`, `startsWith`, `endsWith`, `split`,
+`replace`, `words`, `join`, `sort`, `hash.fnv1a` and `hash.crc32` treat a NUL
+byte (`chr(0)`, `io.readBytes`) as an ordinary character - they used to stop at
+the first one - and none of them copies a substring view to find a terminator
+(`indexOf` on a 1 MB view cost 90 us before it looked at a byte). `replace`
+returns the receiver itself when there is nothing to change and a new string
+otherwise; `trim` returns the receiver itself when there is nothing to trim and
+a copy otherwise - not a view, so a short result does not keep a big string
+alive (`substring` does return a view). Map keys and the text printed by
+`println` are still C strings and end at a NUL byte: after
+`m["x" + chr(0) + "y"] = 1`, `m.has("x")` is true.
 
 ## Concurrency
 
@@ -310,12 +532,12 @@ implemented by the C runtime, everything else is plain Novus you can read.
 
 | Module | What |
 | ------ | ---- |
-| [os](std/os.nv) | files and directories (`mkdir`, `listDir`, `removeAll`, `copy`, ...), processes (`exec`, `output`), environment, `time`/`clock`/`sleep`, `hasCommand`, `envOr` |
+| [os](std/os.nv) | files and directories (`mkdir`, `listDir`, `removeAll`, `copy`, `realpath`, `isSymlink`, `modified`/`modifiedMillis`, ...), processes (`exec`, `output` - they inherit stdin; `run` -> `{code, output}` with stdin closed; `shellQuote`/`shellQuoteFor`), environment, `time`/`clock`/`sleep`, `hasCommand`, `envOr` |
 | [path](std/path.nv) | `join`, `absolute`, `normalize`, `relative`, `dirname`/`basename`/`stem`/`extension`, `withExtension`, `segments`, `exists`/`isDir`/`isFile` |
-| [json](std/json.nv) | `stringify`, `pretty`, `parse`, `parseOr`, `isValid`, `load`, `save` |
+| [json](std/json.nv) | `stringify`, `pretty`, `parse`, `tryParse` (null instead of aborting), `parseOr`, `isValid` (strict), `load`, `save`; surrogate pairs decode to real UTF-8, nesting is limited to 256 levels, the writer always emits valid JSON (ill-formed UTF-8 becomes U+FFFD, NaN/Infinity become `null`) |
 | [http](std/http.nv) | `get`/`post`/`put`/`delete`, `request` -> `{status, ok, body, headers, error}`, `download`, `getJson`, `postJson` (driven by `curl`, https included) |
 | [strings](std/strings.nv) | `repeat`, `padLeft`/`padRight`, `reverse`, `lines`, `words`, `count`, `lastIndexOf`, `capitalize`, `isDigit`/`isAlpha`/`isSpace`/`isNumeric`, `chars`, `stripPrefix`/`stripSuffix`, `truncate`, `compare` |
-| [arrays](std/arrays.nv) | `sort`/`sortDesc`, `reverse`, `unique`, `range`, `slice`, `concat`, `sum`/`min`/`max`, `first`/`last`, `countOf`, `copy`, `chunk` |
+| [arrays](std/arrays.nv) | `sort`/`sortDesc`, `reverse`, `unique` (linear for arrays of strings or of numbers - NaN is always kept and costs nothing extra - pairwise like `contains` for other mixes), `range`, `slice`, `concat`, `sum`/`min`/`max`, `first`/`last`, `countOf`, `copy`, `chunk` |
 | [maps](std/maps.nv) | `merge`, `fromPairs`, `invert`, `copy`, `entries`, `countValues` |
 | [math](std/math.nv) | `sqrt`, `pow`, `floor`/`ceil`/`round`, trigonometry, `log`/`exp`, `abs`/`min`/`max`/`clamp`/`sign`, `gcd`/`lcm`, `powInt`, `isPrime`, `roundTo`, `toInt`/`toFloat` |
 | [time](std/time.nv) | `now`, `clock`, `sleep`, `iso`, `format` (strftime), `parts`, `elapsedMs`, `duration` |
@@ -326,7 +548,8 @@ implemented by the C runtime, everything else is plain Novus you can read.
 | [base64](std/base64.nv) | `encode`, `decode` |
 | [hash](std/hash.nv) | `fnv1a`, `crc32`, `bucket`, `hex` |
 | [csv](std/csv.nv) | `parse`/`parseWith`, `stringify`/`stringifyWith` |
-| [io](std/io.nv) | `readLine`, `readAll`, `readLines`, `write`, `writeErr`, `flush`, `prompt` |
+| [io](std/io.nv) | `readLine`, `readAll`, `readLines`, `readBytes(n)` (exactly n bytes, NUL safe - protocol framing), `eof` (both block a virtual thread's carrier: read on an OS `thread`), `write`, `writeErr`, `flush`, `prompt` |
+| [unicode](std/unicode.nv) | UTF-8 text and UTF-16 positions: `utf16Length`, `byteToUtf16`, `utf16ToByte`, `codePointAt`, `fromCodePoint`, `isValidUtf8`, `charLength` |
 | [test](std/test.nv) | `assert`, `assertEqual`, `report` |
 | [toml](std/toml.nv) | `.toml` files: `parse`, `parseOr`, `isValid`, `errorOf`, `stringify`, `load`, `save` (tables, arrays of tables, inline tables, all string and number forms) |
 | [yaml](std/yaml.nv) | `.yaml`/`.yml` files: the same functions - block and flow collections, quoted and block scalars (`\|`, `>`), comments; no anchors or multiple documents |
@@ -334,6 +557,103 @@ implemented by the C runtime, everything else is plain Novus you can read.
 | [config](std/config.nv) | any of them by extension: `load`/`save` (`.json`, `.toml`, `.yaml`, `.yml`, `.properties`, `.cfg`, `.ini`), `parse`/`stringify` by format, `get(value, "server.port", fallback)` |
 | [web](std/web.nv) | `.nvh` pages and the live HTTP server: `page`, `files`, `tick`, `serve`, `port`; `view`/`render`/`trigger`/`input`/`document` for rendering without a server |
 | [thread](std/thread.nv) | tasks (`join`, `joinAll`, `done`), `sleep`/`yield`, locks (`mutex`, `lock`, `tryLock`), channels (`channel`, `send`, `recv`, `close`), counters, groups, `cpus`/`parallelism` |
+
+`io`, `json` and `os` carry what a protocol server (a language server speaking
+stdio JSON-RPC, say) needs:
+
+```nv
+import io
+import json
+import os
+import unicode
+
+method readMessage(): string {
+    var length = 0
+    var line = io.readLine()
+    while (line != "") {                      // headers end at the blank line
+        if (line.startsWith("Content-Length: ")) {
+            length = parseInt(line.substring(16, line.length()))
+        }
+        line = io.readLine()
+    }
+    return io.readBytes(length)               // exactly length bytes, no newline needed
+}
+
+method main {
+    while (!io.eof()) {                       // true once stdin ended
+        var request = json.tryParse(readMessage())    // null instead of aborting
+        if (typeOf(request) == "map") {
+            var column = unicode.utf16ToByte("a😀b", 3)   // LSP columns are UTF-16 units
+        }
+    }
+    var git = os.run("git status --short 2>&1")           // {code, output}, the command's stdin is closed
+    var listing = os.output("ls " + os.shellQuote(os.cwd()))
+}
+```
+
+- `io.readBytes(n)` blocks until `n` bytes arrived and returns fewer only at end
+  of input; it shares the buffer of `readLine`, keeps NUL bytes, and fails
+  (catchably) above 1 GiB. `io.eof()` peeks one byte, so it waits while the
+  input is open but idle. Both block the carrier thread of a `virtual` thread
+  and with it the other virtual threads on it - read on an OS `thread`.
+- On Windows stdin is switched to binary mode: `io.readAll()` and `readBytes`
+  return the bytes as they are, so `\r\n` stays `\r\n` (it used to become `\n`,
+  and a Ctrl-Z byte used to end the input). `readLine` strips the `\r`.
+- `json.parse` decodes `\uD83D\uDE00` to one 4 byte UTF-8 character (a lone
+  surrogate becomes U+FFFD), and `parse`, `isValid` and `stringify` stop at 256
+  nesting levels - with an error you can trap, never a crash. `json.tryParse`
+  returns `null` for text `parse` would abort on and leaves an enclosing
+  `tryRun`'s error alone. `json.isValid` follows RFC 8259 strictly (no `01`,
+  `1.`, raw control characters, only space/tab/LF/CR as whitespace, nothing
+  after the value even behind a NUL byte); `parse` stays lenient there, but a
+  NUL byte in an object key is an error. `json.parseOr` uses the strict check.
+- TOML numbers are strict too (`port = 08080` is an error now; it read as 8080).
+- `os.run(command)` gives the real exit code and stdout and closes the
+  command's stdin; `os.output` and `os.exec` inherit the program's stdin, so a
+  protocol server must use `run`. stderr is not captured (append `2>&1`).
+  `os.shellQuote` quotes one argument for the shell (`shellQuoteFor("windows",
+  ...)` tests the cmd.exe rules anywhere), `os.realpath` is `""` for a missing
+  path, `os.modifiedMillis` has millisecond resolution.
+- `exit(code)` and a `main` that returns end the process even while another OS
+  thread is blocked reading stdin (`exit()` used to wait for the stdio lock the
+  blocked read holds, so such a program never ended): stdout and stderr are
+  flushed by hand, then the process ends without exit handlers.
+- `os.removeAll` never follows a link: a symlink (on Windows also a directory
+  symlink or junction) inside the tree, or the path itself (also when it is
+  written with a trailing separator), is removed and what
+  it points to stays.
+- A concatenation whose result would exceed 2147483646 bytes raises the same
+  catchable `text is longer than ... bytes` error as the string builders (it
+  used to overflow the length). `tryError()` returns runtime error texts up to
+  4095 bytes (it cut them at 511).
+- `unicode` maps byte offsets to UTF-16 offsets and back (both clamp; an
+  offset inside a character lands on its start) and reads code points; none
+  of it aborts on malformed UTF-8.
+- The compiler is about 17 times faster on itself (`novusc check
+  compiler/main.nv`: 1.1 s to 0.07 s) and its time is linear in the number of
+  statements, blocks and locals of a method: its syntax tree is made of
+  strings, and finding the n-th child of a node used to rescan the node from
+  its start for every child. The navigation (`ast.nodeChild`, `nodeCount`,
+  `nodeHead`, `atomEnd`, `isList`, plus `sexpStr`, `sexpUnescape` and the token
+  accessors) is native now (`runtime/nv_sexp.h`): a node is scanned once and
+  the places where its children start are remembered in a small per-thread
+  cache. Short nodes (under 512 bytes) share a direct mapped table where a
+  newer node replaces an older one - scanning one again is cheap; long nodes
+  (a block of thousands of statements) are kept until the next garbage
+  collection, which makes the cache forget everything (the memory a string
+  lived in can be handed out again). The cache is freed when an operating
+  system thread ends. Code generation no longer copies the whole map of
+  locals for every block (a block adds its locals to the map of the enclosing
+  blocks and takes them out again at its end), which needed `map.remove` to
+  cost one probe run instead of the size of the map. A method of 4000
+  statements went from 21 s to 8 ms; the emitted C is byte-identical. One
+  thing is still quadratic: the nesting depth of a single expression, because
+  finding where a child ends scans that child's whole subtree at every level
+  (`a + a + ... + a` with 1000 terms: 8 ms, 4000 terms: 90 ms).
+- The Windows branches of `os.run` (`<NUL`), `os.realpath`
+  (`GetFinalPathNameByHandle`), `os.modifiedMillis`, the cmd.exe quoting, the
+  link handling of `os.removeAll`, `_exit` and the binary stdin were cross compiled (zig cc, x86_64-windows-gnu) and the
+  golden tests run under Wine; they have not been run on a real Windows.
 
 Free builtins need no import: `readFile`, `writeFile`, `fileExists`,
 `removeFile`, `readLine`, `args`, `parseInt`, `parseFloat`, `chr`, `ord`,
@@ -348,19 +668,20 @@ Free builtins need no import: `readFile`, `writeFile`, `fileExists`,
 | `compiler/ast/`        | The string-encoded s-expression AST (`sexp.nv`, `text.nv`)                   |
 | `compiler/parser/`     | Parser: `tokens`, `types`, `expressions`, `statements`, `members`, `declarations` |
 | `compiler/loader/`     | Program loading: packages (folders), `@` file imports, modules (`paths.nv`, `loader.nv`) |
-| `compiler/codegen/`    | Novus -> C: `index`, `checks`, `modules`, `builtins`, `calls`, `expressions`, `statements`, `methods`, `program` |
+| `compiler/codegen/`    | Novus -> C: `index`, `checks`, `builtins`, `calls`, `expressions`, `statements`, `methods`, `program`, `initorder`; typed code: `kinds`, `inference`, `typed`, `workers` |
 | `compiler/runtime/`    | `runtime.nv`: the runtime headers embedded as one string (generated by `tools/embed.nv`) |
 | `compiler/std/`        | `stdlib.nv`: the `std/` modules embedded as strings (generated by `tools/embedstd.nv`) |
 | `std/`                 | The standard library, one Novus module per file                              |
 | `compiler/nvh/`        | `.nvh` components: template -> Novus class (`nvh.nv`), used by the loader    |
 | `compiler/project/`    | `project.nv` manifests (`manifest.nv`) and git dependencies (`deps.nv`)      |
-| `compiler/driver/`     | The `novusc` command line (`cli.nv`) and build/run steps (`build.nv`)         |
+| `compiler/driver/`     | The `novusc` command line (`cli.nv`), build/run steps (`build.nv`), program cache (`cache.nv`) |
 | `compiler/main.nv`     | Entry point                                                                   |
-| `runtime/`              | The C runtime every compiled program embeds: `novus_rt.h` includes one part per subsystem (`nv_values.h`, `nv_memory.h` - allocator and garbage collector, `nv_classes.h`, `nv_threads.h`, `nv_json.h`, ...) |
+| `runtime/`              | The C runtime every compiled program embeds: `novus_rt.h` includes one part per subsystem (`nv_values.h`, `nv_memory.h` - allocator and garbage collector, `nv_classes.h`, `nv_typed.h` - unboxed numbers, `nv_threads.h`, `nv_json.h`, ...) |
 | `scripts/`              | `bootstrap.sh`/`.cmd`/`.ps1`, `snapshot.sh`, `cross.sh`                       |
 | `test/`                 | Golden tests (`run_tests.sh`) and the self-hosting ladder (`selfhost.sh`)     |
 | `examples/`             | Example programs ([overview](examples/README.md))                             |
-| `vscode-novus/`         | VS Code extension: highlighting, language server, run/build commands           |
+| `lsp/`                  | `novus-lsp`, the language server, written in Novus ([lsp/DESIGN.md](lsp/DESIGN.md)) |
+| `vscode-novus/`         | VS Code extension: highlighting, run/build commands, client of `novus-lsp`     |
 | `website/`              | Documentation site (React + Vite + MDX + Tailwind, built with bun)            |
 
 ## Self-hosting and hacking on the compiler
@@ -373,6 +694,9 @@ change:
 3. that compiler compiles itself
 4. **fixpoint**: the second-generation compiler emits byte-identical C
    (stage 2 == stage 3), and that C is what is checked in as the snapshot
+5. a compiler built from the snapshot by the other of clang/gcc emits the same
+   C (nothing the compiler generates depends on the C compiler's choice of
+   evaluation order)
 
 After changing anything under `compiler/` or `runtime/`, run
 `make snapshot` (`scripts/snapshot.sh`): it re-embeds the runtime and the
@@ -440,9 +764,61 @@ make examples                    # run all 258
 make test              # golden tests, examples and the self-hosting ladder
 test/run_tests.sh      # only the golden tests (filter: test/run_tests.sh classes)
 test/run_examples.sh   # only the examples (filter: test/run_examples.sh maps)
+make lsp-test          # novus-lsp: lint, golden cases, protocol scenarios, corpus, snippets
 ```
+
+A golden case may bring `<name>.stdin` (the program's stdin), `<name>.stdin.sh`
+(a script that writes it) or an empty `<name>.stdin.open`: stdin then stays
+open and never delivers anything, for programs that must end while a thread is
+blocked reading it. Every case is stopped and fails when it runs longer than
+300 s (`CASE_SECONDS`) or the seconds in an optional `<name>.timeout`, so a hang
+cannot stall the suite (guard: `timeout`, `gtimeout` or perl; the runner warns
+when none exists). A case without `<name>.stdin` reads an empty stdin. An
+optional `<name>.needs_mb` skips a case on a machine known to have less free
+memory (MiB).
+
+`tools/difftyped.py REFERENCE NEW` is a differential test of the typed code
+generation: it writes random programs full of integer and float arithmetic
+(typed locals, parameters and results, class fields, `math`, mixed and
+ill-typed operands) and runs each through two `novusc` binaries, the one
+before a change (`git show <commit>:bootstrap/novusc.c`, built with `cc`) and
+the one after; output and exit codes must agree. Differences that are the
+documented rules of [Numbers](#numbers) are kept out of the programs. Run it
+with `NOVUS_CC=gcc` and with `NOVUS_CC=clang`: they order operands and fuse
+floating point operations differently, and each finds what the other hides.
 
 ## Editor support
 
-A VS Code extension with syntax highlighting, a language server and run/build
-commands lives in [vscode-novus/](vscode-novus/README.md).
+`novus-lsp` is the language server: completion with auto import and snippets,
+hover, signature help, definition, references, rename, symbols, folding,
+formatting, code actions, semantic highlighting, and three layers of
+diagnostics (its own, `novusc check`, and the optional Pureline style rules).
+It is written in Novus, speaks LSP 3.17 over stdio and works in every editor
+that can start a command.
+
+```sh
+make lsp                    # build/novus-lsp
+make install                # novusc and novus-lsp into /usr/local/bin
+novus-lsp --version         # novus-lsp 0.1.0
+```
+
+Releases carry `novus-lsp-<target>` next to `novusc-<target>`.
+
+| Editor | Setup |
+| ------ | ----- |
+| VS Code | the extension in [vscode-novus/](vscode-novus/README.md); it finds the server through `novus.server.path`, `build/novus-lsp` in the workspace, then `PATH` |
+| Neovim | `vim.lsp.config('novus', { cmd = { 'novus-lsp', '--stdio' }, filetypes = { 'novus' }, root_markers = { 'project.nv', '.git' } })` and `vim.lsp.enable('novus')` |
+| Helix | a `[language-server.novus-lsp]` with `command = "novus-lsp"` and a `[[language]]` with `file-types = ["nv"]` and `language-servers = ["novus-lsp"]` |
+| IntelliJ and the other JetBrains IDEs | the LSP4IJ plugin, command `novus-lsp --stdio`, file name pattern `*.nv` |
+| Zed | needs a Zed extension that registers the language and returns `novus-lsp --stdio` (none exists yet) |
+| Emacs, Sublime Text, Kate, ... | any LSP client: command `novus-lsp --stdio`, language id `novus` |
+
+The [documentation site](#documentation-site) has the complete
+setup of each editor, every setting (`novus.check.mode`, `novus.pureline.*`,
+`novus.format.*`, ...) and the list of snippet prefixes; the sources are
+[website/src/content/projects/editor.mdx](website/src/content/projects/editor.mdx) and
+[language-server.mdx](website/src/content/projects/language-server.mdx).
+`make snippets` regenerates `vscode-novus/snippets/novus.json` from the
+catalogue in `lsp/services/snippets/`. The TypeScript server that
+`vscode-novus/` still contains stays selectable (`novus.server.implementation`)
+until `novus-lsp` has every one of its features.

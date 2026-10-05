@@ -1,0 +1,9 @@
+step 1000: 140 entries, contents agree: true
+step 2000: 143 entries, contents agree: true
+step 3000: 138 entries, contents agree: true
+step 4000: 150 entries, contents agree: true
+step 5000: 143 entries, contents agree: true
+step 6000: 135 entries, contents agree: true
+lookup mismatches: 0
+after draining: 0 []
+{again: 1}

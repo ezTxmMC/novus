@@ -1,0 +1,160 @@
+package semantic
+
+import base/maybe
+import projects/closure
+import projects/stdlib
+import syntax/outline
+
+// Fills the tables of a ProgramIndex from a closure and the std library; ProgramIndex.construct delegates here. The
+// loaded closure files come first, in closure order, then the std modules that no file loaded: only their functions
+// and globals, under their module name, because std is always written qualified and its types are not visible
+// unless a file imports the module.
+define class IndexBuilder {
+    construct() {
+    }
+
+    method fill(ProgramIndex index, ProgramClosure closure, StdLibrary library) {
+        var loadedQualifiers = {}
+        for (file in closure.files) {
+            this.addFile(index, file)
+            loadedQualifiers[file.qualifier] = true
+        }
+        this.addUnloadedStandard(index, library, loadedQualifiers)
+    }
+
+    method addFile(ProgramIndex index, ClosureFile file) {
+        if (isNone(file.syntax)) {
+            return
+        }
+        var fileSymbols = []
+        for (decl in file.syntax.decls) {
+            this.addDeclaration(index, file, decl, fileSymbols)
+        }
+        index.byFile[file.filePath] = fileSymbols
+    }
+
+    method addDeclaration(ProgramIndex index, ClosureFile file, Decl decl, array<Symbol> fileSymbols) {
+        var symbol = Symbol(decl, file, file.qualifier, "")
+        fileSymbols.append(symbol)
+        if (decl.isType()) {
+            this.addType(index, file, symbol, fileSymbols)
+            return
+        }
+        if (decl.isCallable()) {
+            this.addToTable(index.functions, decl.name, symbol)
+            this.addToTable(index.packages, file.qualifier, symbol)
+            return
+        }
+        if (decl.kind == DeclKind.Global) {
+            this.addToTable(index.globals, decl.name, symbol)
+            this.addToTable(index.packages, file.qualifier, symbol)
+        }
+    }
+
+    method addType(ProgramIndex index, ClosureFile file, Symbol symbol, array<Symbol> fileSymbols) {
+        var decl = symbol.decl
+        var isFirst = index.types.has(decl.name) == false
+        if (isFirst) {
+            index.types[decl.name] = symbol
+        }
+        index.typeList.append(symbol)
+        var members = []
+        for (member in decl.members) {
+            var memberSymbol = Symbol(member, file, file.qualifier, decl.name)
+            members.append(memberSymbol)
+            fileSymbols.append(memberSymbol)
+            this.addDeclarer(index, memberSymbol)
+        }
+        if (isFirst) {
+            index.ownMembers[decl.name] = members
+        }
+    }
+
+    // Fields and methods are the members that `declarersOfMember` lists; constructors and enum constants are not.
+    method addDeclarer(ProgramIndex index, Symbol member) {
+        if (member.decl.kind == DeclKind.Field || member.decl.kind == DeclKind.Method || member.decl.kind == DeclKind.AbstractMethod) {
+            this.addToTable(index.membersByName, member.decl.name, member)
+        }
+    }
+
+    method addToTable(map<string, array<Symbol>> table, string key, Symbol symbol) {
+        if (table.has(key) == false) {
+            table[key] = []
+        }
+        table[key].append(symbol)
+    }
+
+    method addUnloadedStandard(ProgramIndex index, StdLibrary library, map<string, bool> loadedQualifiers) {
+        for (moduleName in library.moduleNames()) {
+            if (loadedQualifiers.has(moduleName) == false) {
+                this.addStandardModule(index, library, moduleName)
+            }
+        }
+    }
+
+    method addStandardModule(ProgramIndex index, StdLibrary library, string moduleName) {
+        var module = library.module(moduleName)
+        if (isNone(module)) {
+            return
+        }
+        var file = ClosureFile(stdFileKey(moduleName), FileOrigin.Standard, "", moduleName, module.syntax)
+        file.moduleName = moduleName
+        var fileSymbols = []
+        index.packages[moduleName] = []
+        for (decl in module.syntax.decls) {
+            this.addStandardDeclaration(index, file, decl, fileSymbols)
+        }
+        index.byFile[file.filePath] = fileSymbols
+    }
+
+    method addStandardDeclaration(ProgramIndex index, ClosureFile file, Decl decl, array<Symbol> fileSymbols) {
+        if (decl.isType()) {
+            return
+        }
+        var symbol = Symbol(decl, file, file.qualifier, "")
+        fileSymbols.append(symbol)
+        this.addToTable(index.packages, file.qualifier, symbol)
+    }
+}
+
+method semanticCopyOf(array<Symbol> symbols): array<Symbol> {
+    var copy = []
+    for (symbol in symbols) {
+        copy.append(symbol)
+    }
+    return copy
+}
+
+method semanticFlatten(map<string, array<Symbol>> table): array<Symbol> {
+    var all = []
+    for (name in table.keys()) {
+        for (symbol in table[name]) {
+            all.append(symbol)
+        }
+    }
+    return all
+}
+
+// Top-level declarations, each followed by its members: the order `IndexBuilder` lists the symbols of a file in.
+method semanticFlattenDeclarations(SourceFile syntax): array<Decl> {
+    var declarations = []
+    for (decl in syntax.decls) {
+        declarations.append(decl)
+        for (member in decl.members) {
+            declarations.append(member)
+        }
+    }
+    return declarations
+}
+
+method semanticSameShape(array<Symbol> symbols, array<Decl> declarations): bool {
+    var i = 0
+    while (i < symbols.length()) {
+        var old = symbols[i].decl
+        if (old.kind != declarations[i].kind || old.name != declarations[i].name) {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}

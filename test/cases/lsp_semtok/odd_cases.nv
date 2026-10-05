@@ -1,0 +1,57 @@
+package main
+
+import "novus/lsp/base/maybe"
+import "novus/lsp/base/model"
+import "novus/lsp/base/text"
+import "novus/lsp/features/semtok"
+import "novus/lsp/projects/workspace"
+import @support
+
+// Documents that are not a normal program: nothing may raise, and a file kind that has no semantic tokens answers none.
+method runOddCases() {
+    println("== odd documents")
+    var world = StWorld(stProject(""))
+    stOdd(world, "an empty document", "")
+    stOdd(world, "blanks only", "  \n\n\t \n")
+    stOdd(world, "a comment only", "// nothing\n")
+    stOdd(world, "an unterminated string", "var s = \"abc\nvar t = 1\n")
+    stOdd(world, "an unterminated block comment", "var a = 1 /* never closed\nvar b = 2\n")
+    stOdd(world, "a NUL byte", "var a = 1" + chr(0) + "var b = 2\n")
+    stOdd(world, "CRLF line ends", "var a = 1\r\nvar b = \"x\"\r\n")
+    stOdd(world, "unknown characters", "var a = # 1 ~ \xc3\xa4\n")
+    stOdd(world, "a missing closing brace", "method main() {\n    var x = 1\n")
+}
+
+method stOdd(StWorld world, string label, string source) {
+    var spans = world.spans("/p/main.nv", source)
+    println("-- " + label)
+    println(stRender(source, spans))
+}
+
+method runKindCases() {
+    println("== file kinds")
+    var world = StWorld(stProject(""))
+    var manifest = "project \"p\"\nmain \"main.nv\"\nrequire \"x/y\"\n"
+    stCheck("a manifest has no tokens", "" + world.spans("/p/project.nv", manifest).length(), "0")
+    var component = stLines(["<?nv", "var greeting = \"hi\"", "?>", "<p>text 1 + 2</p>"])
+    var spans = world.spans("/p/page.nvh", component)
+    stShow("a template: the header only", component, spans)
+    var scratch = world.space.contextFor(Document("untitled:Untitled-1", "novus", 1, "var a = 1\nprintln(a)\n"))
+    stShow("a scratch buffer", scratch.document.text, world.engine.spansFor(scratch, Span(0, scratch.document.text.length())))
+}
+
+method runClosedCases() {
+    println("== a file that is not open")
+    var source = stLines(["package geo", "", "method twice(integer n): integer {", "    return n + n", "}"])
+    var world = StWorld({
+        "/p/project.nv": "project \"p\"\nmain \"main.nv\"\n",
+        "/p/main.nv": "import geo\n\nmethod main() {\n}\n",
+        "/p/geo/extra.nv": source
+    })
+    var closed = world.space.contextForPath("/p/geo/extra.nv")
+    stCheck("it has no tokens from the cache", "" + closed.syntax.tokens.length(), "0")
+    var spans = world.engine.spansFor(closed, Span(0, source.length()))
+    stShow("lexed on demand", source, spans)
+    var open = world.spans("/p/geo/extra.nv", source)
+    stCheck("the same as when it is open", stRender(source, open) == stRender(source, spans) + "", "true")
+}

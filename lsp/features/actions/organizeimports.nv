@@ -1,0 +1,134 @@
+package actions
+
+import arrays
+import base/maybe
+import base/model
+import base/text
+import projects/workspace
+import syntax/outline
+
+private final ACTIONS_KEY_SEPARATOR = chr(1)
+private final ACTIONS_INDEX_WIDTH = 6
+private final ACTIONS_CRLF = "\r\n"
+private final ACTIONS_LF = "\n"
+
+// Sorts and groups the import block: the std modules first, one blank line, then the packages, files and dependencies of the
+// project, each group alphabetically by the imported name and without a repeated line (the order of 8.8, which is also the
+// compiler's own). The block is left alone when a comment or any other token lies between two imports, because rewriting it
+// would lose that text.
+define class ActionsOrganizer {
+    FileContext context
+
+    construct(FileContext context) {
+        this.context = context
+    }
+
+    // The edit that replaces the block, nil when there is none to change.
+    method edit(): TextEdit {
+        var imports = this.context.syntax.imports
+        if (imports.length() == 0 || this.isPlainBlock(imports) == false) {
+            return nothing()
+        }
+        var block = Span(imports[0].span.start, imports[imports.length() - 1].span.end)
+        var organized = this.organizedText(imports)
+        if (organized == this.context.document.text.substring(block.start, block.end)) {
+            return nothing()
+        }
+        return TextEdit(block, organized)
+    }
+
+    method isPlainBlock(array<ImportDecl> imports): bool {
+        var block = Span(imports[0].span.start, imports[imports.length() - 1].span.end)
+        for (comment in this.context.syntax.comments) {
+            if (comment.start >= block.start && comment.end <= block.end) {
+                return false
+            }
+        }
+        for (token in this.context.syntax.tokens) {
+            if (token.start >= block.start && token.end <= block.end && this.isInImport(imports, token.start) == false) {
+                return false
+            }
+        }
+        return true
+    }
+
+    method isInImport(array<ImportDecl> imports, integer offset): bool {
+        for (declaration in imports) {
+            if (declaration.span.contains(offset)) {
+                return true
+            }
+        }
+        return false
+    }
+
+    method organizedText(array<ImportDecl> imports): string {
+        var standard = []
+        var others = []
+        for (declaration in imports) {
+            if (this.isStandard(declaration)) {
+                standard.append(declaration)
+            }
+            if (this.isStandard(declaration) == false) {
+                others.append(declaration)
+            }
+        }
+        var eol = this.lineEnding()
+        var groups = []
+        for (group in [standard, others]) {
+            if (group.length() > 0) {
+                groups.append(this.sortedLines(group).join(eol))
+            }
+        }
+        return groups.join(eol + eol)
+    }
+
+    method isStandard(ImportDecl declaration): bool {
+        if (declaration.kind != ImportKind.Package) {
+            return false
+        }
+        var resolution = this.context.lookupImport(declaration)
+        return resolution.found && resolution.isStandard()
+    }
+
+    // The statements ordered by target (then by their own text), a statement written twice kept once.
+    method sortedLines(array<ImportDecl> group): array<string> {
+        var keyed = {}
+        var keys = []
+        var index = 0
+        for (declaration in group) {
+            var line = this.context.document.text.substring(declaration.span.start, declaration.span.end)
+            var key = declaration.target + ACTIONS_KEY_SEPARATOR + line + ACTIONS_KEY_SEPARATOR + this.padded(index)
+            keyed[key] = line
+            keys.append(key)
+            index = index + 1
+        }
+        var lines = []
+        for (key in arrays.sort(keys)) {
+            if (lines.contains(keyed[key]) == false) {
+                lines.append(keyed[key])
+            }
+        }
+        return lines
+    }
+
+    method padded(integer number): string {
+        var digits = "" + number
+        while (digits.length() < ACTIONS_INDEX_WIDTH) {
+            digits = "0" + digits
+        }
+        return digits
+    }
+
+    method lineEnding(): string {
+        return actionsLineEnding(this.context.document.text)
+    }
+}
+
+// The file's own line ending: CRLF when its first line break is one.
+method actionsLineEnding(string text): string {
+    var first = text.indexOf(ACTIONS_LF)
+    if (first > 0 && text.charAt(first - 1) == "\r") {
+        return ACTIONS_CRLF
+    }
+    return ACTIONS_LF
+}

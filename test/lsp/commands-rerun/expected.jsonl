@@ -1,0 +1,9 @@
+{"id":1,"jsonrpc":"2.0","result":{"capabilities":"@CAPABILITIES@","serverInfo":{"name":"novus-lsp","version":"0.1.0"}}}
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@ROOTURI@/main.nv","version":1}}
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@ROOTURI@/util.nv","version":1}}
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@ROOTURI@/main.nv","version":1}}
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[{"code":"compile-error","message":"run 1","range":{"end":{"character":12,"line":0},"start":{"character":0,"line":0}},"severity":1,"source":"novusc"}],"uri":"@ROOTURI@/main.nv","version":1}}
+{"id":2,"jsonrpc":"2.0","result":null}
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[{"code":"compile-error","message":"run 2","range":{"end":{"character":12,"line":0},"start":{"character":0,"line":0}},"severity":1,"source":"novusc"}],"uri":"@ROOTURI@/main.nv","version":1}}
+{"id":3,"jsonrpc":"2.0","result":null}
+{"id":99,"jsonrpc":"2.0","result":null}

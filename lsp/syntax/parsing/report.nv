@@ -1,0 +1,111 @@
+package parsing
+
+import arrays
+import base/text
+import hash
+import syntax/lexing
+import syntax/outline
+import syntax/scanning
+
+private final PARSING_ISSUE_SEQUENCE_RANGE = 1048576
+private final PARSING_SIGNATURE_SEPARATOR = 1
+
+// Human readable report for the corpus and fuzz tools: `path:line:column: severity code: message`, 1-based, byte columns.
+method syntaxReportLines(string filePath, string text): array<string> {
+    if (fileKindOf(filePath) != FILE_KIND_NV) {
+        return []
+    }
+    var file = parseSourceText(filePath, text, editorParseOptions())
+    var lines = LineIndex(text)
+    var report = []
+    for (issue in file.issues) {
+        var line = lines.lineOf(issue.span.start) + 1
+        var column = lines.byteColumn(issue.span.start) + 1
+        report.append(filePath + ":" + line + ":" + column + ": " + parsingSeverity(issue) + " " + issue.code + ": " + issue.message)
+    }
+    return report
+}
+
+method parsingSeverity(SyntaxIssue issue): string {
+    if (issue.isHint()) {
+        return "hint"
+    }
+    if (issue.warning) {
+        return "warning"
+    }
+    return "error"
+}
+
+// All issues of a parse in source order, one per position: an issue that starts inside the previous one is dropped.
+// The first PARSING_MAX_ISSUES of them are kept, so a hopeless file cannot flood the client with diagnostics.
+method parsingMergeIssues(array<LexIssue> lexIssues, array<SyntaxIssue> parserIssues, array<ScanningProblem> problems): array<SyntaxIssue> {
+    var all = []
+    for (issue in lexIssues) {
+        all.append(SyntaxIssue(issue.span, issue.code, issue.message, issue.warning))
+    }
+    for (issue in parserIssues) {
+        all.append(issue)
+    }
+    for (problem in problems) {
+        all.append(SyntaxIssue(problem.span, problem.code, problem.message, problem.warning))
+    }
+    return parsingOnePerPosition(parsingSortedByStart(all))
+}
+
+method parsingSortedByStart(array<SyntaxIssue> issues): array<SyntaxIssue> {
+    var keys = []
+    var byKey = {}
+    var sequence = 0
+    for (issue in issues) {
+        var key = issue.span.start * PARSING_ISSUE_SEQUENCE_RANGE + sequence % PARSING_ISSUE_SEQUENCE_RANGE
+        keys.append(key)
+        byKey["" + key] = issue
+        sequence = sequence + 1
+    }
+    var ordered = []
+    for (key in arrays.sort(keys)) {
+        ordered.append(byKey["" + key])
+    }
+    return ordered
+}
+
+method parsingOnePerPosition(array<SyntaxIssue> sorted): array<SyntaxIssue> {
+    var kept = []
+    for (issue in sorted) {
+        if (kept.length() >= PARSING_MAX_ISSUES) {
+            return kept
+        }
+        if (kept.length() == 0) {
+            kept.append(issue)
+            continue
+        }
+        var previous = kept[kept.length() - 1]
+        var inside = issue.span.start < previous.span.end || issue.span.start == previous.span.start
+        if (inside == false) {
+            kept.append(issue)
+        }
+    }
+    return kept
+}
+
+// contract-note: parsing/DESIGN-NOTES.md 5. Changes only when a declaration changes (kind, name, parameters, types,
+// modifiers, imports), never with a body edit; positions are not part of it, so it may gate re-resolution and index
+// rebuilds but never the replacement of the stored `SourceFile`.
+method parsingDeclSignature(SourceFile file): integer {
+    var parts = [file.packageName]
+    for (importDecl in file.imports) {
+        parts.append("" + importDecl.kind + ":" + importDecl.target)
+    }
+    for (decl in file.decls) {
+        parsingAppendSignature(parts, decl)
+        for (member in decl.members) {
+            parsingAppendSignature(parts, member)
+        }
+    }
+    return hash.fnv1a(parts.join(chr(PARSING_SIGNATURE_SEPARATOR)))
+}
+
+method parsingAppendSignature(array<string> parts, Decl decl) {
+    var detail = ["" + decl.kind, decl.signatureText(), decl.container, decl.modifiers.join(","), decl.accessors.join(","), decl.nativeName]
+    parts.append(detail.join(":"))
+}

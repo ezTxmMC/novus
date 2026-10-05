@@ -1,0 +1,99 @@
+package platform
+
+import arrays
+import math
+import os
+
+private final MAX_SOURCE_FILE_BYTES = 2097152
+private final PLATFORM_MAX_WALK_DEPTH = 64
+private final PLATFORM_HIDDEN_PREFIX = "."
+private final PLATFORM_MEMORY_SOURCE = "MemoryTextSource"
+private final PLATFORM_SKIPPED_DIRECTORIES = {"build": true, "dist": true, "out": true, "node_modules": true}
+
+// Full paths of the files below rootDir whose name ends with one of the extensions (".nv"), ascending.
+// Directories that isSkippedDirectoryName or os.isSymlink name are not entered, nothing deeper than
+// maxDepth directory levels is, and files above MAX_SOURCE_FILE_BYTES are left out (disk sources only).
+method walkSourceFiles(TextSource source, string rootDir, array<string> extensions, integer maxDepth): array<string> {
+    var onDisk = typeOf(source) != PLATFORM_MEMORY_SOURCE
+    var walk = PlatformSourceWalk(platformWalkableSource(source, onDisk), extensions, math.min(maxDepth, PLATFORM_MAX_WALK_DEPTH), onDisk)
+    walk.visit(rootDir, 0)
+    return arrays.sort(walk.found)
+}
+
+// A memory source is indexed once per walk: asking it entry by entry would scan all its keys every time.
+method platformWalkableSource(TextSource source, bool onDisk): TextSource {
+    if (onDisk) {
+        return source
+    }
+    return PlatformMemorySnapshot(source)
+}
+
+method isSkippedDirectoryName(string name): bool {
+    return name.startsWith(PLATFORM_HIDDEN_PREFIX) || PLATFORM_SKIPPED_DIRECTORIES.has(name)
+}
+
+define class PlatformSourceWalk {
+    TextSource source
+    array<string> extensions
+    integer maxDepth
+    bool limitsFileSize
+    array<string> found
+
+    construct(TextSource source, array<string> extensions, integer maxDepth, bool limitsFileSize) {
+        this.source = source
+        this.extensions = extensions
+        this.maxDepth = maxDepth
+        this.limitsFileSize = limitsFileSize
+        this.found = []
+    }
+
+    method visit(string dirPath, integer depth) {
+        for (name in this.source.entriesOf(dirPath)) {
+            this.visitEntry(dirPath, name, depth)
+        }
+    }
+
+    method visitEntry(string dirPath, string name, integer depth) {
+        var entryPath = platformJoinPath(dirPath, name)
+        if (this.source.isDirectory(entryPath) == false) {
+            this.collectFile(entryPath, name)
+            return
+        }
+        if (isSkippedDirectoryName(name) || depth >= this.maxDepth || os.isSymlink(entryPath)) {
+            return
+        }
+        this.visit(entryPath, depth + 1)
+    }
+
+    method collectFile(string filePath, string name) {
+        if (this.hasWantedExtension(name) == false || this.isTooLarge(filePath)) {
+            return
+        }
+        if (this.source.exists(filePath)) {
+            this.found.push(filePath)
+        }
+    }
+
+    method hasWantedExtension(string name): bool {
+        for (extension in this.extensions) {
+            if (name.endsWith(extension)) {
+                return true
+            }
+        }
+        return false
+    }
+
+    method isTooLarge(string filePath): bool {
+        if (this.limitsFileSize == false) {
+            return false
+        }
+        return os.fileSize(filePath) > MAX_SOURCE_FILE_BYTES
+    }
+}
+
+method platformJoinPath(string dirPath, string name): string {
+    if (dirPath.endsWith(PLATFORM_PATH_SEPARATOR)) {
+        return dirPath + name
+    }
+    return dirPath + PLATFORM_PATH_SEPARATOR + name
+}

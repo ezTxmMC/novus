@@ -1,0 +1,7 @@
+{"id":1,"jsonrpc":"2.0","result":{"capabilities":"@CAPABILITIES@","serverInfo":{"name":"novus-lsp","version":"0.1.0"}}}
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@ROOTURI@/main.nv","version":1}}
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@ROOTURI@/project.nv","version":1}}
+{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"diagnostics":[],"uri":"@ROOTURI@/main.nv","version":1}}
+{"id":2,"jsonrpc":"2.0","result":{"isIncomplete":false,"items":[{"detail":"module","kind":9,"label":"geo","labelDetails":{"description":"v1.0.0"},"sortText":"31_geo","textEdit":{"newText":"geo","range":{"end":{"character":25,"line":2},"start":{"character":24,"line":2}}}}]}}
+{"id":3,"jsonrpc":"2.0","result":{"isIncomplete":false,"items":[{"detail":"required","kind":9,"label":"github.com/acme/geo","sortText":"31_github.com/acme/geo","textEdit":{"newText":"github.com/acme/geo","range":{"end":{"character":26,"line":2},"start":{"character":9,"line":2}}}}]}}
+{"id":99,"jsonrpc":"2.0","result":null}

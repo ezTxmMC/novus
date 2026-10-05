@@ -1,0 +1,197 @@
+package diagnostics
+
+import base/maybe
+import base/model
+import base/text
+import projects/closure
+import projects/modules
+import projects/workspace
+import syntax/lexing
+import syntax/outline
+
+private final DIAGNOSTICS_UNRESOLVED_IMPORT = "unresolved-import"
+private final DIAGNOSTICS_FOLDER_MISMATCH = "package-folder-mismatch"
+private final DIAGNOSTICS_MODULE_NOT_IMPORTED = "module-not-imported"
+private final DIAGNOSTICS_IMPORT_NOT_USED = "import-not-used-here"
+
+// The import family: what the closure reported for the file, the std modules that are used without an import and,
+// with `explicitImports`, the std imports that this file does not use (5.9).
+define class ImportDiagnosticRule based DiagnosticRule {
+    Settings settings
+
+    construct(Settings settings) {
+        this.settings = settings
+    }
+
+    method check(FileContext context): array<Diagnostic> {
+        if (diagnosticsIsSemanticFile(context) == false) {
+            return []
+        }
+        var found = this.closureFindings(context)
+        if (diagnosticsJudgesNames(context) == false) {
+            return found
+        }
+        diagnosticsAppendAll(found, DiagnosticsModuleUses(context).missingImports())
+        if (this.settings.explicitImports) {
+            diagnosticsAppendAll(found, this.unusedImports(context))
+        }
+        return found
+    }
+
+    method closureFindings(FileContext context): array<Diagnostic> {
+        var found = []
+        for (issue in context.project.closure.issues) {
+            if (this.isOfFile(issue, context) && this.isPublished(issue, context)) {
+                found.append(diagnosticsFinding(issue.span, diagnosticsImportSeverity(context, issue.code), issue.code, issue.message))
+            }
+        }
+        return found
+    }
+
+    method isOfFile(ClosureIssue issue, FileContext context): bool {
+        var isImportCode = issue.code == DIAGNOSTICS_UNRESOLVED_IMPORT || issue.code == DIAGNOSTICS_FOLDER_MISMATCH
+        return isImportCode && issue.filePath == context.closureFile.filePath
+    }
+
+    // An import of a dependency that is not fetched belongs to `dependency-not-fetched` on the manifest (5.9).
+    method isPublished(ClosureIssue issue, FileContext context): bool {
+        if (issue.code != DIAGNOSTICS_UNRESOLVED_IMPORT) {
+            return true
+        }
+        for (declaration in context.syntax.imports) {
+            if (declaration.kind == ImportKind.Module && this.isAt(declaration, issue.span)) {
+                return this.isReadyOrUnknown(context, declaration.target)
+            }
+        }
+        return true
+    }
+
+    method isAt(ImportDecl declaration, Span span): bool {
+        return declaration.targetSpan.start == span.start || declaration.span.start == span.start
+    }
+
+    method isReadyOrUnknown(FileContext context, string target): bool {
+        var match = context.project.modules.find(target)
+        return isNone(match) || match.entry.isReady()
+    }
+
+    method unusedImports(FileContext context): array<Diagnostic> {
+        var found = []
+        var usage = DiagnosticsImportUsage(context)
+        for (declaration in context.syntax.imports) {
+            if (this.isStandardImport(context, declaration) && usage.isUsed(declaration.target) == false) {
+                found.append(this.unusedHint(declaration))
+            }
+        }
+        return found
+    }
+
+    method isStandardImport(FileContext context, ImportDecl declaration): bool {
+        if (declaration.kind != ImportKind.Package) {
+            return false
+        }
+        var resolution = context.lookupImport(declaration)
+        return resolution.found && resolution.isStandard()
+    }
+
+    method unusedHint(ImportDecl declaration): Diagnostic {
+        var message = "'" + declaration.target + "' is imported but this file does not use it"
+        var hint = diagnosticsFinding(declaration.span, Severity.Hint, DIAGNOSTICS_IMPORT_NOT_USED, message)
+        hint.unnecessary = true
+        hint.data = declaration.target
+        return hint
+    }
+}
+
+// What a file uses of its std imports: a qualifier `module.`, a type that the module declares (the classes of `web` and `toml`
+// need no qualifier) or a module that only this import loads (`import web` brings `json`). A word that names a type counts.
+define class DiagnosticsImportUsage {
+    FileContext context
+    map<string, bool> qualifiers
+    map<string, bool> words
+    map<string, bool> imported
+    map<string, bool> used
+
+    construct(FileContext context) {
+        this.context = context
+        this.qualifiers = {}
+        this.words = {}
+        this.imported = {}
+        this.used = {}
+        this.read(context.syntax.tokens)
+        for (declaration in context.syntax.imports) {
+            this.imported[declaration.target] = declaration.kind == ImportKind.Package
+        }
+        for (module in context.project.closure.loadedStdModules) {
+            this.used[module] = this.usesModule(module)
+        }
+    }
+
+    // The words of the code and of the interpolations of its strings; the first name of a chain `name.x` is a qualifier.
+    method read(array<Token> tokens) {
+        var index = 0
+        while (index < tokens.length()) {
+            this.readToken(tokens, index)
+            index = index + 1
+        }
+    }
+
+    method readToken(array<Token> tokens, integer index) {
+        var token = tokens[index]
+        for (span in token.interpolations) {
+            this.read(lexRange(this.context.document.text, span.start, span.end).tokens)
+        }
+        if (token.kind != TokenKind.Ident) {
+            return
+        }
+        this.words[token.text] = true
+        var isHead = index == 0 || tokens[index - 1].isPunct(".") == false
+        if (isHead && index + 1 < tokens.length() && tokens[index + 1].isPunct(".")) {
+            this.qualifiers[token.text] = true
+        }
+    }
+
+    method usesModule(string module): bool {
+        if (this.qualifiers.has(module)) {
+            return true
+        }
+        var file = this.context.project.closure.fileAt(stdFileKey(module))
+        if (isNone(file)) {
+            return false
+        }
+        for (decl in file.syntax.decls) {
+            if (decl.isType() && this.words.has(decl.name)) {
+                return true
+            }
+        }
+        return false
+    }
+
+    method isUsed(string module): bool {
+        return this.used.get(module, false) || this.bringsUsedModule(module)
+    }
+
+    // True when a module that the file uses but does not import itself is loaded through this one.
+    method bringsUsedModule(string module): bool {
+        var pending = [module]
+        var visited = {}
+        while (pending.length() > 0) {
+            var file = this.context.project.closure.fileAt(stdFileKey(pending.pop()))
+            if (isNone(file)) {
+                continue
+            }
+            for (declaration in file.syntax.imports) {
+                if (declaration.kind == ImportKind.Package && visited.has(declaration.target) == false) {
+                    visited[declaration.target] = true
+                    pending.append(declaration.target)
+                }
+            }
+        }
+        for (reached in visited.keys()) {
+            if (this.used.get(reached, false) && this.imported.get(reached, false) == false) {
+                return true
+            }
+        }
+        return false
+    }
+}

@@ -1,0 +1,185 @@
+package candidates
+
+import base/maybe
+import base/model
+import base/text
+import projects/workspace
+import semantics/builtins
+import semantics/semantic
+import services/snippets
+import syntax/outline
+
+private final CANDIDATES_NVH_HEADER_WORDS = ["prop", "ref", "var", "method", "define", "import"]
+private final CANDIDATES_TRIGGER_SUGGEST = "editor.action.triggerSuggest"
+private final CANDIDATES_GENERIC_ARRAY = "array<$1>"
+private final CANDIDATES_GENERIC_MAP = "map<$1, $2>"
+
+// Keywords, builtins, snippets, type names and field names.
+define class LexicalSources {
+    Workspace workspace
+    SnippetCatalogue snippets
+    Settings settings
+
+    construct(Workspace workspace, SnippetCatalogue snippets, Settings settings) {
+        this.workspace = workspace
+        this.snippets = snippets
+        this.settings = settings
+    }
+
+    // The keywords that fit the place, the 15 free functions in a body, and the built-in annotations after `@`.
+    method keywordsAndBuiltins(FileContext context, CompletionContext request): array<CompletionItem> {
+        var kind = request.kind
+        if (kind == CANDIDATES_KIND_ANNOTATION) {
+            return this.annotationItems()
+        }
+        if (kind == CANDIDATES_KIND_NVH_HEADER) {
+            return this.keywordItems(CANDIDATES_NVH_HEADER_WORDS)
+        }
+        if (kind == CANDIDATES_KIND_MANIFEST && candidatesDetailForm(request) != CANDIDATES_DETAIL_DIRECTIVE) {
+            return []
+        }
+        var items = this.keywordItems(keywordsForScope(kind))
+        if (candidatesIsValueContext(kind)) {
+            this.addBuiltinFunctions(items)
+        }
+        if (kind == CANDIDATES_KIND_CLASS_MEMBER || kind == CANDIDATES_KIND_TOP_LEVEL) {
+            items.append(this.annotationStart())
+        }
+        return items
+    }
+
+    // `@` opens the annotation list again once it is inserted.
+    method annotationStart(): CompletionItem {
+        var item = candidatesItem("@", CompletionKind.Keyword, "annotation", CANDIDATES_BUCKET_KEYWORD)
+        item.command = CANDIDATES_TRIGGER_SUGGEST
+        return item
+    }
+
+    method keywordItems(array<string> words): array<CompletionItem> {
+        var items = []
+        for (word in words) {
+            var item = candidatesItem(word, CompletionKind.Keyword, "keyword", CANDIDATES_BUCKET_KEYWORD)
+            item.documentation = keywordDocumentation(word)
+            items.append(item)
+        }
+        return items
+    }
+
+    method addBuiltinFunctions(array<CompletionItem> items) {
+        for (member in freeBuiltins()) {
+            var item = candidatesItem(member.name, CompletionKind.Function, member.signature, CANDIDATES_BUCKET_KEYWORD)
+            item.documentation = member.documentation
+            candidatesApplyCall(item, member.maxArity, member.name)
+            items.append(item)
+        }
+    }
+
+    // `@Deprecated{text="$1"}`: the first parameter of the annotation as the snippet's tabstop.
+    method annotationItems(): array<CompletionItem> {
+        var items = []
+        for (annotation in builtinAnnotations()) {
+            var item = candidatesItem(annotation.name, CompletionKind.Struct, annotation.signature, CANDIDATES_BUCKET_KEYWORD)
+            item.documentation = annotation.documentation
+            if (annotation.parameterNames.length() > 0) {
+                item.insertText = annotation.name + "{" + annotation.parameterNames[0] + "=\"$1\"}"
+                item.isSnippet = true
+            }
+            items.append(item)
+        }
+        return items
+    }
+
+    method snippetItems(FileContext context, CompletionContext request): array<CompletionItem> {
+        var scope = candidatesSnippetScope(request)
+        var items = []
+        if (scope == "") {
+            return items
+        }
+        var imports = CandidatesImports(context, CANDIDATES_NO_OFFSET)
+        for (snippet in this.snippets.forScope(scope)) {
+            var edits = candidatesSnippetImportEdits(context, imports, snippet)
+            for (prefix in snippet.prefixes) {
+                items.append(this.snippetItem(snippet, prefix, edits))
+            }
+        }
+        return items
+    }
+
+    method snippetItem(Snippet snippet, string prefix, array<TextEdit> edits): CompletionItem {
+        var item = candidatesItem(prefix, CompletionKind.Snippet, snippet.description, CANDIDATES_BUCKET_SNIPPET)
+        item.insertText = renderLspSnippet(snippet.body, this.settings.snippetIndent)
+        item.isSnippet = true
+        item.filterText = prefix
+        item.additionalEdits = edits
+        return item
+    }
+
+    // The primitive types; `array` and `map` insert their type arguments as tabstops.
+    method typeNames(FileContext context, CompletionContext request): array<CompletionItem> {
+        if (request.kind != CANDIDATES_KIND_TYPE && request.kind != CANDIDATES_KIND_CLASS_MEMBER) {
+            return []
+        }
+        var items = this.keywordItems(primitiveTypeNames())
+        for (item in items) {
+            item.detail = "type"
+            this.addTypeArguments(item)
+        }
+        return items
+    }
+
+    method addTypeArguments(CompletionItem item) {
+        if (item.label == "array") {
+            item.insertText = CANDIDATES_GENERIC_ARRAY
+            item.isSnippet = true
+        }
+        if (item.label == "map") {
+            item.insertText = CANDIDATES_GENERIC_MAP
+            item.isSnippet = true
+        }
+    }
+
+    // `Type{` and `@Annotation{`: the names that are not written yet, as `name=`.
+    method fieldNames(FileContext context, CompletionContext request): array<CompletionItem> {
+        if (request.kind != CANDIDATES_KIND_FIELD_NAME) {
+            return []
+        }
+        var keys = {}
+        for (key in candidatesKeysSet(request)) {
+            keys[key] = true
+        }
+        var items = []
+        for (field in this.fieldsOf(context, request)) {
+            if (keys.has(field.name) == false) {
+                items.append(this.fieldItem(field))
+            }
+        }
+        return items
+    }
+
+    method fieldItem(Param field): CompletionItem {
+        var item = candidatesItem(field.name, CompletionKind.Field, (field.typeText + " " + field.name).trim(), CANDIDATES_BUCKET_MEMBER)
+        item.insertText = field.name + "="
+        return item
+    }
+
+    // Name and type of every field of the class, or the argument names of the annotation.
+    method fieldsOf(FileContext context, CompletionContext request): array<Param> {
+        var fields = []
+        if (candidatesDetailForm(request) == CANDIDATES_DETAIL_ANNOTATION) {
+            for (annotation in builtinAnnotations()) {
+                for (name in annotation.parameterNames) {
+                    if (annotation.name == request.typeName) {
+                        fields.append(Param("string", name, Span(CANDIDATES_NO_OFFSET, CANDIDATES_NO_OFFSET)))
+                    }
+                }
+            }
+        }
+        var resolver = context.resolver()
+        for (member in resolver.membersOf(typeFromText(request.typeName))) {
+            if (member.decl.kind == DeclKind.Field) {
+                fields.append(Param(member.decl.typeText, member.decl.name, member.decl.nameSpan))
+            }
+        }
+        return fields
+    }
+}

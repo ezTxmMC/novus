@@ -1,0 +1,80 @@
+package checker
+
+import base/platform
+
+// Where novusc is: the configured setting, then PATH, then <workspace>/build/novusc. "" when nothing runnable was found.
+private final CHECKER_NOVUSC_NAME = "novusc"
+private final CHECKER_WINDOWS_SUFFIX = ".exe"
+private final CHECKER_WINDOWS = "windows"
+private final CHECKER_BUILD_FOLDER = "build"
+private final CHECKER_PATH_VARIABLE = "PATH"
+private final CHECKER_UNIX_PATH_SEPARATOR = ":"
+private final CHECKER_WINDOWS_PATH_SEPARATOR = ";"
+private final CHECKER_LOCATE_SLASH = "/"
+
+method locateNovusc(string configuredPath, array<string> workspaceFolders): string {
+    var source = DiskTextSource()
+    if (checkerIsRunnable(configuredPath, source)) {
+        return configuredPath
+    }
+    var onPath = checkerSearchPath(environmentValue(CHECKER_PATH_VARIABLE, ""), source)
+    if (onPath != "") {
+        return onPath
+    }
+    return checkerSearchWorkspaces(workspaceFolders, source)
+}
+
+method checkerExecutableName(): string {
+    if (operatingSystem() == CHECKER_WINDOWS) {
+        return CHECKER_NOVUSC_NAME + CHECKER_WINDOWS_SUFFIX
+    }
+    return CHECKER_NOVUSC_NAME
+}
+
+// A configured value is a file that exists, or a bare command name that the shell finds.
+method checkerIsRunnable(string candidate, TextSource source): bool {
+    if (candidate == "") {
+        return false
+    }
+    var normalized = checkerNormalize(candidate)
+    if (normalized.indexOf(CHECKER_LOCATE_SLASH) < 0) {
+        return commandExists(candidate)
+    }
+    return source.exists(candidate) && source.isDirectory(candidate) == false
+}
+
+// The first directory of the PATH value that holds the executable; the value is a parameter so tests need no environment.
+method checkerSearchPath(string pathValue, TextSource source): string {
+    var separator = CHECKER_UNIX_PATH_SEPARATOR
+    if (operatingSystem() == CHECKER_WINDOWS) {
+        separator = CHECKER_WINDOWS_PATH_SEPARATOR
+    }
+    for (directory in pathValue.split(separator)) {
+        var candidate = checkerExecutableIn(directory, source)
+        if (candidate != "") {
+            return candidate
+        }
+    }
+    return ""
+}
+
+method checkerExecutableIn(string directory, TextSource source): string {
+    if (directory == "") {
+        return ""
+    }
+    var candidate = checkerNormalize(directory) + CHECKER_LOCATE_SLASH + checkerExecutableName()
+    if (checkerIsRunnable(candidate, source)) {
+        return candidate
+    }
+    return ""
+}
+
+method checkerSearchWorkspaces(array<string> workspaceFolders, TextSource source): string {
+    for (folder in workspaceFolders) {
+        var candidate = checkerNormalize(folder) + CHECKER_LOCATE_SLASH + CHECKER_BUILD_FOLDER + CHECKER_LOCATE_SLASH + checkerExecutableName()
+        if (folder != "" && checkerIsRunnable(candidate, source)) {
+            return candidate
+        }
+    }
+    return ""
+}

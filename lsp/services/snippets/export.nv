@@ -1,0 +1,199 @@
+package snippets
+
+import json
+import os
+import path
+
+// Export to the VS Code snippet format (DESIGN 7.6) and the verification projects of 7.5: every
+// complete unit of the catalogue is expanded, wrapped by its verify mode and written as a small
+// project that scripts/lsp_snippets.sh compiles. The wrappers of the manifest and .nvh modes live
+// in catalogue_files.nv, next to the snippets they wrap.
+
+private final SNIPPETS_VSCODE_INDENT = "\t"
+private final SNIPPETS_PLAIN_INDENT = "    "
+private final SNIPPETS_NAME_CUT = " ("
+private final SNIPPETS_INDEX_FILE = "INDEX.txt"
+private final SNIPPETS_PROJECT_DIR = "p"
+private final SNIPPETS_MAIN_METHOD = "method main {\n}\n"
+method snippetsTryRun(object task): object native "nv_try_run"
+method snippetsTryFailed(): bool native "nv_try_failed"
+
+// One project: files relative to <output>/<id>/, the entry file inside its "p" folder, and
+// whether the entry also has to survive the C compiler (novusc build) or only novusc check.
+define class SnippetsProject {
+    map<string, string> files
+    string entry
+    bool build
+
+    construct(string entry, bool build) {
+        this.files = {}
+        this.entry = entry
+        this.build = build
+    }
+}
+
+define class SnippetsWriteTask {
+    string target
+    string content
+
+    construct(string target, string content) {
+        this.target = target
+        this.content = content
+    }
+
+    method run(): object {
+        os.mkdir(path.dirname(this.target))
+        os.writeFile(this.target, this.content)
+        return 0
+    }
+}
+
+// The VS Code format keeps the order of the catalogue, so the object is assembled by hand around
+// json.pretty (which would sort the names).
+method exportVsCodeSnippets(SnippetCatalogue catalogue): string {
+    var entries = []
+    var used = {}
+    for (snippet in catalogue.all) {
+        if (snippetsIsExported(snippet)) {
+            entries.append(snippetsExportEntry(snippet, snippetsExportName(snippet, used)))
+        }
+    }
+    if (entries.length() == 0) {
+        return "{}\n"
+    }
+    return "{\n" + entries.join(",\n") + "\n}\n"
+}
+
+// A function, not a constant: globals are initialised in file order, so a constant list that names
+// other constants would read them before they exist.
+method snippetsExportScopes(): array<string> {
+    return [SNIPPETS_SCOPE_TOPLEVEL, SNIPPETS_SCOPE_CLASS, SNIPPETS_SCOPE_STATEMENT, SNIPPETS_SCOPE_EXPRESSION]
+}
+
+method snippetsIsExported(Snippet snippet): bool {
+    var exported = snippetsExportScopes()
+    for (scope in snippet.scopes) {
+        if (exported.contains(scope)) {
+            return true
+        }
+    }
+    return false
+}
+
+method snippetsExportEntry(Snippet snippet, string name): string {
+    var prefix = snippet.prefixes
+    if (prefix.length() == 1) {
+        prefix = snippet.prefixes[0]
+    }
+    var body = renderLspSnippet(snippet.body, SNIPPETS_VSCODE_INDENT).split("\n")
+    var value = {"prefix": prefix, "body": body, "description": snippet.description}
+    return "  " + json.stringify(name) + ": " + json.pretty(value).replace("\n", "\n  ")
+}
+
+// The description up to its first parenthesis; a repeated name gets the id appended.
+method snippetsExportName(Snippet snippet, map<string, bool> used): string {
+    var name = snippet.description
+    var cut = name.indexOf(SNIPPETS_NAME_CUT)
+    if (cut > 0) {
+        name = name.substring(0, cut)
+    }
+    if (used.has(name)) {
+        name = name + " [" + snippet.id + "]"
+    }
+    used[name] = true
+    return name
+}
+
+// Returns the number of projects written, 0 when the index cannot be written (the projects are not
+// usable without it); INDEX.txt lists them as "<id> <entry file> <build|check>".
+method writeVerificationFiles(SnippetCatalogue catalogue, string outputDir): integer {
+    var index = []
+    for (snippet in catalogue.all) {
+        var project = snippetsVerificationProject(snippet)
+        if (snippetsWriteProject(path.join(outputDir, snippet.id), project)) {
+            index.append(snippet.id + " " + project.entry + " " + snippetsMode(project))
+        }
+    }
+    if (snippetsWriteText(path.join(outputDir, SNIPPETS_INDEX_FILE), index.join("\n") + "\n") == false) {
+        return 0
+    }
+    return index.length()
+}
+
+method snippetsMode(SnippetsProject project): string {
+    if (project.build) {
+        return "build"
+    }
+    return "check"
+}
+
+method snippetsWriteProject(string directory, SnippetsProject project): bool {
+    for (file in project.files) {
+        if (snippetsWriteText(path.join(directory, file), project.files[file]) == false) {
+            return false
+        }
+    }
+    return true
+}
+
+// A failing write is a value, never an abort (LSP-R08).
+method snippetsWriteText(string target, string content): bool {
+    snippetsTryRun(SnippetsWriteTask(target, content))
+    return snippetsTryFailed() == false
+}
+
+method snippetsVerificationProject(Snippet snippet): SnippetsProject {
+    var expansion = renderPlainSnippet(snippet.body, snippet.overrides, SNIPPETS_PLAIN_INDENT)
+    if (snippet.verify == SNIPPETS_VERIFY_MANIFEST) {
+        return snippetsManifestProject(snippet, expansion)
+    }
+    if (snippet.verify.startsWith("nvh")) {
+        return snippetsComponentProject(snippet, expansion)
+    }
+    var project = SnippetsProject("main.nv", true)
+    project.files[SNIPPETS_PROJECT_DIR + "/main.nv"] = snippetsSourceText(snippet, expansion)
+    snippetsAddImportFixtures(project, snippet)
+    return project
+}
+
+method snippetsSourceText(Snippet snippet, string expansion): string {
+    var mode = snippet.verify
+    var header = "package main\n" + snippetsImportLines(snippet.imports) + "\n"
+    if (mode == SNIPPETS_VERIFY_FILE) {
+        return header + expansion + "\n"
+    }
+    if (mode == SNIPPETS_VERIFY_TOPLEVEL_RAW) {
+        return expansion + SNIPPETS_MAIN_METHOD
+    }
+    if (mode == SNIPPETS_VERIFY_MEMBER || mode == SNIPPETS_VERIFY_MEMBER_ABSTRACT) {
+        return header + snippetsMemberClass(snippet, expansion) + "\n" + SNIPPETS_MAIN_METHOD
+    }
+    if (mode == SNIPPETS_VERIFY_STATEMENT || mode == SNIPPETS_VERIFY_AFTER_IF || mode == SNIPPETS_VERIFY_EXPRESSION) {
+        return header + snippetsStatementProgram(mode, expansion)
+    }
+    var tail = "\n"
+    if (mode == SNIPPETS_VERIFY_ANNOTATION) {
+        tail = "\nmethod old {\n}\n"
+    }
+    return header + snippetsPrelude(snippet) + expansion + tail + "\n" + SNIPPETS_MAIN_METHOD
+}
+
+method snippetsImportLines(array<string> modules): string {
+    var lines = ""
+    for (module in modules) {
+        lines = lines + "import " + module + "\n"
+    }
+    return lines
+}
+
+method snippetsIndent(string text): string {
+    var indented = []
+    for (line in text.split("\n")) {
+        var pad = SNIPPETS_PLAIN_INDENT
+        if (line == "") {
+            pad = ""
+        }
+        indented.append(pad + line)
+    }
+    return indented.join("\n")
+}

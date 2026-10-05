@@ -1,0 +1,681 @@
+#### suppressed
+== line comment
+context: suppressed
+items: 0 incomplete=false
+== end of a line comment
+context: suppressed
+items: 0 incomplete=false
+== block comment
+context: suppressed
+items: 0 incomplete=false
+== string
+context: suppressed
+items: 0 incomplete=false
+== after the closing quote
+context: suppressed
+items: 0 incomplete=false
+== after a block comment
+context: statement prefix=[] replace=[]
+  21_f f (Function) method f() => f()
+  51_args args (Function) method args(): array<string> => args()
+  51_break break (Keyword) keyword
+items: more than 100 incomplete=false
+== interpolation of a string
+context: expression prefix=[co] replace=[co]
+  01_count count (Variable) parameter count: integer
+  71_config config (Module) import config +edit@14[import config\n\n]
+  72_color Color (Enum) import geo +edit@14[import geo\n\n]
+items: 7 incomplete=false
+#### manifest
+== directive keyword
+context: manifest prefix=[re] replace=[re] detail=[directive]
+  61_replace replace (Snippet) Use a local checkout instead of fetching (relative path) => replace "${1:github.com/user/lib}" "${2:../lib}"
+  61_require require (Snippet) Dependency (git tag, branch, commit or latest) => require "${1:github.com/user/lib}" "${2:latest}"
+  63_project project (Snippet) project.nv header => project "${1:github.com/user/app}"\nversion "${2:0.1.0}"\nmain "${3:main.nv}"\noutput "${4:app}"
+  63_projectfull projectfull (Snippet) Complete project.nv with a dependency => project "${1:github.com/user/app}"\nversion "${2:0.1.0}"\nmain "main.nv"\noutput "${3:app}"\n\nrequire "${4:github.com/user/lib}" "${5:latest}"\n$0
+items: 4 incomplete=false
+== directive on an empty line
+context: manifest prefix=[] replace=[] detail=[directive]
+  51_main main (Keyword) keyword
+  51_novus novus (Keyword) keyword
+  51_output output (Keyword) keyword
+  51_version version (Keyword) keyword
+items: 12 incomplete=false
+== directive after a value is nothing
+context: suppressed
+items: 0 incomplete=false
+== require module of the manifest
+context: manifest prefix=[ex.com/li] replace=[ex.com/li] detail=[requireModule]
+  30_ex.com/li ex.com/li (Module) required
+items: 1 incomplete=false
+== replace module
+context: manifest prefix=[] replace=[] detail=[replaceModule]
+  31_ex.com/lib ex.com/lib (Module) required
+items: 1 incomplete=false
+== replace directory
+context: manifest prefix=[] replace=[] detail=[replaceDir]
+  21_.. .. (Folder) parent directory
+  21_geo geo (Folder) directory
+  21_lib lib (Folder) directory
+  21_other other (Folder) directory
+items: 4 incomplete=false
+== replace directory below a folder
+context: manifest prefix=[s] replace=[s] type=[lib/] detail=[replaceDir]
+  21_sub sub (Folder) directory
+items: 1 incomplete=false
+== require version is nothing
+context: suppressed
+items: 0 incomplete=false
+#### import
+== importTarget after the keyword
+context: importTarget prefix=[] replace=[]
+  21_geo geo (Folder) package folder
+  21_lib lib (Folder) package folder
+  21_other other (Folder) package folder
+  41_arrays arrays (Module) std module
+items: 35 incomplete=false
+== importTarget with a prefix
+context: importTarget prefix=[ge] replace=[ge]
+  21_geo geo (Folder) package folder
+items: 1 incomplete=false
+== importTarget std module
+context: importTarget prefix=[str] replace=[str]
+  41_strings strings (Module) std module
+items: 1 incomplete=false
+== importFile after the at sign
+context: importFile prefix=[] replace=[]
+  21_geo geo (Folder) package folder
+  21_lib lib (Folder) package folder
+  21_other other (Folder) package folder
+  21_util util (File) file
+items: 4 incomplete=false
+== importFile below a folder
+context: importFile prefix=[] replace=[] type=[geo/]
+  21_extra extra (File) file
+  21_shape shape (File) file
+  21_shapes shapes (Folder) package folder
+items: 3 incomplete=false
+== importFile with a prefix
+context: importFile prefix=[sh] replace=[sh] type=[geo/]
+  21_shape shape (File) file
+  21_shapes shapes (Folder) package folder
+items: 2 incomplete=false
+== importNested
+context: importNested prefix=[] replace=[] type=[geo/]
+  21_shapes shapes (Folder) package folder
+items: 1 incomplete=false
+== importNested with a prefix
+context: importNested prefix=[s] replace=[s] type=[lib/]
+  21_sub sub (Folder) package folder
+items: 1 incomplete=false
+== importModule
+context: importModule prefix=[] replace=[]
+  31_ex.com/lib ex.com/lib (Module) module
+items: 1 incomplete=false
+== importModule below a module
+context: importModule prefix=[] replace=[] type=[ex.com/lib/]
+  31_lib lib (File) file
+  31_sub sub (Folder) package folder
+items: 2 incomplete=false
+== importModule with a segment
+context: importModule prefix=[s] replace=[sb] type=[ex.com/lib/]
+  31_sub sub (Folder) package folder
+items: 1 incomplete=false
+== an import inside a body is nothing
+context: suppressed
+items: 0 incomplete=false
+#### annotation and fieldName
+== annotation
+context: annotation prefix=[] replace=[]
+  51_abstract Abstract (Struct) @Abstract
+  51_deprecated Deprecated (Struct) @Deprecated{text="...", since="..."} => Deprecated{text="$1"}
+  51_interface Interface (Struct) @Interface
+  51_warning Warning (Struct) @Warning
+items: 4 incomplete=false
+== annotation with a prefix
+context: annotation prefix=[Dep] replace=[Dep]
+  51_deprecated Deprecated (Struct) @Deprecated{text="...", since="..."} => Deprecated{text="$1"}
+items: 1 incomplete=false
+== annotation in a class
+context: annotation prefix=[] replace=[]
+  51_abstract Abstract (Struct) @Abstract
+  51_deprecated Deprecated (Struct) @Deprecated{text="...", since="..."} => Deprecated{text="$1"}
+  51_interface Interface (Struct) @Interface
+  51_warning Warning (Struct) @Warning
+items: 4 incomplete=false
+== annotation arguments
+context: fieldName prefix=[] replace=[] type=[Deprecated] detail=[annotation|]
+  11_since since (Field) string since => since=
+  11_text text (Field) string text => text=
+items: 2 incomplete=false
+== annotation argument after a comma
+context: fieldName prefix=[] replace=[] type=[Deprecated] detail=[annotation|text]
+  11_since since (Field) string since => since=
+items: 1 incomplete=false
+== object literal keys
+context: fieldName prefix=[] replace=[] type=[Shape] detail=[object|]
+  11_name name (Field) string name => name=
+  11_size size (Field) float size => size=
+items: 2 incomplete=false
+== object literal keys without the set ones
+context: fieldName prefix=[si] replace=[si] type=[Shape] detail=[object|name]
+  11_size size (Field) float size => size=
+items: 1 incomplete=false
+== a value after the equals sign is no key
+context: expression prefix=[] replace=[]
+  21_color Color (Enum) define enum Color
+  21_describe describe (Function) method describe(Shape shape): string => describe($1)
+  21_geo geo (Module) package
+items: 68 incomplete=false
+== the brace of a body is no object literal
+context: statement prefix=[] replace=[]
+  21_a A (Class) define class A => A($1)
+  21_a{} A{} (Struct) object literal => A{$1}
+  21_f f (Function) method f() => f()
+items: more than 100 incomplete=false
+#### define, based, accessor, type
+== define kind
+context: defineKind prefix=[] replace=[]
+  51_abstract abstract (Keyword) keyword
+  51_annotation annotation (Keyword) keyword
+  51_class class (Keyword) keyword
+  51_enum enum (Keyword) keyword
+  51_interface interface (Keyword) keyword
+items: 5 incomplete=false
+== define kind with a prefix
+context: defineKind prefix=[ab] replace=[ab]
+  51_abstract abstract (Keyword) keyword
+items: 1 incomplete=false
+== based
+context: basedClause prefix=[] replace=[] type=[Circle]
+  21_named Named (Interface) define interface Named
+  21_shape Shape (Class) define class Shape
+  71_libthing LibThing (Class) import "ex.com/lib" +edit@14[import "ex.com/lib"\n]
+  71_round Round (Class) import geo/shapes +edit@24[\nimport geo/shapes]
+  71_thing Thing (Class) import other +edit@24[\nimport other]
+items: 5 incomplete=false
+== based with a prefix
+context: basedClause prefix=[Sh] replace=[Sh] type=[Circle]
+  21_shape Shape (Class) define class Shape
+items: 1 incomplete=false
+== accessor
+context: fieldAccessor prefix=[] replace=[]
+  51_get get (Keyword) keyword
+  51_set set (Keyword) keyword
+items: 2 incomplete=false
+== accessor after get
+context: fieldAccessor prefix=[] replace=[]
+  51_get get (Keyword) keyword
+  51_set set (Keyword) keyword
+items: 2 incomplete=false
+== accessor of a generic field
+context: fieldAccessor prefix=[] replace=[]
+  51_get get (Keyword) keyword
+  51_set set (Keyword) keyword
+items: 2 incomplete=false
+== type of a variable
+context: type prefix=[] replace=[]
+  21_color Color (Enum) define enum Color
+  21_named Named (Interface) define interface Named
+  21_shape Shape (Class) define class Shape
+  51_array array (Keyword) type => array<$1>
+  51_bool bool (Keyword) type
+  51_float float (Keyword) type
+  51_integer integer (Keyword) type
+  51_map map (Keyword) type => map<$1, $2>
+  51_object object (Keyword) type
+  51_string string (Keyword) type
+  71_libthing LibThing (Class) import "ex.com/lib" +edit@14[import "ex.com/lib"\n]
+  71_round Round (Class) import geo/shapes +edit@24[\nimport geo/shapes]
+items: 13 incomplete=false
+== type of a variable with a prefix
+context: type prefix=[Sh] replace=[Sh]
+  21_shape Shape (Class) define class Shape
+items: 1 incomplete=false
+== return type
+context: type prefix=[str] replace=[str]
+  51_string string (Keyword) type
+items: 1 incomplete=false
+== return type of a method without parentheses
+context: type prefix=[int] replace=[int]
+  51_integer integer (Keyword) type
+items: 1 incomplete=false
+== parameter type
+context: type prefix=[] replace=[]
+  51_array array (Keyword) type => array<$1>
+  51_bool bool (Keyword) type
+  51_float float (Keyword) type
+  51_integer integer (Keyword) type
+items: 13 incomplete=false
+== second parameter type
+context: type prefix=[flo] replace=[flo]
+  51_float float (Keyword) type
+items: 1 incomplete=false
+== parameter type of a constructor
+context: type prefix=[] replace=[]
+  21_a A (Class) define class A
+  51_array array (Keyword) type => array<$1>
+  51_bool bool (Keyword) type
+items: 14 incomplete=false
+== parameter type of a method without the word method
+context: type prefix=[] replace=[]
+  21_named Named (Interface) define interface Named
+  51_array array (Keyword) type => array<$1>
+  51_bool bool (Keyword) type
+items: 13 incomplete=false
+== generic argument
+context: type prefix=[] replace=[]
+  51_array array (Keyword) type => array<$1>
+  51_bool bool (Keyword) type
+  51_float float (Keyword) type
+  51_integer integer (Keyword) type
+items: 13 incomplete=false
+== second generic argument
+context: type prefix=[] replace=[]
+  51_array array (Keyword) type => array<$1>
+  51_bool bool (Keyword) type
+  51_float float (Keyword) type
+  51_integer integer (Keyword) type
+items: 13 incomplete=false
+#### member
+== members of a class value
+context: member prefix=[] replace=[] receiver=1 steps
+  11_area area (Method) method area(): float => area()
+  11_name name (Field) string name
+  11_size size (Field) float size
+items: 3 incomplete=false
+== members with a prefix and a call chain
+context: member prefix=[sub] replace=[sub] receiver=2 steps
+  11_substring substring (Method) method substring(integer start, integer end): string => substring($1)
+items: 1 incomplete=false
+== members of this
+context: member prefix=[] replace=[] receiver=1 steps
+  11_count count (Field) integer count
+  11_inc inc (Method) method inc(): integer => inc()
+items: 2 incomplete=false
+== members of a parameter typed by a class
+context: member prefix=[ar] replace=[ar] receiver=1 steps
+  11_area area (Method) method area(): float => area()
+items: 1 incomplete=false
+== functions of a package
+context: member prefix=[] replace=[] receiver=1 steps
+  11_describe describe (Function) method describe(Shape shape): string => describe($1)
+items: 1 incomplete=false
+== members of a std module that is imported
+context: member prefix=[pad] replace=[pad] receiver=1 steps
+  11_padleft padLeft (Function) method padLeft(string s, integer width): string => padLeft($1)
+  11_padleftwith padLeftWith (Function) method padLeftWith(string s, integer width, string fill): string => padLeftWith($1)
+  11_padright padRight (Function) method padRight(string s, integer width): string => padRight($1)
+  11_padrightwith padRightWith (Function) method padRightWith(string s, integer width, string fill): string => padRightWith($1)
+items: 4 incomplete=false
+== members of a std module that is not imported
+context: member prefix=[pad] replace=[pad] receiver=1 steps
+  11_padleft padLeft (Function) method padLeft(string s, integer width): string => padLeft($1) +edit@14[import strings\n\n]
+  11_padleftwith padLeftWith (Function) method padLeftWith(string s, integer width, string fill): string => padLeftWith($1) +edit@14[import strings\n\n]
+  11_padright padRight (Function) method padRight(string s, integer width): string => padRight($1) +edit@14[import strings\n\n]
+  11_padrightwith padRightWith (Function) method padRightWith(string s, integer width, string fill): string => padRightWith($1) +edit@14[import strings\n\n]
+items: 4 incomplete=false
+== constants of an enum
+context: member prefix=[] replace=[] receiver=1 steps
+  11_green Green (EnumMember) Green
+  11_red Red (EnumMember) Red
+  11_values values (Method) method values(): array<Color> => values()
+items: 3 incomplete=false
+== a class name has no instance members
+context: member prefix=[] replace=[] receiver=1 steps
+items: 0 incomplete=false
+== members of a string
+context: member prefix=[] replace=[] receiver=1 steps
+  11_charat charAt (Method) method charAt(integer index): string => charAt($1)
+  11_contains contains (Method) method contains(string needle): bool => contains($1)
+  11_endswith endsWith (Method) method endsWith(string suffix): bool => endsWith($1)
+items: 12 incomplete=false
+== string method result
+context: member prefix=[sta] replace=[sta] receiver=2 steps
+  11_startswith startsWith (Method) method startsWith(string prefix): bool => startsWith($1)
+items: 1 incomplete=false
+== members of an array element
+context: member prefix=[tri] replace=[tri] receiver=2 steps
+  11_trim trim (Method) method trim(): string => trim()
+  13_startswith startsWith (Method) method startsWith(string prefix): bool => startsWith($1)
+  13_substring substring (Method) method substring(integer start, integer end): string => substring($1)
+items: 3 incomplete=false
+== members of an array
+context: member prefix=[ap] replace=[ap] receiver=1 steps
+  11_append append (Method) method append(object value) => append($1)
+items: 1 incomplete=false
+== members of a map
+context: member prefix=[ha] replace=[ha] receiver=1 steps
+  11_has has (Method) method has(string key): bool => has($1)
+items: 1 incomplete=false
+== unknown type offers every member
+context: member prefix=[nam] replace=[nam] receiver=1 steps
+  81_name name (Field) string name
+items: 1 incomplete=false
+== nothing before the dot
+context: suppressed
+items: 0 incomplete=false
+== member inside an interpolation
+context: member prefix=[up] replace=[up] receiver=1 steps
+  13_toupper toUpper (Method) method toUpper(): string => toUpper()
+items: 1 incomplete=false
+#### classMember and topLevel
+== class member at the start
+context: classMember prefix=[cons] replace=[cons]
+  61_construct construct (Snippet) Constructor assigning one field => construct(${1:string} ${2:name}) {\n    this.${2} = ${2}\n    $0\n}
+  61_constructall constructall (Snippet) Constructor taking two fields => construct(${1:string} ${2:first}, ${3:integer} ${4:second}) {\n    this.${2} = ${2}\n    this.${4} = ${4}\n}
+items: 2 incomplete=false
+== class member after a field
+context: classMember prefix=[str] replace=[str]
+  51_string string (Keyword) type
+  53_abstract abstract (Keyword) keyword
+  63_abstractm abstractm (Snippet) Abstract method signature => abstract method ${1:name}(${2}): ${3:string}
+  63_construct construct (Snippet) Constructor assigning one field => construct(${1:string} ${2:name}) {\n    this.${2} = ${2}\n    $0\n}
+  63_constructall constructall (Snippet) Constructor taking two fields => construct(${1:string} ${2:first}, ${3:integer} ${4:second}) {\n    this.${2} = ${2}\n    this.${4} = ${4}\n}
+items: 5 incomplete=false
+== class member after a modifier
+context: classMember prefix=[fin] replace=[fin]
+  51_final final (Keyword) keyword
+items: 1 incomplete=false
+== class member in an enum
+context: classMember prefix=[abs] replace=[abs]
+  51_abstract abstract (Keyword) keyword
+  61_absm absm (Snippet) Abstract method signature => abstract method ${1:name}(${2}): ${3:string}
+  61_abstractm abstractm (Snippet) Abstract method signature => abstract method ${1:name}(${2}): ${3:string}
+items: 3 incomplete=false
+== class member field type
+context: classMember prefix=[flo] replace=[flo]
+  51_float float (Keyword) type
+items: 1 incomplete=false
+== a field name is nothing
+context: suppressed
+items: 0 incomplete=false
+== top level at the start
+context: topLevel prefix=[met] replace=[met]
+  61_meth meth (Snippet) Method with parameters and return type => method ${1:name}(${2:integer value})${3:: ${4:integer}} {\n    $0\n}
+  61_method method (Snippet) Method with parameters and return type => method ${1:name}(${2:integer value})${3:: ${4:integer}} {\n    $0\n}
+  61_methoda methoda (Snippet) Async method: calls start on a virtual thread and return a task => async method ${1:name}(${2:integer value}): ${3:integer} {\n    $0\n    return ${4:value}\n}
+  61_methodn methodn (Snippet) Method without a parameter list => method ${1:name} {\n    $0\n}
+  61_methodv methodv (Snippet) Method without a parameter list => method ${1:name} {\n    $0\n}
+  63_implements implements (Snippet) Class implementing an interface => define class ${1:Name} based ${2:Shape} {\n    ${3:name}(): ${4:string} {\n        $0\n        return ${5:""}\n    }\n}
+  63_importnested importnested (Snippet) Import a nested package folder => import ${1:geo}/${2:shapes}
+items: 7 incomplete=false
+== top level after a method
+context: topLevel prefix=[def] replace=[def]
+  51_define define (Keyword) keyword
+items: 1 incomplete=false
+== top level on an empty file
+context: topLevel prefix=[] replace=[]
+  51_@ @ (Keyword) annotation
+  51_define define (Keyword) keyword
+  51_private private (Keyword) keyword
+  51_var var (Keyword) keyword
+  61_@deprecated @Deprecated (Snippet) Mark a method as deprecated => @Deprecated{\n    text="${1:Reason}",\n    since="${2:0.1.0}"\n}
+  61_abstract abstract (Snippet) Abstract class => define abstract ${1:Name} {\n    abstract method ${2:name}(): ${3:string}\n\n    $0\n}
+  61_abstractclass abstractclass (Snippet) Abstract class => define abstract ${1:Name} {\n    abstract method ${2:name}(): ${3:string}\n\n    $0\n}
+  61_anno anno (Snippet) Annotation definition (the braces are required) => define annotation ${1:Name} {\n    $0\n}
+  61_annotation annotation (Snippet) Annotation definition (the braces are required) => define annotation ${1:Name} {\n    $0\n}
+  61_async async (Snippet) Async method: calls start on a virtual thread and return a task => async method ${1:name}(${2:integer value}): ${3:integer} {\n    $0\n    return ${4:value}\n}
+  61_class class (Snippet) Class with fields and a constructor => define class ${1:Name} {\n    ${2:string} ${3:field}\n\n    construct(${2} ${3}) {\n        this.${3} = ${3}\n    }\n\n    $0\n}
+  61_classb classb (Snippet) Class based on another class, abstract class or interface => define class ${1:Name} based ${2:Base} {\n    $0\n}
+items: 53 incomplete=false
+== top level after a modifier
+context: topLevel prefix=[fin] replace=[fin]
+  53_define define (Keyword) keyword
+  61_final final (Snippet) Top-level constant => private final ${1:NAME} = ${2:0}
+items: 2 incomplete=false
+== a name after method is nothing
+context: suppressed
+items: 0 incomplete=false
+#### statement and expression
+== statement after the brace of a body
+context: statement prefix=[cou] replace=[cou]
+  01_count count (Variable) parameter count: integer
+  53_continue continue (Keyword) keyword
+items: 2 incomplete=false
+== statement keyword and snippet
+context: statement prefix=[ret] replace=[ret]
+  00_ret ret (Snippet) Return a value => return ${1:value}
+  53_parsefloat parseFloat (Function) method parseFloat(string text): float => parseFloat($1)
+  53_parseint parseInt (Function) method parseInt(string text): integer => parseInt($1)
+  61_return return (Snippet) Return a value => return ${1:value}
+  63_ifret ifret (Snippet) Guard clause: leave early => if (${1:!condition}) {\n    return ${2}\n}\n$0
+  63_jpretty jpretty (Snippet) Serialize a value to indented JSON => var ${1:text} = json.pretty(${2:value}) +edit@14[import json\n\n]
+items: 8 incomplete=false
+== statement after a block
+context: statement prefix=[whi] replace=[whi]
+  61_while while (Snippet) While loop => while (${1:condition}) {\n    $0\n}
+items: 1 incomplete=false
+== statement after an expression on the line above
+context: statement prefix=[cou] replace=[cou]
+  01_count count (Variable) parameter count: integer
+  53_continue continue (Keyword) keyword
+items: 2 incomplete=false
+== statement inside a block
+context: statement prefix=[bre] replace=[bre]
+  51_break break (Keyword) keyword
+items: 1 incomplete=false
+== statement offers classes and builtins
+context: statement prefix=[Sha] replace=[Sha]
+  21_shape Shape (Class) define class Shape => Shape($1)
+  21_shape{} Shape{} (Struct) object literal => Shape{$1}
+  63_osthread osthread (Snippet) Run a method call on an operating-system thread => var ${1:task} = thread ${2:work}(${3}) +edit@14[import thread\n\n]
+items: 3 incomplete=false
+== statement offers the free builtins
+context: statement prefix=[parse] replace=[parse]
+  51_parsefloat parseFloat (Function) method parseFloat(string text): float => parseFloat($1)
+  51_parseint parseInt (Function) method parseInt(string text): integer => parseInt($1)
+  63_jparse jparse (Snippet) Parse JSON text (aborts on invalid input) => var ${1:data} = json.parse(${2:text}) +edit@14[import json\n\n]
+  63_jsonparse jsonparse (Snippet) Parse JSON text (aborts on invalid input) => var ${1:data} = json.parse(${2:text}) +edit@14[import json\n\n]
+items: 4 incomplete=false
+== statement offers an unimported package class
+context: statement prefix=[Thin] replace=[Thin]
+  71_thing Thing (Class) import other => Thing($1) +edit@14[import other\n\n]
+  71_thing{} Thing{} (Struct) object literal => Thing{$1} +edit@14[import other\n\n]
+  73_libthing LibThing (Class) import "ex.com/lib" => LibThing($1) +edit@14[import "ex.com/lib"\n\n]
+  73_libthing{} LibThing{} (Struct) object literal => LibThing{$1} +edit@14[import "ex.com/lib"\n\n]
+items: 4 incomplete=false
+== expression after the equals sign
+context: expression prefix=[cou] replace=[cou]
+  01_count count (Variable) parameter count: integer
+items: 1 incomplete=false
+== expression does not offer the variable being declared
+context: expression prefix=[tot] replace=[tot]
+items: 0 incomplete=false
+== expression in call arguments
+context: expression prefix=[cou] replace=[cou]
+  01_count count (Variable) parameter count: integer
+items: 1 incomplete=false
+== expression after return
+context: expression prefix=[cou] replace=[cou]
+  01_count count (Variable) parameter count: integer
+items: 1 incomplete=false
+== expression after an operator
+context: expression prefix=[cou] replace=[cou]
+  01_count count (Variable) parameter count: integer
+items: 1 incomplete=false
+== expression in a map literal
+context: expression prefix=[cou] replace=[cou]
+  01_count count (Variable) parameter count: integer
+items: 1 incomplete=false
+== expression after a colon of a map
+context: expression prefix=[cou] replace=[cou]
+  01_count count (Variable) parameter count: integer
+items: 1 incomplete=false
+== expression in a global initialiser
+context: expression prefix=[LIM] replace=[LIM]
+  21_limit LIMIT (Constant) LIMIT
+items: 1 incomplete=false
+== expression offers the constants of an enum once something is typed
+context: expression prefix=[Gre] replace=[Gre]
+  21_color.green Color.Green (EnumMember) Color => Color.Green
+items: 1 incomplete=false
+== expression offers the enum itself, not its constants, for another prefix
+context: expression prefix=[Col] replace=[Col]
+  21_color Color (Enum) define enum Color
+items: 1 incomplete=false
+== expression after a word that takes an operand
+context: expression prefix=[cou] replace=[cou]
+items: 0 incomplete=false
+== expression with the keyword true
+context: expression prefix=[tr] replace=[tr]
+  51_true true (Keyword) keyword
+  53_platform platform (Function) method platform(): string => platform()
+  53_thread thread (Keyword) keyword
+  63_struct struct (Snippet) Object literal with named fields (skips the constructor, so collection fields stay nil; use new for the constructor call) => ${1:Point}{\n    ${2:x}=${3:1}\n}
+  73_strings strings (Module) import strings +edit@14[import strings\n\n]
+  73_thread thread (Module) import thread +edit@14[import thread\n\n]
+items: 6 incomplete=false
+== an operand on the same line gives nothing
+context: suppressed
+items: 0 incomplete=false
+== after the loop variable
+context: statement prefix=[ite] replace=[ite]
+  01_item item (Variable) loop item: string
+  01_items items (Variable) parameter items: array<string>
+  53_writefile writeFile (Function) method writeFile(string path, string content) => writeFile($1)
+  61_iter iter (Snippet) For-in over an array => for (${1:item} in ${2:items}) {\n    $0\n}
+  63_writefile writefile (Snippet) Write a whole file => writeFile("${1:path}", ${2:text})
+items: 5 incomplete=false
+== after var is a name
+context: suppressed
+items: 0 incomplete=false
+#### odd inputs
+unterminated import string: importModule prefix=[li] replace=[li] type=[ex.com/]
+unterminated string elsewhere: suppressed
+unterminated block comment: suppressed
+crlf line endings: statement prefix=[cou] replace=[cou]
+nested calls: expression prefix=[] replace=[]
+index brackets: expression prefix=[] replace=[]
+after a multi-byte string: statement prefix=[cou] replace=[cou]
+an unknown byte before the cursor: expression prefix=[cou] replace=[cou]
+a method that is never closed: statement prefix=[cou] replace=[cou]
+an empty file: topLevel prefix=[] replace=[]
+only a prefix: topLevel prefix=[pa] replace=[pa]
+inside a prefix: statement prefix=[co] replace=[count]
+right before an identifier: statement prefix=[] replace=[]
+a keyword is a prefix too: statement prefix=[ret] replace=[ret]
+a float literal before the dot: member prefix=[] replace=[] receiver=1 steps
+two dots: suppressed
+#### the result cap
+default cap: true (more than 100 items), incomplete=false
+cap 10: 10 items, incomplete=true
+the first ones: count f args break chr continue env exit fileExists ord
+cap equals the count: true (same count), incomplete=false
+cap 0 is no cap: true (same count)
+#### trigger characters and replace spans
+name replaces [name]
+another trigger character gives the same list: true
+#### resolve
+std item key: file:///p/main.nv|Function|std:arrays|142
+documentation before: []
+documentation after: ```novus\nmethod sort(array<object> items): array<object>\n```\n\nascending, numbers or strings
+uri of the key: file:///p/main.nv
+module key: file:///p/main.nv|Module|std:arrays|0
+module documentation: **arrays**\n\nArray helpers beyond the builtin methods (length, append, pop, insert, remove, contains, indexOf, join, clear).
+dependency key: file:///p/main.nv|Function|/p/lib/lib.nv|32
+dependency documentation: ```novus\nmethod libFunction(integer a): integer\n```\n\nReturns its argument.
+project item key: []
+project item documentation: ```novus\ndefine class Shape\n```\n\nA shape with an area.
+#### resolve with a bad key
+key []: uri=[] documentation=[] detail=[]
+key [no separators]: uri=[] documentation=[] detail=[]
+key [a|b]: uri=[] documentation=[] detail=[]
+key [u|Method|/missing.nv|5]: uri=[u] documentation=[] detail=[]
+key [u|Method|std:nothing|5]: uri=[u] documentation=[] detail=[]
+key [u|Method|std:strings|notanumber]: uri=[u] documentation=[] detail=[]
+key [file:///p/a|b.nv|Method|std:strings|3]: uri=[file:///p/a|b.nv] documentation=[] detail=[]
+#### the plain text of snippets
+println "${1:text}"  ->  println "text"
+for (${1:item} in ${2:items}) {\n    $0\n}  ->  for (item in items) {\n    \n}
+${1:name} = $1  ->  name = name
+${1:a${2:b}c}  ->  abc
+${3|get,get\, set,set|}  ->  get
+price \$5 ${1:{x}}  ->  price $5 {x}
+call($1) and ${9}  ->  call() and 
+tail $  ->  tail $
+open ${1:never closed  ->  open never closed
+bare ${x}  ->  bare ${x}
+nested ${1:${2:${3:${4:${5:${6:${7:${8:${9:deep}}}}}}}}}  ->  nested ${9:deep}
+list: incomplete=true first snippet=false [while (condition) {\n    \n}] second snippet=false [name]
+#### nvh
+== outside the header
+context: nvhOutside prefix=[] replace=[]
+  61_component component (Snippet) Component with a prop, state and a handler => <?nv\nprop string ${1:label} = "${2:Count}"\nref integer ${3:count} = 0\n\nmethod ${4:increment}() {\n    ${3} = ${3} + 1\n}\n?>\n<div class="${5:counter}">\n    <button @click="${4}()">${6:+}</button>\n    <span>{${1}}: {${3}}</span>\n</div>\n$0
+  61_nvh nvh (Snippet) Component with a prop, state and a handler => <?nv\nprop string ${1:label} = "${2:Count}"\nref integer ${3:count} = 0\n\nmethod ${4:increment}() {\n    ${3} = ${3} + 1\n}\n?>\n<div class="${5:counter}">\n    <button @click="${4}()">${6:+}</button>\n    <span>{${1}}: {${3}}</span>\n</div>\n$0
+items: 2 incomplete=false
+== outside, after the header
+context: nvhOutside prefix=[comp] replace=[comp]
+  61_component component (Snippet) Component with a prop, state and a handler => <?nv\nprop string ${1:label} = "${2:Count}"\nref integer ${3:count} = 0\n\nmethod ${4:increment}() {\n    ${3} = ${3} + 1\n}\n?>\n<div class="${5:counter}">\n    <button @click="${4}()">${6:+}</button>\n    <span>{${1}}: {${3}}</span>\n</div>\n$0
+items: 1 incomplete=false
+== header member start
+context: nvhHeader prefix=[] replace=[]
+  51_define define (Keyword) keyword
+  51_import import (Keyword) keyword
+  51_method method (Keyword) keyword
+  51_var var (Keyword) keyword
+  61_prop prop (Snippet) Property set by the parent or the URL => prop ${1:string} ${2:name} = "${3:value}"
+  61_ref ref (Snippet) Reactive state of the component => ref ${1:integer} ${2:count} = ${3:0}
+items: 6 incomplete=false
+== header member start with a prefix
+context: nvhHeader prefix=[re] replace=[re]
+  61_ref ref (Snippet) Reactive state of the component => ref ${1:integer} ${2:count} = ${3:0}
+items: 1 incomplete=false
+== header statement
+context: statement prefix=[cou] replace=[cou]
+  11_count count (Field) integer count
+  13_nvcount nvcount (Field) map<string,integer> nvcount
+  53_continue continue (Keyword) keyword
+items: 3 incomplete=false
+== header member access
+context: member prefix=[tr] replace=[tr] receiver=1 steps
+  11_trim trim (Method) method trim(): string => trim()
+  13_startswith startsWith (Method) method startsWith(string prefix): bool => startsWith($1)
+  13_substring substring (Method) method substring(integer start, integer end): string => substring($1)
+  13_tolower toLower (Method) method toLower(): string => toLower()
+  13_toupper toUpper (Method) method toUpper(): string => toUpper()
+items: 5 incomplete=false
+== header type
+context: type prefix=[str] replace=[str]
+  51_string string (Keyword) type
+items: 1 incomplete=false
+== header import
+context: importTarget prefix=[str] replace=[str]
+  41_strings strings (Module) std module
+items: 1 incomplete=false
+== header comment
+context: suppressed
+items: 0 incomplete=false
+#### strings that run over lines
+open import string: importModule prefix=[] replace=[] type=[ex.com/]
+accept below the module: package main\n\nimport "ex.com/lib\nimport geo\nmethod main() {\n    println("x")\n}\n
+accept a whole key: package main\n\nimport "ex.com/lib\nimport geo\nmethod main() {\n    println("x")\n}\n
+crlf: package main\r\n\r\nimport "ex.com/lib\r\nimport geo\r\n
+the closing quote is on the same line: package main\n\nimport "ex.com/lib"\n
+the cursor in the first segment: package main\n\nimport "ex.com/lib"\n
+the cursor in a segment below a module: package main\n\nimport "ex.com/lib/sub/x"\n
+open require string: manifest prefix=[ex.c] replace=[ex.c] detail=[requireModule]
+accept in a manifest: project "p"\nrequire "ex.com/lib"\nrequire "ex.com/lib\nversion "1"\n
+replace module: project "p"\nrequire "ex.com/lib"\nreplace "ex.com/lib\nversion "1"\n
+replace directory: project "p"\nrequire "ex.com/lib"\nreplace "ex.com/lib" "lib\nversion "1"\n
+#### based on the class that is being declared
+== header without a body
+context: basedClause prefix=[] replace=[] type=[A]
+  71_libthing LibThing (Class) import "ex.com/lib" +edit@14[import "ex.com/lib"\n\n]
+  71_named Named (Interface) import geo +edit@14[import geo\n\n]
+  71_round Round (Class) import geo/shapes +edit@14[import geo/shapes\n\n]
+  71_shape Shape (Class) import geo +edit@14[import geo\n\n]
+  71_thing Thing (Class) import other +edit@14[import other\n\n]
+items: 5 incomplete=false
+== header with a body
+context: basedClause prefix=[] replace=[] type=[A]
+  71_libthing LibThing (Class) import "ex.com/lib" +edit@14[import "ex.com/lib"\n\n]
+  71_named Named (Interface) import geo +edit@14[import geo\n\n]
+  71_round Round (Class) import geo/shapes +edit@14[import geo/shapes\n\n]
+  71_shape Shape (Class) import geo +edit@14[import geo\n\n]
+  71_thing Thing (Class) import other +edit@14[import other\n\n]
+items: 5 incomplete=false
+#### a scratch buffer
+cou: count
+box.wi: width
+Bo: box Box Box{}

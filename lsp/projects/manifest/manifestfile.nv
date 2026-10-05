@@ -1,0 +1,140 @@
+package manifest
+
+import base/maybe
+import base/text
+
+private final MANIFEST_DEFAULT_MAIN = "main.nv"
+private final MANIFEST_DEFAULT_OUTPUT = "app"
+private final MANIFEST_NAME_SEPARATOR = "/"
+
+// One `require "module" "version"` line; the span covers the whole directive and `line` is 0-based.
+define class Requirement {
+    string module
+    string version
+    Span span
+    integer line
+
+    construct(string module, string version, Span span, integer line) {
+        this.module = module
+        this.version = version
+        this.span = span
+        this.line = line
+    }
+}
+
+// Any line of project.nv, known setting or not: the diagnostics and completion read the raw shape from here.
+define class ManifestDirective {
+    string key
+    array<string> values
+    Span keySpan
+    array<Span> valueSpans
+    integer line
+
+    construct(string key, array<string> values, Span keySpan, array<Span> valueSpans, integer line) {
+        this.key = key
+        this.values = values
+        this.keySpan = keySpan
+        this.valueSpans = valueSpans
+        this.line = line
+    }
+}
+
+private final MANIFEST_WARNING_CODE = "unterminated-string"
+
+// Something novusc rejects in the manifest (it aborts on the first one, the reader reports them all), with one
+// exception: novusc accepts an unterminated string literal, so that issue is a warning (`isWarning`).
+define class ManifestIssue {
+    Span span
+    integer line
+    string message
+
+    construct(Span span, integer line, string message) {
+        this.span = span
+        this.line = line
+        this.message = message
+    }
+
+    // The stable name of the problem: expected-setting, unknown-setting, values-must-be-quoted, unterminated-string
+    // or bad-arity.
+    method code(): string {
+        return manifestCodeOfMessage(this.message)
+    }
+
+    // True for what novusc builds fine and the diagnostics layer should therefore not publish as an error.
+    method isWarning(): bool {
+        return this.code() == MANIFEST_WARNING_CODE
+    }
+}
+
+// project.nv as data. Defaults mirror compiler/project/manifest.nv: `main` is main.nv until a directive says
+// otherwise and a `require` without a version asks for "latest".
+define class ManifestFile {
+    string filePath
+    string dir
+    string projectName
+    string version
+    string mainFile
+    string libFile
+    string outputName
+    array<Requirement> requires
+    map<string, Requirement> requireIndex
+    map<string, string> replaces
+    array<ManifestDirective> directives
+    array<ManifestIssue> issues
+
+    construct(string filePath) {
+        this.filePath = filePath
+        this.dir = manifestDirectoryOf(filePath)
+        this.projectName = ""
+        this.version = ""
+        this.mainFile = MANIFEST_DEFAULT_MAIN
+        this.libFile = ""
+        this.outputName = ""
+        this.requires = []
+        this.requireIndex = {}
+        this.replaces = {}
+        this.directives = []
+        this.issues = []
+    }
+
+    // The file other projects import when they require this one.
+    method entryFile(): string {
+        if (this.libFile != "") {
+            return this.libFile
+        }
+        return this.mainFile
+    }
+
+    method effectiveOutputName(): string {
+        if (this.outputName != "") {
+            return this.outputName
+        }
+        var parts = this.projectName.split(MANIFEST_NAME_SEPARATOR)
+        var last = parts[parts.length() - 1]
+        if (this.projectName != "" && last != "") {
+            return last
+        }
+        return MANIFEST_DEFAULT_OUTPUT
+    }
+
+    method mainPath(): string {
+        return manifestJoinPath(this.dir, this.mainFile)
+    }
+
+    // The first require of a module wins, like Manifest.addRequire of the compiler. `requires` is appended to only
+    // here: `requireIndex` keeps the lookup constant, so a manifest with 20000 requires parses in linear time.
+    method addRequire(Requirement requirement) {
+        if (this.requireIndex.has(requirement.module)) {
+            return
+        }
+        this.requireIndex[requirement.module] = requirement
+        this.requires.append(requirement)
+    }
+
+    method requirementOf(string module): Requirement {
+        if (this.requireIndex.has(module)) {
+            return this.requireIndex[module]
+        }
+        return nothing()
+    }
+}

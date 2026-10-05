@@ -1,0 +1,372 @@
+package codegen
+
+import ast
+import parser
+
+// The kind of an expression: does it always produce an integer, always a
+// float, or anything else?
+//
+// An expression of kind integer or float is computed as a C `long long` or
+// `double` and boxed once, where a boxed value is needed. What has a kind:
+//
+//   - number literals and the locals the inference proved to be numbers
+//     (`int:x` / `float:x` marks in the locals map, see inference.nv);
+//   - arithmetic on those, and a float with any value on the other side of
+//     `-`, `*`, `/` and `%` (the runtime checks the other side, see
+//     nv_fmul_du);
+//   - calls of methods that have an unboxed worker (workers.nv), and the
+//     numeric natives of the math module;
+//   - fields declared `integer` or `float`, read from `this` or from a
+//     receiver whose class is known (classOf below).
+//
+// Declared field types are trusted: every store into a numeric field
+// converts (see coerceFieldCode and nv_coerce_numeric_field), so a field
+// holds a number of its kind, and a value that is not one is reported as a
+// type error when the code reads it unboxed. That happens only where the
+// value is computed with. A field that is merely read - passed on, compared
+// for equality, kept in a local, returned - stays boxed and is never checked
+// (isBareRead and valueKind below).
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+final KIND_NONE = ""
+final KIND_INT = "i"
+final KIND_FLOAT = "d"
+
+// The operators a value of each kind survives; the classification below runs
+// for every node of every expression, so the sets are built once.
+private final FLOAT_OPERATORS = {"+": true, "-": true, "*": true, "/": true, "%": true}
+private final INTEGER_OPERATORS = {"+": true, "-": true, "*": true, "/": true, "%": true,
+    "&": true, "|": true, "^": true, "<<": true, ">>": true}
+// `+` is not among them: with a string on one side it concatenates.
+private final MIXED_OPERATORS = {"-": true, "*": true, "/": true, "%": true}
+
+// The numeric natives of the math module: what their C function does with
+// its arguments (each one is converted like nv_as_double does).
+private final FLOAT_NATIVES = {"nv_math_sqrt": "sqrt", "nv_math_pow": "pow", "nv_math_sin": "sin",
+    "nv_math_cos": "cos", "nv_math_tan": "tan", "nv_math_atan2": "atan2", "nv_math_log": "log",
+    "nv_math_exp": "exp", "nv_math_to_float32": "nv_to_float32"}
+private final INTEGER_NATIVES = {"nv_math_floor": "nv_floor_int", "nv_math_ceil": "nv_ceil_int", "nv_math_round": "nv_round_int"}
+
+// Does the code generator work on typed expressions inside this function?
+// Initialisers of globals and enum constants are generated outside any
+// function, where nothing could declare the temporaries a typed expression
+// may need.
+method isTypedContext(map<string, string> ctx): bool {
+    return ctx.has("func") && ctx["func"] != ""
+}
+
+method isNumericKind(string kind): bool {
+    return kind != KIND_NONE
+}
+
+// The kind a declared type stands for.
+method kindOfType(string t): string {
+    var n = normType(t)
+    if (n == "integer") {
+        return KIND_INT
+    }
+    if (n == "float") {
+        return KIND_FLOAT
+    }
+    return KIND_NONE
+}
+
+method atomKind(string node, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    if (isNumberAtom(node)) {
+        if (hasDot(node)) {
+            return KIND_FLOAT
+        }
+        return KIND_INT
+    }
+    if (isIntLocal(locals, node)) {
+        return KIND_INT
+    }
+    if (isFloatLocal(locals, node)) {
+        return KIND_FLOAT
+    }
+    if (isTypedContext(ctx) && resolveVar(node, prog, ctx, locals) == "" && isImplicitField(node, prog, ctx, locals)) {
+        return kindOfType(fieldType(prog, ctx["class"], node))
+    }
+    return KIND_NONE
+}
+
+// A `+ - * / %` or bitwise node: both sides numbers of one kind, or a float
+// and anything else.
+method arithmeticKind(string node, string head, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    // each operand is classified once: asking twice doubles the work per level of a chain
+    var left = kindOf(nodeChild(node, 1), prog, ctx, locals)
+    var right = kindOf(nodeChild(node, 2), prog, ctx, locals)
+    if (left == KIND_INT && right == KIND_INT && INTEGER_OPERATORS.has(head)) {
+        return KIND_INT
+    }
+    if (FLOAT_OPERATORS.has(head) == false) {
+        return KIND_NONE
+    }
+    if (isNumericKind(left) && isNumericKind(right) && (left == KIND_FLOAT || right == KIND_FLOAT)) {
+        return KIND_FLOAT
+    }
+    if (isTypedContext(ctx) && MIXED_OPERATORS.has(head) && (left == KIND_FLOAT || right == KIND_FLOAT)) {
+        return KIND_FLOAT
+    }
+    return KIND_NONE
+}
+
+// The function a `name(args)` call reaches when it is a call of a method that
+// is not a member of a class, "" otherwise. It follows genCall.
+method freeCallTarget(string name, integer nargs, map<string, string> prog, map<string, string> ctx): string {
+    var key = name + "/" + nargs
+    var pkg = ctx["pkg"]
+    if (pkg != "" && (prog.has("func:" + pkg + "." + name + "/" + nargs) || prog.has("func:" + pkg + "." + name + "/*"))) {
+        return pkg + "." + name
+    }
+    if (ctx["class"] != "" && findMethod(prog, ctx["class"], name) != "") {
+        return ""
+    }
+    if (prog.has("func:" + key) == false && prog.has("unq:" + key)) {
+        var candidates = prog["unq:" + key]
+        if (candidates.contains(" ")) {
+            return ""
+        }
+        return candidates
+    }
+    if (isCoreBuiltin(name) || isClassLike(prog, name)) {
+        return ""
+    }
+    if (prog.has("func:" + key)) {
+        return name
+    }
+    return ""
+}
+
+// The unboxed worker descriptor of a function, "" when it has none (workers.nv).
+method rawDescriptor(map<string, string> prog, string name, integer nargs): string {
+    var key = "raw:" + name + "/" + nargs
+    if (prog.has(key)) {
+        return prog[key]
+    }
+    return ""
+}
+
+// The kind of what the worker described by `descriptor` returns.
+method rawReturnKind(string descriptor): string {
+    if (descriptor == "") {
+        return KIND_NONE
+    }
+    var kind = descriptor.charAt(0)
+    if (kind == KIND_INT || kind == KIND_FLOAT) {
+        return kind
+    }
+    return KIND_NONE
+}
+
+// The kind of the parameter at `index` (from 0) of a worker: what it takes
+// unboxed, or "n" when it is passed as it is.
+method rawParamKind(string descriptor, integer index): string {
+    return descriptor.charAt(index + 2)
+}
+
+method callKind(string node, map<string, string> prog, map<string, string> ctx): string {
+    if (isTypedContext(ctx) == false) {
+        return KIND_NONE
+    }
+    var nargs = nodeCount(node) - 2
+    var target = freeCallTarget(nodeChild(node, 1), nargs, prog, ctx)
+    if (target == "") {
+        return KIND_NONE
+    }
+    return rawReturnKind(rawDescriptor(prog, target, nargs))
+}
+
+// Is `target` the name of a module: not a value, and the program has the module?
+method isModuleTarget(string target, map<string, string> prog, map<string, string> ctx, map<string, string> locals): bool {
+    return isIdentAtom(target) && resolveVar(target, prog, ctx, locals) == "" && isImplicitField(target, prog, ctx, locals) == false && prog.has("pkg:" + target)
+}
+
+// The native a `module.name(args)` call runs, "" when it is a method written in Novus.
+method nativeOf(string node, map<string, string> prog): string {
+    var name = nodeChild(node, 1) + "." + nodeChild(node, 2)
+    var nargs = nodeCount(node) - 3
+    if (prog.has("func:" + name + "/" + nargs) == false || prog.has("func:" + name + "/*")) {
+        return ""
+    }
+    var m = prog["fnode:" + name + "/" + nargs + "/0"]
+    if (isNativeMethod(m) == false || nodeCount(nodeChild(m, 5)) > 2) {
+        return ""
+    }
+    return sexpUnescape(nodeChild(nodeChild(m, 5), 1))
+}
+
+// The kind of `module.name(args)`.
+method moduleCallKind(string node, map<string, string> prog): string {
+    var name = nodeChild(node, 1) + "." + nodeChild(node, 2)
+    var nargs = nodeCount(node) - 3
+    var native = nativeOf(node, prog)
+    if (FLOAT_NATIVES.has(native)) {
+        return KIND_FLOAT
+    }
+    if (INTEGER_NATIVES.has(native)) {
+        return KIND_INT
+    }
+    if (native != "" || prog.has("func:" + name + "/" + nargs) == false) {
+        return KIND_NONE
+    }
+    return rawReturnKind(rawDescriptor(prog, name, nargs))
+}
+
+// The class a value is guessed to be an instance of, "" when there is no
+// guess. A guess only decides which code is generated first: the code checks
+// the class of the object it gets, and asks the object the general way when
+// it is another one.
+method classOf(string node, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    if (isList(node) == false) {
+        return classOfAtom(node, prog, ctx, locals)
+    }
+    var head = nodeHead(node)
+    if (head == "idx" && isIdentAtom(nodeChild(node, 1))) {
+        return elementClassOf(nodeChild(node, 1), prog, ctx, locals)
+    }
+    if (head == "obj") {
+        return plainClass(prog, nodeChild(node, 1))
+    }
+    if (head == "call" && prog.has("func:" + nodeChild(node, 1) + "/" + (nodeCount(node) - 2)) == false) {
+        return plainClass(prog, nodeChild(node, 1))
+    }
+    return ""
+}
+
+method classOfAtom(string node, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    if (node == "this") {
+        return plainClass(prog, ctx["class"])
+    }
+    if (locals.has("cls:" + node)) {
+        return locals["cls:" + node]
+    }
+    if (locals.has(node) || isImplicitField(node, prog, ctx, locals) == false) {
+        return ""
+    }
+    return plainClass(prog, fieldType(prog, ctx["class"], node))
+}
+
+// The class an `array<Class>` name holds, "" for anything else.
+method elementClassOf(string name, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    if (locals.has("elem:" + name)) {
+        return locals["elem:" + name]
+    }
+    if (locals.has(name) || isImplicitField(name, prog, ctx, locals) == false) {
+        return ""
+    }
+    return plainClass(prog, arrayElementType(fieldType(prog, ctx["class"], name)))
+}
+
+// `cls` when it names a class of the program (enums are left out: their
+// objects carry one more slot behind the fields), "" otherwise.
+method plainClass(map<string, string> prog, string cls): string {
+    if (cls != "" && prog.has("class:" + cls)) {
+        return cls
+    }
+    return ""
+}
+
+// "Body" for "array<Body>", "" for anything else.
+method arrayElementType(string t): string {
+    if (t.startsWith("array<") == false || t.endsWith(">") == false) {
+        return ""
+    }
+    return t.substring(6, t.length() - 1)
+}
+
+// The class a declared type names, "" when it names none.
+method declaredClass(map<string, string> prog, string t): string {
+    return plainClass(prog, normType(t))
+}
+
+// The class of the elements a declared type holds, "" when it is no array of a class.
+method declaredElementClass(map<string, string> prog, string t): string {
+    return plainClass(prog, arrayElementType(normType(t)))
+}
+
+// The kind of `target.name()` when it reads a numeric field of a class that
+// is known for `target`, "" when it is anything else.
+method fieldReadKind(string node, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    var cls = classOf(nodeChild(node, 1), prog, ctx, locals)
+    if (cls == "") {
+        return KIND_NONE
+    }
+    return kindOfType(fieldType(prog, cls, nodeChild(node, 2)))
+}
+
+method methodCallKind(string node, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    if (isTypedContext(ctx) == false) {
+        return KIND_NONE
+    }
+    var target = nodeChild(node, 1)
+    if (isModuleTarget(target, prog, ctx, locals)) {
+        return moduleCallKind(node, prog)
+    }
+    if (nodeCount(node) == 3) {
+        return fieldReadKind(node, prog, ctx, locals)
+    }
+    return KIND_NONE
+}
+
+// Is the node a read of a numeric field and nothing else: `this.f()`,
+// `p.f()` or the name of a field of the class? Such a value is only checked
+// when it is computed with.
+method isBareRead(string node, map<string, string> prog, map<string, string> ctx, map<string, string> locals): bool {
+    if (isList(node) == false) {
+        return isNumberAtom(node) == false && isIntLocal(locals, node) == false && isFloatLocal(locals, node) == false && isNumericKind(atomKind(node, prog, ctx, locals))
+    }
+    return nodeHead(node) == "mcall" && nodeCount(node) == 3 && isModuleTarget(nodeChild(node, 1), prog, ctx, locals) == false && isNumericKind(kindOf(node, prog, ctx, locals))
+}
+
+// The kind of a value that is stored or returned as it is: a bare field read
+// has none, so that a local or a result made of it stays boxed and a value
+// that is no number passes through as it did before the code was typed.
+method valueKind(string node, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    if (isBareRead(node, prog, ctx, locals)) {
+        return KIND_NONE
+    }
+    return kindOf(node, prog, ctx, locals)
+}
+
+// Does the expression always produce an integer (`i`), always a float
+// (`d`), or neither ("")?
+method kindOf(string node, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    if (isList(node) == false) {
+        return atomKind(node, prog, ctx, locals)
+    }
+    var head = nodeHead(node)
+    if (head == "neg") {
+        return kindOf(nodeChild(node, 1), prog, ctx, locals)
+    }
+    if (head == "rawi") {
+        return KIND_INT
+    }
+    if (head == "rawd") {
+        return KIND_FLOAT
+    }
+    if ((FLOAT_OPERATORS.has(head) || INTEGER_OPERATORS.has(head)) && nodeCount(node) == 3) {
+        return arithmeticKind(node, head, prog, ctx, locals)
+    }
+    if (head == "call") {
+        return callKind(node, prog, ctx)
+    }
+    if (head == "mcall") {
+        return methodCallKind(node, prog, ctx, locals)
+    }
+    return KIND_NONE
+}
+
+method isMathNative(string cfn): bool {
+    return FLOAT_NATIVES.has(cfn) || INTEGER_NATIVES.has(cfn)
+}
+
+// The C function that does what the math native `cfn` does on unboxed numbers.
+method mathNativeFunction(string cfn): string {
+    if (FLOAT_NATIVES.has(cfn)) {
+        return FLOAT_NATIVES[cfn]
+    }
+    return INTEGER_NATIVES[cfn]
+}

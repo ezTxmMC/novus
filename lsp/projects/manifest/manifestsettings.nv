@@ -1,0 +1,86 @@
+package manifest
+
+import base/text
+
+private final MANIFEST_DEFAULT_VERSION = "latest"
+private final MANIFEST_REQUIRE_MIN_VALUES = 1
+private final MANIFEST_REQUIRE_MAX_VALUES = 2
+private final MANIFEST_REPLACE_VALUES = 2
+
+// Applies one directive to the ManifestFile and reports what novusc would abort on: unknown settings and a wrong
+// number of values (novusc counts the values before it looks at the name of a single-value setting).
+define class ManifestSettings {
+    ManifestFile file
+
+    construct(ManifestFile file) {
+        this.file = file
+    }
+
+    method apply(ManifestDirective directive, Span span) {
+        var key = directive.key
+        if (key == "require") {
+            this.applyRequire(directive, span)
+            return
+        }
+        if (key == "replace") {
+            this.applyReplace(directive, span)
+            return
+        }
+        this.applySingle(directive, span)
+    }
+
+    method applyRequire(ManifestDirective directive, Span span) {
+        var count = directive.values.length()
+        if (count < MANIFEST_REQUIRE_MIN_VALUES || count > MANIFEST_REQUIRE_MAX_VALUES) {
+            this.report(span, directive.line, manifestRequireArityMessage())
+            return
+        }
+        var version = MANIFEST_DEFAULT_VERSION
+        if (count == MANIFEST_REQUIRE_MAX_VALUES) {
+            version = directive.values[1]
+        }
+        this.file.addRequire(Requirement(directive.values[0], version, span, directive.line))
+    }
+
+    method applyReplace(ManifestDirective directive, Span span) {
+        if (directive.values.length() != MANIFEST_REPLACE_VALUES) {
+            this.report(span, directive.line, manifestReplaceArityMessage())
+            return
+        }
+        this.file.replaces[directive.values[0]] = directive.values[1]
+    }
+
+    method applySingle(ManifestDirective directive, Span span) {
+        if (directive.values.length() != 1) {
+            this.report(span, directive.line, manifestOneValueMessage(directive.key))
+            return
+        }
+        if (manifestKeys().contains(directive.key) == false) {
+            this.report(directive.keySpan, directive.line, manifestUnknownMessage(directive.key))
+            return
+        }
+        this.store(directive.key, directive.values[0])
+    }
+
+    method store(string key, string value) {
+        if (key == "project") {
+            this.file.projectName = value
+        }
+        if (key == "version") {
+            this.file.version = value
+        }
+        if (key == "main") {
+            this.file.mainFile = value
+        }
+        if (key == "lib") {
+            this.file.libFile = value
+        }
+        if (key == "output") {
+            this.file.outputName = value
+        }
+    }
+
+    method report(Span span, integer line, string message) {
+        this.file.issues.append(ManifestIssue(span, line, message))
+    }
+}

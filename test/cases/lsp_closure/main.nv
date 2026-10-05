@@ -1,0 +1,18 @@
+package main
+
+import @rule_cases
+import @dependency_cases
+import @component_cases
+import @target_cases
+import @real_cases
+
+// lsp/projects/closure: the closure builder must load exactly the files the compiler loader reads, with the
+// loader's package semantics. Fixture trees live in memory; the real cases run on the repository itself.
+method main() {
+    runRuleCases()
+    runDependencyCases()
+    runTrailingSlashCases()
+    runComponentCases()
+    runTargetCases()
+    runRealCases()
+}

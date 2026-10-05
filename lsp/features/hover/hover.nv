@@ -1,0 +1,28 @@
+package hover
+
+import base/maybe
+import base/model
+import projects/workspace
+
+// Hover: what the identifier under the cursor stands for (`SymbolHover`), then keywords, built-ins and imports
+// (`WordHover`). A manifest has no closure file and gets nothing. The symbol hover leaves import statements alone.
+define class HoverEngine {
+    SymbolHover symbols
+    WordHover words
+
+    construct() {
+        this.symbols = SymbolHover()
+        this.words = WordHover()
+    }
+
+    method hover(FileContext context, integer offset): HoverInfo {
+        if (isNone(context.closureFile)) {
+            return nothing()
+        }
+        var info = this.symbols.hover(context, offset)
+        if (isSome(info)) {
+            return info
+        }
+        return this.words.hover(context, offset)
+    }
+}

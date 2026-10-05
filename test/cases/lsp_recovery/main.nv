@@ -1,0 +1,41 @@
+package main
+
+import @bodies
+import @check
+import @hardening
+import @openbodies
+import @lexical
+import @lists
+import @robust
+import @scenario
+import @statements
+
+method main(): integer {
+    checkLexicalCodes()
+    checkTopLevelResync()
+    checkTopLevelValid()
+    checkMethodBodies()
+    checkTypeBodies()
+    checkMemberRecovery()
+    checkLists()
+    checkForLoops()
+    checkCompoundAssignment()
+    checkBracesAndParentheses()
+    checkKeywordsAsNames()
+    checkGenericsInStatements()
+    checkExpressionErrors()
+    checkTruncationSweep()
+    checkMutationSweep()
+    checkNesting()
+    checkNastyInput()
+    checkBracelessNesting()
+    checkIssueCap()
+    checkMixedIndentation()
+    checkSkippedCharacters()
+    checkTrueAndFalseStatements()
+    checkMessages()
+    checkOpenBodies()
+    checkOpenSpans()
+    expectAllCodesSeen()
+    return finishChecks()
+}

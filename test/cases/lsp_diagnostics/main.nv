@@ -1,0 +1,22 @@
+package main
+
+import @support
+import @syntax_cases
+import @import_cases
+import @definition_cases
+import @call_cases
+import @member_cases
+import @manifest_cases
+import @report_cases
+import @scale_cases
+
+method main() {
+    runSyntaxCases()
+    runImportCases()
+    runDefinitionCases()
+    runCallCases()
+    runMemberCases()
+    runManifestCases()
+    runReportCases()
+    runScaleCases()
+}

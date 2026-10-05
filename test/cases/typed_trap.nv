@@ -1,0 +1,74 @@
+package main
+
+// A field declared integer or float is trusted to hold a number when typed
+// code reads it. What is stored there that is no number stays what it is
+// (printing it works), and reading it in arithmetic is a reported error, not
+// a silently converted value.
+
+method tryRun(object task): object native "nv_try_run"
+method tryFailed(): bool native "nv_try_failed"
+method tryError(): string native "nv_try_error"
+
+define class Meter {
+    private float reading: get, set
+    private integer ticks: get, set
+
+    method doubled(): float {
+        return reading * 2
+    }
+
+    method plusTicks(): integer {
+        return ticks + 1
+    }
+}
+
+define class Other {
+    private string reading: get, set
+    private string ticks: get, set
+}
+
+define class Run {
+    method run() {
+        var m = Meter{reading = 1.5, ticks = 4}
+        println m.doubled() + " " + m.plusTicks()
+        m.reading("warm")
+        m.ticks("many")
+        println m.reading() + " " + m.ticks()
+        println m.doubled()
+    }
+}
+
+define class RunTicks {
+    method run() {
+        var m = Meter{reading = 1.5, ticks = 4}
+        m.ticks("many")
+        println m.plusTicks()
+    }
+}
+
+define class RunOther {
+    method run() {
+        var o = Other{reading = "r", ticks = "t"}
+        println sum([o])
+    }
+}
+
+method sum(array<Meter> ms): float {
+    var total = 0.0
+    var i = 0
+    while (i < ms.length()) {
+        var m = ms[i]
+        total = total + m.reading() * 2.0
+        i = i + 1
+    }
+    return total
+}
+
+method main {
+    for (task in [Run(), RunTicks(), RunOther()]) {
+        tryRun(task)
+        if (tryFailed()) {
+            println "error: " + tryError()
+        }
+    }
+}

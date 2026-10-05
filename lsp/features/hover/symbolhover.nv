@@ -1,0 +1,97 @@
+package hover
+
+import base/maybe
+import base/model
+import base/text
+import projects/workspace
+import semantics/semantic
+import semantics/targets
+import syntax/outline
+
+private final HOVER_LOOP_ORIGIN = "loop"
+private final HOVER_PARAMETER_ORIGIN = "parameter"
+
+method hoverInsideImport(FileContext context, integer offset): bool {
+    for (declaration in context.syntax.imports) {
+        if (declaration.span.touches(offset)) {
+            return true
+        }
+    }
+    return false
+}
+
+// Hover on a declaration or on an identifier that resolves to one (user, dependency or std). A local shows its
+// declaration line and its inferred type; an ambiguous call lists its candidates with their packages.
+define class SymbolHover {
+    construct() {
+    }
+
+    method hover(FileContext context, integer offset): HoverInfo {
+        if (isNone(context.closureFile) || hoverInsideImport(context, offset)) {
+            return nothing()
+        }
+        var target = TargetFinder(context.resolver()).targetAt(context.closureFile, context.syntax, offset, true)
+        if (isNone(target) || target.isSymbol() == false) {
+            return nothing()
+        }
+        return HoverInfo(this.markdownOf(context, target), target.token.span())
+    }
+
+    method markdownOf(FileContext context, IdentifierTarget target): string {
+        var text = HoverSymbolText()
+        if (target.isAmbiguous()) {
+            return text.ambiguous(target.symbols)
+        }
+        if (target.symbols[0].isLocal()) {
+            return this.localMarkdown(context, target)
+        }
+        return text.render(target.symbols)
+    }
+
+    method localMarkdown(FileContext context, IdentifierTarget target): string {
+        var symbol = target.symbols[0]
+        var local = this.localOf(target, symbol)
+        var label = this.localLabel(symbol)
+        var typeText = this.localType(context, target, local)
+        var head = "(" + label + ") " + symbol.name()
+        if (typeText != "") {
+            head = head + ": " + typeText
+        }
+        var lines = context.document.lines
+        var declaration = lines.lineText(lines.lineOf(symbol.decl.nameSpan.start)).trim()
+        return hoverFence([head]) + "\n\nDeclared: " + hoverInlineCode(declaration)
+    }
+
+    method localLabel(Symbol symbol): string {
+        if (symbol.decl.hasModifier(HOVER_LOOP_ORIGIN)) {
+            return "loop variable"
+        }
+        if (symbol.decl.hasModifier(HOVER_PARAMETER_ORIGIN)) {
+            return "parameter"
+        }
+        return "variable"
+    }
+
+    method localOf(IdentifierTarget target, Symbol symbol): Local {
+        if (isNone(target.scope) || isNone(target.scope.enclosingCallable)) {
+            return nothing()
+        }
+        for (local in target.scope.enclosingCallable.locals) {
+            if (local.nameSpan.start == symbol.decl.nameSpan.start) {
+                return local
+            }
+        }
+        return nothing()
+    }
+
+    method localType(FileContext context, IdentifierTarget target, Local local): string {
+        if (isNone(local)) {
+            return ""
+        }
+        var inferred = context.resolver().typeOfLocal(target.scope, local)
+        if (inferred.known) {
+            return inferred.display()
+        }
+        return local.typeText
+    }
+}

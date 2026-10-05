@@ -1,0 +1,86 @@
+package modules
+
+import base/platform
+import base/text
+import projects/manifest
+
+// Depth first like resolveModules of compiler/project/deps.nv: a module is entered before the modules its own
+// manifest requires, the first version seen wins, and a `replace` counts only in the manifest that declares it.
+// Nothing is ever fetched: a module that is not in the cache just gets the status NotFetched.
+define class ModuleTableBuilder {
+    TextSource source
+    string cacheDir
+
+    construct(TextSource source, string cacheDir) {
+        this.source = source
+        this.cacheDir = cacheDir
+    }
+
+    method build(ManifestFile root): ModuleTable {
+        var table = ModuleTable()
+        this.resolve(root, table, true, 0)
+        this.markDirect(root, table)
+        return table
+    }
+
+    // `direct` means the root manifest requires the module, even when a nested manifest met it first and its
+    // version won (the first version seen wins, as in novusc).
+    method markDirect(ManifestFile root, ModuleTable table) {
+        for (requirement in root.requires) {
+            if (table.has(requirement.module)) {
+                table.byModule[requirement.module].direct = true
+            }
+        }
+    }
+
+    method resolve(ManifestFile declaring, ModuleTable table, bool direct, integer depth) {
+        if (depth > MAX_NESTING_DEPTH) {
+            return
+        }
+        for (requirement in declaring.requires) {
+            if (table.has(requirement.module) == false) {
+                this.resolveRequirement(declaring, requirement, table, direct, depth)
+            }
+        }
+    }
+
+    method resolveRequirement(ManifestFile declaring, Requirement requirement, ModuleTable table, bool direct, integer depth) {
+        var entry = this.entryFor(declaring, requirement)
+        entry.direct = direct
+        table.add(entry)
+        if (entry.isReady() == false) {
+            return
+        }
+        entry.entryFile = moduleEntryFile(this.source, entry.dir)
+        var nested = this.nestedManifest(entry.dir)
+        this.resolve(nested, table, false, depth + 1)
+    }
+
+    method entryFor(ManifestFile declaring, Requirement requirement): ModuleEntry {
+        var module = requirement.module
+        if (declaring.replaces.has(module)) {
+            var target = manifestJoinPath(declaring.dir, declaring.replaces[module])
+            var replaced = ModuleEntry(module, requirement.version, target, this.statusOf(target, ModuleStatus.ReplaceMissing), declaring.filePath)
+            replaced.replaced = true
+            return replaced
+        }
+        var cached = dependencyDirectoryOf(this.cacheDir, module, requirement.version)
+        return ModuleEntry(module, requirement.version, cached, this.statusOf(cached, ModuleStatus.NotFetched), declaring.filePath)
+    }
+
+    method statusOf(string dir, ModuleStatus missing): ModuleStatus {
+        if (this.source.isDirectory(dir)) {
+            return ModuleStatus.Ready
+        }
+        return missing
+    }
+
+    // A module without project.nv has no requirements of its own.
+    method nestedManifest(string dir): ManifestFile {
+        var manifestPath = manifestJoinPath(dir, MODULES_MANIFEST_NAME)
+        if (this.source.exists(manifestPath) == false || this.source.isDirectory(manifestPath)) {
+            return ManifestFile("")
+        }
+        return parseManifestText(manifestPath, this.source.textOf(manifestPath))
+    }
+}

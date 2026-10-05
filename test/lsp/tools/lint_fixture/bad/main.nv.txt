@@ -1,0 +1,8 @@
+package main
+
+import server/wiring
+import server/beta
+
+method main(array<string> args): integer {
+    return 0
+}

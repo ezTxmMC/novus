@@ -1,0 +1,58 @@
+package format
+
+// The whitespace between two items of the file, read byte by byte so a NUL byte inside it cannot hide anything (NG30).
+// A gap that holds a byte other than space, tab, CR or LF is `foreign` and is copied as it is.
+private final FORMAT_LINE_FEED_BYTE = 10
+private final FORMAT_CARRIAGE_RETURN_BYTE = 13
+private final FORMAT_SPACE_BYTE = 32
+private final FORMAT_TAB_BYTE = 9
+
+define class FormatGapScan {
+    integer newlines
+    bool foreign
+    bool crlf
+
+    construct(string gap) {
+        this.newlines = 0
+        this.foreign = false
+        this.crlf = false
+        this.scan(gap)
+    }
+
+    method scan(string gap) {
+        var index = 0
+        while (index < gap.length()) {
+            this.read(gap, index)
+            index = index + 1
+        }
+    }
+
+    method read(string gap, integer index) {
+        var code = ord(gap.charAt(index))
+        if (code == FORMAT_LINE_FEED_BYTE) {
+            this.newlines = this.newlines + 1
+            this.crlf = this.crlf || (this.newlines == 1 && index > 0 && ord(gap.charAt(index - 1)) == FORMAT_CARRIAGE_RETURN_BYTE)
+            return
+        }
+        if (code != FORMAT_CARRIAGE_RETURN_BYTE && code != FORMAT_SPACE_BYTE && code != FORMAT_TAB_BYTE) {
+            this.foreign = true
+        }
+    }
+}
+
+method formatIsBlankByte(integer code): bool {
+    return code == FORMAT_SPACE_BYTE || code == FORMAT_TAB_BYTE || code == FORMAT_CARRIAGE_RETURN_BYTE || code == FORMAT_LINE_FEED_BYTE
+}
+
+// The text without its trailing spaces and tabs (the comment of a line keeps its content, never its tail).
+method formatTrimTrailingBlanks(string text): string {
+    var end = text.length()
+    while (end > 0 && formatIsTrailingBlank(ord(text.charAt(end - 1)))) {
+        end = end - 1
+    }
+    return text.substring(0, end)
+}
+
+method formatIsTrailingBlank(integer code): bool {
+    return code == FORMAT_SPACE_BYTE || code == FORMAT_TAB_BYTE
+}

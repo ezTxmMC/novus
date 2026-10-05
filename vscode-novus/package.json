@@ -81,10 +81,11 @@
         }
       }
     ],
-    "snippets": [
+    "semanticTokenTypes": [
       {
-        "language": "novus",
-        "path": "./snippets/novus.json"
+        "id": "modifier",
+        "superType": "keyword",
+        "description": "A modifier word such as private, final, abstract, async, native, get or set"
       }
     ],
     "commands": [
@@ -135,6 +136,131 @@
     "configuration": {
       "title": "Novus",
       "properties": {
+        "novus.server.implementation": {
+          "type": "string",
+          "enum": [
+            "lsp",
+            "typescript"
+          ],
+          "default": "lsp",
+          "enumDescriptions": [
+            "`novus-lsp`, the language server written in Novus (needs the `novus-lsp` binary)",
+            "The previous TypeScript server that ships with the extension (no longer developed; kept until `novus-lsp` has every feature)"
+          ],
+          "markdownDescription": "Which language server the extension starts. Changing it restarts the server."
+        },
+        "novus.server.path": {
+          "type": "string",
+          "default": "",
+          "scope": "machine-overridable",
+          "markdownDescription": "Path to the `novus-lsp` binary. Leave empty to look for `build/novus-lsp` in the workspace and then `novus-lsp` on `PATH`. A relative path is resolved against the workspace folders."
+        },
+        "novus.diagnostics.own": {
+          "type": "boolean",
+          "default": true,
+          "description": "`novus-lsp` only: report the problems that the server finds itself (syntax and name resolution), without running the compiler."
+        },
+        "novus.check.mode": {
+          "type": "string",
+          "enum": [
+            "onSave",
+            "onType",
+            "off"
+          ],
+          "default": "onSave",
+          "enumDescriptions": [
+            "Run `novusc check` when a file is opened and saved",
+            "Also run it after a pause in typing",
+            "Never run the compiler"
+          ],
+          "markdownDescription": "`novus-lsp` only: when the authoritative `novusc check` runs. Its findings are shown next to the server's own diagnostics."
+        },
+        "novus.check.novuscPath": {
+          "type": "string",
+          "default": "",
+          "scope": "machine-overridable",
+          "markdownDescription": "`novus-lsp` only: the `novusc` binary used for `novusc check` and `novusc deps`. Leave empty to use `novus.executablePath`, then `build/novusc` in the workspace, then `PATH`."
+        },
+        "novus.check.timeoutSeconds": {
+          "type": "integer",
+          "default": 60,
+          "minimum": 1,
+          "maximum": 600,
+          "markdownDescription": "`novus-lsp` only: seconds after which a `novusc check` run is abandoned."
+        },
+        "novus.pureline.enabled": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "`novus-lsp` only: report violations of the Pureline style (`PL-CF-002` no `else`, `PL-FN-001` function length, `PL-STRUCT-001/002` file and folder size, `PL-NAME-001` short names)."
+        },
+        "novus.pureline.flagPlainElse": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Also flag an `else` that does not follow a terminating branch (`PL-CF-002`)."
+        },
+        "novus.pureline.functionReviewLines": {
+          "type": "integer",
+          "default": 30,
+          "minimum": 1,
+          "markdownDescription": "Function length above which `PL-FN-001` asks for a review."
+        },
+        "novus.pureline.functionMaxLines": {
+          "type": "integer",
+          "default": 50,
+          "minimum": 1,
+          "markdownDescription": "Function length above which `PL-FN-001` asks for a split."
+        },
+        "novus.pureline.maxLinesPerFile": {
+          "type": "integer",
+          "default": 200,
+          "minimum": 1,
+          "markdownDescription": "File length limit of `PL-STRUCT-001`."
+        },
+        "novus.pureline.maxFilesPerFolder": {
+          "type": "integer",
+          "default": 10,
+          "minimum": 1,
+          "markdownDescription": "Files per folder limit of `PL-STRUCT-002`."
+        },
+        "novus.pureline.allowedShortNames": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "i",
+            "j",
+            "k"
+          ],
+          "markdownDescription": "One-letter names that `PL-NAME-001` accepts."
+        },
+        "novus.imports.explicit": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "`novus-lsp` only: completion adds the `import` line for a package that the file does not import itself, even when another file of the program already loads it."
+        },
+        "novus.format.tabSize": {
+          "type": "integer",
+          "default": 4,
+          "minimum": 1,
+          "markdownDescription": "`novus-lsp` only: indentation width of the formatter when the editor does not send one."
+        },
+        "novus.format.insertSpaces": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "`novus-lsp` only: indent with spaces when the editor does not send the option."
+        },
+        "novus.snippets.indent": {
+          "type": "string",
+          "default": "    ",
+          "markdownDescription": "`novus-lsp` only: the indentation unit written into snippet bodies."
+        },
+        "novus.completion.maxItems": {
+          "type": "integer",
+          "default": 200,
+          "minimum": 1,
+          "markdownDescription": "`novus-lsp` only: the most items one completion answer holds; a longer list is marked incomplete and narrows while you type."
+        },
         "novus.executablePath": {
           "type": "string",
           "default": "",

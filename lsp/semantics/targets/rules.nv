@@ -1,0 +1,193 @@
+package targets
+
+import base/maybe
+import projects/closure
+import semantics/semantic
+import syntax/lexing
+import syntax/outline
+import syntax/scanning
+
+private final TARGETS_MAX_LENIENT_ARITY = 8
+
+// Reference rules for one identifier token: members after a dot, keys of type literals, calls, names and types. `lenient`
+// lets a call with the wrong number of arguments still find the function (definition, hover).
+define class TargetsRules {
+    Resolver resolver
+    ClosureFile file
+    array<Token> tokens
+    Scope scope
+    bool lenient
+
+    construct(Resolver resolver, ClosureFile file, array<Token> tokens, Scope scope, bool lenient) {
+        this.resolver = resolver
+        this.file = file
+        this.tokens = tokens
+        this.scope = scope
+        this.lenient = lenient
+    }
+
+    method resolve(integer index): IdentifierTarget {
+        var tokens = this.tokens
+        if (index > 0 && tokens[index - 1].isPunct(".")) {
+            return this.fromMember(index)
+        }
+        var owner = targetsTypedLiteralOwner(this.resolver, tokens, index)
+        if (owner != "") {
+            return this.fromLiteralKey(index, owner)
+        }
+        var arity = targetsCallArity(tokens, index)
+        if (arity != TARGETS_NO_ARITY) {
+            return this.fromCall(index, arity)
+        }
+        return this.fromName(index)
+    }
+
+    method fromLiteralKey(integer index, string owner): IdentifierTarget {
+        var token = this.tokens[index]
+        var found = this.resolver.lookupMember(typeFromText(owner), token.text, TARGETS_NO_ARITY)
+        return targetsSymbolTarget(token, found)
+    }
+
+    // A free built-in wins over a function of that name with another number of arguments, as in the compiler's call order.
+    method fromCall(integer index, integer arity): IdentifierTarget {
+        var token = this.tokens[index]
+        var isBuiltin = this.resolver.isBuiltinCall(token.text)
+        var found = this.resolver.lookupCall(this.scope, token.text, arity)
+        if (found.status == TARGETS_STATUS_UNKNOWN && this.lenient && isBuiltin == false) {
+            found = this.anyArity(token.text)
+        }
+        if (found.status != TARGETS_STATUS_UNKNOWN) {
+            return targetsSymbolTarget(token, found)
+        }
+        if (isBuiltin) {
+            return targetsPlainTarget(TARGETS_KIND_FREE_BUILTIN, token)
+        }
+        return nothing()
+    }
+
+    // The functions of that name whatever their arity, for a call that does not match any overload.
+    method anyArity(string name): Resolution {
+        var seen = {}
+        var found = []
+        var arity = 0
+        while (arity <= TARGETS_MAX_LENIENT_ARITY) {
+            for (symbol in this.resolver.lookupCall(this.scope, name, arity).candidates) {
+                if (seen.has(symbol.key) == false) {
+                    seen[symbol.key] = true
+                    found.append(symbol)
+                }
+            }
+            arity = arity + 1
+        }
+        return targetsResolutionOf(found)
+    }
+
+    method fromName(integer index): IdentifierTarget {
+        var token = this.tokens[index]
+        var variable = this.resolver.lookupName(this.scope, token.text)
+        if (variable.status != TARGETS_STATUS_UNKNOWN) {
+            return targetsSymbolTarget(token, variable)
+        }
+        var type = this.resolver.lookupType(token.text)
+        if (isSome(type)) {
+            return IdentifierTarget(TARGETS_KIND_SYMBOL, [type], TARGETS_STATUS_RESOLVED, token)
+        }
+        if (this.resolver.isModuleQualifier(token.text)) {
+            return targetsPlainTarget(TARGETS_KIND_QUALIFIER, token)
+        }
+        return nothing()
+    }
+
+    method fromMember(integer index): IdentifierTarget {
+        var tokens = this.tokens
+        var chain = chainEndingAt(tokens, index - 2)
+        if (chain.length() == 0) {
+            return nothing()
+        }
+        var arity = targetsCallArity(tokens, index)
+        var special = this.fromStaticReceiver(chain, tokens[index], arity)
+        if (isSome(special)) {
+            return special
+        }
+        var type = this.resolver.typeOfChain(this.scope, chain)
+        var found = this.resolver.lookupMember(type, tokens[index].text, arity)
+        if (found.status == TARGETS_STATUS_UNKNOWN && this.lenient && arity != TARGETS_NO_ARITY) {
+            found = this.resolver.lookupMember(type, tokens[index].text, TARGETS_NO_ARITY)
+        }
+        return this.memberTarget(tokens[index], found, type, chain)
+    }
+
+    method memberTarget(Token token, Resolution found, TypeRef type, array<ChainStep> chain): IdentifierTarget {
+        if (found.status != TARGETS_STATUS_UNKNOWN) {
+            return targetsSymbolTarget(token, found)
+        }
+        if (type.isString() || type.isArray() || type.isMap()) {
+            return this.builtinMember(token, type)
+        }
+        if (type.known == false && this.startsAtStandard(chain)) {
+            return this.builtinMember(token, type)
+        }
+        var unresolved = targetsPlainTarget(TARGETS_KIND_UNRESOLVED, token)
+        unresolved.receiverKnown = type.known
+        unresolved.receiver = this.receiverName(type)
+        return unresolved
+    }
+
+    method builtinMember(Token token, TypeRef type): IdentifierTarget {
+        var target = targetsPlainTarget(TARGETS_KIND_BUILTIN_MEMBER, token)
+        target.receiver = this.receiverName(type)
+        return target
+    }
+
+    method receiverName(TypeRef type): string {
+        if (type.known) {
+            return type.name
+        }
+        return ""
+    }
+
+    // A value that comes out of a std module, a std function or a built-in function is not an instance of a user type,
+    // so its members are not the user's fields (a rename must not touch `parseJson(text).size`).
+    method startsAtStandard(array<ChainStep> chain): bool {
+        var first = chain[0]
+        if (first.kind == TARGETS_STEP_NAME) {
+            return this.resolver.lookupName(this.scope, first.text).status == TARGETS_STATUS_UNKNOWN && this.resolver.isModuleQualifier(first.text)
+        }
+        if (first.kind != TARGETS_STEP_CALL) {
+            return false
+        }
+        var called = this.resolver.lookupCall(this.scope, first.text, first.argCount)
+        if (called.status == TARGETS_STATUS_UNKNOWN) {
+            return this.resolver.isBuiltinCall(first.text)
+        }
+        return called.candidates[0].origin() == FileOrigin.Standard
+    }
+
+    // `module.name` and `Enum.Constant`: a receiver that is no value.
+    method fromStaticReceiver(array<ChainStep> chain, Token token, integer arity): IdentifierTarget {
+        if (chain.length() != 1 || chain[0].kind != TARGETS_STEP_NAME) {
+            return nothing()
+        }
+        var receiver = chain[0].text
+        if (this.resolver.lookupName(this.scope, receiver).status != TARGETS_STATUS_UNKNOWN) {
+            return nothing()
+        }
+        if (this.resolver.isModuleQualifier(receiver)) {
+            return targetsSymbolTarget(token, this.resolver.lookupQualified(receiver, token.text, arity))
+        }
+        return this.enumConstant(receiver, token)
+    }
+
+    method enumConstant(string typeName, Token token): IdentifierTarget {
+        var type = this.resolver.lookupType(typeName)
+        if (isNone(type) || type.decl.kind != DeclKind.Enum) {
+            return nothing()
+        }
+        for (constant in this.resolver.constantsOf(typeName)) {
+            if (constant.decl.name == token.text) {
+                return IdentifierTarget(TARGETS_KIND_SYMBOL, [constant], TARGETS_STATUS_RESOLVED, token)
+            }
+        }
+        return nothing()
+    }
+}

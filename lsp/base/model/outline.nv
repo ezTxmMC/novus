@@ -1,0 +1,48 @@
+package model
+
+import base/text
+
+// Document and workspace symbols.
+define enum OutlineKind {
+    Module(2), Namespace(3), Class(5), Method(6), Property(7), Field(8), Constructor(9), Enum(10),
+    Interface(11), Function(12), Variable(13), Constant(14), EnumMember(22), Struct(23);
+    integer code
+
+    construct(integer code) {
+        this.code = code
+    }
+}
+
+define class OutlineEntry {
+    string name
+    string detail
+    OutlineKind kind
+    Span fullSpan
+    Span nameSpan
+    bool deprecated
+    array<OutlineEntry> children
+
+    construct(string name, string detail, OutlineKind kind, Span fullSpan, Span nameSpan) {
+        this.name = name
+        this.detail = detail
+        this.kind = kind
+        this.fullSpan = fullSpan
+        this.nameSpan = nameSpan
+        this.deprecated = false
+        this.children = []
+    }
+}
+
+define class WorkspaceSymbolEntry {
+    string name
+    OutlineKind kind
+    string containerName
+    Location location
+
+    construct(string name, OutlineKind kind, string containerName, Location location) {
+        this.name = name
+        this.kind = kind
+        this.containerName = containerName
+        this.location = location
+    }
+}

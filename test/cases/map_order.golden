@@ -1,0 +1,10 @@
+step 500: 546 entries, disagreements so far: 0
+step 1000: 569 entries, disagreements so far: 0
+step 1500: 573 entries, disagreements so far: 0
+step 2000: 566 entries, disagreements so far: 0
+step 2500: 565 entries, disagreements so far: 0
+step 3000: 569 entries, disagreements so far: 0
+final: 0 disagreements
+200
+a-late n99
+b-late false true

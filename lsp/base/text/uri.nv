@@ -1,0 +1,200 @@
+package text
+
+// file:// URI <-> path; every other scheme maps to the empty path.
+private final TEXT_FILE_SCHEME = "file:"
+private final TEXT_AUTHORITY_MARKER = "//"
+private final TEXT_LOCAL_HOST = "localhost"
+private final TEXT_PERCENT = "%"
+private final TEXT_HEX_DIGITS = "0123456789ABCDEF"
+private final TEXT_URI_PATH_EXTRA_SAFE = "-._~/:"
+private final TEXT_PERCENT_TRIPLET_LENGTH = 3
+private final TEXT_HEX_BASE = 16
+private final TEXT_NUL_BYTE = 0
+private final TEXT_HIGH_DIGIT_OFFSET = 1
+private final TEXT_LOW_DIGIT_OFFSET = 2
+private final TEXT_HEX_LETTER_VALUE = 10
+private final TEXT_ASCII_ZERO = 48
+private final TEXT_ASCII_NINE = 57
+private final TEXT_ASCII_UPPER_A = 65
+private final TEXT_ASCII_UPPER_F = 70
+private final TEXT_ASCII_UPPER_Z = 90
+private final TEXT_ASCII_LOWER_A = 97
+private final TEXT_ASCII_LOWER_F = 102
+private final TEXT_ASCII_LOWER_Z = 122
+
+// -1 when the character is not a hexadecimal digit.
+method textHexValue(string digit): integer {
+    var code = ord(digit)
+    if (code >= TEXT_ASCII_ZERO && code <= TEXT_ASCII_NINE) {
+        return code - TEXT_ASCII_ZERO
+    }
+    if (code >= TEXT_ASCII_LOWER_A && code <= TEXT_ASCII_LOWER_F) {
+        return code - TEXT_ASCII_LOWER_A + TEXT_HEX_LETTER_VALUE
+    }
+    if (code >= TEXT_ASCII_UPPER_A && code <= TEXT_ASCII_UPPER_F) {
+        return code - TEXT_ASCII_UPPER_A + TEXT_HEX_LETTER_VALUE
+    }
+    return -1
+}
+
+// The byte of the %XX triplet at offset, or -1 when it is not a triplet (or would be a NUL byte).
+method textPercentByte(string source, integer offset): integer {
+    if (offset + TEXT_PERCENT_TRIPLET_LENGTH > source.length()) {
+        return -1
+    }
+    var high = textHexValue(source.charAt(offset + TEXT_HIGH_DIGIT_OFFSET))
+    var low = textHexValue(source.charAt(offset + TEXT_LOW_DIGIT_OFFSET))
+    if (high < 0 || low < 0) {
+        return -1
+    }
+    var value = high * TEXT_HEX_BASE + low
+    if (value == TEXT_NUL_BYTE) {
+        return -1
+    }
+    return value
+}
+
+// Bytes that are not valid percent triplets stay as they are, so decoding never fails.
+method percentDecode(string text): string {
+    var found = text.indexOf(TEXT_PERCENT, 0)
+    if (found < 0) {
+        return text
+    }
+    var pieces = []
+    var cursor = 0
+    while (found >= 0) {
+        var value = textPercentByte(text, found)
+        if (value < 0) {
+            found = text.indexOf(TEXT_PERCENT, found + 1)
+            continue
+        }
+        pieces.append(text.substring(cursor, found))
+        pieces.append(chr(value))
+        cursor = found + TEXT_PERCENT_TRIPLET_LENGTH
+        found = text.indexOf(TEXT_PERCENT, cursor)
+    }
+    pieces.append(text.substring(cursor))
+    return pieces.join("")
+}
+
+method textIsUriSafeByte(integer code): bool {
+    var isDigit = code >= TEXT_ASCII_ZERO && code <= TEXT_ASCII_NINE
+    var isUpper = code >= TEXT_ASCII_UPPER_A && code <= TEXT_ASCII_UPPER_Z
+    var isLower = code >= TEXT_ASCII_LOWER_A && code <= TEXT_ASCII_LOWER_Z
+    if (isDigit || isUpper || isLower) {
+        return true
+    }
+    if (code <= TEXT_NUL_BYTE) {   // chr(0) is an empty needle for indexOf and would match at index 0
+        return false
+    }
+    return TEXT_URI_PATH_EXTRA_SAFE.indexOf(chr(code), 0) >= 0
+}
+
+method textEncodeByte(string character, integer code): string {
+    if (textIsUriSafeByte(code)) {
+        return character
+    }
+    var high = TEXT_HEX_DIGITS.charAt(code / TEXT_HEX_BASE)
+    return TEXT_PERCENT + high + TEXT_HEX_DIGITS.charAt(code % TEXT_HEX_BASE)
+}
+
+method percentEncodePath(string text): string {
+    var pieces = []
+    var i = 0
+    while (i < text.length()) {
+        var code = ord(text.charAt(i))
+        pieces.append(textEncodeByte(text.charAt(i), code))
+        i = i + 1
+    }
+    return pieces.join("")
+}
+
+method textIsDriveLetter(string character): bool {
+    var code = ord(character)
+    var isUpper = code >= TEXT_ASCII_UPPER_A && code <= TEXT_ASCII_UPPER_Z
+    var isLower = code >= TEXT_ASCII_LOWER_A && code <= TEXT_ASCII_LOWER_Z
+    return isUpper || isLower
+}
+
+// "C:" or "C:/..." (also with a backslash), the shape of a Windows drive path.
+method textHasDrivePrefix(string filePath): bool {
+    if (filePath.length() < 2 || filePath.charAt(1) != ":") {
+        return false
+    }
+    if (textIsDriveLetter(filePath.charAt(0)) == false) {
+        return false
+    }
+    if (filePath.length() == 2) {
+        return true
+    }
+    return filePath.charAt(2) == "/" || filePath.charAt(2) == "\\"
+}
+
+// "/C:/x" is how a URI spells the Windows path "C:/x".
+method textStripDriveSlash(string decodedPath): string {
+    if (decodedPath.startsWith("/") && textHasDrivePrefix(decodedPath.substring(1))) {
+        return decodedPath.substring(1)
+    }
+    return decodedPath
+}
+
+method textCutAt(string source, string marker): string {
+    var found = source.indexOf(marker, 0)
+    if (found < 0) {
+        return source
+    }
+    return source.substring(0, found)
+}
+
+// Splits "//authority/path" into [authority, path]; a rest without "//" has no authority.
+method textSplitAuthority(string rest): array<string> {
+    if (rest.startsWith(TEXT_AUTHORITY_MARKER) == false) {
+        return ["", rest]
+    }
+    var slash = rest.indexOf("/", TEXT_AUTHORITY_MARKER.length())
+    if (slash < 0) {
+        return [rest.substring(TEXT_AUTHORITY_MARKER.length()), ""]
+    }
+    return [rest.substring(TEXT_AUTHORITY_MARKER.length(), slash), rest.substring(slash)]
+}
+
+method uriToFilePath(string uri): string {
+    if (uri.length() < TEXT_FILE_SCHEME.length()) {
+        return ""
+    }
+    if (uri.substring(0, TEXT_FILE_SCHEME.length()).toLower() != TEXT_FILE_SCHEME) {
+        return ""
+    }
+    var rest = textCutAt(textCutAt(uri.substring(TEXT_FILE_SCHEME.length()), "#"), "?")
+    var parts = textSplitAuthority(rest)
+    if (parts[1].startsWith("/") == false) {
+        return ""
+    }
+    var decodedPath = percentDecode(parts[1])
+    if (parts[0] == "" || parts[0].toLower() == TEXT_LOCAL_HOST) {
+        return textStripDriveSlash(decodedPath)
+    }
+    return TEXT_AUTHORITY_MARKER + percentDecode(parts[0]) + decodedPath
+}
+
+method textIsWindowsPath(string filePath): bool {
+    return textHasDrivePrefix(filePath) || filePath.startsWith("\\\\")
+}
+
+method filePathToUri(string filePath): string {
+    if (filePath == "") {
+        return ""
+    }
+    var normalized = filePath
+    if (textIsWindowsPath(filePath)) {
+        normalized = filePath.replace("\\", "/")
+    }
+    var encoded = percentEncodePath(normalized)
+    if (normalized.startsWith(TEXT_AUTHORITY_MARKER)) {
+        return TEXT_FILE_SCHEME + encoded
+    }
+    if (normalized.startsWith("/")) {
+        return TEXT_FILE_SCHEME + TEXT_AUTHORITY_MARKER + encoded
+    }
+    return TEXT_FILE_SCHEME + TEXT_AUTHORITY_MARKER + "/" + encoded
+}

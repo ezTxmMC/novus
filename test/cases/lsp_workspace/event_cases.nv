@@ -1,0 +1,138 @@
+package main
+
+import "novus/lsp/base/maybe"
+import "novus/lsp/base/platform"
+import "novus/lsp/projects/closure"
+import "novus/lsp/projects/stdlib"
+import "novus/lsp/projects/workspace"
+import @support
+
+method runManifestCases() {
+    println("== manifest edits")
+    var world = WsWorld(wsSimpleProject())
+    var context = world.open("/p/main.nv", 1)
+    var manifestText = "project \"p\"\nmain \"lone.nv\"\n"
+    world.change("/p/project.nv", 1, manifestText)
+    wsCheck("an edited manifest invalidates its project", wsSummary(context.project), "key=/p/project.nv valid=false revision=1")
+    var manifest = world.space.contextFor(wsDocument("/p/project.nv", 1, manifestText))
+    wsCheck("a manifest document: no closure file, the model of its project", manifest.syntax.fileKind + " closureFile=" + isNone(manifest.closureFile) + " " + (manifest.project == context.project) + " main=" + manifest.project.layout.mainFile, "manifest closureFile=true true main=/p/lone.nv")
+    wsCheck("the new main file is the program; the open old main joins it as an orphan", wsNames(manifest.project.closure.files), "/p/lone.nv, /p/main.nv, /p/geo/extra.nv, /p/geo/shape.nv")
+    world.space.onDocumentClosed("/p/project.nv")
+    wsCheck("closing it discards the edit: stale again", manifest.project.valid + " " + world.cache.hasOverlay("/p/project.nv"), "false false")
+    wsCheck("back to the disk manifest", world.model("/p/main.nv").layout.mainFile, "/p/main.nv")
+}
+
+method runDiskEventCases() {
+    println("== Workspace.onFilesChangedOnDisk")
+    var world = WsWorld(wsSimpleProject())
+    var context = world.open("/p/main.nv", 1)
+    var model = context.project
+    var scan = model.scanFor(world.cache, 10)
+    world.cache.syntaxOf("/p/geo/extra.nv")
+    world.source.write("/p/geo/extra.nv", "package geo\n\nmethod changed(): integer {\n    return 2\n}\n")
+    world.space.onFilesChangedOnDisk(["/p/geo/extra.nv"])
+    wsCheck("a changed file: its parse is forgotten, the project and the scan are stale", wsSummary(model) + " parsed=" + world.cache.parsed.has("/p/geo/extra.nv") + " scan=" + isNone(model.scan), "key=/p/project.nv valid=false revision=1 parsed=false scan=true")
+    var after = world.open("/p/main.nv", 1)
+    wsCheck("rebuilt with the new text", after.index().functionsNamed("changed").length() + " " + after.index().functionsNamed("extra").length(), "1 0")
+    var revision = after.project.revision
+    world.space.onFilesChangedOnDisk(["/elsewhere/other.nv", "/p/../q/x.nv"])
+    wsCheck("a path outside every project changes nothing", wsSummary(after.project), "key=/p/project.nv valid=true revision=" + revision)
+    world.source.write("/p/geo/created.nv", "package geo\n\nmethod created() {\n}\n")
+    world.space.onFilesChangedOnDisk(["/p/geo/created.nv"])
+    wsCheck("a created file is treated like a changed one", after.project.valid, "false")
+    world.cache.setOverlay("/p/geo/shape.nv", "package geo\n// open buffer\n")
+    world.space.onFilesChangedOnDisk(["/p/geo/shape.nv"])
+    wsCheck("an overlay survives a disk event", world.cache.hasOverlay("/p/geo/shape.nv") + " " + world.cache.textOf("/p/geo/shape.nv").length(), "true 27")
+}
+
+method runProgramCases() {
+    println("== one model per program (V99)")
+    var files = {
+        "/a/project.nv": "project \"a\"\nmain \"main.nv\"\n", "/a/main.nv": "method main() {\n}\n",
+        "/b/project.nv": "project \"b\"\nmain \"main.nv\"\n", "/b/main.nv": "method main() {\n}\n", "/b/sub/deep.nv": "method deep() {\n}\n",
+        "/solo/a.nv": "import @b\nmethod main() {\n}\n", "/solo/b.nv": "method b() {\n}\n", "/solo/c.nv": "method main() {\n}\n"
+    }
+    var world = WsWorld(files)
+    var ctxA = world.open("/a/main.nv", 1)
+    var ctxB = world.open("/b/sub/deep.nv", 1)
+    wsCheck("two manifests, two models", ctxA.project.key() + " " + ctxB.project.key() + " " + (ctxA.project == ctxB.project), "/a/project.nv /b/project.nv false")
+    wsCheck("an unreached file below a manifest joins that project", wsNames(ctxB.project.closure.files), "/b/main.nv, /b/sub/deep.nv")
+    var solo = world.open("/solo/a.nv", 1)
+    var imported = world.open("/solo/b.nv", 1)
+    var third = world.open("/solo/c.nv", 1)
+    wsCheck("without a manifest every file is its own program", solo.project.key() + " " + imported.project.key() + " " + third.project.key(), "/solo/a.nv /solo/b.nv /solo/c.nv")
+    wsCheck("the program of a.nv holds what it imports", wsNames(solo.project.closure.files) + " | " + wsNames(imported.project.closure.files), "/solo/a.nv, /solo/b.nv | /solo/b.nv")
+    wsCheck("models by key", world.space.projects.keys().join(", "), "/a/project.nv, /b/project.nv, /solo/a.nv, /solo/b.nv, /solo/c.nv")
+    var keys = []
+    for (model in world.space.allProjects()) {
+        keys.append(model.key())
+    }
+    wsCheck("allProjects in key order", keys.join(", "), "/a/project.nv, /b/project.nv, /solo/a.nv, /solo/b.nv, /solo/c.nv")
+    world.source.write("/solo/project.nv", "project \"solo\"\nmain \"a.nv\"\n")
+    world.space.onFilesChangedOnDisk(["/solo/project.nv"])
+    wsCheck("a manifest that appears above programs without one drops them", world.space.projects.keys().join(", "), "/a/project.nv, /b/project.nv")
+    wsCheck("they come back under the manifest", world.model("/solo/c.nv").key() + " " + world.model("/solo/a.nv").key(), "/solo/project.nv /solo/project.nv")
+}
+
+method runScratchCases() {
+    println("== scratch buffers")
+    var world = WsWorld(wsSimpleProject())
+    var scratch = Document("untitled:Untitled-1", "novus", 1, "method s() {\n}\n")
+    var context = world.space.contextFor(scratch)
+    wsCheck("a program of its own", "key=[" + context.project.key() + "] file=[" + context.closureFile.filePath + "] origin=" + context.closureFile.origin + " files=" + context.project.closure.files.length() + " symbols=" + context.index().symbolsInFile("").length(), "key=[] file=[] origin=Project files=1 symbols=1")
+    wsCheck("no check entry, no root", "[" + context.project.checkEntry("") + "] [" + context.project.layout.root + "]", "[] []")
+    wsCheck("it is not one of the projects", world.space.allProjects().length() + " " + world.space.projects.has(""), "0 true")
+    var same = world.space.contextFor(scratch)
+    wsCheck("unchanged text: the same closure file", same.closureFile == context.closureFile, "true")
+    var edited = Document("untitled:Untitled-1", "novus", 2, "method s() {\n}\n\nmethod t() {\n}\n")
+    var changed = world.space.contextFor(edited)
+    wsCheck("changed text: built again", (changed.closureFile == context.closureFile) + " " + changed.index().functionsNamed("t").length() + " revision=" + changed.project.revision, "false 1 revision=2")
+    wsCheck("projectFor", (world.space.projectFor("") == context.project) + " " + world.space.projectFor("").key().length(), "true 0")
+    world.space.onDocumentClosed("")
+    wsCheck("closing it removes the model", world.space.projects.has(""), "false")
+}
+
+method runFolderCases() {
+    println("== Workspace.setFolders, stdSourcePath, editorPathOf")
+    var world = WsWorld(wsSimpleProject())
+    world.space.setFolders(["/p/./geo/..", "/nowhere"])
+    wsCheck("folders are normalised and models made for the manifests above them", world.space.folders.join(", ") + " | " + world.space.projects.keys().join(", "), "/p, /nowhere | /p/project.nv")
+    var models = world.space.allProjects()
+    wsCheck("allProjects builds what is stale", models.length() + " " + wsSummary(models[0]), "1 key=/p/project.nv valid=true revision=1")
+    wsCheck("editorPathOf leaves other paths alone", world.space.editorPathOf("/p/main.nv") + " " + world.space.editorPathOf("std:nope"), "/p/main.nv ")
+    var path = world.space.editorPathOf("std:strings")
+    var stdPath = world.space.stdSourcePath("strings")
+    wsCheck("a std key becomes a file the editor can open", (path == stdPath) + " " + path.endsWith("/strings.nv") + " " + (readTextFile(path) == standardLibrary().module("strings").source), "true true true")
+    wsCheck("it lives in a directory named after the std fingerprint", path.contains("/novus-lsp-std-" + standardLibrary().fingerprint() + "/"), "true")
+    wsCheck("a name that is no module", world.space.stdSourcePath("nope") + "|", "|")
+}
+
+method runDeletedManifestCases() {
+    println("== a manifest that is deleted")
+    var world = WsWorld(wsSimpleProject())
+    var context = world.open("/p/main.nv", 1)
+    world.source.erase("/p/project.nv")
+    world.space.onFilesChangedOnDisk(["/p/project.nv"])
+    wsCheck("the model of the manifest is dropped", world.space.projects.length(), "0")
+    var again = world.open("/p/main.nv", 1)
+    wsCheck("the file is its own program now", again.project.key() + " " + wsNames(again.project.closure.files), "/p/main.nv /p/main.nv, /p/geo/extra.nv, /p/geo/shape.nv")
+    wsCheck("the old model object is not reused", again.project == context.project, "false")
+}
+
+method runDependencyManifestCases() {
+    println("== the manifest of a required module")
+    var files = {
+        "/p/project.nv": "project \"p\"\nmain \"main.nv\"\nrequire \"ex.com/lib\"\nreplace \"ex.com/lib\" \"../lib\"\n",
+        "/p/main.nv": "import \"ex.com/lib\"\nmethod main() {\n}\n",
+        "/lib/project.nv": "project \"ex.com/lib\"\nlib \"lib.nv\"\n",
+        "/lib/lib.nv": "method libFn() {\n}\n",
+        "/other/project.nv": "project \"other\"\n"
+    }
+    var world = WsWorld(files)
+    var context = world.open("/p/main.nv", 1)
+    wsCheck("the dependency is part of the program", wsNames(context.project.closure.files) + " | entries=" + context.project.modules.entries.length(), "/p/main.nv, /lib/lib.nv | entries=1")
+    world.space.onFilesChangedOnDisk(["/other/project.nv"])
+    wsCheck("an unrelated manifest changes nothing", context.project.valid, "true")
+    world.space.onFilesChangedOnDisk(["/lib/project.nv"])
+    wsCheck("the manifest of a required module makes the project stale", context.project.valid, "false")
+}

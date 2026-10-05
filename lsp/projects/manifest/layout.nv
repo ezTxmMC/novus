@@ -1,0 +1,70 @@
+package manifest
+
+import base/platform
+
+private final MANIFEST_FILE_NAME = "project.nv"
+private final MANIFEST_MAX_LEVELS = 64
+
+// Which project a file belongs to: the root folder, the manifest (or an empty one), and the entry file.
+define class ProjectLayout {
+    string root
+    string manifestPath
+    ManifestFile manifest
+    string mainFile
+
+    construct(string root, string manifestPath, ManifestFile manifest, string mainFile) {
+        this.root = root
+        this.manifestPath = manifestPath
+        this.manifest = manifest
+        this.mainFile = mainFile
+    }
+
+    method hasManifest(): bool {
+        return this.manifestPath != ""
+    }
+}
+
+// The nearest project.nv from the folder of `startPath` upwards (at most 64 levels, like novusc), else the
+// folder itself is the root and `startPath` the main file. A scratch buffer ("") has no root at all.
+method findProjectLayout(TextSource source, string startPath): ProjectLayout {
+    if (startPath == "") {
+        return ProjectLayout("", "", ManifestFile(""), "")
+    }
+    var start = manifestNormalizePath(startPath)
+    var folder = manifestStartFolder(source, start)
+    var found = manifestFindManifestPath(source, folder)
+    if (found == "") {
+        return ProjectLayout(folder, "", ManifestFile(""), manifestOwnMain(source, start))
+    }
+    var manifest = parseManifestText(found, source.textOf(found))
+    return ProjectLayout(manifestDirectoryOf(found), found, manifest, manifest.mainPath())
+}
+
+method manifestStartFolder(TextSource source, string start): string {
+    if (source.isDirectory(start)) {
+        return start
+    }
+    return manifestDirectoryOf(start)
+}
+
+// Without a manifest a file is its own program, a folder has none.
+method manifestOwnMain(TextSource source, string start): string {
+    if (source.isDirectory(start)) {
+        return ""
+    }
+    return start
+}
+
+method manifestFindManifestPath(TextSource source, string folder): string {
+    var probe = folder
+    var level = 0
+    while (probe != "" && level < MANIFEST_MAX_LEVELS) {
+        var candidate = manifestJoinPath(probe, MANIFEST_FILE_NAME)
+        if (source.exists(candidate) && source.isDirectory(candidate) == false) {
+            return candidate
+        }
+        probe = manifestParentDirectory(probe)
+        level = level + 1
+    }
+    return ""
+}

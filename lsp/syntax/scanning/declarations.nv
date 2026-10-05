@@ -1,0 +1,162 @@
+package scanning
+
+import base/text
+import syntax/lexing
+import syntax/outline
+
+// `var name [: Type] [= value]` and the typed form `Type name = value`, with the local each one declares.
+define class ScanningDeclarations {
+    ScanningWalker walker
+
+    construct(ScanningWalker walker) {
+        this.walker = walker
+    }
+
+    method walkVar() {
+        var nameIndex = this.walker.pos + 1
+        if (this.walker.cursor.isIdent(nameIndex)) {
+            this.finishVar(nameIndex, true)
+            return
+        }
+        if (this.walker.cursor.isKind(nameIndex, TokenKind.Keyword)) {
+            this.walker.report(this.walker.cursor.spanAt(nameIndex), "keyword-as-name", "expected variable name but found keyword " + this.walker.cursor.describeAt(nameIndex))
+            this.finishVar(nameIndex, false)
+            return
+        }
+        this.walker.report(this.walker.cursor.spanAt(nameIndex), "expected-token", "expected variable name but found " + this.walker.cursor.describeAt(nameIndex))
+        this.walker.pos = nameIndex
+    }
+
+    method finishVar(integer nameIndex, bool declare) {
+        this.walker.pos = nameIndex + 1
+        var typeText = this.optionalType()
+        var initializer = this.optionalInitializer()
+        if (declare == false) {
+            return
+        }
+        this.declareAt(nameIndex, typeText, "var", initializer)
+    }
+
+    method declareAt(integer nameIndex, string typeText, string origin, Span initializer) {
+        var walker = this.walker
+        var name = walker.cursor.tokens[nameIndex].text
+        walker.scopes.declare(name, walker.cursor.spanAt(nameIndex), typeText, origin, initializer, walker.cursor.tokens[walker.pos - 1].end)
+    }
+
+    method optionalType(): string {
+        var walker = this.walker
+        walker.types.fusedAssign = false
+        if (walker.cursor.isPunct(walker.pos, ":") == false) {
+            return ""
+        }
+        var typeStart = walker.pos + 1
+        var typeEnd = walker.types.endOf(typeStart)
+        walker.pos = typeEnd
+        if (typeEnd == typeStart) {
+            walker.report(walker.cursor.spanAt(typeStart), "expected-token", "expected a type after ':' but found " + walker.cursor.describeAt(typeStart))
+            return ""
+        }
+        return walker.types.textOf(typeStart, typeEnd)
+    }
+
+    // The initialiser after `=`; a `>=` that closed a generic type already swallowed the `=`.
+    method optionalInitializer(): Span {
+        var walker = this.walker
+        var exprStart = walker.pos + 1
+        if (walker.types.fusedAssign) {
+            exprStart = walker.pos
+        }
+        if (walker.types.fusedAssign == false && walker.cursor.isPunct(walker.pos, "=") == false) {
+            return Span(-1, -1)
+        }
+        var end = walker.expressionAfter(exprStart, "=")
+        walker.pos = end
+        if (end > exprStart) {
+            return Span(walker.cursor.tokens[exprStart].start, walker.cursor.tokens[end - 1].end)
+        }
+        return Span(-1, -1)
+    }
+
+    // Index of the name token when a typed declaration starts at the walker position, else -1 (the compiler's isTypedDecl).
+    method typedDeclarationName(): integer {
+        var cursor = this.walker.cursor
+        var from = this.walker.pos
+        if (cursor.isIdent(from) == false) {
+            return -1
+        }
+        var index = from + 1
+        if (cursor.isPunct(index, "<")) {
+            index = this.afterSingleBrackets(index)
+        }
+        if (cursor.isIdent(index) && cursor.isPunct(index + 1, "=")) {
+            return index
+        }
+        return this.nameAfterShiftType()
+    }
+
+    // Counts only single `<` and `>` until the depth returns to zero, exactly like the compiler.
+    method afterSingleBrackets(integer open): integer {
+        var depth = 0
+        var index = open
+        while (this.walker.cursor.has(index)) {
+            depth = depth + this.singleBracketChange(index)
+            index = index + 1
+            if (depth == 0) {
+                return index
+            }
+        }
+        return index
+    }
+
+    method singleBracketChange(integer index): integer {
+        if (this.walker.cursor.isPunct(index, "<")) {
+            return 1
+        }
+        if (this.walker.cursor.isPunct(index, ">")) {
+            return -1
+        }
+        return 0
+    }
+
+    // `map<string, array<integer>> m = {}`: the compiler rejects it, the editor still sees the declaration.
+    method nameAfterShiftType(): integer {
+        var cursor = this.walker.cursor
+        var from = this.walker.pos
+        if (cursor.isPunct(from + 1, "<") == false) {
+            return -1
+        }
+        var end = ScanningTypes(cursor, []).endOf(from)
+        if (cursor.isIdent(end) && cursor.isPunct(end + 1, "=") && this.shiftBetween(from, end) >= 0) {
+            return end
+        }
+        return -1
+    }
+
+    method shiftBetween(integer from, integer to): integer {
+        var index = from
+        while (index < to) {
+            if (this.walker.cursor.isPunct(index, ">>")) {
+                return index
+            }
+            index = index + 1
+        }
+        return -1
+    }
+
+    method walkTyped(integer nameIndex) {
+        var walker = this.walker
+        var typeText = walker.cursor.textBetween(walker.pos, nameIndex)
+        var shift = this.shiftBetween(walker.pos, nameIndex)
+        if (shift >= 0) {
+            walker.problems.append(ScanningProblem(walker.cursor.spanAt(shift), "generic-shift-token", "the compiler does not close a generic at '>>' in a declaration statement: write 'var name: " + typeText + " = value'", true))
+        }
+        var initStart = nameIndex + 2
+        var end = walker.expressionAfter(initStart, "=")
+        walker.pos = end
+        var initializer = Span(-1, -1)
+        if (end > initStart) {
+            initializer = Span(walker.cursor.tokens[initStart].start, walker.cursor.tokens[end - 1].end)
+        }
+        this.declareAt(nameIndex, typeText, "typed", initializer)
+    }
+}

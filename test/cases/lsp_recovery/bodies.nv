@@ -1,0 +1,38 @@
+package main
+
+method checkMethodBodies() {
+    scenario("body/unclosed-closed-by-a-column-zero-method", "method a() {\n    var x = 1\n\nmethod b() {\n}\n", "method a() / method b()", "unterminated-block@1/e")
+    scenario("body/unclosed-at-the-end-of-the-file", "method a() {\n    var x = 1\n", "method a()", "unterminated-block@1/e")
+    scenario("body/unclosed-inner-block", "method a() {\n    if (x) {\n        var y = 1\n}\n", "method a()", "unterminated-block@1/e")
+    scenario("body/unclosed-closed-by-define", "method a() {\n    var x = 1\ndefine class C {\n}\n", "method a() / define class C", "unterminated-block@1/e")
+    scenario("body/unclosed-closed-by-import", "method a() {\n    var x = 1\nimport json\n", "method a()", "unterminated-block@1/e")
+    scenario("body/unclosed-closed-by-an-annotation", "method a() {\n    var x = 1\n@Note\nmethod b() {\n}\n", "method a() / method b()", "unterminated-block@1/e")
+    scenario("body/member-body-closed-by-the-next-member", "define class C {\n    method a() {\n        var x = 1\n\n    method b() {\n    }\n}\n", "define class C /   method a() /   method b()", "unterminated-block@2/e")
+    scenario("body/method-without-a-body", "method a()\nmethod b() {\n}\n", "method a() / method b()", "expected-token@2/e")
+    scenario("body/braces-in-strings-and-comments-do-not-count", "method a() {\n    var s = \"}\" // }\n    /* } */\n}\nmethod b() {\n}\n", "method a() / method b()", "")
+}
+
+method checkTypeBodies() {
+    scenario("class/unclosed-closed-by-a-column-zero-define", "define class A {\n    integer x\n\ndefine class B {\n}\n", "define class A /   integer x / define class B", "unterminated-class-body@1/e")
+    scenario("class/unclosed-closed-by-a-column-zero-method", "define class A {\n    integer x\nmethod m() {\n}\n", "define class A /   integer x / method m()", "unterminated-class-body@1/e")
+    scenario("class/unclosed-closed-by-a-global", "define class A {\n    integer x\nX = 1\n", "define class A /   integer x / X", "unterminated-class-body@1/e")
+    scenario("class/unclosed-at-the-end", "define class A {\n    integer x", "define class A /   integer x", "unterminated-class-body@1/e")
+    scenario("class/unindented-members-are-not-a-column-zero-hazard", "define class A {\nmethod m() {\n}\ninteger x\n}\nmethod z() {\n}\n", "define class A /   method m() /   integer x / method z()", "")
+    scenario("enum/unclosed", "define enum E {\n    A, B;\n    integer x\n", "define enum E /   A /   B /   integer x", "unterminated-class-body@1/e")
+    scenario("interface/unclosed", "define interface I {\n    f(): integer\n", "define interface I /   abstract method f(): integer", "unterminated-class-body@1/e")
+    scenario("class/missing-open-brace", "define class A based B\nmethod m() {\n}\n", "define class A based B / method m()", "expected-token@2/e")
+    scenario("class/second-base-is-skipped", "define class A based B, C {\n    integer x\n}\n", "define class A based B /   integer x", "expected-token@1/e")
+}
+
+method checkMemberRecovery() {
+    scenario("member/junk-between-members", "define class A {\n    integer x\n    = = =\n    string y\n}\n", "define class A /   integer x /   string y", "expected-token@3/e expected-token@3/e")
+    scenario("member/field-initializer", "define class A {\n    integer x = 3\n    string y\n}\n", "define class A /   integer x /   string y", "expected-token@2/e")
+    scenario("member/type-without-name-before-the-next-member", "define class A {\n    integer\n    string name\n}\n", "define class A /   string name", "expected-token@3/e")
+    scenario("member/duplicate-constructor-keeps-the-last", "define class A {\n    construct() {\n    }\n    construct(integer a) {\n    }\n}\n", "define class A /   construct(integer a)", "duplicate-constructor@2/w")
+    scenario("member/async-inside-a-class", "define class A {\n    async method f() {\n    }\n}\n", "define class A /   method f()", "unexpected-token@2/e")
+    scenario("member/typed-method-is-not-a-method", "define enum E {\n    A;\n    string label() {\n    }\n}\n", "define enum E /   A /   string label", "expected-token@3/e")
+    scenario("member/enum-two-names-is-a-field", "define enum E {\n    A B\n}\n", "define enum E /   A B", "")
+    scenario("member/enum-three-names-is-an-error", "define enum E {\n    A B C\n}\n", "define enum E /   A B", "expected-token@3/e")
+    scenario("member/stray-semicolons", "define class A {\n    ;\n    integer x;\n}\n", "define class A /   integer x", "")
+    scenario("member/annotations-reset-after-each-member", "define class A {\n    @Note\n    integer x\n    integer y\n}\n", "define class A /   integer x /   integer y", "")
+}

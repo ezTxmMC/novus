@@ -1,0 +1,66 @@
+package main
+
+import path
+import "novus/lsp/base/platform"
+import "novus/lsp/base/text"
+import @issues
+import @tally
+
+private final SYNTAX_TOOL_SOURCE_EXTENSIONS = [".nv", ".nvh"]
+private final SYNTAX_TOOL_MAX_DEPTH = 64
+private final SYNTAX_TOOL_CORPUS_KEYS = ["syntax.unexpected", "syntax.known-bad", "syntax.accepted", "syntax.missing", "syntax.files.nv", "syntax.files.nvh", "syntax.files.manifest"]
+
+// Every `.nv`, `.nvh` and `project.nv` file below the root (the walker skips dot directories, build, dist, out and node_modules).
+method syntaxToolCorpusFiles(string root): array<string> {
+    return walkSourceFiles(DiskTextSource(), root, SYNTAX_TOOL_SOURCE_EXTENSIONS, SYNTAX_TOOL_MAX_DEPTH)
+}
+
+// DESIGN 9.5-4 (a): files that are not listed must yield zero own syntax issues (the compiler accepts all of them),
+// files that are listed must yield at least one. Prints the summary counters and returns the exit code.
+method syntaxToolCheckCorpus(string root, string knownBadFile): integer {
+    var knownBad = syntaxToolLoadNames(knownBadFile)
+    var tally = SyntaxToolTally()
+    tally.declare(SYNTAX_TOOL_CORPUS_KEYS)
+    for (file in syntaxToolCorpusFiles(root)) {
+        syntaxToolCheckFile(root, file, knownBad, tally)
+    }
+    syntaxToolCountMissing(root, knownBad, tally)
+    tally.printSummary()
+    return syntaxToolExitCode(tally.valueOf("syntax.unexpected") + tally.valueOf("syntax.accepted") + tally.valueOf("syntax.missing"))
+}
+
+method syntaxToolCheckFile(string root, string file, map<string, bool> knownBad, SyntaxToolTally tally) {
+    var relative = path.relative(root, file)
+    tally.add("syntax.files." + fileKindOf(relative), 1)
+    var issues = syntaxToolIssuesOf(relative, readTextFile(file))
+    if (knownBad.has(relative)) {
+        syntaxToolCheckListed(relative, issues, tally)
+        return
+    }
+    syntaxToolCheckClean(relative, issues, tally)
+}
+
+method syntaxToolCheckClean(string relative, array<SyntaxToolIssue> issues, SyntaxToolTally tally) {
+    for (issue in issues) {
+        println(issue.describe(relative))
+    }
+    tally.add("syntax.unexpected", issues.length())
+}
+
+method syntaxToolCheckListed(string relative, array<SyntaxToolIssue> issues, SyntaxToolTally tally) {
+    tally.add("syntax.known-bad", 1)
+    if (issues.length() > 0) {
+        return
+    }
+    println(relative + ": listed as known bad, but no issue was reported")
+    tally.add("syntax.accepted", 1)
+}
+
+method syntaxToolCountMissing(string root, map<string, bool> knownBad, SyntaxToolTally tally) {
+    for (name in knownBad.keys()) {
+        if (path.isFile(path.join(root, name)) == false) {
+            println(name + ": listed as known bad, but the file does not exist")
+            tally.add("syntax.missing", 1)
+        }
+    }
+}

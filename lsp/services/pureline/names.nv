@@ -1,0 +1,94 @@
+package pureline
+
+import base/model
+import base/text
+import syntax/outline
+
+// The names PL-NAME-001 looks at: locals, parameters (once each, the scanner lists them as locals too) and fields.
+private final PURELINE_PLACEHOLDER_NAMES = { "tmp": true, "obj": true, "thing": true, "data2": true }
+private final PURELINE_COUNTER_NAMES = { "i": true, "j": true, "k": true }
+private final PURELINE_CODE_NAME = "PL-NAME-001"
+private final PURELINE_LOOP_ORIGIN = "loop"
+private final PURELINE_FIRST_DIGIT = 48
+private final PURELINE_LAST_DIGIT = 57
+private final PURELINE_ONE_LETTER = 1
+
+define class PurelineNameCheck {
+    PurelineSettings settings
+    Document document
+    map<string, bool> reported
+    array<Diagnostic> found
+
+    construct(PurelineSettings settings, Document document) {
+        this.settings = settings
+        this.document = document
+        this.reported = {}
+        this.found = []
+    }
+
+    method checkCallable(Decl decl) {
+        for (param in decl.params) {
+            this.consider(param.name, param.nameSpan, "", Span(-1, -1))
+        }
+        for (local in decl.locals) {
+            this.consider(local.name, local.nameSpan, local.origin, local.initializer)
+        }
+    }
+
+    method checkField(Decl decl) {
+        this.consider(decl.name, decl.nameSpan, "", Span(-1, -1))
+    }
+
+    method consider(string name, Span nameSpan, string origin, Span initializer) {
+        var key = "" + nameSpan.start
+        if (this.reported.has(key) || nameSpan.start < 0) {
+            return
+        }
+        this.reported[key] = true
+        if (this.isAllowed(name, origin, initializer)) {
+            return
+        }
+        var kind = this.problemOf(name)
+        if (kind != "") {
+            this.found.append(purelineDiagnostic(nameSpan, Severity.Warning, PURELINE_CODE_NAME, "'" + name + "' is " + kind + ": use a name that says what it holds."))
+        }
+    }
+
+    method problemOf(string name): string {
+        if (PURELINE_PLACEHOLDER_NAMES.has(name)) {
+            return "a placeholder name"
+        }
+        if (name.length() == PURELINE_ONE_LETTER) {
+            return "a one-letter name"
+        }
+        return ""
+    }
+
+    // Names the settings list, and the loop counters i, j and k: a `for` variable or a variable that starts as an integer literal.
+    method isAllowed(string name, string origin, Span initializer): bool {
+        for (allowed in this.settings.allowedShortNames) {
+            if (allowed == name) {
+                return true
+            }
+        }
+        if (PURELINE_COUNTER_NAMES.has(name) == false) {
+            return false
+        }
+        return origin == PURELINE_LOOP_ORIGIN || this.isIntegerLiteral(initializer)
+    }
+
+    method isIntegerLiteral(Span initializer): bool {
+        if (initializer.start < 0 || initializer.end <= initializer.start || initializer.end > this.document.text.length()) {
+            return false
+        }
+        var index = initializer.start
+        while (index < initializer.end) {
+            var code = ord(this.document.text.charAt(index))
+            if (code < PURELINE_FIRST_DIGIT || code > PURELINE_LAST_DIGIT) {
+                return false
+            }
+            index = index + 1
+        }
+        return true
+    }
+}

@@ -1,0 +1,24 @@
+package wiring
+
+import features/actions
+import features/navigation
+import server/edits
+
+private final WIRING_METHOD_PREPARE_RENAME = "textDocument/prepareRename"
+private final WIRING_METHOD_RENAME = "textDocument/rename"
+private final WIRING_METHOD_FORMATTING = "textDocument/formatting"
+private final WIRING_METHOD_RANGE_FORMATTING = "textDocument/rangeFormatting"
+private final WIRING_METHOD_CODE_ACTION = "textDocument/codeAction"
+
+// Rename and prepareRename (registered together, or the client never asks), formatting and range formatting, code actions.
+// The engines share the settings of the session (6.30); the encoder is the one of the server.
+method registerEditHandlers(ServerParts parts) {
+    var router = parts.router
+    var renamer = Renamer(ReferenceFinder())
+    router.registerHandler(WIRING_METHOD_PREPARE_RENAME, PrepareRenameHandler(parts.session, renamer, parts.encoder))
+    router.registerHandler(WIRING_METHOD_RENAME, RenameHandler(parts.session, renamer, parts.encoder, parts.cancellations))
+    router.registerHandler(WIRING_METHOD_FORMATTING, FormattingHandler(parts.session, parts.encoder))
+    router.registerHandler(WIRING_METHOD_RANGE_FORMATTING, RangeFormattingHandler(parts.session, parts.encoder))
+    var engine = ActionEngine(parts.session.settings)
+    router.registerHandler(WIRING_METHOD_CODE_ACTION, CodeActionHandler(parts.session, engine, parts.encoder))
+}

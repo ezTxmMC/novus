@@ -1,0 +1,145 @@
+package main
+
+import "novus/lsp/base/maybe"
+import "novus/lsp/base/model"
+import "novus/lsp/features/candidates"
+import @support
+
+private final CA_MAIN = "/p/main.nv"
+
+method caKind(string kind): CompletionContext {
+    return caContext(kind, "", 14)
+}
+
+method caFind(array<CompletionItem> items, string label): CompletionItem {
+    for (item in items) {
+        if (item.label == label) {
+            return item
+        }
+    }
+    return nothing()
+}
+
+method runKeywordCases() {
+    println("#### LexicalSources.keywordsAndBuiltins")
+    var world = CaWorld(caProject())
+    var context = world.open(CA_MAIN, "package main\n\nmethod main() {\n}\n")
+    for (kind in ["defineKind", "fieldAccessor", "classMember", "topLevel", "type", "member", "importTarget", "basedClause"]) {
+        println(kind + ": " + caLabels(world.lexical.keywordsAndBuiltins(context, caKind(kind))))
+    }
+    var statement = world.lexical.keywordsAndBuiltins(context, caKind("statement"))
+    println("statement: " + statement.length() + " items: " + caLabels(statement))
+    var expression = world.lexical.keywordsAndBuiltins(context, caKind("expression"))
+    println("expression: " + expression.length() + " items: " + caLabels(expression))
+    var builtin = caFind(statement, "readFile")
+    caPrint("a builtin function", [builtin])
+    println("its documentation: " + builtin.documentation)
+    var keyword = caFind(statement, "while")
+    println("a keyword: " + caItemLine(keyword) + " | " + keyword.documentation.substring(0, 30))
+    caPrint("annotations", world.lexical.keywordsAndBuiltins(context, caKind("annotation")))
+    caPrint("the keywords of an nvh header", world.lexical.keywordsAndBuiltins(context, caKind("nvhHeader")))
+    var manifest = caKind("manifest")
+    manifest.detail = "directive"
+    println("manifest directive: " + caLabels(world.lexical.keywordsAndBuiltins(context, manifest)))
+    manifest.detail = "requireModule"
+    println("manifest module string: " + world.lexical.keywordsAndBuiltins(context, manifest).length())
+}
+
+method runSnippetCases() {
+    println("#### LexicalSources.snippetItems")
+    var world = CaWorld(caProject())
+    var context = world.open(CA_MAIN, "package main\n\nimport geo\n\nmethod main() {\n}\n")
+    for (kind in ["statement", "expression", "classMember", "topLevel", "nvhHeader", "nvhOutside", "type", "member", "importTarget", "annotation"]) {
+        println(kind + ": " + world.lexical.snippetItems(context, caKind(kind)).length() + " snippets")
+    }
+    var manifest = caKind("manifest")
+    manifest.detail = "directive"
+    println("manifest directive: " + caLabels(world.lexical.snippetItems(context, manifest)))
+    manifest.detail = "replaceDir"
+    println("manifest value: " + world.lexical.snippetItems(context, manifest).length())
+    var statement = world.lexical.snippetItems(context, caKind("statement"))
+    for (label in ["sout", "println", "soutv", "fori", "foreach", "jsonparse", "ifelse"]) {
+        caPrint("statement snippet " + label, [caFind(statement, label)])
+    }
+    var topLevel = world.lexical.snippetItems(context, caKind("topLevel"))
+    for (label in ["psvm", "maine", "class"]) {
+        caPrint("top-level snippet " + label, [caFind(topLevel, label)])
+    }
+    var sout = caFind(statement, "sout")
+    println("snippet fields: isSnippet=" + sout.isSnippet + " filterText=" + sout.filterText + " bucket=" + sout.sortText + " detail=" + sout.detail)
+    world.settings.snippetIndent = "\t"
+    println("indent of a tab: " + caEscape(caFind(world.lexical.snippetItems(context, caKind("statement")), "foreach").insertText))
+    world.settings.snippetIndent = "  "
+    println("indent of two spaces: " + caEscape(caFind(world.lexical.snippetItems(context, caKind("statement")), "foreach").insertText))
+}
+
+method runSnippetImportCases() {
+    println("#### the std imports of a snippet")
+    var world = CaWorld(caProject())
+    var without = world.open(CA_MAIN, "package main\n\nmethod main() {\n}\n")
+    caPrint("no imports yet", [caFind(world.lexical.snippetItems(without, caKind("statement")), "httpget")])
+    var sorted = world.open(CA_MAIN, "package main\n\nimport os\nimport strings\n\nimport geo\n\nmethod main() {\n}\n")
+    caPrint("another std import in the group", [caFind(world.lexical.snippetItems(sorted, caKind("statement")), "httpget")])
+    var complete = world.open(CA_MAIN, "package main\n\nimport http\nimport json\n\nmethod main() {\n}\n")
+    caPrint("the import is there", [caFind(world.lexical.snippetItems(complete, caKind("statement")), "httpjson")])
+    caPrint("a snippet that needs no import", [caFind(world.lexical.snippetItems(complete, caKind("statement")), "sout")])
+}
+
+method runTypeAndFieldCases() {
+    println("#### typeNames and fieldNames")
+    var world = CaWorld(caProject())
+    var context = world.open(CA_MAIN, "package main\n\nimport geo\n\nmethod main() {\n}\n")
+    caPrint("type slot", world.lexical.typeNames(context, caKind("type")))
+    println("class member field type: " + caLabels(world.lexical.typeNames(context, caKind("classMember"))))
+    println("a statement has no type names: " + world.lexical.typeNames(context, caKind("statement")).length())
+    var keys = caKind("fieldName")
+    keys.typeName = "Shape"
+    keys.detail = "object|"
+    caPrint("fields of a class", world.lexical.fieldNames(context, keys))
+    keys.detail = "object|name"
+    caPrint("without the field that is set", world.lexical.fieldNames(context, keys))
+    keys.detail = "object|name,size"
+    caPrint("everything set", world.lexical.fieldNames(context, keys))
+    keys.typeName = "Nothing"
+    keys.detail = "object|"
+    caPrint("an unknown class", world.lexical.fieldNames(context, keys))
+    keys.typeName = "Deprecated"
+    keys.detail = "annotation|"
+    caPrint("a built-in annotation", world.lexical.fieldNames(context, keys))
+    keys.detail = "annotation|since"
+    caPrint("a built-in annotation with one argument set", world.lexical.fieldNames(context, keys))
+    keys.typeName = "Warning"
+    caPrint("an annotation without arguments", world.lexical.fieldNames(context, keys))
+    keys.typeName = "Audited"
+    caPrint("an annotation of the project", world.lexical.fieldNames(context, keys))
+    caPrint("another kind", world.lexical.fieldNames(context, caKind("statement")))
+}
+
+method runDuplicateLabelCases() {
+    println("#### no label appears twice (7.7)")
+    var world = CaWorld(caProject())
+    var context = world.open(CA_MAIN, "package main\n\nmethod main() {\n}\n")
+    for (kind in ["statement", "expression", "classMember", "topLevel", "nvhHeader", "nvhOutside"]) {
+        var items = world.lexical.keywordsAndBuiltins(context, caKind(kind))
+        for (item in world.lexical.snippetItems(context, caKind(kind))) {
+            items.append(item)
+        }
+        var ranked = rankItems(items, "")
+        var seen = {}
+        var duplicates = []
+        for (item in ranked) {
+            if (seen.has(item.label)) {
+                duplicates.append(item.label)
+            }
+            seen[item.label] = true
+        }
+        println(kind + ": " + items.length() + " offered, " + ranked.length() + " ranked, duplicates [" + duplicates.join(" ") + "]")
+    }
+    var manifest = caKind("manifest")
+    manifest.detail = "directive"
+    var manifestItems = world.lexical.keywordsAndBuiltins(context, manifest)
+    for (item in world.lexical.snippetItems(context, manifest)) {
+        manifestItems.append(item)
+    }
+    println("manifest: " + manifestItems.length() + " offered, " + rankItems(manifestItems, "").length() + " ranked")
+}

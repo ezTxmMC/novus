@@ -1,0 +1,125 @@
+package main
+
+import strings
+import "novus/lsp/base/text"
+import "novus/lsp/syntax/lexing"
+
+private final PROGRAM_TEMPLATE = "method f(string s): integer {\n    var t = \"a @{s}\" /* c */ + 0x1F\n    return 1.5 // end\n}\n"
+private final TRUNCATION_VARIANTS = 14
+
+// Every byte is covered by a token or a comment, or is whitespace; items are ascending and never overlap.
+method isLossless(string source, LexResult lexed): bool {
+    var covered = []
+    var offset = 0
+    while (offset < source.length()) {
+        covered.append(false)
+        offset = offset + 1
+    }
+    var items = []
+    for (token in lexed.tokens) {
+        items.append(token)
+    }
+    for (comment in lexed.comments) {
+        items.append(comment)
+    }
+    for (item in items) {
+        if (item.end > source.length() || item.start > item.end) {
+            return false
+        }
+        var at = item.start
+        while (at < item.end) {
+            if (covered[at]) {
+                return false
+            }
+            covered[at] = true
+            at = at + 1
+        }
+    }
+    return uncoveredIsBlank(source, covered)
+}
+
+method uncoveredIsBlank(string source, array<bool> covered): bool {
+    var offset = 0
+    while (offset < source.length()) {
+        if (covered[offset] == false && ord(source.charAt(offset)) > 32) {
+            return false
+        }
+        offset = offset + 1
+    }
+    return true
+}
+
+method isAscending(LexResult lexed): bool {
+    var previous = 0
+    for (token in lexed.tokens) {
+        if (token.start < previous || token.line < 0 || token.column < 0) {
+            return false
+        }
+        previous = token.end
+    }
+    return lexed.tokens[lexed.tokens.length() - 1].isEnd()
+}
+
+method checkTruncations() {
+    var program = dollar(PROGRAM_TEMPLATE)
+    var variant = 0
+    while (variant <= TRUNCATION_VARIANTS) {
+        var cut = variant * program.length() / TRUNCATION_VARIANTS
+        var prefix = program.substring(0, cut)
+        var lexed = lexText(prefix)
+        expectTrue("truncation/" + cut + "-lossless-and-ascending", isLossless(prefix, lexed) && isAscending(lexed))
+        variant = variant + 1
+    }
+}
+
+method checkSpecificTruncations() {
+    var program = dollar(PROGRAM_TEMPLATE)
+    var inString = program.substring(0, program.indexOf("\"a ", 0) + 4)
+    expectEqual("truncation/inside-a-string", "unterminated-string@42-46/error", renderIssues(lexText(inString)))
+    var inComment = program.substring(0, program.indexOf("/* c", 0) + 4)
+    expectEqual("truncation/inside-a-block-comment", "unterminated-comment@51-53/warning", renderIssues(lexText(inComment)))
+    var inHex = program.substring(0, program.indexOf("0x1F", 0) + 2)
+    expectEqual("truncation/inside-a-hex-literal", "N:0 I:x", lex(inHex).split(" P:+ ")[1])
+    var full = lexText(program)
+    expectEqual("truncation/whole-program-has-no-issues", "", renderIssues(full))
+    expectEqual("truncation/whole-program-comments", "/* c */ // end", full.comments[0].text + " " + full.comments[1].text)
+}
+
+method checkLargeAndOdd() {
+    var hashes = strings.repeat("#", 5000)
+    var lexed = lexText(hashes)
+    expectInt("large/every-unknown-byte-is-a-token", 5001, lexed.tokens.length())
+    expectTrue("large/issue-count-is-capped", lexed.issues.length() <= 1000 && lexed.issues.length() > 0)
+    var binary = ""
+    var byte = 1
+    while (byte < 256) {
+        binary = binary + chr(byte)
+        byte = byte + 1
+    }
+    var odd = lexText(binary)
+    expectTrue("odd/every-byte-value-is-survived", isLossless(binary, odd) && isAscending(odd))
+    expectEqual("odd/empty-text-has-only-eof", "E", renderEnd(lexText("")))
+    expectInt("odd/deeply-nested-brackets", 40001, lexText(strings.repeat("(", 40000)).tokens.length())
+}
+
+// The string builtins stop at a NUL byte (strstr, strcmp); the lexer must not, whatever the text holds.
+// Offsets are compared instead of texts, because `==` on strings stops at a NUL byte too.
+method checkNulBytes() {
+    var nul = chr(0)
+    var inString = lexText("\"a" + nul + "b\" x")
+    expectEqual("nul/string-closes-after-it", "3 0-5 6-7 true", inString.tokens.length() + " " + inString.tokens[0].start + "-" + inString.tokens[0].end + " " + inString.tokens[1].start + "-" + inString.tokens[1].end + " " + inString.tokens[0].terminated)
+    var inComment = lexText("a // c" + nul + "d\nx")
+    expectEqual("nul/line-comment-ends-at-the-newline", "2-8 1:0", inComment.comments[0].start + "-" + inComment.comments[0].end + " " + inComment.tokens[1].line + ":" + inComment.tokens[1].column)
+    var inBlock = lexText("a /* x" + nul + " */ y")
+    expectEqual("nul/block-comment-closes-after-it", "2-10 3", inBlock.comments[0].start + "-" + inBlock.comments[0].end + " " + inBlock.tokens.length())
+    expectEqual("nul/lines-are-counted-after-it", "1:0*", renderPosition(lexText("a" + nul + "\nb").tokens[1]))
+    var broken = lexText("\"a" + nul + "b\nx")
+    expectEqual("nul/unterminated-string-stops-at-its-line", "0-4 1:0 unterminated-string", broken.tokens[0].start + "-" + broken.tokens[0].end + " " + broken.tokens[1].line + ":" + broken.tokens[1].column + " " + broken.issues[0].code)
+}
+
+method renderEnd(LexResult lexed): string {
+    if (lexed.tokens.length() == 1 && lexed.tokens[0].isEnd() && lexed.comments.length() == 0 && lexed.issues.length() == 0) {
+        return "E"
+    }
+    return "other"
+}

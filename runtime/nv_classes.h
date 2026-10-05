@@ -223,6 +223,9 @@ static inline nv nv_coerce_kind(nv v, signed char kind, const char *type) {
     if (kind == 1 && nv_type_of(v) != NV_FLOAT) {
         return v;
     }
+    if (kind == 2 && nv_type_of(v) != NV_INT) {
+        return v;
+    }
     if (kind == 3 && nv_type_of(v) == NV_STR) {
         return v;
     }
@@ -247,6 +250,18 @@ static void nv_class_layout(NvClass *c) {
         c->flatTypes[i] = type;
         c->flatKinds[i] = type ? nv_type_kind(type) : 0;
     }
+}
+
+/* What is stored into field slot `at` of a class by an assignment or an object
+ * literal: a field declared integer or float converts the value the way its
+ * setter and the constructor do, so that it holds a number of its kind. Other
+ * fields keep the value as given. */
+static nv nv_coerce_numeric_field(NvClass *c, int at, nv v) {
+    nv_class_layout(c);
+    if (c->flatKinds[at] == 1 || c->flatKinds[at] == 2) {
+        return nv_coerce_kind(v, c->flatKinds[at], c->flatTypes[at]);
+    }
+    return v;
 }
 
 /* Value, object header and field slots live in one heap block. */
@@ -399,7 +414,7 @@ static nv nv_new_object_fields_cached(NvClass **cache, const char *className, in
         if (at < 0) {
             nv_error("no field '%s' on %s", name, obj->o->cls->name);
         }
-        nv_fields(obj->o)[at] = val;
+        nv_fields(obj->o)[at] = nv_coerce_numeric_field(obj->o->cls, at, val);
     }
     va_end(ap);
     return obj;
@@ -417,7 +432,7 @@ static nv nv_new_object_fields(const char *className, int n, ...) {
         if (at < 0) {
             nv_error("no field '%s' on %s", name, obj->o->cls->name);
         }
-        nv_fields(obj->o)[at] = val;
+        nv_fields(obj->o)[at] = nv_coerce_numeric_field(obj->o->cls, at, val);
     }
     va_end(ap);
     return obj;

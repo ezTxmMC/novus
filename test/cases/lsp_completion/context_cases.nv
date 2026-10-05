@@ -1,0 +1,85 @@
+package main
+
+import @support
+
+private final CX_MAIN = "/p/main.nv"
+private final CX_MANIFEST = "/p/project.nv"
+
+method runSuppressedCases() {
+    println("#### suppressed")
+    var world = CxWorld(cxProject())
+    cxShow("line comment", world, CX_MAIN, "package main\n\n// the radius is <|>\nmethod f() {\n}\n", 5)
+    cxShow("end of a line comment", world, CX_MAIN, "package main\n\nmethod f() {\n    var a = 1 // note<|>\n}\n", 5)
+    cxShow("block comment", world, CX_MAIN, "package main\n\n/* old code: <|> */\nmethod f() {\n}\n", 5)
+    cxShow("string", world, CX_MAIN, "package main\n\nmethod f() {\n    var s = \"abc<|>\"\n}\n", 5)
+    cxShow("after the closing quote", world, CX_MAIN, "package main\n\nmethod f() {\n    var s = \"abc\"<|>\n}\n", 5)
+    cxShow("after a block comment", world, CX_MAIN, "package main\n\nmethod f() {\n    /* c */ <|>\n}\n", 3)
+    var dollar = "$"
+    cxShow("interpolation of a string", world, CX_MAIN, "package main\n\nmethod f(integer count) {\n    var s = \"n = " + dollar + "{co<|>}\"\n}\n", 3)
+}
+
+method runManifestCases() {
+    println("#### manifest")
+    var world = CxWorld(cxProject())
+    cxShow("directive keyword", world, CX_MANIFEST, "project \"p\"\nmain \"main.nv\"\nre<|>\n", 6)
+    cxShow("directive on an empty line", world, CX_MANIFEST, "project \"p\"\n<|>\n", 4)
+    cxShow("directive after a value is nothing", world, CX_MANIFEST, "project \"p\" <|>\n", 4)
+    cxShow("require module of the manifest", world, CX_MANIFEST, "project \"p\"\nrequire \"ex.com/li<|>\"\n", 4)
+    cxShow("replace module", world, CX_MANIFEST, "project \"p\"\nrequire \"ex.com/lib\"\nreplace \"<|>\" \"lib\"\n", 4)
+    cxShow("replace directory", world, CX_MANIFEST, "project \"p\"\nrequire \"ex.com/lib\"\nreplace \"ex.com/lib\" \"<|>\"\n", 8)
+    cxShow("replace directory below a folder", world, CX_MANIFEST, "project \"p\"\nrequire \"ex.com/lib\"\nreplace \"ex.com/lib\" \"lib/s<|>\"\n", 8)
+    cxShow("require version is nothing", world, CX_MANIFEST, "project \"p\"\nrequire \"ex.com/lib\" \"<|>\"\n", 4)
+}
+
+method runImportCases() {
+    println("#### import")
+    var world = CxWorld(cxProject())
+    cxShow("importTarget after the keyword", world, CX_MAIN, "package main\n\nimport <|>\n", 4)
+    cxShow("importTarget with a prefix", world, CX_MAIN, "package main\n\nimport ge<|>\n", 4)
+    cxShow("importTarget std module", world, CX_MAIN, "package main\n\nimport str<|>\n", 4)
+    cxShow("importFile after the at sign", world, CX_MAIN, "package main\n\nimport @<|>\n", 8)
+    cxShow("importFile below a folder", world, CX_MAIN, "package main\n\nimport @geo/<|>\n", 8)
+    cxShow("importFile with a prefix", world, CX_MAIN, "package main\n\nimport @geo/sh<|>\n", 8)
+    cxShow("importNested", world, CX_MAIN, "package main\n\nimport geo/<|>\n", 8)
+    cxShow("importNested with a prefix", world, CX_MAIN, "package main\n\nimport lib/s<|>\n", 8)
+    cxShow("importModule", world, CX_MAIN, "package main\n\nimport \"<|>\"\n", 8)
+    cxShow("importModule below a module", world, CX_MAIN, "package main\n\nimport \"ex.com/lib/<|>\"\n", 8)
+    cxShow("importModule with a segment", world, CX_MAIN, "package main\n\nimport \"ex.com/lib/s<|>b\"\n", 8)
+    cxShow("an import inside a body is nothing", world, CX_MAIN, "package main\n\nmethod f() {\n    import <|>\n}\n", 4)
+}
+
+method runAnnotationCases() {
+    println("#### annotation and fieldName")
+    var world = CxWorld(cxProject())
+    cxShow("annotation", world, CX_MAIN, "package main\n\n@<|>\nmethod old() {\n}\n", 8)
+    cxShow("annotation with a prefix", world, CX_MAIN, "package main\n\n@Dep<|>\nmethod old() {\n}\n", 8)
+    cxShow("annotation in a class", world, CX_MAIN, "package main\n\ndefine class A {\n    @<|>\n    method f() {\n    }\n}\n", 4)
+    cxShow("annotation arguments", world, CX_MAIN, "package main\n\n@Deprecated{<|>}\nmethod old() {\n}\n", 8)
+    cxShow("annotation argument after a comma", world, CX_MAIN, "package main\n\n@Deprecated{text=\"x\", <|>}\nmethod old() {\n}\n", 8)
+    cxShow("object literal keys", world, CX_MAIN, "package main\n\nimport geo\n\nmethod main() {\n    var s = Shape{<|>}\n}\n", 8)
+    cxShow("object literal keys without the set ones", world, CX_MAIN, "package main\n\nimport geo\n\nmethod main() {\n    var s = Shape{name=\"a\", si<|>}\n}\n", 8)
+    cxShow("a value after the equals sign is no key", world, CX_MAIN, "package main\n\nimport geo\n\nmethod main() {\n    var s = Shape{name=<|>}\n}\n", 3)
+    cxShow("the brace of a body is no object literal", world, CX_MAIN, "package main\n\ndefine class A {\n    integer x\n}\n\nmethod f() {\n    <|>\n}\n", 3)
+}
+
+method runDeclarationCases() {
+    println("#### define, based, accessor, type")
+    var world = CxWorld(cxProject())
+    cxShow("define kind", world, CX_MAIN, "package main\n\ndefine <|>\n", 8)
+    cxShow("define kind with a prefix", world, CX_MAIN, "package main\n\ndefine ab<|>\n", 8)
+    cxShow("based", world, CX_MAIN, "package main\n\nimport geo\n\ndefine class Circle based <|> {\n}\n", 12)
+    cxShow("based with a prefix", world, CX_MAIN, "package main\n\nimport geo\n\ndefine class Circle based Sh<|> {\n}\n", 12)
+    cxShow("accessor", world, CX_MAIN, "package main\n\ndefine class A {\n    integer x: <|>\n}\n", 8)
+    cxShow("accessor after get", world, CX_MAIN, "package main\n\ndefine class A {\n    integer x: get, <|>\n}\n", 8)
+    cxShow("accessor of a generic field", world, CX_MAIN, "package main\n\ndefine class A {\n    array<string> items: <|>\n}\n", 8)
+    cxShow("type of a variable", world, CX_MAIN, "package main\n\nimport geo\n\nmethod f() {\n    var c: <|>\n}\n", 12)
+    cxShow("type of a variable with a prefix", world, CX_MAIN, "package main\n\nimport geo\n\nmethod f() {\n    var c: Sh<|>\n}\n", 12)
+    cxShow("return type", world, CX_MAIN, "package main\n\nmethod f(): str<|> {\n}\n", 12)
+    cxShow("return type of a method without parentheses", world, CX_MAIN, "package main\n\nmethod f: int<|> {\n}\n", 12)
+    cxShow("parameter type", world, CX_MAIN, "package main\n\nmethod f(<|>) {\n}\n", 4)
+    cxShow("second parameter type", world, CX_MAIN, "package main\n\nmethod f(integer a, flo<|>) {\n}\n", 4)
+    cxShow("parameter type of a constructor", world, CX_MAIN, "package main\n\ndefine class A {\n    construct(<|>) {\n    }\n}\n", 3)
+    cxShow("parameter type of a method without the word method", world, CX_MAIN, "package main\n\ndefine interface Named {\n    label(<|>): string\n}\n", 3)
+    cxShow("generic argument", world, CX_MAIN, "package main\n\nmethod f(array<<|>> items) {\n}\n", 4)
+    cxShow("second generic argument", world, CX_MAIN, "package main\n\nmethod f(map<string, <|>> items) {\n}\n", 4)
+}

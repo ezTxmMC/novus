@@ -1,0 +1,9 @@
+package main
+
+define enum Kind {
+    LEFT,
+    RIGHT
+}
+
+final FIRST_NAME = "first"
+final SECOND_NAME = "second-" + Kind.RIGHT

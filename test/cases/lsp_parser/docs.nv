@@ -1,0 +1,39 @@
+package main
+
+import "novus/lsp/syntax/outline"
+import "novus/lsp/syntax/parsing"
+
+private final DOC_SOURCE = "// License header\n\n// Not attached: a blank line follows\n\nmethod a() {\n}\n\n// attached line 1\n// attached line 2\nmethod b() {\n}\n\n/// triple slash doc\nmethod c() {\n}\n\n/**\n * Block doc\n * second line\n */\nmethod d() {\n}\n\n/* simple block */\nmethod e() {\n}\n\nmethod f() native \"x\"   // trailing for f\nmethod g() native \"y\"\nmethod h() {   // trailing after the brace\n    var x = 1   // inside the body\n}\n\n// the owner\ndefine enum Color {\n    // red doc\n    Red,   // red trailing\n    Green, // green trailing\n    Blue;\n\n    // field doc\n    string label\n}\n\n// between\n\n// directly above\n@Note\nmethod i() {\n}\n"
+
+method docsOf(string source, ParseOptions options): string {
+    var file = parseSourceText("d.nv", source, options)
+    var parts = []
+    for (decl in file.decls) {
+        parts.append(decl.name + "=" + visible(decl.doc))
+        for (member in decl.members) {
+            parts.append(decl.name + "." + member.name + "=" + visible(member.doc))
+        }
+    }
+    return parts.join(" | ")
+}
+
+method checkDocs() {
+    var expected = "a= | b=attached line 1\\nattached line 2 | c=triple slash doc | d=Block doc\\nsecond line | e=simple block | f=trailing for f | g= | h=trailing after the brace | Color=the owner | Color.Red=red doc | Color.Green=green trailing | Color.Blue= | Color.label=field doc | i=directly above"
+    expectEqual("docs/leading-trailing-and-members", expected, docsOf(DOC_SOURCE, editorParseOptions()))
+    expectEqual("docs/index-options-keep-docs", expected, docsOf(DOC_SOURCE, indexParseOptions()))
+    var without = docsOf(DOC_SOURCE, ParseOptions(true, true, false))
+    expectTrue("docs/switched-off", without.indexOf("=a", 0) < 0 && without.replace("= | ", "").length() > 0 && without.indexOf("attached", 0) < 0)
+    var crlf = DOC_SOURCE.replace("\n", "\r\n")
+    expectEqual("docs/crlf", expected, docsOf(crlf, editorParseOptions()))
+}
+
+method checkDocEdgeCases() {
+    expectEqual("docs/comment-above-the-annotation-line", "m=doc", docsOf("// doc\n@A{x=\"1\"}\nmethod m() {\n}\n", editorParseOptions()))
+    expectEqual("docs/comment-above-modifiers", "X=limit", docsOf("// limit\nprivate final X = 1\n", editorParseOptions()))
+    expectEqual("docs/indentation-after-the-first-space-is-kept", "m= indented", docsOf("//  indented\nmethod m() {\n}\n", editorParseOptions()))
+    expectEqual("docs/block-gutter-and-indentation", "m=first\\n  code", docsOf("/**\n * first\n *   code\n */\nmethod m() {\n}\n", editorParseOptions()))
+    expectEqual("docs/no-comment-no-doc", "m=", docsOf("method m() {\n}\n", editorParseOptions()))
+    expectEqual("docs/comment-only-file", "", docsOf("// nothing here\n", editorParseOptions()))
+    expectEqual("docs/doc-without-text", "m=", docsOf("//\nmethod m() {\n}\n", editorParseOptions()))
+    expectEqual("docs/block-comment-same-line-as-the-declaration", "m=", docsOf("/* x */ method m() {\n}\n", editorParseOptions()))
+}

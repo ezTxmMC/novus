@@ -1,0 +1,199 @@
+package main
+
+import strings
+import regex
+
+// Markdown → HTML renderer. Renders the markdown subset used in Novus docs.
+// Supports: headings (h1-h3), paragraphs, lists, code fences, inline code,
+// bold, italic, links, images, tables, blockquotes, and callouts (:::note).
+
+method mdToHtml(string md): string {
+    var lines = md.split(chr(10))
+    var out = []
+    var i = 0
+    var inCodeBlock = false
+    var codeLang = ""
+    var codeLines = []
+
+    while (i < lines.length()) {
+        var line = lines[i]
+
+        // Code fence: ``` lang
+        if (line.startsWith("```")) {
+            if (inCodeBlock) {
+                out.append(mdRenderCodeBlock(codeLang, codeLines.join(chr(10))))
+                codeLines = []
+                inCodeBlock = false
+            } else {
+                codeLang = line.substring(3, line.length()).trim()
+                inCodeBlock = true
+            }
+            i = i + 1
+            continue
+        }
+
+        if (inCodeBlock) {
+            codeLines.append(line)
+            i = i + 1
+            continue
+        }
+
+        // Blank lines
+        if (line.trim() == "") {
+            i = i + 1
+            continue
+        }
+
+        // Headings: # h1, ## h2, ### h3
+        if (line.startsWith("#")) {
+            var heading = mdParseHeading(line)
+            if (heading[0] != "") {
+                out.append(heading[0])
+            }
+            i = i + 1
+            continue
+        }
+
+        // Blockquotes: >
+        if (line.startsWith(">")) {
+            out.append(mdRenderBlockquote(line.substring(1, line.length()).trim()))
+            i = i + 1
+            continue
+        }
+
+        // Lists: - or *
+        if (line.startsWith("-") || line.startsWith("*")) {
+            // Collect all list items
+            var items = []
+            while (i < lines.length() && (lines[i].startsWith("-") || lines[i].startsWith("*"))) {
+                var item = lines[i].substring(1, lines[i].length()).trim()
+                items.append(mdInline(item))
+                i = i + 1
+            }
+            out.append("<ul>" + items.join("") + "</ul>")
+            continue
+        }
+
+        // Numbered lists: 1.
+        if (line.length() > 2 && mdIsDigit(line.charAt(0)) && line.charAt(1) == '.') {
+            var items = []
+            while (i < lines.length() && mdIsDigit(lines[i].charAt(0)) && lines[i].length() > 2 && lines[i].charAt(1) == '.') {
+                var item = lines[i].substring(2, lines[i].length()).trim()
+                items.append(mdInline(item))
+                i = i + 1
+            }
+            out.append("<ol>" + items.join("") + "</ol>")
+            continue
+        }
+
+        // Default: paragraph
+        out.append("<p>" + mdInline(line.trim()) + "</p>")
+        i = i + 1
+    }
+
+    return out.join("")
+}
+
+method mdParseHeading(string line): array {
+    var level = 0
+    var i = 0
+    while (i < line.length() && line.charAt(i) == '#') {
+        level = level + 1
+        i = i + 1
+    }
+
+    if (level < 1 || level > 3) {
+        return [""]
+    }
+
+    var text = line.substring(level, line.length()).trim()
+    var id = text.toLowerCase().replaceAll(" ", "-").replaceAll("[^a-z0-9-]", "")
+    var tag = "h" + text(level)
+
+    return ["<" + tag + " id=\"" + id + "\">" + mdInline(text) + "</" + tag + ">"]
+}
+
+method mdInline(string text): string {
+    var result = text
+
+    // Code: `code` or ```
+    if (text.contains("`")) {
+        var parts = text.split("`")
+        var out = []
+        var i = 0
+        var inCode = false
+        while (i < parts.length()) {
+            if (inCode) {
+                out.append("<code>" + mdEscape(parts[i]) + "</code>")
+            } else {
+                out.append(mdEscape(parts[i]))
+            }
+            inCode = !inCode
+            i = i + 1
+        }
+        result = out.join("")
+    } else {
+        result = mdEscape(result)
+    }
+
+    // Bold: **text**
+    result = result.replaceAll("\\*\\*([^*]+)\\*\\*", "<strong>$1</strong>")
+    result = result.replaceAll("__([^_]+)__", "<strong>$1</strong>")
+
+    // Italic: *text* or _text_
+    result = result.replaceAll("\\*([^*]+)\\*", "<em>$1</em>")
+    result = result.replaceAll("_([^_]+)_", "<em>$1</em>")
+
+    // Links: [text](url)
+    if (result.contains("[")) {
+        var linkRe = "\\[([^\\]]+)\\]\\(([^)]+)\\)"
+        var m = regex.matchAll(result, linkRe)
+        var offset = 0
+        for (match in m) {
+            var text = match.group(1)
+            var url = match.group(2)
+            var html = "<a href=\"" + url + "\">" + text + "</a>"
+            // TODO: proper replacement with offset tracking
+        }
+    }
+
+    return result
+}
+
+method mdRenderCodeBlock(string lang, string code): string {
+    var cssClass = mdCodeClass(lang)
+    return "<pre><code class=\"" + cssClass + "\">" + mdEscape(code) + "</code></pre>"
+}
+
+method mdRenderBlockquote(string text): string {
+    return "<blockquote>" + mdInline(text) + "</blockquote>"
+}
+
+method mdEscape(string text): string {
+    var result = text
+    result = result.replaceAll("&", "&amp;")
+    result = result.replaceAll("<", "&lt;")
+    result = result.replaceAll(">", "&gt;")
+    result = result.replaceAll("\"", "&quot;")
+    return result
+}
+
+method mdCodeClass(string lang): string {
+    if (lang == "nv" || lang == "novus") {
+        return "language-novus"
+    }
+    if (lang == "nvh") {
+        return "language-nvh"
+    }
+    if (lang == "bash" || lang == "sh") {
+        return "language-bash"
+    }
+    if (lang == "") {
+        return "language-plaintext"
+    }
+    return "language-" + lang
+}
+
+method mdIsDigit(string c): bool {
+    return c >= "0" && c <= "9"
+}

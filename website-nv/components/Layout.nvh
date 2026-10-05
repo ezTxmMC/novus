@@ -1,0 +1,80 @@
+<?nv
+prop string title = "Novus"
+prop string description = "The Novus language"
+prop string section = ""
+?>
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{title} · Novus</title>
+<meta name="description" content="{description}">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+</head>
+<body>
+<div class="container">
+  <header class="header">
+    <div class="header-inner">
+      <a href="/" class="logo">Novus</a>
+      <nav class="nav">
+        <a href="/docs" class:active={section == "docs"}>Docs</a>
+        <a href="/examples" class:active={section == "examples"}>Examples</a>
+        <a href="/stdlib" class:active={section == "stdlib"}>Stdlib</a>
+        <a href="/benchmarks" class:active={section == "benchmarks"}>Benchmarks</a>
+      </nav>
+    </div>
+  </header>
+  <main class="main">
+    <slot />
+  </main>
+  <footer class="footer">
+    <p>© 2026 Novus. <a href="https://github.com/ezTxmMC/novus">GitHub</a></p>
+  </footer>
+</div>
+</body>
+</html>
+
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html { color-scheme: dark; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; font-size: 16px; line-height: 1.6; background: #0e0a1a; color: #e9d5ff; }
+a { color: #c084fc; text-decoration: none; }
+a:hover { color: #d8b4fe; }
+a.active { color: #f5d0fe; font-weight: 600; }
+
+.container { max-width: 1280px; margin: 0 auto; display: flex; flex-direction: column; min-height: 100vh; }
+.header { background: rgba(15, 10, 26, 0.8); border-bottom: 1px solid rgba(168, 85, 247, 0.1); backdrop-filter: blur(10px); position: sticky; top: 0; z-index: 100; }
+.header-inner { padding: 1rem 2rem; display: flex; justify-content: space-between; align-items: center; }
+.logo { font-size: 1.5rem; font-weight: 700; color: #d8b4fe; font-family: "JetBrains Mono", monospace; }
+
+.nav { display: flex; gap: 2rem; }
+.nav a { font-size: 0.95rem; transition: color 150ms ease; }
+
+.main { flex: 1; padding: 2rem; }
+.footer { background: rgba(15, 10, 26, 0.5); border-top: 1px solid rgba(168, 85, 247, 0.1); padding: 2rem; text-align: center; font-size: 0.9rem; color: #a78bfa; }
+
+h1 { font-size: 2.5rem; font-weight: 700; margin-bottom: 1rem; color: #f5d0fe; }
+h2 { font-size: 1.8rem; font-weight: 600; margin-top: 2rem; margin-bottom: 0.75rem; color: #d8b4fe; }
+h3 { font-size: 1.3rem; font-weight: 600; margin-top: 1.5rem; margin-bottom: 0.5rem; color: #d8b4fe; }
+
+p { margin-bottom: 1rem; }
+ul, ol { margin-left: 2rem; margin-bottom: 1rem; }
+li { margin-bottom: 0.5rem; }
+
+code { background: rgba(168, 85, 247, 0.1); padding: 0.2rem 0.4rem; border-radius: 3px; font-family: "JetBrains Mono", monospace; color: #e9d5ff; }
+pre { background: #1a1025; padding: 1rem; border-radius: 6px; margin: 1rem 0; overflow-x: auto; border: 1px solid rgba(168, 85, 247, 0.2); }
+pre code { background: none; padding: 0; }
+
+blockquote { border-left: 4px solid #a855f7; padding-left: 1rem; margin: 1rem 0; color: #c084fc; font-style: italic; }
+
+table { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+th, td { padding: 0.75rem; text-align: left; border-bottom: 1px solid rgba(168, 85, 247, 0.1); }
+th { background: rgba(168, 85, 247, 0.05); color: #d8b4fe; font-weight: 600; }
+
+@media (max-width: 768px) {
+  .nav { flex-direction: column; gap: 0.5rem; }
+  h1 { font-size: 1.8rem; }
+  .main { padding: 1rem; }
+}
+</style>

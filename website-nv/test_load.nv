@@ -1,0 +1,18 @@
+package main
+
+import os
+
+method main {
+    var path = "/docs/introduction"
+    var slug = path
+    if (slug.startsWith("/docs/")) {
+        slug = slug.substring(6, slug.length())
+    }
+    var file = "content/" + slug + ".md"
+    println "File: " + file
+    if (os.isFile(file)) {
+        println "Found!"
+    } else {
+        println "Not found"
+    }
+}

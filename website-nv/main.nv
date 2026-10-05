@@ -83,11 +83,15 @@ method navIndex(string path): integer {
 }
 
 method loadContent(string path): string {
-    var file = "content" + path + ".md"
-    if (os.isDir(file)) {
-        return ""
+    var slug = path
+    if (slug.startsWith("/docs/")) {
+        slug = slug.substring(6, slug.length())
     }
-    return os.readFile(file)
+    var file = "content/" + slug + ".md"
+    if (os.isFile(file)) {
+        return os.readFile(file)
+    }
+    return ""
 }
 
 // Simplified markdown renderer (stub for quick test)

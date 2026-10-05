@@ -1,181 +1,228 @@
 package main
 
-import strings
-import regex
-
-// Markdown → HTML renderer. Renders the markdown subset used in Novus docs.
-// Supports: headings (h1-h3), paragraphs, lists, code fences, inline code,
-// bold, italic, links, images, tables, blockquotes, and callouts (:::note).
+// Markdown → HTML converter for docs.
+// Handles: headings, paragraphs, code blocks, inline code/bold/italic, links, lists.
 
 method mdToHtml(string md): string {
     var lines = md.split(chr(10))
-    var out = []
+    var result = []
     var i = 0
-    var inCodeBlock = false
+    var inCode = false
     var codeLang = ""
     var codeLines = []
 
     while (i < lines.length()) {
         var line = lines[i]
 
-        // Code fence: ``` lang
+        // Code fence
         if (line.startsWith("```")) {
-            if (inCodeBlock) {
-                out.append(mdRenderCodeBlock(codeLang, codeLines.join(chr(10))))
+            if (inCode) {
+                result.append(mdCodeBlock(codeLang, codeLines))
                 codeLines = []
-                inCodeBlock = false
+                inCode = false
+                codeLang = ""
             } else {
-                codeLang = line.substring(3, line.length()).trim()
-                inCodeBlock = true
+                inCode = true
+                codeLang = line.substring(3, line.length())
             }
             i = i + 1
             continue
         }
 
-        if (inCodeBlock) {
+        if (inCode) {
             codeLines.append(line)
             i = i + 1
             continue
         }
 
-        // Blank lines
+        // Blank line
         if (line.trim() == "") {
             i = i + 1
             continue
         }
 
-        // Headings: # h1, ## h2, ### h3
-        if (line.startsWith("#")) {
-            var heading = mdParseHeading(line)
-            if (heading[0] != "") {
-                out.append(heading[0])
-            }
+        // Heading h1/h2/h3
+        if (line.startsWith("# ")) {
+            result.append(mdHeading(line, 1))
+            i = i + 1
+            continue
+        }
+        if (line.startsWith("## ")) {
+            result.append(mdHeading(line, 2))
+            i = i + 1
+            continue
+        }
+        if (line.startsWith("### ")) {
+            result.append(mdHeading(line, 3))
             i = i + 1
             continue
         }
 
-        // Blockquotes: >
-        if (line.startsWith(">")) {
-            out.append(mdRenderBlockquote(line.substring(1, line.length()).trim()))
-            i = i + 1
-            continue
-        }
-
-        // Lists: - or *
-        if (line.startsWith("-") || line.startsWith("*")) {
-            // Collect all list items
+        // List: - or *
+        if (line.startsWith("- ") || line.startsWith("* ")) {
             var items = []
-            while (i < lines.length() && (lines[i].startsWith("-") || lines[i].startsWith("*"))) {
-                var item = lines[i].substring(1, lines[i].length()).trim()
+            while (i < lines.length() && (lines[i].startsWith("- ") || lines[i].startsWith("* "))) {
+                var item = lines[i].substring(2, lines[i].length())
                 items.append(mdInline(item))
                 i = i + 1
             }
-            out.append("<ul>" + items.join("") + "</ul>")
-            continue
-        }
-
-        // Numbered lists: 1.
-        if (line.length() > 2 && mdIsDigit(line.charAt(0)) && line.charAt(1) == '.') {
-            var items = []
-            while (i < lines.length() && mdIsDigit(lines[i].charAt(0)) && lines[i].length() > 2 && lines[i].charAt(1) == '.') {
-                var item = lines[i].substring(2, lines[i].length()).trim()
-                items.append(mdInline(item))
-                i = i + 1
+            result.append("<ul>")
+            for (item in items) {
+                result.append("<li>" + item + "</li>")
             }
-            out.append("<ol>" + items.join("") + "</ol>")
+            result.append("</ul>")
             continue
         }
 
-        // Default: paragraph
-        out.append("<p>" + mdInline(line.trim()) + "</p>")
+        // Paragraph
+        result.append("<p>" + mdInline(line) + "</p>")
         i = i + 1
     }
 
-    return out.join("")
+    return result.join("")
 }
 
-method mdParseHeading(string line): array {
-    var level = 0
-    var i = 0
-    while (i < line.length() && line.charAt(i) == '#') {
-        level = level + 1
-        i = i + 1
+method mdHeading(string line, integer level): string {
+    var prefix = ""
+    var j = 0
+    while (j < level) {
+        prefix = prefix + "#"
+        j = j + 1
     }
-
-    if (level < 1 || level > 3) {
-        return [""]
-    }
-
-    var text = line.substring(level, line.length()).trim()
-    var id = text.toLowerCase().replaceAll(" ", "-").replaceAll("[^a-z0-9-]", "")
-    var tag = "h" + text(level)
-
-    return ["<" + tag + " id=\"" + id + "\">" + mdInline(text) + "</" + tag + ">"]
+    var text = line.substring(level + 1, line.length())
+    var id = mdSlug(text)
+    var tag = "h" + toString(level)
+    return "<" + tag + " id=\"" + id + "\">" + mdInline(text) + "</" + tag + ">"
 }
 
 method mdInline(string text): string {
     var result = text
 
-    // Code: `code` or ```
-    if (text.contains("`")) {
-        var parts = text.split("`")
-        var out = []
-        var i = 0
-        var inCode = false
-        while (i < parts.length()) {
-            if (inCode) {
-                out.append("<code>" + mdEscape(parts[i]) + "</code>")
-            } else {
-                out.append(mdEscape(parts[i]))
-            }
-            inCode = !inCode
-            i = i + 1
-        }
-        result = out.join("")
-    } else {
-        result = mdEscape(result)
-    }
-
-    // Bold: **text**
-    result = result.replaceAll("\\*\\*([^*]+)\\*\\*", "<strong>$1</strong>")
-    result = result.replaceAll("__([^_]+)__", "<strong>$1</strong>")
-
-    // Italic: *text* or _text_
-    result = result.replaceAll("\\*([^*]+)\\*", "<em>$1</em>")
-    result = result.replaceAll("_([^_]+)_", "<em>$1</em>")
+    // Escape HTML
+    result = mdEscape(result)
 
     // Links: [text](url)
+    // (simplified: no fancy regex, just basic support)
     if (result.contains("[")) {
-        var linkRe = "\\[([^\\]]+)\\]\\(([^)]+)\\)"
-        var m = regex.matchAll(result, linkRe)
-        var offset = 0
-        for (match in m) {
-            var text = match.group(1)
-            var url = match.group(2)
-            var html = "<a href=\"" + url + "\">" + text + "</a>"
-            // TODO: proper replacement with offset tracking
-        }
+        result = mdRenderLinks(result)
     }
 
+    // Code: `code`
+    if (result.contains("<code>") == false && result.contains("`")) {
+        result = mdRenderInlineCode(result)
+    }
+
+    // Bold: **text** or __text__
+    result = mdRenderBold(result)
+
+    // Italic: *text* or _text_
+    result = mdRenderItalic(result)
+
     return result
 }
 
-method mdRenderCodeBlock(string lang, string code): string {
-    var cssClass = mdCodeClass(lang)
-    return "<pre><code class=\"" + cssClass + "\">" + mdEscape(code) + "</code></pre>"
-}
-
-method mdRenderBlockquote(string text): string {
-    return "<blockquote>" + mdInline(text) + "</blockquote>"
-}
-
-method mdEscape(string text): string {
+method mdRenderLinks(string text): string {
+    // Simple link parser [text](url)
     var result = text
-    result = result.replaceAll("&", "&amp;")
-    result = result.replaceAll("<", "&lt;")
-    result = result.replaceAll(">", "&gt;")
-    result = result.replaceAll("\"", "&quot;")
+    var start = 0
+    while (start < result.length()) {
+        var idx = mdIndexOf(result, "[", start)
+        if (idx < 0) {
+            break
+        }
+        var endBracket = mdIndexOf(result, "]", idx)
+        if (endBracket < 0) {
+            break
+        }
+        if (endBracket + 1 >= result.length() || result.charAt(endBracket + 1) != "(") {
+            start = endBracket + 1
+            continue
+        }
+        var endParen = mdIndexOf(result, ")", endBracket + 2)
+        if (endParen < 0) {
+            break
+        }
+        var linkText = result.substring(idx + 1, endBracket)
+        var url = result.substring(endBracket + 2, endParen)
+        var link = "<a href=\"" + url + "\">" + linkText + "</a>"
+        result = result.substring(0, idx) + link + result.substring(endParen + 1, result.length())
+        start = idx + link.length()
+    }
     return result
+}
+
+method mdRenderInlineCode(string text): string {
+    var parts = text.split("`")
+    var result = ""
+    var i = 0
+    var inCode = false
+    while (i < parts.length()) {
+        if (inCode) {
+            result = result + "<code>" + parts[i] + "</code>"
+        } else {
+            result = result + parts[i]
+        }
+        inCode = !inCode
+        i = i + 1
+    }
+    return result
+}
+
+method mdRenderBold(string text): string {
+    // ** and __
+    var result = text
+    var i = 0
+    while (i < result.length() - 3) {
+        if ((result.charAt(i) == "*" && result.charAt(i + 1) == "*") ||
+            (result.charAt(i) == "_" && result.charAt(i + 1) == "_")) {
+            var marker = result.charAt(i)
+            var endIdx = i + 2
+            while (endIdx < result.length() - 1) {
+                if (result.charAt(endIdx) == marker && result.charAt(endIdx + 1) == marker) {
+                    var inner = result.substring(i + 2, endIdx)
+                    var bold = "<strong>" + inner + "</strong>"
+                    result = result.substring(0, i) + bold + result.substring(endIdx + 2, result.length())
+                    i = i + bold.length()
+                    break
+                }
+                endIdx = endIdx + 1
+            }
+        }
+        i = i + 1
+    }
+    return result
+}
+
+method mdRenderItalic(string text): string {
+    // *text* and _text_
+    var result = text
+    var i = 0
+    while (i < result.length() - 1) {
+        var marker = result.charAt(i)
+        if ((marker == "*" || marker == "_") && result.charAt(i - 1) != marker && result.charAt(i + 1) != marker) {
+            var endIdx = i + 1
+            while (endIdx < result.length()) {
+                if (result.charAt(endIdx) == marker && result.charAt(endIdx - 1) != marker) {
+                    var inner = result.substring(i + 1, endIdx)
+                    if (inner.contains(marker) == false) {
+                        var italic = "<em>" + inner + "</em>"
+                        result = result.substring(0, i) + italic + result.substring(endIdx + 1, result.length())
+                        i = i + italic.length()
+                        break
+                    }
+                }
+                endIdx = endIdx + 1
+            }
+        }
+        i = i + 1
+    }
+    return result
+}
+
+method mdCodeBlock(string lang, array lines): string {
+    var css = mdCodeClass(lang)
+    var code = lines.join(chr(10))
+    return "<pre><code class=\"" + css + "\">" + mdEscape(code) + "</code></pre>"
 }
 
 method mdCodeClass(string lang): string {
@@ -188,12 +235,112 @@ method mdCodeClass(string lang): string {
     if (lang == "bash" || lang == "sh") {
         return "language-bash"
     }
-    if (lang == "") {
-        return "language-plaintext"
-    }
     return "language-" + lang
 }
 
-method mdIsDigit(string c): bool {
-    return c >= "0" && c <= "9"
+method mdEscape(string text): string {
+    var result = text
+    result = mdReplace(result, "&", "&amp;")
+    result = mdReplace(result, "<", "&lt;")
+    result = mdReplace(result, ">", "&gt;")
+    result = mdReplace(result, "\"", "&quot;")
+    return result
+}
+
+method mdSlug(string text): string {
+    var result = text
+    result = mdReplace(result, " ", "-")
+    var lower = ""
+    var i = 0
+    while (i < result.length()) {
+        var c = result.charAt(i)
+        if ((c >= "a" && c <= "z") || (c >= "0" && c <= "9") || c == "-") {
+            lower = lower + c
+        } else if (c >= "A" && c <= "Z") {
+            lower = lower + mdLower(c)
+        }
+        i = i + 1
+    }
+    return lower
+}
+
+method mdLower(string c): string {
+    if (c == "A") { return "a" }
+    if (c == "B") { return "b" }
+    if (c == "C") { return "c" }
+    if (c == "D") { return "d" }
+    if (c == "E") { return "e" }
+    if (c == "F") { return "f" }
+    if (c == "G") { return "g" }
+    if (c == "H") { return "h" }
+    if (c == "I") { return "i" }
+    if (c == "J") { return "j" }
+    if (c == "K") { return "k" }
+    if (c == "L") { return "l" }
+    if (c == "M") { return "m" }
+    if (c == "N") { return "n" }
+    if (c == "O") { return "o" }
+    if (c == "P") { return "p" }
+    if (c == "Q") { return "q" }
+    if (c == "R") { return "r" }
+    if (c == "S") { return "s" }
+    if (c == "T") { return "t" }
+    if (c == "U") { return "u" }
+    if (c == "V") { return "v" }
+    if (c == "W") { return "w" }
+    if (c == "X") { return "x" }
+    if (c == "Y") { return "y" }
+    if (c == "Z") { return "z" }
+    return c
+}
+
+method mdReplace(string text, string from, string to): string {
+    var result = ""
+    var i = 0
+    while (i < text.length()) {
+        var match = true
+        var j = 0
+        while (j < from.length() && i + j < text.length()) {
+            if (text.charAt(i + j) != from.charAt(j)) {
+                match = false
+                break
+            }
+            j = j + 1
+        }
+        if (match && j == from.length()) {
+            result = result + to
+            i = i + from.length()
+        } else {
+            result = result + text.charAt(i)
+            i = i + 1
+        }
+    }
+    return result
+}
+
+method mdIndexOf(string text, string sub, integer start): integer {
+    var i = start
+    while (i < text.length() - sub.length() + 1) {
+        var match = true
+        var j = 0
+        while (j < sub.length()) {
+            if (text.charAt(i + j) != sub.charAt(j)) {
+                match = false
+                break
+            }
+            j = j + 1
+        }
+        if (match) {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+method toString(integer n): string {
+    if (n == 1) { return "1" }
+    if (n == 2) { return "2" }
+    if (n == 3) { return "3" }
+    return ""
 }

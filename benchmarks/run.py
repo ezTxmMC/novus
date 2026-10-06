@@ -1,22 +1,4 @@
 #!/usr/bin/env python3
-"""
-Runs every benchmark in every language and writes results.json.
-
-Each workload is implemented once per language in <language>/<workload>.<ext>.
-All implementations must print exactly the same output - the runner refuses
-to record a result otherwise, which keeps the comparison honest.
-
-Timing is wall clock including process start (that is what a user waits for),
-memory is the peak RSS of the child measured through wait4. Every program runs
-REPEATS times and the best run counts.
-
-  python3 run.py                 # everything
-  python3 run.py --only primes   # one workload
-  python3 run.py --langs novus,rust
-  python3 run.py --previous alpha5=/path/to/old/novusc
-                                 # an older novusc as one more column, for
-                                 # comparing releases on the same machine
-"""
 import argparse
 import json
 import os

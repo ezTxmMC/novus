@@ -1,5 +1,29 @@
 # Novus Language
 
+<!--toc:start-->
+- [Novus Language](#novus-language)
+  - [Quick start](#quick-start)
+  - [Using novusc](#using-novusc)
+    - [Build latency: the cache of `run`](#build-latency-the-cache-of-run)
+  - [Projects and dependencies](#projects-and-dependencies)
+  - [Packages and imports](#packages-and-imports)
+  - [Language](#language)
+    - [Evaluation order](#evaluation-order)
+    - [Numbers](#numbers)
+    - [Typed code](#typed-code)
+  - [Concurrency](#concurrency)
+  - [Web components (.nvh)](#web-components-nvh)
+  - [Standard library](#standard-library)
+  - [Architecture](#architecture)
+  - [Self-hosting and hacking on the compiler](#self-hosting-and-hacking-on-the-compiler)
+  - [Repository statistics](#repository-statistics)
+  - [Benchmarks](#benchmarks)
+  - [Documentation site](#documentation-site)
+  - [Examples](#examples)
+  - [Tests](#tests)
+  - [Editor support](#editor-support)
+<!--toc:end-->
+
 Novus is a self-hosting programming language. Its compiler, `novusc`, is
 written in Novus, compiles Novus to portable C, and compiles itself -
 byte-identically (bootstrap fixpoint). There is no other implementation
@@ -776,16 +800,6 @@ cannot stall the suite (guard: `timeout`, `gtimeout` or perl; the runner warns
 when none exists). A case without `<name>.stdin` reads an empty stdin. An
 optional `<name>.needs_mb` skips a case on a machine known to have less free
 memory (MiB).
-
-`tools/difftyped.py REFERENCE NEW` is a differential test of the typed code
-generation: it writes random programs full of integer and float arithmetic
-(typed locals, parameters and results, class fields, `math`, mixed and
-ill-typed operands) and runs each through two `novusc` binaries, the one
-before a change (`git show <commit>:bootstrap/novusc.c`, built with `cc`) and
-the one after; output and exit codes must agree. Differences that are the
-documented rules of [Numbers](#numbers) are kept out of the programs. Run it
-with `NOVUS_CC=gcc` and with `NOVUS_CC=clang`: they order operands and fuse
-floating point operations differently, and each finds what the other hides.
 
 ## Editor support
 

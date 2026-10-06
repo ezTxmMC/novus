@@ -1,22 +1,3 @@
-/*
- * novus_rt.h - the C runtime embedded into every program that novusc emits.
- *
- * Values are dynamically typed (NvVal): integers, floats, bools, strings,
- * arrays, maps, class instances and enum constants all flow through the
- * same variables. Integers up to 62 bits are encoded in the pointer itself
- * (no allocation); everything else lives in a garbage collected heap
- * (see nv_memory.h) that hands memory back to the system as objects die.
- *
- * The runtime is one translation unit split into parts, one per subsystem,
- * included below in dependency order. `novusc` pastes them into every
- * generated C file in that same order (tools/embed.nv inlines the quoted
- * includes), so a program stays a single self-contained C file; with
- * `novusc build --no-runtime` the generated file includes this header
- * instead and the parts are picked up from this directory.
- *
- * Portable C11 (anonymous unions): builds with gcc, clang, zig cc and
- * mingw on 64-bit Linux, macOS and Windows.
- */
 #ifndef NOVUS_RT_H
 #define NOVUS_RT_H
 

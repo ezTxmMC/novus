@@ -6,150 +6,150 @@ import thread
 private final NAME = "Syntaxprogramm"
 
 method main {
-  println "Starting programm ${NAME}"
+    println "Starting programm ${NAME}"
 }
 
 method main(array<str> args) {
-  println "Starting programm ${NAME} with args: ${args}"
-  var tom = Person{
-    name="Tom H.",
-    age=18,
-    friends=[]
-  }
-  var fabi = Person{
-    name="Fabi K.",
-    age=21,
-    friends=[]
-  }
-  var jason = Person{
-    name="Jason E.",
-    age=19,
-    friends=[]
-  }
-  tom.friends().append(fabi, jason)
-  fabi.friends().append(tom)
-  jason.friends().append(tom)
-  var personObject = json.parse(tom)
-  var peoplePath = path.join(path.absolute, "people")
-  json.save(personObject, peoplePath, "person.json")
+    println "Starting programm ${NAME} with args: ${args}"
+    var person1 = Person{
+        name="Person 1",
+        age=23,
+        friends=[]
+    }
+    var person2 = Person{
+        name="Person 2",
+        age=32,
+        friends=[]
+    }
+    var person3 = Person{
+        name="Person 3",
+        age=26,
+        friends=[]
+    }
+    person1.friends().append(person2, person3)
+    person2.friends().append(person1)
+    person3.friends().append(person1)
+    var personObject = json.parse(person1)
+    var peoplePath = path.join(path.absolute, "people")
+    json.save(personObject, peoplePath, "person.json")
 }
 
 var total = 0
 
 async method load(string name): string {
-  return "contents of ${name}"
+    return "contents of ${name}"
 }
 
 method addOne(integer n): integer {
-  return n + 1
+    return n + 1
 }
 
 method concurrent(): integer {
-  var lock = thread.mutex()
-  var work = thread.channel(0)
+    var lock = thread.mutex()
+    var work = thread.channel(0)
 
-  var native = thread addOne(1)
-  var green = virtual addOne(2)
-  var text = await load("notes.txt")
-  println text
+    var native = thread addOne(1)
+    var green = virtual addOne(2)
+    var text = await load("notes.txt")
+    println text
 
-  sync {
-    total = total + 1
-  }
-  sync (lock) {
-    total = total + 1
-  }
+    sync {
+        total = total + 1
+    }
+    sync (lock) {
+        total = total + 1
+    }
 
-  var many = [virtual addOne(3), virtual addOne(4)]
-  for (part in thread.joinAll(many)) {
-    total = total + part
-  }
+    var many = [virtual addOne(3), virtual addOne(4)]
+    for (part in thread.joinAll(many)) {
+        total = total + part
+    }
 
-  thread.send(work, total)
-  var back = thread.recv(work)
-  if (thread.received()) {
-    thread.close(work)
-  }
-  thread.sleep(1)
-  return await native + await green + back
+    thread.send(work, total)
+    var back = thread.recv(work)
+    if (thread.received()) {
+        thread.close(work)
+    }
+    thread.sleep(1)
+    return await native + await green + back
 }
 
 define class Person based IPerson {
-  private final string name: get
-  private final integer age: get, set
-  private final array<Person> friends: get, set
+    private final string name: get
+    private final integer age: get, set
+    private final array<Person> friends: get, set
 
-  construct(string name, integer age, array<Person> friends) {
-    this.name = name
-    this.age = age
-    this.friends = friends
-  }
+    construct(string name, integer age, array<Person> friends) {
+        this.name = name
+        this.age = age
+        this.friends = friends
+    }
 
-  @Interface
-  sendPacket() {
-  }
+    @Interface
+    sendPacket() {
+    }
 }
 
 define enum Gender {
-  MALE("männlich"),
-  FEMALE("weiblich"),
-  NONE_BINARY("non binär");
+    MALE("männlich"),
+    FEMALE("weiblich"),
+    NONE_BINARY("non binär");
 
-  private final str text: get
+    private final str text: get
 
-  private construct(str text) {
-    this.text = text;
-  }
+    private construct(str text) {
+        this.text = text;
+    }
 }
 
 define interface IPerson {
-  sendPacket()
+    sendPacket()
 }
 
 define abstract Shopping {
-  private final array<Item> items: get, set
+    private final array<Item> items: get, set
 
-  abstract method buy(): bool
+    abstract method buy(): bool
 }
 
 define class WeekShopping(array<Item> items) based Shopping {
-  private final array<Item> items
-  private final double sum
+    private final array<Item> items
+    private final double sum
 
-  @Deprecated{
-    text="This method is signed as removal and will removed in a later version. Please use WeekShopping#collect(items) to prevent unexpected errors!",
-    since="0.3.5"
-  }
-  method collect(Item item) {
-    items.append(item)
-  }
-
-  method collect(array<Item> items) {
-    items.append(items)
-  }
-
-  @Abstract
-  method buy(): bool {
-    var itemObjects = []
-    for (item in items) {
-      sum + item.price()
-      itemObjects.append(json.parse(item))
+    @Deprecated{
+        text="This method is signed as removal and will removed in a later version. Please use WeekShopping#collect(items) to prevent unexpected errors!",
+        since="0.3.5"
     }
-    http.post("127.0.0.1/buy", {
-      "items": itemObjects,
-      "sum": sum
-    })
-  }
+    method collect(Item item) {
+        items.append(item)
+    }
+
+    method collect(array<Item> items) {
+        items.append(items)
+    }
+
+    @Abstract
+    method buy(): bool {
+        var itemObjects = []
+        for (item in items) {
+            sum + item.price()
+            itemObjects.append(json.parse(item))
+        }
+        http.post("127.0.0.1/buy", {
+            "items": itemObjects,
+            "sum": sum
+        })
+    }
 }
 
 define class Item(string name, doub price, image icon) {
-  private final string name: get
-  private final doub price: get, set
-  private final image icon: get, set
+    private final string name: get
+    private final doub price: get, set
+    private final image icon: get, set
 }
 
 define annotation Deprecated {
-  @Warning
-  text(): string
-  since(): string
+    @Warning
+    text(): string
+    since(): string
 }

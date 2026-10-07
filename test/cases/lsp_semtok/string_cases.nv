@@ -24,3 +24,22 @@ method runStringCases() {
     var world = StWorld(stProject(source))
     stShow("interpolations", source, world.spans("/p/main.nv", source))
 }
+
+// The C of a block is no Novus code and gets no tokens; its `$name` is classified like a name in the code.
+method runCBlockCases() {
+    println("== C blocks")
+    var dollar = "$"
+    var source = stLines([
+        "define class Counter {",
+        "    integer total",
+        "",
+        "    method bump(integer by) {",
+        "        var local = 1",
+        "        c { int x = 1; " + dollar + "total = nv_int(nv_ival(" + dollar + "local) + " + dollar + dollar + " + " + dollar + "by); }",
+        "        println local",
+        "    }",
+        "}"
+    ])
+    var world = StWorld(stProject(source))
+    stShow("variables of a C block", source, world.spans("/p/main.nv", source))
+}

@@ -36,8 +36,8 @@ for needed in packages.txt contract_names.txt; do
         exit 2
     fi
 done
-STD_MODULES="arrays base64 bits bytes cli config crypto csv fmt hash http io json log maps math net os path properties random strings test thread time toml unicode web yaml zlib"
-COMPILER_PACKAGES="ast codegen driver lexer loader nvh parser project runtime std"
+STD_MODULES="project arrays base64 bits bytes cli config crypto csv fmt hash http io json log maps math net os path properties random strings test thread time toml unicode web yaml zlib"
+COMPILER_PACKAGES="ast codegen driver lexer loader nvh parser runtime std"
 failures=0
 
 fail() {

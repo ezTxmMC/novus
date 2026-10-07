@@ -5,6 +5,7 @@
   "fileTypes": ["nv"],
   "patterns": [
     { "include": "#comments" },
+    { "include": "#c-block" },
     { "include": "#strings" },
     { "include": "#package" },
     { "include": "#import" },
@@ -18,6 +19,7 @@
     { "include": "#var-declaration" },
     { "include": "#return-type" },
     { "include": "#accessors" },
+    { "include": "#cascade" },
     { "include": "#keywords" },
     { "include": "#types" },
     { "include": "#numbers" },
@@ -32,6 +34,35 @@
     { "include": "#punctuation" }
   ],
   "repository": {
+    "c-block": {
+      "comment": "c { ... }: raw C, with $name for a Novus variable",
+      "begin": "(?<!\\bmethod )(?<!\\bclass )(?<!\\bconstruct )(?<!\\.)(?<!@)\\b(c)\\s*(\\{)",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.c-block.novus" },
+        "2": { "name": "punctuation.section.block.begin.novus" }
+      },
+      "end": "\\}",
+      "endCaptures": { "0": { "name": "punctuation.section.block.end.novus" } },
+      "contentName": "meta.embedded.block.c",
+      "patterns": [
+        { "include": "#c-block-braces" },
+        { "include": "#c-block-variable" },
+        { "include": "source.c" }
+      ]
+    },
+    "c-block-braces": {
+      "begin": "\\{",
+      "end": "\\}",
+      "patterns": [
+        { "include": "#c-block-braces" },
+        { "include": "#c-block-variable" },
+        { "include": "source.c" }
+      ]
+    },
+    "c-block-variable": {
+      "match": "\\$\\$|\\$[A-Za-z_][A-Za-z0-9_]*",
+      "name": "variable.other.readwrite.novus"
+    },
     "comments": {
       "patterns": [
         {
@@ -379,6 +410,26 @@
     "object": {
       "match": "\\b([A-Za-z_]\\w*)(?=\\s*\\.\\s*[A-Za-z_])",
       "captures": { "1": { "name": "variable.other.object.novus" } }
+    },
+    "cascade": {
+      "comment": "`receiver..a()..b = 1`: every section runs against the receiver (before the single `.` accessor so `..` is never two accessors)",
+      "patterns": [
+        {
+          "match": "(\\.\\.)\\s*([A-Za-z_]\\w*)(?=\\s*\\()",
+          "captures": {
+            "1": { "name": "keyword.operator.cascade.novus" },
+            "2": { "name": "entity.name.function.member.novus" }
+          }
+        },
+        {
+          "match": "(\\.\\.)\\s*([A-Za-z_]\\w*)",
+          "captures": {
+            "1": { "name": "keyword.operator.cascade.novus" },
+            "2": { "name": "variable.other.property.novus" }
+          }
+        },
+        { "match": "\\.\\.", "name": "keyword.operator.cascade.novus" }
+      ]
     },
     "member-access": {
       "patterns": [

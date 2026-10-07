@@ -46,3 +46,25 @@ method checkUnterminatedStrings() {
     expectEqual("unterminated-string/later-quote-closes-a-multi-line-string", "S:\"a\\nb\"=a\\nb", lex("\"a\nb\""))
     expectEqual("unterminated-string/no-issue-when-closed-later", "", renderIssues(lexText("\"a\nb\"")))
 }
+
+method checkCBlocks() {
+    var block = lexText("a c { x } b")
+    expectEqual("cblock/is-kept-aside-like-a-comment", "I:a I:b", renderTokens(block))
+    expectEqual("cblock/text-and-span", "c { x }@2-9/0:2", renderComments(block))
+    expectTrue("cblock/is-recognised", lexingIsCBlock(block.comments[0]))
+    expectTrue("cblock/a-comment-is-none", lexingIsCBlock(lexText("/* c */").comments[0]) == false)
+    expectEqual("cblock/no-space-needed-before-the-brace", "I:a", lex("a c{ x }"))
+    expectEqual("cblock/braces-in-strings-chars-and-comments", "I:a I:b", lex("a c { \"}\" '}' /* } */ // }\n if (1) { } } b"))
+    expectEqual("cblock/lines-are-counted", "2:2", renderPosition(lexText("c {\n a\n} b").tokens[0]))
+    expectEqual("cblock/method-named-c", "K:method I:c P:{ P:}", lex("method c { }"))
+    expectEqual("cblock/class-named-c", "I:define I:class I:c P:{ P:}", lex("define class c { }"))
+    expectEqual("cblock/member-named-c", "I:x P:. I:c P:{ P:}", lex("x.c { }"))
+    expectEqual("cblock/longer-words-are-words", "I:cc P:{ P:} I:c2 P:{ P:}", lex("cc { } c2 { }"))
+    expectEqual("cblock/c-alone-is-a-word", "I:c P:+ N:1", lex("c + 1"))
+    var names = lexText("c { $x = $$ + $y1; $ $9 }")
+    expectEqual("cblock/dollar-names-are-islands", "[5,6) [15,17)", renderSpans(names.comments[0].interpolations))
+    expectEqual("cblock/a-dollar-sign-and-a-digit-are-no-names", "", renderSpans(lexText("c { $$a $ $1 }").comments[0].interpolations))
+    var open = lexText("a c { if (1) {")
+    expectEqual("cblock/unterminated-runs-to-the-end", "c { if (1) {@2-14/0:2", renderComments(open))
+    expectEqual("cblock/unterminated-is-an-error-at-the-opener", "unterminated-cblock@2-5/error", renderIssues(open))
+}

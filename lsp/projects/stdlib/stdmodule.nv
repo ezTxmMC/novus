@@ -36,11 +36,11 @@ define class StdLibrary {
     }
 
     method moduleNames(): array<string> {
-        return arrays.sort(stdModules())
+        return arrays.sort(stdlibAllNames())
     }
 
     method has(string name): bool {
-        return stdModules().contains(name)
+        return stdlibAllNames().contains(name)
     }
 
     // nil for a name that is no standard module.
@@ -57,17 +57,17 @@ define class StdLibrary {
     }
 
     method parseModule(string name): StdModule {
-        var source = stdSource(name)
+        var source = stdlibSourceOf(name)
         var syntax = parseSourceText(STDLIB_KEY_PREFIX + name, source, indexParseOptions())
         return StdModule(name, source, syntax)
     }
 
     // `<module count>-<total source bytes>`: it changes with every compiler build that changes the embedded std.
     method fingerprint(): string {
-        var names = stdModules()
+        var names = stdlibAllNames()
         var total = 0
         for (name in names) {
-            total = total + stdSource(name).length()
+            total = total + stdlibSourceOf(name).length()
         }
         return "" + names.length() + "-" + total
     }

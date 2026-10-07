@@ -104,11 +104,29 @@ method exampleFiles(string folder): array<string> {
 
 method main {
     var folders = chapters()
+    printIntroduction(totalExamples(folders))
+    printChapterTable(folders)
+    for (folder in folders) {
+        printChapter(folder)
+    }
+    printShowcase()
+    printNotes()
+}
+
+method totalExamples(array<string> folders): integer {
     var total = 0
     for (folder in folders) {
         total = total + exampleFiles(folder).length()
     }
+    return total
+}
 
+// The numbers of the first and the last example of a chapter: "001-012".
+method numberRange(array<string> files): string {
+    return files[0].substring(0, 3) + "-" + files[files.length() - 1].substring(0, 3)
+}
+
+method printIntroduction(integer total) {
     println "# Novus examples"
     println ""
     println "${total} small programs, from the first line of Novus to complete projects."
@@ -121,37 +139,34 @@ method main {
     println "test/run_examples.sh strings                       # only matching paths"
     println "```"
     println ""
+}
+
+method printChapterTable(array<string> folders) {
     println "| Chapter | Examples | Topic |"
     println "|---|---|---|"
     for (folder in folders) {
-        var files = exampleFiles(folder)
-        var first = files[0].substring(0, 3)
-        var last = files[files.length() - 1].substring(0, 3)
+        var range = numberRange(exampleFiles(folder))
         var title = chapterTitle(folder)
         var anchor = title.toLower().replace(" ", "-")
-        println "| [${title}](#${anchor}-${first}-${last}) | ${first}-${last} | " + strings.stripSuffix(chapterBlurb(folder), ".") + " |"
+        println "| [${title}](#${anchor}-${range}) | ${range} | " + strings.stripSuffix(chapterBlurb(folder), ".") + " |"
     }
+}
 
-    for (folder in folders) {
-        var files = exampleFiles(folder)
-        var title = chapterTitle(folder)
-        var first = files[0].substring(0, 3)
-        var last = files[files.length() - 1].substring(0, 3)
-        println ""
-        println "## ${title} (${first}-${last})"
-        println ""
-        println chapterBlurb(folder)
-        println ""
-        println "| # | Example | Shows |"
-        println "|---|---------|-------|"
-        for (file in files) {
-            var number = file.substring(0, 3)
-            var name = titleOf(file)
-            var summary = describe(path.join("examples", folder, file))
-            println "| ${number} | [${name}](${folder}/${file}) | ${summary} |"
-        }
+method printChapter(string folder) {
+    println ""
+    println "## ${chapterTitle(folder)} (${numberRange(exampleFiles(folder))})"
+    println ""
+    println chapterBlurb(folder)
+    println ""
+    println "| # | Example | Shows |"
+    println "|---|---------|-------|"
+    for (file in exampleFiles(folder)) {
+        var summary = describe(path.join("examples", folder, file))
+        println "| ${file.substring(0, 3)} | [${titleOf(file)}](${folder}/${file}) | ${summary} |"
     }
+}
 
+method printShowcase() {
     println ""
     println "## Showcase projects"
     println ""
@@ -163,6 +178,9 @@ method main {
     println "| [todo](todo/main.nv) | CLI arguments and JSON persistence | `novusc run examples/todo/main.nv add \"buy milk\"` |"
     println "| [wordcount](wordcount/main.nv) | Files, maps and string processing | `novusc run examples/wordcount/main.nv file.txt` |"
     println "| [mccloud](mccloud/README.md) | A multi-file project: classes, `os`/`path`/`json`, `screen` and Windows consoles | `novusc build examples/mccloud/main.nv && ./mccloud init` |"
+}
+
+method printNotes() {
     println ""
     println "## Notes"
     println ""

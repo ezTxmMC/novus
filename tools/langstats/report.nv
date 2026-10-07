@@ -1,0 +1,132 @@
+package langstats
+
+import os
+import path
+
+// The table of languages.
+
+private final BAR_WIDTH = 30
+
+method report(map<string, Stat> stats, array<string> generated, bool all, bool byLines) {
+    var counted = []
+    var others = []
+    var total = 0
+    for (name in stats) {
+        var stat = stats[name]
+        if (all || stat.kind() == "programming" || stat.kind() == "markup") {
+            counted.append(stat)
+            total = total + weight(stat, byLines)
+            continue
+        }
+        others.append(stat)
+    }
+    printCounted(sortByWeight(counted, byLines), total, byLines)
+    printNotCounted(sortByWeight(others, byLines))
+    if (generated.length() > 0) {
+        println ""
+        println "generated (excluded): " + generated.join(", ")
+    }
+}
+
+method printCounted(array<Stat> counted, integer total, bool byLines) {
+    var unit = "bytes"
+    if (byLines) {
+        unit = "lines"
+    }
+    println "Language        Files    Lines      Bytes   Share (by ${unit})"
+    for (stat in counted) {
+        var share = percent(weight(stat, byLines), total)
+        println columns(stat) + "  " + padLeft(share, 5) + "%  " + bar(weight(stat, byLines), total)
+    }
+}
+
+method printNotCounted(array<Stat> others) {
+    if (others.length() == 0) {
+        return
+    }
+    println ""
+    println "not counted (data / prose; use --all to include):"
+    for (stat in others) {
+        println "  " + columns(stat)
+    }
+}
+
+// Language, files, lines and size of one row.
+method columns(Stat stat): string {
+    return padRight(stat.language(), 15) + padLeft("" + stat.files(), 6) + padLeft("" + stat.lines(), 9) + padLeft(formatBytes(stat.bytes()), 11)
+}
+
+method weight(Stat s, bool byLines): integer {
+    if (byLines) {
+        return s.lines()
+    }
+    return s.bytes()
+}
+
+// Descending insertion sort (stable) - small inputs.
+method sortByWeight(array<Stat> items, bool byLines): array<Stat> {
+    var sorted = []
+    for (s in items) {
+        var at = 0
+        while (at < sorted.length() && weight(sorted[at], byLines) >= weight(s, byLines)) {
+            at = at + 1
+        }
+        sorted.insert(at, s)
+    }
+    return sorted
+}
+
+// "12.3" with one decimal, integer arithmetic only.
+method percent(integer part, integer total): string {
+    if (total == 0) {
+        return "0.0"
+    }
+    var tenths = (part * 1000 + total / 2) / total
+    return "${tenths / 10}.${tenths % 10}"
+}
+
+method bar(integer part, integer total): string {
+    var filled = 0
+    if (total > 0) {
+        filled = (part * BAR_WIDTH + total / 2) / total
+    }
+    var out = ""
+    var i = 0
+    while (i < BAR_WIDTH) {
+        if (i < filled) {
+            out = out + "#"
+            i = i + 1
+            continue
+        }
+        out = out + "."
+        i = i + 1
+    }
+    return out
+}
+
+method formatBytes(integer bytes): string {
+    if (bytes < 1024) {
+        return "${bytes} B"
+    }
+    if (bytes < 1024 * 1024) {
+        return "${(bytes * 10 / 1024) / 10}.${(bytes * 10 / 1024) % 10} KB"
+    }
+    var tenths = bytes * 10 / (1024 * 1024)
+    return "${tenths / 10}.${tenths % 10} MB"
+}
+
+method padRight(string s, integer width): string {
+    var out = s
+    while (out.length() < width) {
+        out = out + " "
+    }
+    return out
+}
+
+method padLeft(string s, integer width): string {
+    var out = s
+    while (out.length() < width) {
+        out = " " + out
+    }
+    return out
+}

@@ -1,0 +1,51 @@
+<?nv
+import data
+
+prop string chapter = ""
+prop string name = ""
+
+method example(): Example {
+    return data.exampleAt(chapter + "/" + name)
+}
+
+method sourceUrl(): string {
+    return "https://github.com/ezTxmMC/novus/blob/master/examples/" + example().id + ".nv"
+}
+?>
+<Layout title={example().title} description={example().summary} section="examples">
+    <div class="mx-auto max-w-5xl px-4 py-12 sm:px-6 lg:px-8">
+        <nav aria-label="Breadcrumb" class="text-sm text-ink-400">
+            <a href="/examples">Examples</a>
+            <span aria-hidden="true"> / </span>
+            <span>{example().chapter}</span>
+        </nav>
+        <h1 class="mt-3 text-4xl font-semibold tracking-tight text-ink-50"><span class="font-mono text-accent-300">{example().number}</span> {example().title}</h1>
+        {#if example().summary != ""}
+            <p class="mt-3 max-w-3xl text-lg text-ink-400">{example().summary}.</p>
+        {/if}
+        <h2 class="eyebrow mt-10 mb-3">Source</h2>
+        <Code code={example().source} lang="nv" />
+        <h2 class="eyebrow mt-8 mb-3">Expected output</h2>
+        <div class="code-frame">
+            <pre class="code-block" aria-label="Expected output"><code>{example().output}</code></pre>
+        </div>
+        {#if example().exitCode != 0}
+            <p class="mt-3 text-sm text-accent-300">Exits with code {example().exitCode}.</p>
+        {/if}
+        <p class="mt-4 text-sm"><a href={sourceUrl()} rel="noreferrer">View on GitHub</a></p>
+        <nav class="mt-12 grid gap-4 sm:grid-cols-2" aria-label="Previous and next example">
+            {#if data.exampleNeighbour(example().id, -1).chapter != ""}
+                <a href={data.exampleNeighbour(example().id, -1).path()} class="card no-underline" rel="prev">
+                    <span class="eyebrow">Previous</span>
+                    <span class="mt-1 block text-ink-50">{data.exampleNeighbour(example().id, -1).title}</span>
+                </a>
+            {/if}
+            {#if data.exampleNeighbour(example().id, 1).chapter != ""}
+                <a href={data.exampleNeighbour(example().id, 1).path()} class="card text-right no-underline sm:col-start-2" rel="next">
+                    <span class="eyebrow">Next</span>
+                    <span class="mt-1 block text-ink-50">{data.exampleNeighbour(example().id, 1).title}</span>
+                </a>
+            {/if}
+        </nav>
+    </div>
+</Layout>

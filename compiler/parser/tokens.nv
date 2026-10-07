@@ -68,3 +68,13 @@ method expectIdent(array<string> tokens, integer p, string what): integer {
     }
     return p + 1
 }
+
+method fail(string message, string pos): integer {
+    eprintln "error: " + pos + ": " + message
+    exit(1)
+    return 0
+}
+
+method q(): string {
+    return chr(34)
+}

@@ -1,0 +1,79 @@
+package expr
+
+import ast
+import parser
+
+// Expressions -> C: the dispatch on the kind of node; the kinds live in their own files.
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+private final LITERAL_HEADS = {"arr": true, "mapl": true, "obj": true}
+
+method genExpr(string node, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    if (isList(node) == false) {
+        return genAtom(node, prog, ctx, locals)
+    }
+    var head = nodeHead(node)
+    if (head == "str") {
+        return litRef(prog, nodeChild(node, 1))
+    }
+    var sequence = sequenceOperands(node, prog, ctx, locals)
+    if (sequence.length() > 0) {
+        return sequencedExpr(sequence, genExpr(sequence[0], prog, ctx, locals))
+    }
+    if (LITERAL_HEADS.has(head)) {
+        return genLiteral(node, head, prog, ctx, locals)
+    }
+    if (head == "idx" || head == "mget" || head == "mcall" || head == "call") {
+        return genAccess(node, head, prog, ctx, locals)
+    }
+    return genSpecial(node, head, prog, ctx, locals)
+}
+
+method genLiteral(string node, string head, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    if (head == "arr") {
+        return genArrayLiteral(node, prog, ctx, locals)
+    }
+    if (head == "mapl") {
+        return genMapLiteral(node, prog, ctx, locals)
+    }
+    return genObjectLiteral(node, prog, ctx, locals)
+}
+
+method genAccess(string node, string head, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    if (head == "idx") {
+        return genIndex(node, prog, ctx, locals)
+    }
+    if (head == "mget") {
+        return genMemberGet(node, prog, ctx, locals)
+    }
+    if (head == "mcall") {
+        return genMethodCall(node, prog, ctx, locals)
+    }
+    return genCall(node, prog, ctx, locals)
+}
+
+// Await, spawn, cascades, generated C and operators.
+method genSpecial(string node, string head, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    if (head == "casc") {
+        return genCascade(node, prog, ctx, locals)
+    }
+    if (head == "await") {
+        return "nv_await(" + genExpr(nodeChild(node, 1), prog, ctx, locals) + ")"
+    }
+    if (head == "spawn") {
+        return genSpawn(node, prog, ctx, locals)
+    }
+    if (head == "craw") {
+        // C written by the code generator itself - see genSpawn()
+        return sexpUnescape(nodeChild(node, 1))
+    }
+    if (head == "neg") {
+        return genNegation(node, prog, ctx, locals)
+    }
+    if (head == "!") {
+        return "nv_not(" + genExpr(nodeChild(node, 1), prog, ctx, locals) + ")"
+    }
+    return genOperation(node, head, prog, ctx, locals)
+}

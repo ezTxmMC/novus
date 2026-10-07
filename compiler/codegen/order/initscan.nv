@@ -1,0 +1,147 @@
+package order
+
+import ast
+import parser
+
+// The units of the start-up initialisation and what their generated C refers to (see initorder.nv).
+//
+// Two kinds of "init unit" run before main: a global's initial value
+// (key "g:<cname>") and the constants of an enum ("e:<Enum>"). A unit may use
+// other units - a global built from other globals, an enum constant in a
+// global's initialiser, an enum constant whose argument is a global - so a
+// unit runs after the units it uses; otherwise the order of the source holds
+// (the globals first, then the enums).
+//
+// What a unit uses is read off the generated C, which has resolved every
+// name already: directly in the unit's own text, and through the free
+// functions ("f:<cname>") and classes ("c:<Class>": constructor and methods)
+// that text mentions. Units that use each other in their own text can never
+// be ordered: that is a compile error. A cycle that exists only through a
+// function body (an initialiser calling a function that reads the global
+// being initialised) is ordered by source position instead.
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+final GLOBAL_PREFIX = "g_"
+final FUNCTION_PREFIX = "f_"
+final STATE_VISITING = "visiting"
+final STATE_DONE = "done"
+final CHAR_CODE_ZERO = 48
+final CHAR_CODE_NINE = 57
+final CHAR_CODE_UPPER_A = 65
+final CHAR_CODE_UPPER_Z = 90
+final CHAR_CODE_UNDERSCORE = 95
+final CHAR_CODE_LOWER_A = 97
+final CHAR_CODE_LOWER_Z = 122
+
+method isUnitKey(string key): bool {
+    return key.startsWith("g:") || key.startsWith("e:")
+}
+
+method isCIdentChar(string c): bool {
+    var code = ord(c)
+    if (code >= CHAR_CODE_ZERO && code <= CHAR_CODE_NINE) {
+        return true
+    }
+    if (code >= CHAR_CODE_UPPER_A && code <= CHAR_CODE_UPPER_Z) {
+        return true
+    }
+    if (code >= CHAR_CODE_LOWER_A && code <= CHAR_CODE_LOWER_Z) {
+        return true
+    }
+    return code == CHAR_CODE_UNDERSCORE
+}
+
+// Adds `key` to `found` once, provided the program has such a thing.
+method noteKey(string key, map<string, string> sources, array<string> found, map<string, string> seen) {
+    if (sources.has(key) == false || seen.has(key)) {
+        return
+    }
+    seen[key] = "1"
+    found.append(key)
+}
+
+// The key a C identifier stands for: g_x is a global, f_x a free function.
+method identifierKey(string token): string {
+    if (token.startsWith(GLOBAL_PREFIX)) {
+        return "g:" + token.substring(GLOBAL_PREFIX.length(), token.length())
+    }
+    if (token.startsWith(FUNCTION_PREFIX)) {
+        return "f:" + token
+    }
+    return ""
+}
+
+// The index after the identifier that starts at `start`.
+method identifierEnd(string text, integer start): integer {
+    var at = start
+    while (at < text.length() && isCIdentChar(text.charAt(at))) {
+        at = at + 1
+    }
+    return at
+}
+
+// The index after the string literal whose opening quote is at `start`.
+method quotedEnd(string text, integer start): integer {
+    var at = start + 1
+    while (at < text.length() && text.charAt(at) != q()) {
+        if (text.charAt(at) == "\\") {
+            at = at + 1
+        }
+        at = at + 1
+    }
+    return at + 1
+}
+
+// A string literal naming a class or an enum is what the generated C uses
+// to reach one.
+method noteQuoted(string literal, map<string, string> sources, array<string> found, map<string, string> seen) {
+    noteKey("c:" + literal, sources, found, seen)
+    noteKey("e:" + literal, sources, found, seen)
+}
+
+// The keys of `sources` that the C text refers to, each once.
+method referencedKeys(string text, map<string, string> sources): array<string> {
+    var found = []
+    var seen = {}
+    var at = 0
+    while (at < text.length()) {
+        var c = text.charAt(at)
+        if (c == q()) {
+            var closing = quotedEnd(text, at)
+            noteQuoted(text.substring(at + 1, closing - 1), sources, found, seen)
+            at = closing
+            continue
+        }
+        if (isCIdentChar(c)) {
+            var end = identifierEnd(text, at)
+            noteKey(identifierKey(text.substring(at, end)), sources, found, seen)
+            at = end
+            continue
+        }
+        at = at + 1
+    }
+    return found
+}
+
+// The name of a unit as the source spells it.
+method unitName(string key): string {
+    return key.substring(2, key.length()).replace("__", ".")
+}
+
+// How a unit is called in an error message.
+method unitLabel(string key): string {
+    if (key.startsWith("e:")) {
+        return "enum " + unitName(key)
+    }
+    return "global " + unitName(key)
+}
+
+// The position the other errors about a unit report.
+method unitPosition(string key): string {
+    if (key.startsWith("e:")) {
+        return unitLabel(key)
+    }
+    return "constant " + unitName(key)
+}

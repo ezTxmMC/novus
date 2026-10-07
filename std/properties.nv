@@ -105,40 +105,42 @@ method writeFlat(map<string, object> values, string prefix, array<string> out): 
         var v = values[key]
         if (typeOf(v) == "map") {
             writeFlat(v, full, out)
-        } else {
-            var text = ""
-            if (typeOf(v) != "unknown") {
-                text = "" + v
-            }
-            out.append(escapeText(full, true) + "=" + escapeText(text, false) + "\n")
+            continue
         }
+        var text = ""
+        if (typeOf(v) != "unknown") {
+            text = "" + v
+        }
+        out.append(escapeText(full, true) + "=" + escapeText(text, false) + "\n")
     }
     return 0
 }
+
+private final ESCAPES = {"\\": "\\\\", "\n": "\\n", "\r": "\\r", "\t": "\\t"}
+private final KEY_SEPARATORS = "=: #!"
 
 method escapeText(string s, bool isKey): string {
     var out = []
     var i = 0
     while (i < s.length()) {
-        var c = s.charAt(i)
-        if (c == "\\") {
-            out.append("\\\\")
-        } else if (c == "\n") {
-            out.append("\\n")
-        } else if (c == "\r") {
-            out.append("\\r")
-        } else if (c == "\t") {
-            out.append("\\t")
-        } else if (isKey && (c == "=" || c == ":" || c == " " || c == "#" || c == "!")) {
-            out.append("\\" + c)
-        } else if (isKey == false && i == 0 && c == " ") {
-            out.append("\\ ")
-        } else {
-            out.append(c)
-        }
+        out.append(escapeChar(s.charAt(i), isKey, i == 0))
         i = i + 1
     }
     return out.join("")
+}
+
+// Separators are escaped in keys, a leading blank in values; the control characters everywhere.
+method escapeChar(string c, bool isKey, bool atStart): string {
+    if (ESCAPES.has(c)) {
+        return ESCAPES[c]
+    }
+    if (isKey && KEY_SEPARATORS.contains(c)) {
+        return "\\" + c
+    }
+    if (isKey == false && atStart && c == " ") {
+        return "\\ "
+    }
+    return c
 }
 
 // The logical lines as ["section", name] and ["pair", key, value].
@@ -223,6 +225,9 @@ method separator(string line): integer {
     return 0 - 1
 }
 
+private final UNESCAPES = {"t": "\t", "n": "\n", "r": "\r", "f": chr(12)}
+private final UNICODE_DIGITS = 4
+
 method unescape(string s): string {
     if (s.contains("\\") == false) {
         return s
@@ -238,20 +243,16 @@ method unescape(string s): string {
         }
         var e = s.charAt(i + 1)
         i = i + 2
-        if (e == "t") {
-            out.append("\t")
-        } else if (e == "n") {
-            out.append("\n")
-        } else if (e == "r") {
-            out.append("\r")
-        } else if (e == "f") {
-            out.append(chr(12))
-        } else if (e == "u" && i + 4 <= s.length()) {
-            out.append(utf8(hexValue(s.substring(i, i + 4))))
-            i = i + 4
-        } else {
-            out.append(e)
+        if (e == "u" && i + UNICODE_DIGITS <= s.length()) {
+            out.append(utf8(hexValue(s.substring(i, i + UNICODE_DIGITS))))
+            i = i + UNICODE_DIGITS
+            continue
         }
+        if (UNESCAPES.has(e)) {
+            out.append(UNESCAPES[e])
+            continue
+        }
+        out.append(e)
     }
     return out.join("")
 }
@@ -261,18 +262,24 @@ method hexValue(string s): integer {
     var i = 0
     while (i < s.length()) {
         var c = s.charAt(i)
-        var d = 0
-        if (c >= "0" && c <= "9") {
-            d = ord(c) - ord("0")
-        } else if (c >= "a" && c <= "f") {
-            d = ord(c) - ord("a") + 10
-        } else if (c >= "A" && c <= "F") {
-            d = ord(c) - ord("A") + 10
-        }
-        n = n * 16 + d
+        n = n * 16 + digitValue(c)
         i = i + 1
     }
     return n
+}
+
+// The value of a hexadecimal digit, 0 for anything else.
+method digitValue(string c): integer {
+    if (c >= "0" && c <= "9") {
+        return ord(c) - ord("0")
+    }
+    if (c >= "a" && c <= "f") {
+        return ord(c) - ord("a") + 10
+    }
+    if (c >= "A" && c <= "F") {
+        return ord(c) - ord("A") + 10
+    }
+    return 0
 }
 
 // The UTF-8 bytes of a code point.

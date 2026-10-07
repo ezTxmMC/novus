@@ -1,0 +1,110 @@
+package codegen
+
+import ast
+import parser
+
+// Classes and enums -> C: the class table, constructors and methods.
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+method genClassCode(string node, map<string, string> prog, array<string> protos, array<string> bodies, array<string> registry, map<string, string> sources): integer {
+    var cls = nodeChild(node, 1)
+    var base = classBase(node)
+    if (isClassLike(prog, base) == false) {
+        base = ""
+    }
+    if (base != "") {
+        // an inherited method runs whatever the base class reaches
+        addSource(sources, "c:" + cls, cstr(base))
+    }
+    protos.append("static NvClass *nv_cls_" + cls + ";" + nl())
+    registry.append("    c = nv_class_define(" + cstr(cls) + ", " + cstr(base) + ", " + flagOf(classIsAbstract(node)) + ", " + flagOf(nodeHead(node) == "enum") + ");" + nl())
+    registry.append("    nv_cls_" + cls + " = c;" + nl())
+    registerFields(node, registry)
+    genClassConstructor(cls, classCtor(node), prog, protos, bodies, registry, sources)
+    genClassMethods(cls, classMethods(node), prog, protos, bodies, registry, sources)
+    return 0
+}
+
+// The C flag for a boolean of the class table.
+method flagOf(bool value): string {
+    if (value) {
+        return "1"
+    }
+    return "0"
+}
+
+method registerFields(string node, array<string> registry) {
+    var fields = classFields(node)
+    var i = 1
+    var count = nodeCount(fields)
+    while (i < count) {
+        var f = nodeChild(fields, i)
+        registry.append("    nv_class_field(c, " + cstr(nodeChild(f, 2)) + ", " + cstr(normType(nodeChild(f, 1))) + ");" + nl())
+        i = i + 1
+    }
+}
+
+method genClassConstructor(string cls, string ctor, map<string, string> prog, array<string> protos, array<string> bodies, array<string> registry, map<string, string> sources) {
+    if (nodeHead(ctor) != "ctor") {
+        return
+    }
+    protos.append("static nv c_" + cls + "(nv self, nv *args, int n);" + nl())
+    var ctorBody = genCtor(cls, ctor, prog)
+    bodies.append(ctorBody)
+    addSource(sources, "c:" + cls, ctorBody)
+    registry.append("    nv_class_ctor(c, " + (nodeCount(nodeChild(ctor, 1)) - 1) + ", c_" + cls + ");" + nl())
+}
+
+method genClassMethods(string cls, string methods, map<string, string> prog, array<string> protos, array<string> bodies, array<string> registry, map<string, string> sources) {
+    var k = 1
+    var count = nodeCount(methods)
+    while (k < count) {
+        var m = nodeChild(methods, k)
+        if (isAbstractMethod(m) == false) {
+            var cname = methodCName(cls, m, methodVariant(methods, k))
+            protos.append("static nv " + cname + "(nv self, nv *args, int n);" + nl())
+            var methodBody = genClassMethod(cls, m, cname, prog)
+            bodies.append(methodBody)
+            addSource(sources, "c:" + cls, methodBody)
+            registry.append("    nv_class_method(c, " + cstr(methodName(m)) + ", " + arityOf(m) + ", " + cname + ");" + nl())
+        }
+        k = k + 1
+    }
+}
+
+method genEnumInit(string node, map<string, string> prog): string {
+    var name = nodeChild(node, 1)
+    var consts = nodeChild(node, 2)
+    var ctx = {"class": "", "pkg": "", "func": "", "ret": "void", "pos": "enum " + name}
+    var locals = {}
+    var out = ""
+    var i = 1
+    var constsCount = nodeCount(consts)
+    while (i < constsCount) {
+        out = out + genEnumConstant(name, nodeChild(consts, i), prog, ctx, locals)
+        i = i + 1
+    }
+    return withTemps(out, tempNames(ctx))
+}
+
+// The statement that creates one enum constant. Its constructor arguments are
+// evaluated left to right like the arguments of a call.
+method genEnumConstant(string enumName, string constant, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    var nargs = nodeCount(constant) - 2
+    var sequence = sequenceOperands(constant, prog, ctx, locals)
+    var source = constant
+    if (sequence.length() > 0) {
+        source = sequence[0]
+    }
+    var constructor = "nv_construct(" + cstr(enumName) + ", " + nargs
+    if (nargs > 0) {
+        constructor = constructor + ", " + genArgs(source, 2, prog, ctx, locals)
+    }
+    constructor = constructor + ")"
+    if (sequence.length() > 0) {
+        constructor = sequencedExpr(sequence, constructor)
+    }
+    return "    nv_enum_add(" + cstr(enumName) + ", " + cstr(nodeChild(constant, 1)) + ", " + constructor + ");" + nl()
+}

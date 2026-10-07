@@ -1,0 +1,88 @@
+package driver
+
+import os
+import path
+import strings
+
+// Where the cache lives and how big it may grow.
+
+// The cache folder; "" when the cache is switched off (NOVUS_CACHE=off) or
+// the system has no place for it.
+method cacheDirectory(): string {
+    var configured = env("NOVUS_CACHE")
+    if (configured.toLower() == CACHE_OFF) {
+        return ""
+    }
+    if (configured != "") {
+        return configured
+    }
+    return defaultCacheDirectory()
+}
+
+method defaultCacheDirectory(): string {
+    var home = os.home()
+    if (platform() == "windows") {
+        return windowsCacheDirectory(home)
+    }
+    if (platform() == "macos" && home != "") {
+        return path.join(home, "Library", "Caches", "novus")
+    }
+    var xdg = env("XDG_CACHE_HOME")
+    if (xdg != "" && path.isAbsolute(xdg)) {
+        return path.join(xdg, "novus")
+    }
+    if (home == "") {
+        return ""
+    }
+    return path.join(home, ".cache", "novus")
+}
+
+method windowsCacheDirectory(string home): string {
+    var local = env("LOCALAPPDATA")
+    if (local != "") {
+        return path.join(local, "novus", "cache")
+    }
+    if (home == "") {
+        return ""
+    }
+    return path.join(home, "AppData", "Local", "novus", "cache")
+}
+
+// $NOVUS_CACHE_LIMIT: bytes, or a number with K, M or G ("256M", the default).
+method cacheLimitBytes(): integer {
+    var text = env("NOVUS_CACHE_LIMIT")
+    if (text == "") {
+        return DEFAULT_LIMIT_BYTES
+    }
+    var digits = text.substring(0, text.length() - 1)
+    var multiplier = unitMultiplier(text.charAt(text.length() - 1).toUpper())
+    if (multiplier == 1) {
+        digits = text
+    }
+    if (multiplier == 0 || isCount(digits) == false || parseInt(digits) > MAX_LIMIT_BYTES / multiplier) {
+        eprintln "novusc: NOVUS_CACHE_LIMIT must be a size like 256M, 512K or a number of bytes, at most 1 PiB (got '${text}')"
+        exit(1)
+    }
+    return parseInt(digits) * multiplier
+}
+
+// 0 for a character that is neither a unit nor a digit.
+method unitMultiplier(string unit): integer {
+    if (unit == "K") {
+        return KILOBYTE
+    }
+    if (unit == "M") {
+        return MEGABYTE
+    }
+    if (unit == "G") {
+        return GIGABYTE
+    }
+    if (strings.isDigit(unit)) {
+        return 1
+    }
+    return 0
+}
+
+method isCount(string text): bool {
+    return text != "" && text.startsWith("-") == false && strings.isNumeric(text)
+}

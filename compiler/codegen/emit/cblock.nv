@@ -1,0 +1,82 @@
+package emit
+
+import ast
+
+// `c { ... }`: C written by the program, copied into the generated code.
+//
+//   - A block inside a method becomes a C block `{ ... }` at its place. `$name` stands for the
+//     value (an `nv`) of a variable, parameter, field or global, written like any expression
+//     would read it, so it is also what is assigned to: `$count = nv_int(1);`. `$$` is a `$`.
+//     A method with a C block keeps all its variables boxed (typed/localkinds.nv): there is
+//     no unboxed number a `$name` could not be assigned to.
+//   - A block outside of methods goes in front of all declarations, after the runtime, in the
+//     order of the source: `#include`s, static helpers, structures. No `$name` there, only `$$`.
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+final CBLOCK_NODE = "cblock"
+private final DOLLAR = "$"
+
+// A method body or a worker candidate with C in it.
+method hasCBlock(string node): bool {
+    return node.contains("(" + CBLOCK_NODE + " ")
+}
+
+method genCBlockStatement(string node, string indent, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    var text = expandCBlock(sexpUnescape(nodeChild(node, 1)), prog, ctx, locals, true)
+    return indent + "{" + nl() + text + nl() + indent + "}" + nl()
+}
+
+// The text of a top-level block.
+method genCBlockDeclaration(string node, map<string, string> prog, map<string, string> ctx): string {
+    return expandCBlock(sexpUnescape(nodeChild(node, 1)), prog, ctx, {}, false) + nl()
+}
+
+// The block with every `$name` replaced; `$$` is one `$`, a `$` that no name follows stays.
+method expandCBlock(string text, map<string, string> prog, map<string, string> ctx, map<string, string> locals, bool inMethod): string {
+    var out = ""
+    var i = 0
+    var n = text.length()
+    while (i < n) {
+        var c = text.charAt(i)
+        i = i + 1
+        if (c != DOLLAR || i >= n) {
+            out = out + c
+            continue
+        }
+        if (text.charAt(i) == DOLLAR) {
+            out = out + DOLLAR
+            i = i + 1
+            continue
+        }
+        if (isCNameStart(text.charAt(i)) == false) {
+            out = out + c
+            continue
+        }
+        var end = cNameEnd(text, i)
+        out = out + cBlockVariable(text.substring(i, end), prog, ctx, locals, inMethod)
+        i = end
+    }
+    return out
+}
+
+method isCNameStart(string c): bool {
+    return (c >= "a" && c <= "z") || (c >= "A" && c <= "Z") || c == "_"
+}
+
+method cNameEnd(string text, integer from): integer {
+    var i = from
+    while (i < text.length() && (isCNameStart(text.charAt(i)) || (text.charAt(i) >= "0" && text.charAt(i) <= "9"))) {
+        i = i + 1
+    }
+    return i
+}
+
+// The C expression of `$name`: what reading the variable `name` generates; an unknown name is an error.
+method cBlockVariable(string name, map<string, string> prog, map<string, string> ctx, map<string, string> locals, bool inMethod): string {
+    if (inMethod == false) {
+        fail("$" + name + " in a c { } block outside of a method: only methods have variables (write $$ for a dollar sign)", ctx["pos"])
+    }
+    return genExpr(name, prog, ctx, locals)
+}

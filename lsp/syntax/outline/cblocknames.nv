@@ -1,0 +1,44 @@
+package outline
+
+import base/maybe
+import base/text
+import syntax/lexing
+
+// One `$name` of a C block: the identifier it stands for (without the dollar) and the callable and type it is in.
+// Outside of a method the callable is nothing: the compiler accepts no variables there.
+define class OutlineCBlockName {
+    Token token
+    Decl callable
+    Decl owner
+
+    construct(Token token, Decl callable, Decl owner) {
+        this.token = token
+        this.callable = callable
+        this.owner = owner
+    }
+
+    method isInMethod(): bool {
+        return isSome(this.callable)
+    }
+}
+
+// Every `$name` of the C blocks of a file, in source order.
+method outlineCBlockNames(SourceFile syntax): array<OutlineCBlockName> {
+    var names = []
+    for (comment in syntax.comments) {
+        if (lexingIsCBlock(comment)) {
+            outlineAppendCBlockNames(syntax, comment, names)
+        }
+    }
+    return names
+}
+
+method outlineAppendCBlockNames(SourceFile syntax, Token block, array<OutlineCBlockName> names) {
+    var callable = syntax.enclosingCallable(block.start)
+    var owner = syntax.enclosingType(block.start)
+    for (span in block.interpolations) {
+        var text = block.text.substring(span.start - block.start, span.end - block.start)
+        var token = Token(TokenKind.Ident, text, span.start, span.end, block.line, span.start - block.start + block.column)
+        names.append(OutlineCBlockName(token, callable, owner))
+    }
+}

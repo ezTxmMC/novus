@@ -1,0 +1,55 @@
+package expr
+
+import ast
+import parser
+
+// Unary and binary operators on boxed values.
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+// *_fast are inline wrappers that keep small-integer arithmetic in registers
+private final OPERATOR_FUNCTIONS = {"+": "nv_add_fast", "-": "nv_sub_fast", "*": "nv_mul_fast", "/": "nv_div_fast", "%": "nv_mod_fast",
+    "==": "nv_eq", "!=": "nv_ne", "<": "nv_lt", ">": "nv_gt", "<=": "nv_le", ">=": "nv_ge",
+    "&": "nv_band", "|": "nv_bor", "^": "nv_bxor", "<<": "nv_shl", ">>": "nv_shr"}
+
+private final SHORT_CIRCUIT_FUNCTIONS = {"&&": "&&", "||": "||"}
+
+method genNegation(string node, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    var operand = nodeChild(node, 1)
+    if (isNumberAtom(operand) == false) {
+        return "nv_neg(" + genExpr(operand, prog, ctx, locals) + ")"
+    }
+    if (hasDot(operand)) {
+        return "nv_float(-" + operand + ")"
+    }
+    return "nv_int(-" + operand + "LL)"
+}
+
+// A sub-expression that can only be numeric is computed unboxed and
+// boxed once at the end, instead of boxing every intermediate result.
+method genOperation(string node, string head, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    var kind = kindOf(node, prog, ctx, locals)
+    if (kind == KIND_INT) {
+        return "nv_int(" + genInt(node, prog, ctx, locals) + ")"
+    }
+    if (kind == KIND_FLOAT) {
+        return "nv_float(" + genFloat(node, prog, ctx, locals) + ")"
+    }
+    if (head == "+" && isList(nodeChild(node, 1)) && nodeHead(nodeChild(node, 1)) == "+") {
+        return genAddChain(node, prog, ctx, locals)
+    }
+    return genBinary(node, head, prog, ctx, locals)
+}
+
+method genBinary(string node, string head, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    var left = genExpr(nodeChild(node, 1), prog, ctx, locals)
+    var right = genExpr(nodeChild(node, 2), prog, ctx, locals)
+    if (SHORT_CIRCUIT_FUNCTIONS.has(head)) {
+        return "nv_bool(nv_truthy(" + left + ") " + head + " nv_truthy(" + right + "))"
+    }
+    if (OPERATOR_FUNCTIONS.has(head) == false) {
+        fail("unsupported expression '" + head + "'", ctx["pos"])
+    }
+    return OPERATOR_FUNCTIONS[head] + "(" + left + ", " + right + ")"
+}

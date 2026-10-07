@@ -22,4 +22,14 @@ method runMemberCases() {
         "/p/main.nv": "define interface Handler {\n    handle(string text): string\n}\n\nmethod run(Handler handler) {\n    println(handler.handle(\"x\"))\n    println(handler.other(\"x\"))\n}\n\nmethod main() {\n    return\n}\n"
     })
     dgShow("an interface-typed receiver", iface.ownOf("/p/main.nv"))
+    var cascade = DgWorld({
+        "/p/project.nv": "project \"p\"\n",
+        "/p/main.nv": "define class Crate {\n    integer width\n    integer height\n\n    method add(integer by): Crate {\n        this.width = this.width + by\n        return this\n    }\n}\n\nmethod describe() {\n    Crate plain = Crate(1, 2)\n    println(plain.nowhere)\n    Crate box = Crate(1, 2)..add(1)..width = 2..height = 3\n    println(box.nowhere)\n    Crate other = Crate(1, 2)\n        ..add(2)\n        ..[0] = 1\n        ..missing()\n    println(other.nowhere(1))\n    other..add(1)..nowhere()\n}\n\nmethod main() {\n    describe()\n}\n"
+    })
+    dgShow("cascades: a cascade has the type of its receiver, a value ends at the next ..", cascade.ownOf("/p/main.nv"))
+    var cblocks = DgWorld({
+        "/p/project.nv": "project \"p\"\n",
+        "/p/main.nv": "define class Counter {\n    integer total\n\n    method bump(integer by) {\n        var local = 1\n        c { $total = nv_int(1 + nv_ival($by)); $local; $missing; $$ literal $; }\n        println local\n    }\n}\n\nc { static int helper; $nothing }\n\nmethod main() {\n    Counter().bump(1)\n}\n"
+    })
+    dgShow("C blocks: $name is a variable of the method, an unknown one and one outside of a method are errors", cblocks.ownOf("/p/main.nv"))
 }

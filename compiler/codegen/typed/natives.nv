@@ -1,0 +1,64 @@
+package typed
+
+import ast
+import parser
+
+// The numeric natives of the math module and how a `module.name(args)` call is typed.
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+// The numeric natives of the math module: what their C function does with
+// its arguments (each one is converted like nv_as_double does).
+private final FLOAT_NATIVES = {"nv_math_sqrt": "sqrt", "nv_math_pow": "pow", "nv_math_sin": "sin",
+    "nv_math_cos": "cos", "nv_math_tan": "tan", "nv_math_atan2": "atan2", "nv_math_log": "log",
+    "nv_math_exp": "exp", "nv_math_to_float32": "nv_to_float32"}
+private final INTEGER_NATIVES = {"nv_math_floor": "nv_floor_int", "nv_math_ceil": "nv_ceil_int", "nv_math_round": "nv_round_int"}
+
+// Is `target` the name of a module: not a value, and the program has the module?
+method isModuleTarget(string target, map<string, string> prog, map<string, string> ctx, map<string, string> locals): bool {
+    return isIdentAtom(target) && resolveVar(target, prog, ctx, locals) == "" && isImplicitField(target, prog, ctx, locals) == false && prog.has("pkg:" + target)
+}
+
+// The native a `module.name(args)` call runs, "" when it is a method written in Novus.
+method nativeOf(string node, map<string, string> prog): string {
+    var name = nodeChild(node, 1) + "." + nodeChild(node, 2)
+    var nargs = nodeCount(node) - 3
+    if (prog.has("func:" + name + "/" + nargs) == false || prog.has("func:" + name + "/*")) {
+        return ""
+    }
+    var m = prog["fnode:" + name + "/" + nargs + "/0"]
+    if (isNativeMethod(m) == false || nodeCount(nodeChild(m, 5)) > 2) {
+        return ""
+    }
+    return sexpUnescape(nodeChild(nodeChild(m, 5), 1))
+}
+
+// The kind of `module.name(args)`.
+method moduleCallKind(string node, map<string, string> prog): string {
+    var name = nodeChild(node, 1) + "." + nodeChild(node, 2)
+    var nargs = nodeCount(node) - 3
+    var native = nativeOf(node, prog)
+    if (FLOAT_NATIVES.has(native)) {
+        return KIND_FLOAT
+    }
+    if (INTEGER_NATIVES.has(native)) {
+        return KIND_INT
+    }
+    if (native != "" || prog.has("func:" + name + "/" + nargs) == false) {
+        return KIND_NONE
+    }
+    return rawReturnKind(rawDescriptor(prog, name, nargs))
+}
+
+method isMathNative(string cfn): bool {
+    return FLOAT_NATIVES.has(cfn) || INTEGER_NATIVES.has(cfn)
+}
+
+// The C function that does what the math native `cfn` does on unboxed numbers.
+method mathNativeFunction(string cfn): string {
+    if (FLOAT_NATIVES.has(cfn)) {
+        return FLOAT_NATIVES[cfn]
+    }
+    return INTEGER_NATIVES[cfn]
+}

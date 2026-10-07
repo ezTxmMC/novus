@@ -7,11 +7,11 @@ import projects/workspace
 import semantics/semantic
 import syntax/lexing
 import syntax/outline
+import syntax/scanning
 
 private final DIAGNOSTICS_UNKNOWN_MEMBER = "unknown-member"
 private final DIAGNOSTICS_THIS_RECEIVER = "this"
 private final DIAGNOSTICS_MEMBER_OFFSET = 2
-private final DIAGNOSTICS_OPEN_PAREN_OFFSET = 3
 
 // `receiver.member` where the receiver has a declared user type that, with all its bases, has no member of that name and
 // no subtype declares one either (a variable typed with a base class may hold a subtype). Receivers without a declared
@@ -28,7 +28,7 @@ define class MemberDiagnosticRule based DiagnosticRule {
         var scanner = DiagnosticsUseScanner(context.syntax.tokens)
         var judge = DiagnosticsMemberJudge(context)
         for (use in scanner.usesOfFile(context.syntax)) {
-            if (use.isQualifier() && use.index + DIAGNOSTICS_MEMBER_OFFSET < scanner.tokens.length()) {
+            if (use.isQualifier()) {
                 this.judgeUse(judge, use, scanner, found)
             }
         }
@@ -36,19 +36,31 @@ define class MemberDiagnosticRule based DiagnosticRule {
     }
 
     method judgeUse(DiagnosticsMemberJudge judge, DiagnosticsUse use, DiagnosticsUseScanner scanner, array<Diagnostic> found) {
-        var member = scanner.tokens[use.index + DIAGNOSTICS_MEMBER_OFFSET]
-        if (member.kind != TokenKind.Ident) {
-            return
+        for (index in this.membersAfter(scanner.tokens, use.index)) {
+            var finding = judge.judge(use, scanner.tokens[index], this.arityAfter(scanner, index))
+            if (isSome(finding)) {
+                found.append(finding)
+            }
         }
-        var arity = DIAGNOSTICS_NO_ARITY
-        var open = use.index + DIAGNOSTICS_OPEN_PAREN_OFFSET
+    }
+
+    // `a.m`: one member; a cascade `a..m()..n`: one per section.
+    method membersAfter(array<Token> tokens, integer index): array<integer> {
+        if (scanningIsCascadeAt(tokens, index + 1)) {
+            return scanningCascadeMembers(tokens, index)
+        }
+        if (index + DIAGNOSTICS_MEMBER_OFFSET < tokens.length() && tokens[index + 1].isPunct(".")) {
+            return [index + DIAGNOSTICS_MEMBER_OFFSET]
+        }
+        return []
+    }
+
+    method arityAfter(DiagnosticsUseScanner scanner, integer member): integer {
+        var open = member + 1
         if (open < scanner.tokens.length() && scanner.tokens[open].isPunct("(")) {
-            arity = scanner.argumentCount(open)
+            return scanner.argumentCount(open)
         }
-        var finding = judge.judge(use, member, arity)
-        if (isSome(finding)) {
-            found.append(finding)
-        }
+        return DIAGNOSTICS_NO_ARITY
     }
 }
 

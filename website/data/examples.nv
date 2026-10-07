@@ -1,0 +1,132 @@
+package data
+
+import arrays
+import os
+import strings
+
+// The programs of examples/ with their expected output, read from the
+// repository so the site cannot drift from the language.
+
+define class Example {
+    string id
+    string stem
+    string chapter
+    string chapterId
+    string number
+    string name
+    string title
+    string summary
+    string source
+    string output
+    integer exitCode
+
+    construct(string chapterId, string chapter, string file, string source, string output, integer exitCode) {
+        var stem = strings.stripSuffix(file, ".nv")
+        this.id = chapterId + "/" + stem
+        this.stem = stem
+        this.chapter = chapter
+        this.chapterId = chapterId
+        this.number = stem.substring(0, NUMBER_WIDTH)
+        this.name = stem.substring(NUMBER_WIDTH + 1, stem.length())
+        this.title = strings.capitalize(this.name.replace("-", " "))
+        this.summary = leadingComment(source, 0)
+        this.source = source
+        this.output = output
+        this.exitCode = exitCode
+    }
+
+    method path(): string {
+        return "/examples/" + this.id
+    }
+}
+
+private final EXAMPLES_FOLDER = "../examples"
+private final NUMBER_WIDTH = 3
+
+private final CHAPTERS = {
+    "01-basics": "Basics", "02-control": "Control flow", "03-methods": "Methods",
+    "04-strings": "Strings", "05-arrays": "Arrays", "06-maps": "Maps",
+    "07-classes": "Classes", "08-stdlib": "Standard library", "09-algorithms": "Algorithms",
+    "10-projects": "Projects", "11-concurrency": "Concurrency" }
+
+private var loadedExamples = []
+
+// Map iteration is in key order, which is the order of the chapter numbers.
+method chapterIds(): array<string> {
+    var ids = []
+    for (id in CHAPTERS) {
+        ids.append(id)
+    }
+    return ids
+}
+
+method chapterTitle(string chapterId): string {
+    return CHAPTERS[chapterId]
+}
+
+method examples(): array<Example> {
+    if (loadedExamples.length() > 0) {
+        return loadedExamples
+    }
+    for (chapterId in chapterIds()) {
+        loadChapter(chapterId, loadedExamples)
+    }
+    return loadedExamples
+}
+
+method loadChapter(string chapterId, array<Example> into) {
+    var folder = EXAMPLES_FOLDER + "/" + chapterId
+    if (os.isDir(folder) == false) {
+        return
+    }
+    for (file in arrays.sort(os.listDir(folder))) {
+        if (file.endsWith(".nv")) {
+            into.append(loadExample(chapterId, folder, file))
+        }
+    }
+}
+
+method loadExample(string chapterId, string folder, string file): Example {
+    var base = folder + "/" + strings.stripSuffix(file, ".nv")
+    return Example(chapterId, CHAPTERS[chapterId], file, os.readFile(base + ".nv"), optionalFile(base + ".golden"), exitCodeOf(base + ".rc"))
+}
+
+method optionalFile(string file): string {
+    if (os.isFile(file) == false) {
+        return ""
+    }
+    return os.readFile(file)
+}
+
+method exitCodeOf(string file): integer {
+    var text = optionalFile(file).trim()
+    if (text == "") {
+        return 0
+    }
+    return parseInt(text)
+}
+
+method exampleAt(string id): Example {
+    for (example in examples()) {
+        if (example.id == id) {
+            return example
+        }
+    }
+    return examples()[0]
+}
+
+method exampleNeighbour(string id, integer step): Example {
+    var all = examples()
+    var index = 0
+    while (index < all.length()) {
+        if (all[index].id == id) {
+            break
+        }
+        index = index + 1
+    }
+    var target = index + step
+    if (target < 0 || target >= all.length()) {
+        return Example("none", "", "000-none.nv", "", "", 0)
+    }
+    return all[target]
+}

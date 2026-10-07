@@ -17,11 +17,11 @@ method joinParts(array<string> parts): string {
         var next = []
         var i = 0
         while (i < current.length()) {
+            var piece = current[i]
             if (i + 1 < current.length()) {
-                next.append(current[i] + current[i + 1])
-            } else {
-                next.append(current[i])
+                piece = piece + current[i + 1]
             }
+            next.append(piece)
             i = i + 2
         }
         current = next

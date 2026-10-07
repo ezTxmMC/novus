@@ -1,5 +1,6 @@
 package parser
 
+import ast
 import lexer
 
 // Statements and blocks.
@@ -31,18 +32,19 @@ method parseIf(array<string> tokens, integer pos): map<string, string> {
     var thenBlock = parseBlock(tokens, p)
     var node = "(if " + c["node"] + " " + thenBlock["node"]
     p = parseInt(thenBlock["pos"])
-    if (isKw(tokens, p, "else")) {
-        if (isKw(tokens, p + 1, "if")) {
-            var elseIf = parseIf(tokens, p + 1)
-            node = node + " " + elseIf["node"]
-            p = parseInt(elseIf["pos"])
-        } else {
-            var elseBlock = parseBlock(tokens, p + 1)
-            node = node + " " + elseBlock["node"]
-            p = parseInt(elseBlock["pos"])
-        }
+    if (isKw(tokens, p, "else") == false) {
+        return { "node": node + ")", "pos": p }
     }
-    return { "node": node + ")", "pos": p }
+    var tail = parseElse(tokens, p + 1)
+    return { "node": node + " " + tail["node"] + ")", "pos": parseInt(tail["pos"]) }
+}
+
+// What follows `else`: another if, or the block.
+method parseElse(array<string> tokens, integer pos): map<string, string> {
+    if (isKw(tokens, pos, "if")) {
+        return parseIf(tokens, pos)
+    }
+    return parseBlock(tokens, pos)
 }
 
 // Is there a typed declaration `Type name = expr` at pos?
@@ -73,105 +75,114 @@ method parseStatement(array<string> tokens, integer pos): map<string, string> {
     var t = tokens[pos]
     var kind = tokKind(t)
     var val = tokVal(t)
-    var here = tokPos(t)
     if (kind == "SYM" && val == ";") {
         return { "node": "(nop)", "pos": pos + 1 }
     }
+    if (kind == CBLOCK_KIND || kind == CBLOCK_UNTERMINATED_KIND) {
+        return { "node": cBlockNode(t), "pos": pos + 1 }
+    }
     if (kind == "KEYWORD") {
-        if (val == "var") {
-            var p = expectIdent(tokens, pos + 1, "variable name")
-            var name = tokVal(tokens[p - 1])
-            var declType = ""
-            if (isSym(tokens, p, ":")) {
-                var ty = parseType(tokens, p + 1)
-                declType = ty["node"]
-                p = parseInt(ty["pos"])
-            }
-            if (isSym(tokens, p, "=")) {
-                var e = parseExpr(tokens, p + 1, 0)
-                if (declType != "") {
-                    return { "node": "(tvar " + declType + " " + name + " " + e["node"] + ")", "pos": parseInt(e["pos"]) }
-                }
-                return { "node": "(var " + name + " " + e["node"] + ")", "pos": parseInt(e["pos"]) }
-            }
-            if (declType != "") {
-                return { "node": "(tvar " + declType + " " + name + ")", "pos": p }
-            }
-            return { "node": "(var " + name + ")", "pos": p }
-        }
-        if (val == "return") {
-            var next = pos + 1
-            if (atEnd(tokens, next) || isSym(tokens, next, "}") || tokPos(tokens[next]) != here) {
-                return { "node": "(return)", "pos": next }
-            }
-            var re = parseExpr(tokens, next, 0)
-            return { "node": "(return " + re["node"] + ")", "pos": parseInt(re["pos"]) }
-        }
-        if (val == "println" || val == "print" || val == "eprintln") {
-            var pe = parseExpr(tokens, pos + 1, 0)
-            return { "node": "(" + val + " " + pe["node"] + ")", "pos": parseInt(pe["pos"]) }
-        }
-        if (val == "if") {
-            return parseIf(tokens, pos)
-        }
-        if (val == "while") {
-            var wp = expectSym(tokens, pos + 1, "(")
-            var c = parseExpr(tokens, wp, 0)
-            wp = expectSym(tokens, parseInt(c["pos"]), ")")
-            var b = parseBlock(tokens, wp)
-            return { "node": "(while " + c["node"] + " " + b["node"] + ")", "pos": parseInt(b["pos"]) }
-        }
-        if (val == "for") {
-            var fp = expectSym(tokens, pos + 1, "(")
-            fp = expectIdent(tokens, fp, "loop variable name")
-            var loopVar = tokVal(tokens[fp - 1])
-            if (isKw(tokens, fp, "in") == false) {
-                fail("expected 'in' in for loop but found " + describe(tokens, fp), posOf(tokens, fp))
-            }
-            var iterable = parseExpr(tokens, fp + 1, 0)
-            fp = expectSym(tokens, parseInt(iterable["pos"]), ")")
-            var fb = parseBlock(tokens, fp)
-            return { "node": "(forin " + loopVar + " " + iterable["node"] + " " + fb["node"] + ")", "pos": parseInt(fb["pos"]) }
-        }
-        if (val == "break") {
-            return { "node": "(break)", "pos": pos + 1 }
-        }
-        if (val == "continue") {
-            return { "node": "(continue)", "pos": pos + 1 }
-        }
-        if (val == "package") {
-            return { "node": "(nop)", "pos": pos + 2 }
-        }
-        fail("unexpected keyword '" + val + "'", here)
+        return parseKeywordStatement(tokens, pos, val)
     }
     // sync { ... } takes the program-wide lock, sync (lock) { ... } that one
     if (kind == "IDENT" && val == "sync" && (isSym(tokens, pos + 1, "{") || isSym(tokens, pos + 1, "("))) {
-        var sp = pos + 1
-        var lock = "-"
-        if (isSym(tokens, sp, "(")) {
-            var le = parseExpr(tokens, sp + 1, 0)
-            sp = expectSym(tokens, parseInt(le["pos"]), ")")
-            lock = le["node"]
-        }
-        var sb = parseBlock(tokens, sp)
-        return { "node": "(sync " + lock + " " + sb["node"] + ")", "pos": parseInt(sb["pos"]) }
+        return parseSync(tokens, pos)
     }
     if (kind == "IDENT" && isSym(tokens, pos + 1, "=")) {
-        var ae = parseExpr(tokens, pos + 2, 0)
-        return { "node": "(assign " + val + " " + ae["node"] + ")", "pos": parseInt(ae["pos"]) }
+        var assigned = parseExpr(tokens, pos + 2, 0)
+        return { "node": "(assign " + val + " " + assigned["node"] + ")", "pos": parseInt(assigned["pos"]) }
     }
     if (isTypedDecl(tokens, pos)) {
-        var dt = parseType(tokens, pos)
-        var dp = parseInt(dt["pos"])
-        var dname = tokVal(tokens[dp])
-        var de = parseExpr(tokens, dp + 2, 0)
-        return { "node": "(tvar " + dt["node"] + " " + dname + " " + de["node"] + ")", "pos": parseInt(de["pos"]) }
+        return parseTypedDecl(tokens, pos)
     }
-    var e = parseExpr(tokens, pos, 0)
-    var ep = parseInt(e["pos"])
-    if (isSym(tokens, ep, "=")) {
-        var rhs = parseExpr(tokens, ep + 1, 0)
-        return { "node": "(setexpr " + e["node"] + " " + rhs["node"] + ")", "pos": parseInt(rhs["pos"]) }
+    return parseExpressionStatement(tokens, pos)
+}
+
+method parseKeywordStatement(array<string> tokens, integer pos, string val): map<string, string> {
+    if (val == "var") {
+        return parseVar(tokens, pos)
     }
-    return { "node": e["node"], "pos": ep }
+    if (val == "return") {
+        return parseReturn(tokens, pos)
+    }
+    if (val == "println" || val == "print" || val == "eprintln") {
+        var printed = parseExpr(tokens, pos + 1, 0)
+        return { "node": "(" + val + " " + printed["node"] + ")", "pos": parseInt(printed["pos"]) }
+    }
+    if (val == "if") {
+        return parseIf(tokens, pos)
+    }
+    if (val == "while") {
+        return parseWhile(tokens, pos)
+    }
+    if (val == "for") {
+        return parseFor(tokens, pos)
+    }
+    if (val == "break" || val == "continue") {
+        return { "node": "(" + val + ")", "pos": pos + 1 }
+    }
+    if (val == "package") {
+        return { "node": "(nop)", "pos": pos + 2 }
+    }
+    fail("unexpected keyword '" + val + "'", tokPos(tokens[pos]))
+    return { "node": "(nop)", "pos": pos + 1 }
+}
+
+// var name [: type] [= expr]
+method parseVar(array<string> tokens, integer pos): map<string, string> {
+    var p = expectIdent(tokens, pos + 1, "variable name")
+    var name = tokVal(tokens[p - 1])
+    var declType = ""
+    if (isSym(tokens, p, ":")) {
+        var ty = parseType(tokens, p + 1)
+        declType = ty["node"]
+        p = parseInt(ty["pos"])
+    }
+    var head = "(var "
+    if (declType != "") {
+        head = "(tvar " + declType + " "
+    }
+    if (isSym(tokens, p, "=") == false) {
+        return { "node": head + name + ")", "pos": p }
+    }
+    var value = parseExpr(tokens, p + 1, 0)
+    return { "node": head + name + " " + value["node"] + ")", "pos": parseInt(value["pos"]) }
+}
+
+// A return without a value ends its line.
+method parseReturn(array<string> tokens, integer pos): map<string, string> {
+    var next = pos + 1
+    if (atEnd(tokens, next) || isSym(tokens, next, "}") || tokPos(tokens[next]) != tokPos(tokens[pos])) {
+        return { "node": "(return)", "pos": next }
+    }
+    var value = parseExpr(tokens, next, 0)
+    return { "node": "(return " + value["node"] + ")", "pos": parseInt(value["pos"]) }
+}
+
+// Type name = expr
+method parseTypedDecl(array<string> tokens, integer pos): map<string, string> {
+    var declType = parseType(tokens, pos)
+    var p = parseInt(declType["pos"])
+    var name = tokVal(tokens[p])
+    var value = parseExpr(tokens, p + 2, 0)
+    return { "node": "(tvar " + declType["node"] + " " + name + " " + value["node"] + ")", "pos": parseInt(value["pos"]) }
+}
+
+// An expression, or `target = value` where the target is a member or an element.
+method parseExpressionStatement(array<string> tokens, integer pos): map<string, string> {
+    var target = parseExpr(tokens, pos, 0)
+    var after = parseInt(target["pos"])
+    if (isSym(tokens, after, "=") == false) {
+        return { "node": target["node"], "pos": after }
+    }
+    var value = parseExpr(tokens, after + 1, 0)
+    return { "node": "(setexpr " + target["node"] + " " + value["node"] + ")", "pos": parseInt(value["pos"]) }
+}
+
+// `c { ... }`: the raw text, kept as it is, and where it is (see lexer/cblock.nv).
+method cBlockNode(string token): string {
+    if (tokKind(token) == CBLOCK_UNTERMINATED_KIND) {
+        fail("unterminated c { } block (missing '}')", tokPos(token))
+    }
+    return "(cblock " + sexpStr(tokVal(token)) + " " + sexpStr(tokPos(token)) + ")"
 }

@@ -1,0 +1,12 @@
+<?nv
+prop integer base = 4
+
+method shifted(): integer {
+    c {
+        long long v = nv_ival($base);
+        char open = '{';
+        return nv_int(v + (open == '{' ? 1 : 0));
+    }
+}
+?>
+<p>{shifted()}</p>

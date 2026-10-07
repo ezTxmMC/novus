@@ -1,0 +1,54 @@
+package driver
+
+import crypto
+import os
+import path
+import strings
+
+// novusc cache: show and clear.
+
+// novusc cache [dir | clear]
+method cacheCommand(array<string> arguments): integer {
+    var directory = cacheDirectory()
+    var action = ""
+    if (arguments.length() >= 2) {
+        action = arguments[1]
+    }
+    if (action != "" && action != "dir" && action != "clear") {
+        eprintln "usage: novusc cache [dir | clear]"
+        return 1
+    }
+    if (directory == "") {
+        println "cache: off"
+        return 0
+    }
+    if (action == "dir") {
+        println directory
+        return 0
+    }
+    if (action == "clear") {
+        return clearCache(directory)
+    }
+    return describeCache(directory)
+}
+
+method clearCache(string directory): integer {
+    var entries = cacheEntries(directory)
+    for (id in entries) {
+        removeEntry(directory, entries[id].name())
+    }
+    println "removed ${entries.length()} programs from ${directory}"
+    return 0
+}
+
+method describeCache(string directory): integer {
+    var entries = cacheEntries(directory)
+    var total = 0
+    for (id in entries) {
+        total = total + entries[id].size()
+    }
+    println "cache: ${directory}"
+    println "programs: ${entries.length()}"
+    println "size: ${total} bytes (limit ${cacheLimitBytes()})"
+    return 0
+}

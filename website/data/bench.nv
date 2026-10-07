@@ -1,0 +1,159 @@
+package data
+
+import json
+import math
+import os
+
+// The benchmark results of benchmarks/results.json and the sources that
+// produced them, so nobody has to trust the numbers.
+
+private final BENCHMARK_FOLDER = "../benchmarks"
+private final RESULTS_FILE = BENCHMARK_FOLDER + "/results.json"
+private final PREFERRED_ORDER = ["novus", "cpp", "rust", "go", "crystal", "java", "node", "python"]
+private final EXTENSIONS = { "novus": "nv", "cpp": "cpp", "rust": "rs", "go": "go", "crystal": "cr", "java": "java", "node": "js", "python": "py" }
+private final JAVA_CLASSES = { "fib": "Fib", "loop": "Loop", "primes": "Primes", "mandelbrot": "Mandelbrot",
+    "array": "Arr", "sort": "Sort", "strings": "Str", "map": "MapB", "objects": "Obj", "wordfreq": "WordFreq",
+    "nbody": "NBody", "spectral": "SpectralNorm" }
+
+private var results = {}
+
+method benchmarks(): map<string, object> {
+    if (results.has("workloads")) {
+        return results
+    }
+    if (os.isFile(RESULTS_FILE) == false) {
+        results = { "languages": {}, "workloads": [], "runs": {} }
+        return results
+    }
+    results = json.parse(os.readFile(RESULTS_FILE))
+    return results
+}
+
+method benchWorkloads(): array<object> {
+    return benchmarks()["workloads"]
+}
+
+// The measured languages in the order the site shows them.
+method benchLanguages(): array<string> {
+    var measured = benchmarks()["languages"]
+    var ordered = []
+    for (name in PREFERRED_ORDER) {
+        if (measured.has(name)) {
+            ordered.append(name)
+        }
+    }
+    return ordered
+}
+
+method benchLabel(string language): string {
+    return benchmarks()["languages"][language]["label"]
+}
+
+method benchVersion(string language): string {
+    return benchmarks()["languages"][language]["version"]
+}
+
+method benchRuns(string workload): map<string, object> {
+    return benchmarks()["runs"][workload]
+}
+
+// The source of one workload in one language, "" when there is none.
+method benchSource(string workload, string language): string {
+    var name = workload
+    if (language == "java") {
+        name = JAVA_CLASSES[workload]
+    }
+    var file = BENCHMARK_FOLDER + "/" + language + "/" + name + "." + EXTENSIONS[language]
+    if (os.isFile(file) == false) {
+        return ""
+    }
+    return os.readFile(file)
+}
+
+// How often each language is the best of a workload for `metric` ("ms" or "mb").
+method benchWins(string metric): map<string, integer> {
+    var wins = {}
+    for (workload in benchWorkloads()) {
+        var best = bestOf(benchRuns(workload["name"]), metric)
+        if (best != "") {
+            wins[best] = winsOf(wins, best) + 1
+        }
+    }
+    return wins
+}
+
+method winsOf(map<string, integer> wins, string language): integer {
+    if (wins.has(language)) {
+        return wins[language]
+    }
+    return 0
+}
+
+method bestOf(map<string, object> runs, string metric): string {
+    var best = ""
+    for (language in benchLanguages()) {
+        if (runs.has(language) && (best == "" || runs[language][metric] < runs[best][metric])) {
+            best = language
+        }
+    }
+    return best
+}
+
+// The smallest value of `metric` in a workload: what the table puts in bold.
+method bestValue(map<string, object> runs, string metric): float {
+    return runs[bestOf(runs, metric)][metric]
+}
+
+// The length of a bar, 0.6 - 100 percent of the largest value.
+method barPercent(map<string, object> runs, string language, string metric): float {
+    var largest = 0.0
+    for (name in benchLanguages()) {
+        if (runs.has(name) && runs[name][metric] > largest) {
+            largest = runs[name][metric]
+        }
+    }
+    var width = runs[language][metric] * 100.0 / largest
+    if (width < 0.6) {
+        return 0.6
+    }
+    return width
+}
+
+method formatMeasure(float value, string metric): string {
+    var unit = " ms"
+    if (metric == "mb") {
+        unit = " MB"
+    }
+    if (value < 10.0) {
+        var tenths = math.round(value * 10.0)
+        return "" + (tenths / 10) + "." + (tenths % 10) + unit
+    }
+    return "" + math.round(value) + unit
+}
+
+private final LANGUAGE_COLORS = { "novus": "oklch(0.72 0.22 320)", "cpp": "oklch(0.68 0.13 250)", "rust": "oklch(0.72 0.13 55)",
+    "go": "oklch(0.74 0.11 200)", "crystal": "oklch(0.7 0.13 20)", "java": "oklch(0.7 0.12 150)",
+    "node": "oklch(0.8 0.12 95)", "python": "oklch(0.72 0.1 270)" }
+private final HIGHLIGHT_LANGUAGES = { "novus": "nv", "cpp": "c", "node": "js" }
+
+method benchColor(string language): string {
+    return LANGUAGE_COLORS[language]
+}
+
+// The language name the highlighter knows for the sources of a benchmark language.
+method benchHighlight(string language): string {
+    if (HIGHLIGHT_LANGUAGES.has(language)) {
+        return HIGHLIGHT_LANGUAGES[language]
+    }
+    return "text"
+}
+
+method percentText(float percent): string {
+    var tenths = math.round(percent * 10.0)
+    return "" + (tenths / 10) + "." + (tenths % 10)
+}
+
+// The first output line the languages agree on.
+method benchOutput(string workload): string {
+    return benchRuns(workload)["novus"]["output"].split(chr(10))[0]
+}

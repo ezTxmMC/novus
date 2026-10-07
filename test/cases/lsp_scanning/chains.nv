@@ -84,3 +84,14 @@ method checkChainDepthCap() {
     var steps = chainEndingAt(lexText(source).tokens, lexText(source).tokens.length() - 2)
     expectTrue("chain/depth-is-capped", steps.length() > 0 && steps.length() <= 200)
 }
+
+// `a..b()..c`: a cascade section is typed against the receiver, the sections before it are dropped.
+method checkCascadeChains() {
+    expectEqual("cascade/first-section", "name:a/0<a> call:b/0<b()>", chainOf("a..b()", "b()"))
+    expectEqual("cascade/later-section-uses-the-receiver", "name:a/0<a> name:c/0<c>", chainOf("a..b()..c", "c"))
+    expectEqual("cascade/selectors-stay-in-their-section", "name:a/0<a> call:b/0<b()> call:c/0<c()>", chainOf("a..b().c()", "c()"))
+    expectEqual("cascade/receiver-of-a-dot-pair", "name:a/0<a>", chainOf("a..b()..", "a..b()."))
+    expectEqual("cascade/call-receiver", "call:make/0<make()> call:add/1<add(1)>", chainOf("make()..add(1)", "add(1)"))
+    expectEqual("cascade/start-index", "0", "" + startOf("a..b()..c", "c"))
+    expectEqual("cascade/apart-dots-are-no-cascade", "name:a/0<a>", chainOf("a. .b", "a"))
+}

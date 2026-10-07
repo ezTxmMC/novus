@@ -1,0 +1,102 @@
+package main
+
+import os
+
+// novusc run tools/linkcheck.nv [dist]
+// Checks every internal href and src of the exported site: the target file
+// has to exist and so does the #fragment inside it.
+
+private final DEFAULT_FOLDER = "dist"
+private final ATTRIBUTES = ["href=\"", "src=\""]
+private final SKIPPED_PREFIXES = ["http://", "https://", "mailto:", "//", "data:"]
+
+method main {
+    var arguments = os.args()
+    var root = DEFAULT_FOLDER
+    if (arguments.length() > 0) {
+        root = arguments[0]
+    }
+    var broken = 0
+    var checked = 0
+    for (file in htmlFiles(root)) {
+        var html = os.readFile(file)
+        for (link in linksOf(html)) {
+            checked = checked + 1
+            if (isValid(root, link) == false) {
+                println file + ": broken link " + link
+                broken = broken + 1
+            }
+        }
+    }
+    println "linkcheck: " + checked + " links, " + broken + " broken"
+    if (broken > 0) {
+        os.exit(1)
+    }
+}
+
+method htmlFiles(string folder): array<string> {
+    var found = []
+    for (entry in os.listDir(folder)) {
+        var path = folder + "/" + entry
+        if (os.isDir(path)) {
+            for (inner in htmlFiles(path)) {
+                found.append(inner)
+            }
+            continue
+        }
+        if (entry.endsWith(".html")) {
+            found.append(path)
+        }
+    }
+    return found
+}
+
+method linksOf(string html): array<string> {
+    var links = []
+    for (attribute in ATTRIBUTES) {
+        var at = html.indexOf(attribute)
+        while (at >= 0) {
+            var start = at + attribute.length()
+            links.append(html.substring(start, html.indexOf(chr(34), start)))
+            at = html.indexOf(attribute, start)
+        }
+    }
+    return links
+}
+
+method isExternal(string link): bool {
+    for (prefix in SKIPPED_PREFIXES) {
+        if (link.startsWith(prefix)) {
+            return true
+        }
+    }
+    return false
+}
+
+method isValid(string root, string link): bool {
+    if (isExternal(link) || link.startsWith("#") || link == "") {
+        return true
+    }
+    var hash = link.indexOf("#")
+    var path = link
+    var fragment = ""
+    if (hash >= 0) {
+        path = link.substring(0, hash)
+        fragment = link.substring(hash + 1, link.length())
+    }
+    var target = targetFile(root, path)
+    if (os.isFile(target) == false) {
+        return false
+    }
+    return fragment == "" || target.endsWith(".html") == false || os.readFile(target).contains("id=\"" + fragment + "\"")
+}
+
+method targetFile(string root, string path): string {
+    if (path.endsWith("/")) {
+        return root + path + "index.html"
+    }
+    if (os.isDir(root + path)) {
+        return root + path + "/index.html"
+    }
+    return root + path
+}

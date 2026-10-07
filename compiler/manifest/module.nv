@@ -1,0 +1,67 @@
+package manifest
+
+import nvh
+
+// The `project` module: `import project` gives a program the values of the
+// project.nv it is built from, as a module the compiler writes on the fly.
+//
+//     project.name()      project.version()     project.main()      project.lib()
+//     project.output()    project.novus()       project.requires()  project.replaces()
+//     project.get(key)    project.all()
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+// The key under which the module table carries the generated source (no import path can be this).
+final PROJECT_MODULE_KEY = "project:module"
+
+// The Novus source of the `project` module for a manifest.
+method projectModuleSource(Manifest m): string {
+    var values = projectValues(m)
+    var lines = ["package project"]
+    for (key in ["name", "version", "main", "lib", "output", "novus"]) {
+        lines.append("method " + key + "(): string { return " + nvhLit(values[projectKeyOf(key)]) + " }")
+    }
+    lines.append("method requires(): array { return " + requireRecords(m) + " }")
+    lines.append("method replaces(): array { return " + replaceRecords(m) + " }")
+    lines.append("method all(): map { return " + valueMap(values) + " }")
+    lines.append("method get(string key): string { var values = all() if (values.has(key)) { return values[key] } return \"\" }")
+    return lines.join(chr(10)) + chr(10)
+}
+
+// The single-value settings by the name project.nv uses for them; main and output as the build uses them.
+method projectValues(Manifest m): map<string, string> {
+    return {"project": m.name(), "version": m.version(), "main": m.main(), "lib": m.lib(), "output": m.outputName(), "novus": m.novus()}
+}
+
+// The method `name` reads the setting `project`.
+method projectKeyOf(string setting): string {
+    if (setting == "name") {
+        return "project"
+    }
+    return setting
+}
+
+method valueMap(map<string, string> values): string {
+    var entries = []
+    for (key in values) {
+        entries.append(nvhLit(key) + ": " + nvhLit(values[key]))
+    }
+    return "{" + entries.join(", ") + "}"
+}
+
+method requireRecords(Manifest m): string {
+    var records = []
+    for (d in m.requires()) {
+        records.append("{\"module\": " + nvhLit(d.module()) + ", \"version\": " + nvhLit(d.version()) + "}")
+    }
+    return "[" + records.join(", ") + "]"
+}
+
+method replaceRecords(Manifest m): string {
+    var records = []
+    for (module in m.replaces()) {
+        records.append("{\"module\": " + nvhLit(module) + ", \"path\": " + nvhLit(m.replaces()[module]) + "}")
+    }
+    return "[" + records.join(", ") + "]"
+}

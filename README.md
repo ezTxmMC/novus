@@ -9,6 +9,9 @@
   - [Packages and imports](#packages-and-imports)
   - [Language](#language)
     - [Evaluation order](#evaluation-order)
+    - [Cascades](#cascades)
+    - [C blocks](#c-blocks)
+    - [Project values](#project-values)
     - [Numbers](#numbers)
     - [Typed code](#typed-code)
   - [Concurrency](#concurrency)
@@ -66,6 +69,21 @@ Prebuilt binaries for Linux, macOS and Windows are produced by the CI
 workflow for every push and attached to tagged releases. To cross compile
 all of them yourself from one machine, install [zig](https://ziglang.org)
 and run `scripts/cross.sh` (output in `dist/`).
+
+To install a release instead of building, download the files of your target
+from the [releases](https://github.com/ezTxmMC/novus/releases) and move them
+onto the `PATH` - on Linux:
+
+```sh
+TARGET=x86_64-linux-gnu        # or aarch64-linux-gnu, x86_64-linux-musl
+BASE=https://github.com/ezTxmMC/novus/releases/latest/download   # or .../download/<tag>
+curl -fLO $BASE/novusc-$TARGET && curl -fLO $BASE/novus-lsp-$TARGET
+chmod +x novusc-$TARGET novus-lsp-$TARGET
+sudo mv novusc-$TARGET /usr/bin/novusc && sudo mv novus-lsp-$TARGET /usr/bin/novus-lsp
+```
+
+A C compiler is still needed to compile programs. The documentation site has
+the macOS and Windows steps.
 
 ## Using novusc
 
@@ -295,6 +313,96 @@ map with a pending order sorts again at the next iteration). Missing
 interface/abstract implementations, unknown names and unknown fields are
 errors. Array `remove(i)`/`insert` shift the tail (O(n), so `remove(0)` in a
 loop is quadratic) and `contains`/`indexOf` scan.
+
+### Cascades
+
+`receiver..section..section` runs every section on the receiver and the whole
+expression is the receiver itself - not what a section returns (the cascade
+of Dart):
+
+```nv
+var page = Page{title="Home"}
+    ..addSection("intro")        // a method call: its result is dropped
+    ..addSection("usage")
+    ..footer = "(c) 2026"         // a member assignment
+    ..tags["draft"] = true        // an element of a member (`..[i] = v` is an element of the receiver)
+
+var names = []..append("Ada")..append("Grace")    // names is the array
+```
+
+A section is a selector chain on the receiver (`..a().b`, `..items[0].name()`),
+optionally ending in an assignment; the value of an assignment is parsed
+without another cascade, so `..a = 1..b = 2` are two sections. The receiver is
+evaluated once, the sections run in order, and a cascade binds to the operand
+on its left (`x + y..m()` cascades on `y`); put it in parentheses to cascade on
+a larger expression.
+
+### C blocks
+
+`c { ... }` is raw C inside Novus - for a system call, a library or a hot
+loop that the language does not offer. The text up to the matching brace is
+copied into the generated C unchanged (braces in C strings, character literals
+and comments do not count):
+
+```nv
+c {
+    #include <unistd.h>                    // outside of methods: before all declarations,
+    static long long pid(void) {           // after the runtime, in the order of the source
+        return (long long)getpid();
+    }
+}
+
+method processId(): integer {
+    c { return nv_int(pid()); }            // the whole body may be C
+}
+
+method bump(integer by) {
+    var total = 0
+    c {                                    // a statement: a C block at this place
+        $total = nv_int(nv_ival($total) + nv_ival($by));
+    }
+    println total
+}
+```
+
+`$name` is the value (an `nv`) of a variable, parameter, field or global of the
+program, written exactly like Novus reads it, so it can be assigned to as well;
+`$$` is a dollar sign. An unknown name is a compile error. A method that
+contains a C block keeps all its variables boxed, so `$x = ...` always works.
+Outside of methods there are no variables: only `$$`. The runtime that every
+program embeds is in scope (`runtime/novus_rt.h`): `nv` is the value type,
+`nv_int(long long)`/`nv_ival(nv)`, `nv_float(double)`/`nv_fval(nv)`,
+`nv_str(const char *)`, `nv_bool(int)`, `nv_nil`, `nv_println(nv)`. The C is not
+checked by Novus: its mistakes are the C compiler's, and a program with C
+blocks is exactly as safe as the C in it. `novusc check --offline` does not
+compile it and `novusc emit` prints it as it is. In a `.nvh` header the same
+`c { }` works inside its methods.
+
+### Project values
+
+`import project` gives a program the settings of the `project.nv` it is built
+from, fixed at compile time:
+
+```nv
+import project
+
+method main {
+    println project.name() + " " + project.version()    // "github.com/user/app 0.1.0"
+    for (dep in project.requires()) {                    // maps with "module" and "version"
+        println dep["module"] + " " + dep["version"]
+    }
+}
+```
+
+`name()`, `version()`, `main()`, `lib()`, `output()`, `novus()` are strings (`""`
+when the manifest does not set them; `main` and `output` as the build uses them),
+`requires()` and `replaces()` are arrays of maps (`module`/`version` and
+`module`/`path`), `get(key)` reads one setting by its `project.nv` name
+(`"project"`, `"version"`, ...) and `all()` is the map of them. Without a
+`project.nv` the import is a compile error; a dependency that imports `project`
+sees the manifest of the program that is built, not its own. `novusc version`
+and `novus-lsp --version` are `project.version()` of `compiler/project.nv` and
+`lsp/project.nv`.
 
 ### Numbers
 
@@ -543,8 +651,17 @@ The compiler turns `Counter.nvh` into a class `Counter based NvhComponent`
 and state shared through globals needs no lock. `web.view`, `web.render`,
 `web.trigger` and `web.input` run components without a server, for tests.
 [examples/web](examples/web) is a complete app (counters, a live clock, a
-shared todo list and a chat); the [documentation](website/src/content/web/components.mdx)
+shared todo list and a chat); the [documentation](website/content/components.md)
 has the details.
+
+### Markdown components (.nvmd)
+
+Markdown with Novus in it (`.nvmd`, like `.mdx` with JSX) is not part of the
+compiler: the dependency
+[github.com/ezTxmMC/nvh-markdown](https://github.com/ezTxmMC/nvh-markdown)
+generates `.nvh` components from `.nvmd` files (`novusc run nvmd.nv build`),
+which the compiler then loads like any other component. Its README has the
+format and the setup.
 
 ## Standard library
 
@@ -697,7 +814,7 @@ Free builtins need no import: `readFile`, `writeFile`, `fileExists`,
 | `compiler/std/`        | `stdlib.nv`: the `std/` modules embedded as strings (generated by `tools/embedstd.nv`) |
 | `std/`                 | The standard library, one Novus module per file                              |
 | `compiler/nvh/`        | `.nvh` components: template -> Novus class (`nvh.nv`), used by the loader    |
-| `compiler/project/`    | `project.nv` manifests (`manifest.nv`) and git dependencies (`deps.nv`)      |
+| `compiler/manifest/`   | `project.nv` manifests (`manifest.nv`) and git dependencies (`deps.nv`)      |
 | `compiler/driver/`     | The `novusc` command line (`cli.nv`), build/run steps (`build.nv`), program cache (`cache.nv`) |
 | `compiler/main.nv`     | Entry point                                                                   |
 | `runtime/`              | The C runtime every compiled program embeds: `novus_rt.h` includes one part per subsystem (`nv_values.h`, `nv_memory.h` - allocator and garbage collector, `nv_classes.h`, `nv_typed.h` - unboxed numbers, `nv_threads.h`, `nv_json.h`, ...) |
@@ -760,13 +877,18 @@ out of `results.json` and of the site rather than shown as an empty column.
 
 ## Documentation site
 
-[website/](website/README.md) is the documentation site: React, React Router,
-Vite, MDX and Tailwind CSS 4, built with bun. It generates its examples
-browser, standard library reference and syntax highlighting from this
-repository, so it cannot drift from the language.
+[website/](website/README.md) is the documentation site, written in Novus: nvh
+components, the documentation as `.nvmd` files (Markdown with Novus) and
+Tailwind CSS 4.3, through the dependencies
+[nvh-markdown](https://github.com/ezTxmMC/nvh-markdown) and
+[nvh-tailwindcss](https://github.com/ezTxmMC/nvh-tailwindcss). Examples, the
+standard library reference and the benchmarks are read from this repository
+when the site is built, so it cannot drift from the language.
 
 ```sh
-cd website && bun install && bun run dev
+cd website
+../build/novusc run main.nv                # development server on :8080
+../build/novusc run main.nv export dist    # the static site
 ```
 
 ## Examples
@@ -803,6 +925,9 @@ memory (MiB).
 
 ## Editor support
 
+The recommended IDE for Novus is [Lumen IDE](https://github.com/ezTxmMC/lumen-ide).
+Any other editor works through the language server as well:
+
 `novus-lsp` is the language server: completion with auto import and snippets,
 hover, signature help, definition, references, rename, symbols, folding,
 formatting, code actions, semantic highlighting, and three layers of
@@ -830,8 +955,8 @@ Releases carry `novus-lsp-<target>` next to `novusc-<target>`.
 The [documentation site](#documentation-site) has the complete
 setup of each editor, every setting (`novus.check.mode`, `novus.pureline.*`,
 `novus.format.*`, ...) and the list of snippet prefixes; the sources are
-[website/src/content/projects/editor.mdx](website/src/content/projects/editor.mdx) and
-[language-server.mdx](website/src/content/projects/language-server.mdx).
+[website/content/projects/editor.nvmd](website/content/projects/editor.nvmd) and
+[language-server.nvmd](website/content/projects/language-server.nvmd).
 `make snippets` regenerates `vscode-novus/snippets/novus.json` from the
 catalogue in `lsp/services/snippets/`. The TypeScript server that
 `vscode-novus/` still contains stays selectable (`novus.server.implementation`)

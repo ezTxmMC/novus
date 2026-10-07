@@ -430,6 +430,16 @@
       "tvar"
     ]
   },
+  "Cascade: several calls on one receiver, which stays the value": {
+    "body": [
+      "${1:items}..append(${2:value})..append(${3:value})"
+    ],
+    "description": "Cascade: several calls on one receiver, which stays the value",
+    "prefix": [
+      "cascade",
+      "casc"
+    ]
+  },
   "Typed local declaration": {
     "body": [
       "${1:integer} ${2:name} = ${3:value}"

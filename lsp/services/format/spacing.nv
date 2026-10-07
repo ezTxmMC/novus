@@ -83,7 +83,7 @@ define class SpacingRules {
     }
 
     method hugs(Token left, Token right, integer index): bool {
-        if (right.kind == TokenKind.Punct && right.text == "." && left.kind == TokenKind.Integer) {
+        if (right.kind == TokenKind.Punct && right.text == "." && left.kind == TokenKind.Integer && this.startsCascade(index) == false) {
             return false
         }
         if (this.hugsPunctuation(left, right, index)) {
@@ -93,6 +93,11 @@ define class SpacingRules {
             return true
         }
         return this.hugsBracket(left, right, index)
+    }
+
+    // The dot at `index` is the first of `..`: `1..b` is the integer 1 and a cascade, not a float.
+    method startsCascade(integer index): bool {
+        return index + 1 < this.tokens.length() && this.tokens[index + 1].isPunct(".")
     }
 
     method hugsPunctuation(Token left, Token right, integer index): bool {

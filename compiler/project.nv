@@ -1,0 +1,6 @@
+// Manifest of novusc, the Novus compiler (written in Novus, compiles itself).
+// Build: scripts/bootstrap.sh (from the checked-in C snapshot) - see BOOTSTRAP.md
+project "github.com/ezTxmMC/novus"
+version "0.1.0-pre.alpha.8"
+main "main.nv"
+output "novusc"

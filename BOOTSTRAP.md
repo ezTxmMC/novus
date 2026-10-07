@@ -57,7 +57,7 @@ up to date. `scripts/snapshot.sh` regenerates `compiler/runtime/runtime.nv` and
 ## Pipeline
 
 Each package lives in its own directory under `compiler/` (the root of the
-compiler's packages, since it has no project.nv); files import the packages
+compiler's packages: `compiler/project.nv` makes that folder the project root; keep its `version` equal to `VERSION` in `driver/cli.nv`); files import the packages
 they use by name (`import parser`, `import codegen`).
 
 - `lexer/` produces tokens as strings `KIND file:line value`.
@@ -100,7 +100,7 @@ they use by name (`import parser`, `import codegen`).
   is a `.nvh` file. Classes of a std module (`NvhComponent` in `std/web.nv`)
   are recorded as `(classpkg Class module)` so that their methods see the
   module's functions and globals unqualified.
-- `project/` parses `project.nv` manifests and fetches `require`d modules
+- `manifest/` parses `project.nv` manifests and fetches `require`d modules
   with git into the cache; the loader resolves module imports through the
   resulting module table.
 - `driver/` implements the command line and drives the C compiler
@@ -120,6 +120,8 @@ they use by name (`import parser`, `import codegen`).
 (import "module/path")  (importmod pkg/path)  (importfile "pkg/file" "pos")
 (package name "pos")    (userpkg name)        (classpkg Class pkg)
 
+c blocks:    (cblock "raw text" "file:line") - a statement of a method or a top-level
+             declaration; `$name` is expanded by codegen/emit/cblock.nv
 statements:  (var name [expr]) (tvar type name [expr]) (assign name expr)
              (setexpr target expr) (return [expr]) (println e) (print e) (eprintln e)
              (if cond block [else-block | (if ...)]) (while cond block)
@@ -127,6 +129,8 @@ statements:  (var name [expr]) (tvar type name [expr]) (assign name expr)
 expressions: atoms 123 1.5 true false name, (str "escaped"), (neg e), (! e),
              (arr e...), (mapl k v ...), (obj Class (f name e)...), (idx t k),
              (mget t name), (mcall t name args...), (call name args...),
+             (casc receiver section...)  a cascade: a section is a selector chain whose
+             innermost receiver is the placeholder (cself), or (setexpr target value),
              (op l r) for + - * / % == != < > <= >= && ||
 ```
 

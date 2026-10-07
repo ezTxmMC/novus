@@ -10,29 +10,14 @@ method parseWith(string text, string separator): array<object> {
     var rows = []
     var row = []
     var field = ""
-    var quoted = false
     var i = 0
     var n = text.length()
     while (i < n) {
         var c = text.charAt(i)
-        if (quoted) {
-            if (c == "\"" && i + 1 < n && text.charAt(i + 1) == "\"") {
-                field = field + "\""
-                i = i + 2
-                continue
-            }
-            if (c == "\"") {
-                quoted = false
-                i = i + 1
-                continue
-            }
-            field = field + c
-            i = i + 1
-            continue
-        }
         if (c == "\"") {
-            quoted = true
-            i = i + 1
+            var close = quoteEnd(text, i + 1)
+            field = field + text.substring(i + 1, close).replace("\"\"", "\"")
+            i = close + 1
             continue
         }
         if (c == separator) {
@@ -41,18 +26,18 @@ method parseWith(string text, string separator): array<object> {
             i = i + 1
             continue
         }
-        if (c == "\n" || c == "\r") {
-            if (c == "\r" && i + 1 < n && text.charAt(i + 1) == "\n") {
-                i = i + 1
-            }
-            row.append(field)
-            rows.append(row)
-            row = []
-            field = ""
+        if (c != "\n" && c != "\r") {
+            field = field + c
             i = i + 1
             continue
         }
-        field = field + c
+        if (c == "\r" && i + 1 < n && text.charAt(i + 1) == "\n") {
+            i = i + 1
+        }
+        row.append(field)
+        rows.append(row)
+        row = []
+        field = ""
         i = i + 1
     }
     if (field != "" || row.length() > 0) {
@@ -60,6 +45,23 @@ method parseWith(string text, string separator): array<object> {
         rows.append(row)
     }
     return rows
+}
+
+// The index of the quote that closes a quoted field whose content starts at `from` ("" is an
+// escaped quote); the end of the text when it is never closed.
+method quoteEnd(string text, integer from): integer {
+    var i = from
+    while (i < text.length()) {
+        if (text.charAt(i) == "\"" && i + 1 < text.length() && text.charAt(i + 1) == "\"") {
+            i = i + 2
+            continue
+        }
+        if (text.charAt(i) == "\"") {
+            return i
+        }
+        i = i + 1
+    }
+    return text.length()
 }
 
 method stringify(array<object> rows): string {

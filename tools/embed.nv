@@ -82,31 +82,35 @@ method inlineIncludes(string file, map<string, string> seen): string {
     var i = 0
     var n = lines.length()
     while (i < n) {
-        var line = lines[i]
-        var name = quotedInclude(line)
-        if (name == "") {
-            out = out + line
-            if (i < n - 1) {
-                out = out + "\n"
-            }
-        } else {
-            var target = path.join(dir, name)
-            if (seen.has(target) == false) {
-                seen[target] = "1"
-                var part = inlineIncludes(target, seen)
-                if (part == "") {
-                    eprintln "cannot read " + target + " (included from " + file + ")"
-                    exit(1)
-                }
-                out = out + part
-                if (part.endsWith("\n") == false) {
-                    out = out + "\n"
-                }
-            }
-        }
+        var name = quotedInclude(lines[i])
         i = i + 1
+        if (name != "") {
+            out = out + includedPart(path.join(dir, name), file, seen)
+            continue
+        }
+        out = out + lines[i - 1]
+        if (i < n) {
+            out = out + "\n"
+        }
     }
     return out
+}
+
+// The text of an included file, "" when it was inlined before.
+method includedPart(string target, string includer, map<string, string> seen): string {
+    if (seen.has(target)) {
+        return ""
+    }
+    seen[target] = "1"
+    var part = inlineIncludes(target, seen)
+    if (part == "") {
+        eprintln "cannot read " + target + " (included from " + includer + ")"
+        exit(1)
+    }
+    if (part.endsWith("\n") == false) {
+        part = part + "\n"
+    }
+    return part
 }
 
 // The file name of an `#include "name"` line, "" for any other line.

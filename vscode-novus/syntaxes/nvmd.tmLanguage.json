@@ -1,0 +1,113 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Novus Markdown",
+  "scopeName": "source.nvmd",
+  "comment": ".nvmd pages: Markdown with a `---` frontmatter, an `<?nv ... ?>` header, {expressions}, {#if}/{#for} blocks and <Component> tags (NVMD_SPEC.md of nvh-markdown).",
+  "patterns": [
+    { "include": "#frontmatter" },
+    { "include": "#code-block" },
+    { "include": "#novus-fence" },
+    { "include": "#template-block" },
+    { "include": "text.html.markdown" }
+  ],
+  "injections": {
+    "L:source.nvmd -meta.embedded.block.novus -meta.embedded.expression.novus -meta.embedded.block.frontmatter -markup.fenced_code -markup.inline.raw -comment": {
+      "patterns": [
+        { "include": "#escaped-brace" },
+        { "include": "#expression" }
+      ]
+    }
+  },
+  "repository": {
+    "frontmatter": {
+      "begin": "\\A(-{3})(\\s.*)?$",
+      "end": "^(---)\\s*$",
+      "beginCaptures": { "1": { "name": "punctuation.definition.metadata.markdown" } },
+      "endCaptures": { "1": { "name": "punctuation.definition.metadata.markdown" } },
+      "contentName": "meta.embedded.block.frontmatter",
+      "patterns": [{ "include": "source.yaml" }]
+    },
+    "code-block": {
+      "name": "meta.embedded.block.novus",
+      "begin": "<\\?nv\\b",
+      "end": "\\?>",
+      "beginCaptures": { "0": { "name": "punctuation.section.embedded.begin.novus" } },
+      "endCaptures": { "0": { "name": "punctuation.section.embedded.end.novus" } },
+      "contentName": "source.novus",
+      "patterns": [
+        { "match": "\\b(prop|ref)\\b", "name": "storage.modifier.novus" },
+        { "include": "source.novus" }
+      ]
+    },
+    "novus-fence": {
+      "name": "markup.fenced_code.block.markdown",
+      "begin": "(^|\\G)(\\s*)(`{3,}|~{3,})\\s*(?i:(nv|novus))(\\s+[^`~]*)?$",
+      "end": "(^|\\G)(\\2|\\s{0,3})(\\3)\\s*$",
+      "beginCaptures": {
+        "3": { "name": "punctuation.definition.markdown" },
+        "4": { "name": "fenced_code.block.language.markdown" },
+        "5": { "name": "fenced_code.block.language.attributes.markdown" }
+      },
+      "endCaptures": { "3": { "name": "punctuation.definition.markdown" } },
+      "patterns": [
+        {
+          "begin": "(^|\\G)(\\s*)(.*)",
+          "while": "(^|\\G)(?!\\s*([`~]{3,})\\s*$)",
+          "contentName": "meta.embedded.block.novus",
+          "patterns": [{ "include": "source.novus" }]
+        }
+      ]
+    },
+    "template-block": {
+      "patterns": [
+        {
+          "name": "meta.embedded.expression.novus",
+          "begin": "(\\{)\\s*([#:]\\s*(?:else\\s+if|if|else|for))\\b",
+          "end": "\\}",
+          "beginCaptures": {
+            "1": { "name": "punctuation.section.embedded.begin.novus" },
+            "2": { "name": "keyword.control.novus" }
+          },
+          "endCaptures": { "0": { "name": "punctuation.section.embedded.end.novus" } },
+          "patterns": [
+            { "match": "\\bin\\b", "name": "keyword.control.novus" },
+            { "include": "source.novus" }
+          ]
+        },
+        {
+          "name": "meta.embedded.expression.novus",
+          "match": "(\\{)\\s*(:else|/if|/for)\\s*(\\})",
+          "captures": {
+            "1": { "name": "punctuation.section.embedded.begin.novus" },
+            "2": { "name": "keyword.control.novus" },
+            "3": { "name": "punctuation.section.embedded.end.novus" }
+          }
+        },
+        {
+          "name": "meta.embedded.expression.novus",
+          "begin": "(\\{)\\s*(@html)\\b",
+          "end": "\\}",
+          "beginCaptures": {
+            "1": { "name": "punctuation.section.embedded.begin.novus" },
+            "2": { "name": "keyword.control.novus" }
+          },
+          "endCaptures": { "0": { "name": "punctuation.section.embedded.end.novus" } },
+          "patterns": [{ "include": "source.novus" }]
+        }
+      ]
+    },
+    "escaped-brace": {
+      "match": "\\\\[{}]",
+      "name": "constant.character.escape.novus"
+    },
+    "expression": {
+      "name": "meta.embedded.expression.novus",
+      "begin": "\\{(?![#:/@])",
+      "end": "\\}",
+      "beginCaptures": { "0": { "name": "punctuation.section.embedded.begin.novus" } },
+      "endCaptures": { "0": { "name": "punctuation.section.embedded.end.novus" } },
+      "contentName": "source.novus",
+      "patterns": [{ "include": "source.novus" }]
+    }
+  }
+}

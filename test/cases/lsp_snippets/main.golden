@@ -43,9 +43,9 @@ validate "$1": a literal '$' must be written #d at offset 0
 validate "#{0:x}": tabstop 0 is the final cursor and has no default at offset 3
 validate "#12345": a tabstop needs a number of 1 to 4 digits at offset 6
 #### catalogue
-toplevel 15, types 9, members 6, basics 15
+toplevel 15, types 9, members 6, basics 16
 flow 22, library 22, manifest 6, components 8
-snippets: 103, prefixes: 185
+snippets: 104, prefixes: 187
 notation errors: []
 duplicate ids: []
 unknown scopes: []
@@ -53,7 +53,7 @@ unknown verify modes: []
 imports that are no std module: []
 scope toplevel: 27 snippets, 49 prefixes
 scope class: 11 snippets, 20 prefixes
-scope statement: 57 snippets, 104 prefixes
+scope statement: 58 snippets, 106 prefixes
 scope expression: 2 snippets, 3 prefixes
 scope manifest: 6 snippets, 8 prefixes
 scope nvh: 1 snippets, 2 prefixes
@@ -68,7 +68,7 @@ assertEqual imports test, overrides count/3
 tryrun fixtures 0, importm fixture module
 empty catalogue: 0
 #### export
-exported entries: 89 (catalogue entries in a scope of the VS Code format: 89)
+exported entries: 90 (catalogue entries in a scope of the VS Code format: 90)
 ends with a line break: true, starts with: "{\n  \"Program entry point\": {"
 catalogue order kept: true
 manifest and nvh left out: true
@@ -78,8 +78,8 @@ Field with getter and/or setter: prefix ["fieldgs","accessors"], body ["${1:stri
 Print a variable with its name: prefix ["soutv","printv"], body ["println \"${1:value} = \\${${1}}\""]
 HTTP POST of a map or array as JSON: prefix ["httppost","post"], body ["var ${1:body} = http.post(\"${2:https://example.com}\", ${3:{\"key\": \"value\"\\}})"]
 Class with fields and a constructor: prefix ["class","cls"], body ["define class ${1:Name} {","\t${2:string} ${3:field}","","\tconstruct(${2} ${3}) {","\t\tthis.${3} = ${3}","\t}","","\t$0","}"]
-verification projects written: 103 of 103
-index lines: 103, build: 89, check only: 14
+verification projects written: 104 of 104
+index lines: 104, build: 90, check only: 14
 first index lines: main main.nv build / package main.nv build / nvh_html comp.nvh check
 ---- construct/p/main.nv
 package main
@@ -212,4 +212,4 @@ emoji lead byte: unknown escape '#' before a non-ASCII character at offset 0
 plain keeps the control byte: true
 lsp form: "${1|a\u0001b,c|}", valid: []
 escaped comma next to the control byte: 4
-index cannot be written: 0 of 103
+index cannot be written: 0 of 104

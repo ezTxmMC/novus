@@ -35,20 +35,15 @@ todo.json
 mccloud-data/
 people/
 
-# Website (website/ — bun + vite docs site; its `dist/` is covered above)
+# Website (website/, written in Novus; its `dist/` is covered above)
+website/.nvh-tailwind/
+website/public/site.css
+website/public/search-index.json
+
+# vscode-novus (TypeScript)
 node_modules/
 *.tsbuildinfo
 .vite/
-
-# Copied out of the repository by `bun run sync` (scripts/sync-content.ts)
-website/src/generated/
-website/src/lib/novus.tmLanguage.json
-
-# Documentation site (website/ has its own .gitignore as well)
-website/node_modules/
-website/dist/
-website/src/generated/
-website/src/lib/novus.tmLanguage.json
 
 # Tooling caches and logs
 .cache/
@@ -73,3 +68,6 @@ benchmarks/java/*.class
 !benchmarks/*.c
 **claude**
 DESIGN**.md
+
+# Translated from website/content/**/*.nvmd by nvh-markdown (`make -C website content`)
+website/content/**/*.nvh

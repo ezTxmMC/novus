@@ -1,0 +1,154 @@
+package order
+
+import ast
+import parser
+
+// Which operands have effects (call code) and which only read: the classification the evaluation order is decided on (see hoisting.nv).
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+// How an operand relates to the evaluation order. A stable operand cannot
+// fail, has no effect and cannot be changed by one; an operand that reads
+// takes part in no effect itself but may read what another operand changes
+// (a global, a field, an element); an operand with effects calls code.
+final OPERAND_STABLE = 0
+
+final OPERAND_READS = 1
+
+final OPERAND_EFFECTS = 2
+
+// Does the text of the node hold a call, a method call, an await or a spawn?
+// A literal that only contains the text "(call " says yes as well, which
+// merely costs a temporary.
+method mentionsCall(string node): bool {
+    return node.contains("(call ") || node.contains("(mcall ") || node.contains("(await ") || node.contains("(spawn ") || node.contains("(casc ")
+}
+
+// `module.name` without parentheses is a call of the parameterless function of
+// that module unless the module has a global of that name - the cases
+// genExpr tells apart for a member of something that is not a value.
+method isModuleFunction(string node, map<string, string> prog, map<string, string> ctx, map<string, string> locals): bool {
+    var target = nodeChild(node, 1)
+    if (isValueTarget(target, prog, ctx, locals) || prog.has("enum:" + target) || prog.has("pkg:" + target) == false) {
+        return false
+    }
+    return prog.has("global:" + target + "." + nodeChild(node, 2)) == false
+}
+
+// Does the node contain a module member that is a call?
+method callsModuleFunction(string node, map<string, string> prog, map<string, string> ctx, map<string, string> locals): bool {
+    if (isList(node) == false || nodeHead(node) == "str" || nodeHead(node) == "craw") {
+        return false
+    }
+    if (nodeHead(node) == "mget" && nodeCount(node) == 3 && isModuleFunction(node, prog, ctx, locals)) {
+        return true
+    }
+    for (child in childrenFrom(node, 1)) {
+        if (callsModuleFunction(child, prog, ctx, locals)) {
+            return true
+        }
+    }
+    return false
+}
+
+// Does the node contain code that runs?
+method hasEffects(string node, map<string, string> prog, map<string, string> ctx, map<string, string> locals): bool {
+    if (mentionsCall(node)) {
+        return true
+    }
+    return node.contains("(mget ") && callsModuleFunction(node, prog, ctx, locals)
+}
+
+// Division, remainder and shifts stop the program on a bad operand.
+method canTrap(string node): bool {
+    return node.contains("(/ ") || node.contains("(% ") || node.contains("(<< ") || node.contains("(>> ")
+}
+
+method atomClass(string node, map<string, string> locals): integer {
+    if (node == "true" || node == "false" || node == "this" || isNumberAtom(node) || locals.has(node)) {
+        return OPERAND_STABLE
+    }
+    return OPERAND_READS
+}
+
+// Is the node free of code that runs, or made of typed reads (see
+// typedReads)? Such an operand reads but has no effect.
+method readsOnly(string node, map<string, string> prog, map<string, string> ctx, map<string, string> locals): bool {
+    return hasEffects(node, prog, ctx, locals) == false || typedReads(node, prog, ctx, locals)
+}
+
+// Is the node made of reads that the code generator types: a numeric field
+// of `this`, a numeric native of the math module, arithmetic on those? They
+// call no code of the program. The field of another object is not among
+// them: the class the compiler guessed for it is only a guess, and an object
+// of another class is asked the ordinary way, which runs the method of that
+// class.
+method typedReads(string node, map<string, string> prog, map<string, string> ctx, map<string, string> locals): bool {
+    if (isTypedContext(ctx) == false || isList(node) == false) {
+        return false
+    }
+    var head = nodeHead(node)
+    if (head == "neg") {
+        return readsOnly(nodeChild(node, 1), prog, ctx, locals)
+    }
+    if (head == "mcall" && nodeCount(node) == 3) {
+        return nodeChild(node, 1) == "this" && fieldReadKind(node, prog, ctx, locals) != KIND_NONE
+    }
+    if (head == "mcall" && isModuleTarget(nodeChild(node, 1), prog, ctx, locals) && isMathNative(nativeOf(node, prog))) {
+        return childrenReadOnly(node, 3, prog, ctx, locals)
+    }
+    if (head == "idx" || (isBinaryOperator(head) && nodeCount(node) == 3)) {
+        return childrenReadOnly(node, 1, prog, ctx, locals)
+    }
+    return false
+}
+
+method childrenReadOnly(string node, integer from, map<string, string> prog, map<string, string> ctx, map<string, string> locals): bool {
+    var i = from
+    var count = nodeCount(node)
+    while (i < count) {
+        if (readsOnly(nodeChild(node, i), prog, ctx, locals) == false) {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+method operandClass(string node, map<string, string> prog, map<string, string> ctx, map<string, string> locals): integer {
+    if (isList(node) == false) {
+        return atomClass(node, locals)
+    }
+    var head = nodeHead(node)
+    if (head == "str" || head == "craw" || head == "rawd" || head == "rawi") {
+        return OPERAND_STABLE
+    }
+    if (hasEffects(node, prog, ctx, locals)) {
+        if (typedReads(node, prog, ctx, locals)) {
+            return OPERAND_READS
+        }
+        return OPERAND_EFFECTS
+    }
+    var numeric = isNumericKind(kindOf(node, prog, ctx, locals)) && isLocalArithmetic(node, locals)
+    if (numeric && canTrap(node) == false) {
+        return OPERAND_STABLE
+    }
+    return OPERAND_READS
+}
+
+// Is the node built from number literals and unboxed locals alone? Nothing
+// else an operand computes with is out of the reach of an effect.
+method isLocalArithmetic(string node, map<string, string> locals): bool {
+    if (isList(node) == false) {
+        return isNumberAtom(node) || isIntLocal(locals, node) || isFloatLocal(locals, node)
+    }
+    var head = nodeHead(node)
+    if (head == "neg") {
+        return isLocalArithmetic(nodeChild(node, 1), locals)
+    }
+    if (isBinaryOperator(head) && nodeCount(node) == 3) {
+        return isLocalArithmetic(nodeChild(node, 1), locals) && isLocalArithmetic(nodeChild(node, 2), locals)
+    }
+    return head == "rawd" || head == "rawi"
+}

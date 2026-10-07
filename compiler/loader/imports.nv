@@ -1,0 +1,178 @@
+package loader
+
+import arrays
+import os
+
+import ast
+import manifest
+import nvh
+import parser
+import std
+
+// Following imports: packages, single files, dependency modules and the standard library.
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+// import name: the package folder below the root, else the standard module.
+method loadPackage(string name, string root, string from, map<string, string> loaded, array<string> out, map<string, string> modules): integer {
+    if (root != "") {
+        var dir = joinPath(root, name)
+        if (sourceFilesIn(dir).length() > 0) {
+            return loadPackageDir(dir, root, from, loaded, out, modules)
+        }
+    }
+    if (name == PROJECT_MODULE_NAME) {
+        return loadProjectModule(from, loaded, out, modules)
+    }
+    if (name.contains("/") == false && stdSource(name) != "") {
+        return loadStdModule(name, from, loaded, out, modules)
+    }
+    var where = "."
+    if (root != "") {
+        where = root
+    }
+    fail("no package '" + name + "': there is no folder " + joinPath(where, name) + " with .nv files and no standard module of that name (standard modules: " + stdModules().join(", ") + ")", from)
+    return 0
+}
+
+// import @pkg/file: one file of a package, without its extension.
+method loadSingleFile(string rel, string root, string from, map<string, string> loaded, array<string> out, map<string, string> modules): integer {
+    if (isSourceName(rel)) {
+        fail("import @" + rel + ": leave the extension out (import @" + rel.substring(0, rel.length() - sourceExtension(rel).length()) + ")", from)
+    }
+    for (extension in SOURCE_EXTENSIONS) {
+        var candidate = joinPath(root, rel + extension)
+        if (fileExists(candidate)) {
+            return loadFile(candidate, root, from, loaded, out, modules)
+        }
+    }
+    fail("import @" + rel + ": there is no " + joinPath(root, rel + ".nv") + " (or .nvh)", from)
+    return 0
+}
+
+// import "module[/package[/file]]" of a dependency.
+method loadModuleImport(string rel, string module, string from, map<string, string> loaded, array<string> out, map<string, string> modules): integer {
+    var moduleRoot = modules[module + "/"]
+    if (rel == module) {
+        return loadFile(modules[module], moduleRoot, from, loaded, out, modules)
+    }
+    var sub = rel.substring(module.length() + 1, rel.length())
+    var dir = joinPath(moduleRoot, sub)
+    if (sourceFilesIn(dir).length() > 0) {
+        return loadPackageDir(dir, moduleRoot, from, loaded, out, modules)
+    }
+    if (hasSourceFile(moduleRoot, sub)) {
+        return loadSingleFile(sub, moduleRoot, from, loaded, out, modules)
+    }
+    fail("module " + module + " has no package or file '" + sub + "'", from)
+    return 0
+}
+
+// Appends declarations, following the imports. `qualifier` is the package
+// the declarations belong to ("" for the main package and std modules).
+method addDecls(array<string> decls, string dir, string root, string qualifier, string from, map<string, string> loaded, array<string> out, map<string, string> modules): integer {
+    for (d in decls) {
+        var head = nodeHead(d)
+        if (head == "package") {
+            continue
+        }
+        if (head == "import" || head == "importmod" || head == "importfile") {
+            followImport(d, head, root, from, loaded, out, modules)
+            continue
+        }
+        appendDecl(d, head, qualifier, out)
+    }
+    return 0
+}
+
+method followImport(string d, string head, string root, string from, map<string, string> loaded, array<string> out, map<string, string> modules) {
+    if (head == "import") {
+        followModuleImport(sexpUnescape(nodeChild(d, 1)), from, loaded, out, modules)
+        return
+    }
+    if (head == "importmod") {
+        loadPackage(nodeChild(d, 1), root, from, loaded, out, modules)
+        return
+    }
+    if (root == "") {
+        fail("import @" + sexpUnescape(nodeChild(d, 1)) + " is not possible in a standard module", from)
+    }
+    loadSingleFile(sexpUnescape(nodeChild(d, 1)), root, sexpUnescape(nodeChild(d, 2)), loaded, out, modules)
+}
+
+// import "path": a dependency module, or an error saying what to write instead.
+method followModuleImport(string rel, string from, map<string, string> loaded, array<string> out, map<string, string> modules) {
+    var module = moduleOf(rel, modules)
+    if (module != "") {
+        loadModuleImport(rel, module, from, loaded, out, modules)
+        return
+    }
+    if (isSourceName(rel)) {
+        var stem = rel.substring(0, rel.length() - sourceExtension(rel).length())
+        fail("import \"" + rel + "\": file paths are not imported - a folder is a package: import it (import " + dirName(stem) + ") or one file of it (import @" + stem + ", relative to the project root)", from)
+    }
+    fail("import \"" + rel + "\": no dependency module of that name in project.nv (packages of this project are imported without quotes: import " + rel + ")", from)
+}
+
+// A declaration of a package is prefixed with the package name.
+method appendDecl(string d, string head, string qualifier, array<string> out) {
+    if (qualifier != "" && (head == "method" || head == "global")) {
+        out.append("(" + head + " " + qualifier + "." + d.substring(head.length() + 2, d.length()))
+        return
+    }
+    if (qualifier != "" && (head == "class" || head == "enum")) {
+        // its methods see the package's functions and globals first
+        out.append("(classpkg " + nodeChild(d, 1) + " " + qualifier + ")")
+    }
+    out.append(d)
+}
+
+// The module a program reads the values of its project.nv from; the source comes from the module table.
+final PROJECT_MODULE_NAME = "project"
+
+method loadProjectModule(string from, map<string, string> loaded, array<string> out, map<string, string> modules): integer {
+    if (modules.has(PROJECT_MODULE_KEY) == false) {
+        fail("import project: there is no project.nv - the module gives the values of the manifest of the program (run 'novusc init')", from)
+    }
+    return loadModuleSource(PROJECT_MODULE_NAME, modules[PROJECT_MODULE_KEY], "project.nv", from, loaded, out, modules)
+}
+
+// Loads an embedded standard library module (`import os`). Its methods and
+// globals are namespaced: `(method os.mkdir ...)`, used as os.mkdir(...).
+method loadStdModule(string name, string from, map<string, string> loaded, array<string> out, map<string, string> modules): integer {
+    var source = stdSource(name)
+    if (source == "") {
+        fail("unknown module '" + name + "' (standard modules: " + stdModules().join(", ") + ")", from)
+    }
+    return loadModuleSource(name, source, "std/" + name + ".nv", from, loaded, out, modules)
+}
+
+// A module whose source is text the compiler has: its declarations are prefixed with the module's name.
+method loadModuleSource(string name, string source, string label, string from, map<string, string> loaded, array<string> out, map<string, string> modules): integer {
+    var key = "std:" + name
+    if (loaded.has(key)) {
+        return 0
+    }
+    loaded[key] = "1"
+    var decls = []
+    for (d in parseFile(source, label)) {
+        var head = nodeHead(d)
+        if (head == "method") {
+            decls.append("(method " + name + "." + d.substring(8, d.length()))
+            continue
+        }
+        if (head == "global") {
+            decls.append("(global " + name + "." + d.substring(8, d.length()))
+            continue
+        }
+        if (head == "class" || head == "enum") {
+            // its methods see the module's functions and globals unqualified
+            decls.append("(classpkg " + nodeChild(d, 1) + " " + name + ")")
+        }
+        decls.append(d)
+    }
+    // a module's imports are standard modules: root ""
+    addDecls(decls, "std", "", "", label, loaded, out, modules)
+    return 0
+}

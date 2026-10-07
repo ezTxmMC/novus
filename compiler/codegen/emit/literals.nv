@@ -1,0 +1,85 @@
+package emit
+
+import ast
+import parser
+
+// The tables the generated program carries: string literals, spawned bodies, inline caches.
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+// Every distinct string literal of a program is laid down as one static
+// value. A literal inside a loop is then a constant address instead of a
+// value the runtime has to box (or look up in a cache) on every pass.
+// `cText` is the literal already in C form, quotes included.
+method litRef(map<string, string> prog, string cText): string {
+    var key = "lit:" + cText
+    if (prog.has(key)) {
+        return "(&nv_lits[" + prog[key] + "])"
+    }
+    var index = 0
+    if (prog.has("litn")) {
+        index = parseInt(prog["litn"])
+    }
+    prog[key] = intToStr(index)
+    prog["litat:" + index] = cText
+    prog["litn"] = intToStr(index + 1)
+    return "(&nv_lits[" + index + "])"
+}
+
+// The literal table itself, in first-use order.
+method literalTable(map<string, string> prog): string {
+    if (prog.has("litn") == false) {
+        return ""
+    }
+    var count = parseInt(prog["litn"])
+    var parts = []
+    parts.append(nl() + "/* string literals */" + nl())
+    parts.append("static NvVal nv_lits[" + count + "];" + nl())
+    parts.append("static const char *const nv_lit_text[" + count + "] = {" + nl())
+    var i = 0
+    while (i < count) {
+        parts.append("    " + prog["litat:" + i] + "," + nl())
+        i = i + 1
+    }
+    parts.append("};" + nl())
+    return joinParts(parts)
+}
+
+// The bodies registered by spawnBody(), in the order the spawn sites were
+// generated.
+method spawnBodies(map<string, string> prog): string {
+    if (prog.has("spawnn") == false) {
+        return ""
+    }
+    var count = parseInt(prog["spawnn"])
+    var parts = []
+    parts.append(nl() + "/* bodies of thread, virtual and async spawns */" + nl())
+    var i = 0
+    while (i < count) {
+        parts.append("static nv nv_spawn_body_" + i + "(nv *a, int n) {" + nl())
+        parts.append("    (void)a;" + nl() + "    (void)n;" + nl())
+        parts.append("    return " + prog["spawnat:" + i] + ";" + nl() + "}" + nl())
+        i = i + 1
+    }
+    return joinParts(parts)
+}
+
+// The inline cache a call site gets (see NvIc in the runtime): one slot of
+// nv_ics[] per site, numbered in the order the sites are generated.
+method icSite(map<string, string> prog): string {
+    var index = 0
+    if (prog.has("icn")) {
+        index = parseInt(prog["icn"])
+    }
+    prog["icn"] = intToStr(index + 1)
+    return "&nv_ics[" + index + "]"
+}
+
+// The table of the inline caches, "" for a program without call sites.
+method icTable(map<string, string> prog): string {
+    if (prog.has("icn") == false) {
+        return ""
+    }
+    return nl() + "/* inline caches of the call sites */" + nl() + "static NV_TLS NvIc nv_ics[" + prog["icn"] + "];" + nl()
+}

@@ -1,0 +1,11 @@
+// the values the program reads back
+project "example.com/values"
+version "2.3.4-beta"
+main "main.nv"
+output "values-demo"
+novus "0.1.0-pre.alpha.2"
+
+require "example.com/geo" "v1.0.0"
+require "example.com/colors"
+replace "example.com/geo" "lib"
+replace "example.com/colors" "lib"

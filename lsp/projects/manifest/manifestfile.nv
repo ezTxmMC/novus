@@ -66,7 +66,7 @@ define class ManifestIssue {
     }
 }
 
-// project.nv as data. Defaults mirror compiler/project/manifest.nv: `main` is main.nv until a directive says
+// project.nv as data. Defaults mirror compiler/manifest/manifest.nv: `main` is main.nv until a directive says
 // otherwise and a `require` without a version asks for "latest".
 define class ManifestFile {
     string filePath

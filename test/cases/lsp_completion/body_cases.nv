@@ -23,6 +23,9 @@ method runMemberCases() {
     cxShow("members of a map", world, CX_MAIN, "package main\n\nmethod f(map<string, integer> table) {\n    table.ha<|>\n}\n", 8)
     cxShow("unknown type offers every member", world, CX_MAIN, "package main\n\nimport geo\n\nmethod f(object value) {\n    value.nam<|>\n}\n", 8)
     cxShow("nothing before the dot", world, CX_MAIN, "package main\n\nmethod f() {\n    .<|>\n}\n", 3)
+    cxShow("members after a cascade", world, CX_MAIN, "package main\n\nimport geo\n\nmethod main() {\n    var shape = Shape(\"a\", 1.0)\n    shape..<|>\n}\n", 8)
+    cxShow("members of the receiver in a later section", world, CX_MAIN, "package main\n\nimport geo\n\nmethod main() {\n    var shape = Shape(\"a\", 1.0)\n    shape..area()..na<|>\n}\n", 8)
+    cxShow("members of a section result", world, CX_MAIN, "package main\n\nimport geo\n\nmethod main() {\n    var shape = Shape(\"a\", 1.0)\n    shape..name.sub<|>\n}\n", 8)
     cxShow("member inside an interpolation", world, CX_MAIN, "package main\n\nmethod f(string text) {\n    var s = \"" + "$" + "{text.up<|>}\"\n}\n", 8)
 }
 
@@ -88,5 +91,5 @@ method runOddInputCases() {
     cxShowContext("right before an identifier", world, CX_MAIN, "package main\n\nmethod f(integer count) {\n    <|>count\n}\n")
     cxShowContext("a keyword is a prefix too", world, CX_MAIN, "package main\n\nmethod f(integer count) {\n    ret<|>\n}\n")
     cxShowContext("a float literal before the dot", world, CX_MAIN, "package main\n\nmethod f() {\n    var a = 1.5.<|>\n}\n")
-    cxShowContext("two dots", world, CX_MAIN, "package main\n\nmethod f(string s) {\n    s..<|>\n}\n")
+    cxShowContext("two dots are a cascade", world, CX_MAIN, "package main\n\nmethod f(string s) {\n    s..<|>\n}\n")
 }

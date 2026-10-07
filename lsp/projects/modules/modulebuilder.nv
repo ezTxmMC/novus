@@ -4,7 +4,7 @@ import base/platform
 import base/text
 import projects/manifest
 
-// Depth first like resolveModules of compiler/project/deps.nv: a module is entered before the modules its own
+// Depth first like resolveModules of compiler/manifest/deps.nv: a module is entered before the modules its own
 // manifest requires, the first version seen wins, and a `replace` counts only in the manifest that declares it.
 // Nothing is ever fetched: a module that is not in the cache just gets the status NotFetched.
 define class ModuleTableBuilder {

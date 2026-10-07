@@ -1,0 +1,192 @@
+package nvh
+
+import lexer
+import loader
+import parser
+
+// The <?nv ... ?> block of members: imports and define blocks move to the
+// file level, prop/ref/var become fields, methods stay where they are; and
+// the conversion of a prop or ref to its declared type.
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+method nvhFirstWord(string s): string {
+    var i = 0
+    while (i < s.length() && isAlpha(s.charAt(i))) {
+        i = i + 1
+    }
+    return s.substring(0, i)
+}
+
+// Is `s` an assignment `=` and not ==, !=, <= or >= ?
+method nvhIsAssignment(string s, integer i): bool {
+    var before = ""
+    if (i > 0) {
+        before = s.charAt(i - 1)
+    }
+    var after = ""
+    if (i + 1 < s.length()) {
+        after = s.charAt(i + 1)
+    }
+    return after != "=" && before != "=" && before != "!" && before != "<" && before != ">"
+}
+
+// Index of the '=' of a declaration (not ==, !=, <=, >=), -1 when none.
+method nvhAssignAt(string s): integer {
+    var depth = 0
+    var i = 0
+    var n = s.length()
+    while (i < n) {
+        var c = s.charAt(i)
+        if (c == NVH_QUOTE) {
+            i = nvhSkipString(s, i)
+            continue
+        }
+        if (c == "(" || c == "[" || c == "{") {
+            depth = depth + 1
+        }
+        if (c == ")" || c == "]" || c == "}") {
+            depth = depth - 1
+        }
+        if (c == "=" && depth == 0 && nvhIsAssignment(s, i)) {
+            return i
+        }
+        i = i + 1
+    }
+    return 0 - 1
+}
+
+// prop|ref|var [type] name [= initial] -> a field, recorded in st.
+method nvhField(string stmt, string word, integer line, string file, map<string, object> st): string {
+    var rest = stmt.substring(word.length(), stmt.length())
+    var eq = nvhAssignAt(rest)
+    var left = rest.trim()
+    var init = ""
+    if (eq >= 0) {
+        left = rest.substring(0, eq).trim()
+        init = rest.substring(eq + 1, rest.length()).trim()
+    }
+    var cut = left.length()
+    while (cut > 0 && nvhIsSpace(left.charAt(cut - 1)) == false) {
+        cut = cut - 1
+    }
+    var name = left.substring(cut, left.length())
+    var kind = left.substring(0, cut).trim()
+    if (kind == "") {
+        kind = "object"
+    }
+    if (nvhIsIdent(name) == false) {
+        fail("expected '" + word + " [type] name [= value]'", file + ":" + line)
+    }
+    var names = st["names"]
+    if (names.has(name)) {
+        fail("'" + name + "' is declared twice", file + ":" + line)
+    }
+    names[name] = word
+    var entry = {"name": name, "type": kind, "init": init, "line": line}
+    st[nvhFieldList(word)].append(entry)
+    return "private " + kind + " " + name + nvhOnlyNewlines(stmt)
+}
+
+// prop declarations are the component's props, ref and var its state.
+method nvhFieldList(string word): string {
+    if (word == "prop") {
+        return "props"
+    }
+    return "refs"
+}
+
+// The index after the /* */ comment that starts at `i`; the end when it is not closed.
+method nvhBlockCommentEnd(string code, integer i): integer {
+    var close = code.indexOf("*/", i + 2)
+    if (close < 0) {
+        close = code.length() - 2
+    }
+    return close + 2
+}
+
+// The members block, rewritten in place (line breaks kept): imports move to
+// the file header, define blocks stay at the file level before the class,
+// the class opens before the first member.
+method nvhDecls(string code, integer startLine, string file, string opener, map<string, object> st): string {
+    var out = []
+    var i = 0
+    var n = code.length()
+    var line = startLine
+    while (i < n) {
+        var c = code.charAt(i)
+        if (nvhIsSpace(c)) {
+            if (c == NVH_NEWLINE) {
+                line = line + 1
+            }
+            out.append(c)
+            i = i + 1
+            continue
+        }
+        if (c == "/" && i + 1 < n && code.charAt(i + 1) == "/") {
+            var eol = nvhLineEnd(code, i)
+            out.append(code.substring(i, eol))
+            i = eol
+            continue
+        }
+        if (c == "/" && i + 1 < n && code.charAt(i + 1) == "*") {
+            var end = nvhBlockCommentEnd(code, i)
+            var comment = code.substring(i, end)
+            out.append(comment)
+            line = line + nvhNewlines(comment)
+            i = end
+            continue
+        }
+        var stmtEnd = nvhStatementEnd(code, i)
+        var stmt = code.substring(i, stmtEnd)
+        out.append(nvhDeclStatement(stmt, line, file, opener, st))
+        line = line + nvhNewlines(stmt)
+        i = stmtEnd
+    }
+    return out.join("")
+}
+
+// One statement of the block: what it becomes in the generated source.
+method nvhDeclStatement(string stmt, integer line, string file, string opener, map<string, object> st): string {
+    var word = nvhFirstWord(stmt)
+    if (word == "import") {
+        st["imports"].append(stmt.trim())
+        return nvhOnlyNewlines(stmt)
+    }
+    if (word == "package") {
+        return nvhOnlyNewlines(stmt)
+    }
+    if (word == "define") {
+        if (st["opened"]) {
+            fail("define blocks go before the component's members in the <?nv ?> block", file + ":" + line)
+        }
+        return stmt
+    }
+    var lead = ""
+    if (st["opened"] == false) {
+        lead = opener + " "
+        st["opened"] = true
+    }
+    if (word == "prop" || word == "ref" || word == "var") {
+        return lead + nvhField(stmt, word, line, file, st)
+    }
+    return lead + stmt
+}
+
+// Novus code converting `value` to a field's declared type.
+method nvhConvert(string type, string value): string {
+    if (type == "integer" || type == "int") {
+        return "web.toInt(" + value + ")"
+    }
+    if (type == "float" || type == "double") {
+        return "web.toFloat(" + value + ")"
+    }
+    if (type == "bool" || type == "boolean") {
+        return "web.toBool(" + value + ")"
+    }
+    if (type == "string" || type == "str") {
+        return "web.toStr(" + value + ")"
+    }
+    return value
+}

@@ -1,0 +1,153 @@
+package nvh
+
+import lexer
+import loader
+import parser
+
+// Characters, names and string literals the template compiler works with.
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+final NVH_BACKSLASH = chr(92)
+final NVH_QUOTE = chr(34)
+final NVH_NEWLINE = chr(10)
+final NVH_RETURN = chr(13)
+final NVH_TAB = chr(9)
+
+private final EXTENSIONS = [".nvh"]
+
+// What a Novus string literal writes for a character it cannot hold as it is.
+private final LITERAL_ESCAPES = { chr(92): chr(92) + chr(92), chr(34): chr(92) + chr(34), chr(10): chr(92) + "n",
+    chr(13): chr(92) + "r", chr(9): chr(92) + "t" }
+
+// The component class of a template file: its name without the extension.
+method nvhClassName(string file): string {
+    var base = nvhWithoutExtension(nvhFileName(file))
+    var out = ""
+    var i = 0
+    while (i < base.length()) {
+        var c = base.charAt(i)
+        out = out + nvhNameChar(c)
+        i = i + 1
+    }
+    if (out == "" || isDigit(out.charAt(0))) {
+        return "_" + out
+    }
+    return out
+}
+
+// The part of a path after its last separator.
+method nvhFileName(string file): string {
+    var start = file.length()
+    while (start > 0 && file.charAt(start - 1) != "/" && file.charAt(start - 1) != NVH_BACKSLASH) {
+        start = start - 1
+    }
+    return file.substring(start, file.length())
+}
+
+method nvhWithoutExtension(string base): string {
+    var name = base
+    for (extension in EXTENSIONS) {
+        if (name.endsWith(extension)) {
+            name = name.substring(0, name.length() - extension.length())
+        }
+    }
+    return name
+}
+
+method nvhNameChar(string c): string {
+    if (isAlphaNum(c)) {
+        return c
+    }
+    return "_"
+}
+
+method nvhIsIdent(string s): bool {
+    if (s.length() == 0 || isAlpha(s.charAt(0)) == false) {
+        return false
+    }
+    var i = 1
+    while (i < s.length()) {
+        if (isAlphaNum(s.charAt(i)) == false) {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+method nvhIsSpace(string c): bool {
+    return c == " " || c == NVH_TAB || c == NVH_NEWLINE || c == NVH_RETURN
+}
+
+method nvhBlank(string s): bool {
+    var i = 0
+    while (i < s.length()) {
+        if (nvhIsSpace(s.charAt(i)) == false) {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+method nvhNewlines(string s): integer {
+    var count = 0
+    var i = s.indexOf(NVH_NEWLINE)
+    while (i >= 0) {
+        count = count + 1
+        i = s.indexOf(NVH_NEWLINE, i + 1)
+    }
+    return count
+}
+
+// Only the line breaks of `s` - what a moved statement leaves behind.
+method nvhOnlyNewlines(string s): string {
+    var out = ""
+    var n = nvhNewlines(s)
+    while (n > 0) {
+        out = out + NVH_NEWLINE
+        n = n - 1
+    }
+    return out
+}
+
+// A Novus string literal for `s`. "${" is split so it is not interpolated.
+method nvhLit(string s): string {
+    var parts = [NVH_QUOTE]
+    var i = 0
+    var n = s.length()
+    while (i < n) {
+        var c = s.charAt(i)
+        i = i + 1
+        if (LITERAL_ESCAPES.has(c)) {
+            parts.append(LITERAL_ESCAPES[c])
+            continue
+        }
+        if (c == "$" && i < n && s.charAt(i) == "{") {
+            parts.append("$" + NVH_QUOTE + " + " + NVH_QUOTE)
+            continue
+        }
+        parts.append(c)
+    }
+    parts.append(NVH_QUOTE)
+    return parts.join("")
+}
+
+private final VOID_TAGS = {"area": true, "base": true, "br": true, "col": true, "embed": true, "hr": true,
+    "img": true, "input": true, "link": true, "meta": true, "param": true, "source": true,
+    "track": true, "wbr": true}
+
+method nvhIsVoid(string tag): bool {
+    return VOID_TAGS.has(tag.toLower())
+}
+
+method nvhIsComponent(string tag): bool {
+    var c = tag.charAt(0)
+    return c >= "A" && c <= "Z"
+}
+
+method nvhTagChar(string c): bool {
+    return isAlphaNum(c) || c == "-" || c == ":" || c == "."
+}

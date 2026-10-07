@@ -53,7 +53,7 @@ define class TargetFinder {
         if (isNone(file) || isNone(syntax)) {
             return nothing()
         }
-        var tokens = targetsIslandAt(syntax.tokens, offset)
+        var tokens = targetsIslandAtIn(syntax, offset)
         if (isNone(tokens)) {
             tokens = syntax.tokens
         }

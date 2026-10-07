@@ -6,7 +6,7 @@ import arrays
 // runtime, the free builtins of the code generator and the keyword table of the lexer.
 
 private final RUNTIME_DISPATCH = "../../../runtime/nv_invoke.h"
-private final CODEGEN_BUILTINS = "../../../compiler/codegen/builtins.nv"
+private final CODEGEN_BUILTINS = "../../../compiler/codegen/expr/builtins.nv"
 private final LEXER_CHARS = "../../../compiler/lexer/chars.nv"
 private final DISPATCH_MARK = "strcmp(name, \""
 private final STRING_TABLE_MARK = "{\""
@@ -74,20 +74,47 @@ method dispatchHasLength(): bool {
     return readFile(RUNTIME_DISPATCH).contains("strcmp(name, \"length\") == 0")
 }
 
+private final BUILTIN_TABLE_START = "private final BUILTINS = {"
+private final BUILTIN_TABLE_END = "private final CORE_BUILTINS"
+private final BUILTIN_ENTRY_MARK = "\": [\""
+
+// The entries of the builtin table of the code generator: `"name": ["c_function", arity]`,
+// cut at the mark behind each name.
+method builtinEntries(): array<string> {
+    var table = sourceSection(readFile(CODEGEN_BUILTINS), BUILTIN_TABLE_START, BUILTIN_TABLE_END)
+    return table.split(BUILTIN_ENTRY_MARK)
+}
+
 // Free builtins as the code generator implements them: name and the exact argument count.
 method codegenArity(string name): integer {
-    var source = readFile(CODEGEN_BUILTINS)
-    var marker = "expectArgs(\"" + name + "\", nargs, "
-    var at = source.indexOf(marker)
-    if (at < 0) {
-        return -1
+    var entries = builtinEntries()
+    var index = 0
+    while (index < entries.length() - 1) {
+        if (lastWord(entries[index]) == name) {
+            var rest = entries[index + 1]
+            var arityAt = rest.indexOf(QUOTE) + 3
+            return parseInt(rest.substring(arityAt, rest.indexOf("]", arityAt)))
+        }
+        index = index + 1
     }
-    var from = at + marker.length()
-    return parseInt(source.substring(from, source.indexOf(",", from)))
+    return -1
 }
 
 method codegenNames(): array<string> {
-    return wordsAfter(readFile(CODEGEN_BUILTINS), "if (name == \"")
+    var entries = builtinEntries()
+    var names = []
+    var index = 0
+    while (index < entries.length() - 1) {
+        names.append(lastWord(entries[index]))
+        index = index + 1
+    }
+    return names
+}
+
+// The text behind the last quote.
+method lastWord(string text): string {
+    var pieces = text.split(QUOTE)
+    return pieces[pieces.length() - 1]
 }
 
 method lexerKeywords(): array<string> {

@@ -5,6 +5,14 @@ package lexer
 // NOTE: this file is part of the bootstrap chain: it must stay compilable
 // by the previous compiler snapshot (bootstrap/novusc.c).
 
+// The characters that source code names by code.
+final NEWLINE = chr(10)
+final TAB = chr(9)
+final CARRIAGE_RETURN = chr(13)
+final NUL = chr(0)
+final QUOTE = chr(34)
+final BACKSLASH = chr(92)
+
 // Built once: the lexer asks about every identifier and every character.
 private final KEYWORDS = { "package": true, "import": true, "method": true, "var": true,
     "println": true, "print": true, "eprintln": true, "private": true,
@@ -22,7 +30,7 @@ method isKeywordWord(string word): bool {
 }
 
 method isTwoCharOp(string op): bool {
-    return op == "==" || op == "!=" || op == "<=" || op == ">=" || op == "&&" || op == "||" || op == "=>" || op == "=<" || op == "<<" || op == ">>"
+    return op == "==" || op == "!=" || op == "<=" || op == ">=" || op == "&&" || op == "||" || op == "=>" || op == "=<" || op == "<<" || op == ">>" || op == ".."
 }
 
 method isDigit(string c): bool {
@@ -58,16 +66,16 @@ method isSymbolChar(string c): bool {
 
 method lexEscape(string c): string {
     if (c == "n") {
-        return chr(10)
+        return NEWLINE
     }
     if (c == "t") {
-        return chr(9)
+        return TAB
     }
     if (c == "r") {
-        return chr(13)
+        return CARRIAGE_RETURN
     }
     if (c == "0") {
-        return chr(0)
+        return NUL
     }
     return c
 }

@@ -1,0 +1,27 @@
+<?nv
+import data
+
+prop string current = ""
+
+// "page" marks the current link, false leaves the attribute out.
+method ariaCurrent(string path): object {
+    if (path == current) {
+        return "page"
+    }
+    return false
+}
+?>
+<nav class="space-y-7 text-sm" aria-label="Documentation">
+    {#for section in data.navSections()}
+        <div>
+            <p class="eyebrow mb-2">{section.title}</p>
+            <ul class="space-y-0.5 border-l border-ink-700">
+                {#for item in section.items}
+                    <li>
+                        <a href={item.path} class="-ml-px block border-l border-transparent py-1.5 pl-4 text-ink-400 no-underline hover:border-primary-400 hover:text-ink-100" class:border-primary-400={item.path == current} class:text-primary-100={item.path == current} class:font-medium={item.path == current} aria-current={ariaCurrent(item.path)}>{item.title}</a>
+                    </li>
+                {/for}
+            </ul>
+        </div>
+    {/for}
+</nav>

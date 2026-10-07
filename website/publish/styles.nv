@@ -1,0 +1,22 @@
+package publish
+
+import "github.com/ezTxmMC/nvh-tailwindcss/tailwindcss"
+
+// The Tailwind build: styles/site.css plus every class the .nvh, .nvmd and
+// .nv sources of the site and of its dependencies (nvh-tailwindcss finds those through project.nv) use.
+
+private final STYLE_INPUT = "styles/site.css"
+
+method styleOptions(string output, bool minify): TailwindOptions {
+    var options = tailwindcss.options(STYLE_INPUT, output)
+    options.minify = minify
+    return options
+}
+
+method buildStyles(string output, bool minify): bool {
+    var result = tailwindcss.build(styleOptions(output, minify))
+    if (result.ok == false) {
+        eprintln "tailwind failed:\n" + result.output
+    }
+    return result.ok
+}

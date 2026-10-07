@@ -11,6 +11,13 @@ ok   chain/map-index-then-member
 ok   chain/this-member
 ok   chain/number-receiver
 ok   chain/object-literal-receiver
+ok   cascade/first-section
+ok   cascade/later-section-uses-the-receiver
+ok   cascade/selectors-stay-in-their-section
+ok   cascade/receiver-of-a-dot-pair
+ok   cascade/call-receiver
+ok   cascade/start-index
+ok   cascade/apart-dots-are-no-cascade
 ok   argc/empty
 ok   argc/trailing-comma
 ok   argc/nested-calls-and-literals
@@ -90,4 +97,4 @@ ok   describe/continuation-bytes-only-still-terminate
 ok   define/kind-word-follows
 ok   define/other-name-is-a-local-type
 ok   define/alone-is-not-a-start
-92 checks, 0 failed
+99 checks, 0 failed

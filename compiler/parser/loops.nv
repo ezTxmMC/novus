@@ -1,0 +1,44 @@
+package parser
+
+import lexer
+
+// Loops and `sync` blocks.
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+method parseWhile(array<string> tokens, integer pos): map<string, string> {
+    var p = expectSym(tokens, pos + 1, "(")
+    var condition = parseExpr(tokens, p, 0)
+    p = expectSym(tokens, parseInt(condition["pos"]), ")")
+    var body = parseBlock(tokens, p)
+    return { "node": "(while " + condition["node"] + " " + body["node"] + ")", "pos": parseInt(body["pos"]) }
+}
+
+// for (name in expr) { ... }
+method parseFor(array<string> tokens, integer pos): map<string, string> {
+    var p = expectSym(tokens, pos + 1, "(")
+    p = expectIdent(tokens, p, "loop variable name")
+    var loopVar = tokVal(tokens[p - 1])
+    if (isKw(tokens, p, "in") == false) {
+        fail("expected 'in' in for loop but found " + describe(tokens, p), posOf(tokens, p))
+    }
+    var iterable = parseExpr(tokens, p + 1, 0)
+    p = expectSym(tokens, parseInt(iterable["pos"]), ")")
+    var body = parseBlock(tokens, p)
+    return { "node": "(forin " + loopVar + " " + iterable["node"] + " " + body["node"] + ")", "pos": parseInt(body["pos"]) }
+}
+
+private final DEFAULT_LOCK = "-"
+
+method parseSync(array<string> tokens, integer pos): map<string, string> {
+    var p = pos + 1
+    var lock = DEFAULT_LOCK
+    if (isSym(tokens, p, "(")) {
+        var lockExpr = parseExpr(tokens, p + 1, 0)
+        p = expectSym(tokens, parseInt(lockExpr["pos"]), ")")
+        lock = lockExpr["node"]
+    }
+    var body = parseBlock(tokens, p)
+    return { "node": "(sync " + lock + " " + body["node"] + ")", "pos": parseInt(body["pos"]) }
+}

@@ -157,3 +157,11 @@ method runSpacingCases() {
     runBraceCases()
     runUnknownCases()
 }
+
+method runCascadeCases() {
+    expectLine("cascade call", "x=a .. add(1) .. add(2)", "x = a..add(1)..add(2)")
+    expectLine("cascade assignment", "a..width=1..height=2", "a..width = 1..height = 2")
+    expectLine("cascade index", "a..[0]=1", "a..[0] = 1")
+    expectText("cascade lines continue the chain", "var b = make()\n..add(1)\n..add(2)\n", "var b = make()\n    ..add(1)\n    ..add(2)\n")
+    expectStable("cascade lines", "method f() {\n    var b = make()\n        ..add(1)\n        ..label = \"x\"\n}\n")
+}

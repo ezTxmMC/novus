@@ -261,9 +261,9 @@ method fill(array args, object value): array {
     for (a in args) {
         if (typeOf(a) == "map" && a.has("$nv")) {
             out.append(value)
-        } else {
-            out.append(a)
+            continue
         }
+        out.append(a)
     }
     return out
 }
@@ -607,28 +607,32 @@ define class NvhView {
 
     // A browser event: {"c": id, "h": handler, "a": [args]} or a binding
     // {"c": id, "b": ref, "val": value}.
+    // Hands an event to its component - a bound input or a handler call - and returns what went wrong, if anything.
+    method nvDeliver(NvhComponent c, map<string, object> message): string {
+        if (message.has("b")) {
+            var name = text(message["b"])
+            if (guarded(c, "set", name, message["val"]) == false && failed() == false) {
+                eprintln "web: ${c.nvName()} has no ref '${name}' to bind"
+            }
+            return failure()
+        }
+        var handler = text(message["h"])
+        var args = []
+        if (message.has("a") && typeOf(message["a"]) == "array") {
+            args = message["a"]
+        }
+        if (guarded(c, "call", handler, args) == false && failed() == false) {
+            eprintln "web: ${c.nvName()} has no handler ${handler}/${args.length()}"
+        }
+        return failure()
+    }
+
     method nvEvent(map<string, object> message): map<string, object> {
         touched = os.time()
         var cid = text(message["c"])
         var problem = ""
         if (comps.has(cid)) {
-            var c = comps[cid]
-            if (message.has("b")) {
-                var name = text(message["b"])
-                if (guarded(c, "set", name, message["val"]) == false && failed() == false) {
-                    eprintln "web: ${c.nvName()} has no ref '${name}' to bind"
-                }
-            } else {
-                var handler = text(message["h"])
-                var args = []
-                if (message.has("a") && typeOf(message["a"]) == "array") {
-                    args = message["a"]
-                }
-                if (guarded(c, "call", handler, args) == false && failed() == false) {
-                    eprintln "web: ${c.nvName()} has no handler ${handler}/${args.length()}"
-                }
-            }
-            problem = failure()
+            problem = nvDeliver(comps[cid], message)
         }
         var update = nvRefresh()
         if (problem != "" && update.has("error") == false) {
@@ -646,10 +650,10 @@ method collect(NvhComponent c, map<string, string> fresh, map<string, object> fo
     for (p in c.nvParts()) {
         if (typeOf(p) == "string") {
             parts.append(p)
-        } else {
-            parts.append("<#" + p.id() + ">")
-            collect(p, fresh, found)
+            continue
         }
+        parts.append("<#" + p.id() + ">")
+        collect(p, fresh, found)
     }
     fresh[c.id()] = parts.join("")
     return 0
@@ -681,9 +685,9 @@ method htmlInto(array parts, array out): integer {
     for (p in parts) {
         if (typeOf(p) == "string") {
             out.append(p)
-        } else {
-            htmlInto(p.nvParts(), out)
+            continue
         }
+        htmlInto(p.nvParts(), out)
     }
     return 0
 }
@@ -762,51 +766,70 @@ method serve(integer port) {
     var lastSweep = os.time()
     while (true) {
         var sockets = [server]
-        var pending = false
         for (key in conns) {
-            var c = conns[key]
-            sockets.append(c.fd())
-            if (bytes.size(c.output()) > 0) {
-                pending = true
-            }
+            sockets.append(conns[key].fd())
         }
-        var wait = 1000
-        if (tickEvery > 0) {
-            wait = tickEvery - (nowMs() - lastTick)
-            if (wait < 0) {
-                wait = 0
-            }
-        }
-        if (pending && wait > 10) {
-            wait = 10
-        }
-        for (s in net.poll(sockets, wait)) {
-            if (s == server) {
-                acceptAll(server, conns)
-            } else {
-                var key = "" + s
-                if (conns.has(key)) {
-                    readFrom(conns[key], conns)
-                }
-            }
+        for (s in net.poll(sockets, pollTimeout(conns, lastTick))) {
+            serveSocket(server, s, conns)
         }
         flush(conns)
         if (tickEvery > 0 && nowMs() - lastTick >= tickEvery) {
             lastTick = nowMs()
-            for (vid in views) {
-                if (views[vid].nvSocket() >= 0) {
-                    views[vid].nvTickAll()
-                }
-            }
-            pushAll("", conns)
-            flush(conns)
+            tickViews(conns)
         }
         var now = os.time()
-        if (now - lastSweep >= 15) {
+        if (now - lastSweep >= SWEEP_SECONDS) {
             lastSweep = now
             sweep(now, conns)
         }
     }
+}
+
+private final IDLE_POLL_MS = 1000
+private final PENDING_POLL_MS = 10
+private final SWEEP_SECONDS = 15
+
+// How long poll() may block: until the next tick, shortened while output waits to be sent.
+method pollTimeout(map<string, object> conns, integer lastTick): integer {
+    var wait = IDLE_POLL_MS
+    if (tickEvery > 0) {
+        wait = math.max(0, tickEvery - (nowMs() - lastTick))
+    }
+    if (hasPendingOutput(conns) && wait > PENDING_POLL_MS) {
+        return PENDING_POLL_MS
+    }
+    return wait
+}
+
+method hasPendingOutput(map<string, object> conns): bool {
+    for (key in conns) {
+        if (bytes.size(conns[key].output()) > 0) {
+            return true
+        }
+    }
+    return false
+}
+
+// A readable socket: a new connection on the listening one, else data of a known connection.
+method serveSocket(integer server, integer socket, map<string, object> conns) {
+    if (socket == server) {
+        acceptAll(server, conns)
+        return
+    }
+    var key = "" + socket
+    if (conns.has(key)) {
+        readFrom(conns[key], conns)
+    }
+}
+
+method tickViews(map<string, object> conns) {
+    for (vid in views) {
+        if (views[vid].nvSocket() >= 0) {
+            views[vid].nvTickAll()
+        }
+    }
+    pushAll("", conns)
+    flush(conns)
 }
 
 method nowMs(): integer {
@@ -872,6 +895,12 @@ method readFrom(NvhConn conn, map<string, object> conns): integer {
     return 0
 }
 
+private final HTTP_OK = 200
+private final HTTP_NOT_FOUND = 404
+private final HTTP_NOT_ALLOWED = 405
+private final HTTP_FAILED = 500
+private final HTML_TYPE = "text/html; charset=utf-8"
+
 method dispatch(NvhConn conn, string verb, string target, string body, map<string, object> conns): integer {
     var where = target
     var query = ""
@@ -884,10 +913,10 @@ method dispatch(NvhConn conn, string verb, string target, string body, map<strin
     var params = parseQuery(query)
     if (where == "/_nvh/event") {
         if (verb != "POST") {
-            respond(conn, verb, 405, "text/plain", "method not allowed")
+            respond(conn, verb, HTTP_NOT_ALLOWED, "text/plain", "method not allowed")
             return 0
         }
-        respond(conn, verb, 200, "application/json", eventReply(body, conns))
+        respond(conn, verb, HTTP_OK, "application/json", eventReply(body, conns))
         return 0
     }
     if (where == "/_nvh/live") {
@@ -895,17 +924,12 @@ method dispatch(NvhConn conn, string verb, string target, string body, map<strin
         return 0
     }
     if (verb != "GET" && verb != "HEAD") {
-        logRequest(verb, target, 405)
-        respond(conn, verb, 405, "text/plain", "method not allowed")
+        logRequest(verb, target, HTTP_NOT_ALLOWED)
+        respond(conn, verb, HTTP_NOT_ALLOWED, "text/plain", "method not allowed")
         return 0
     }
-    for (m in mounts) {
-        if (where.startsWith(m[0])) {
-            if (serveFile(conn, verb, where.substring(m[0].length(), where.length()), m[1])) {
-                logRequest(verb, target, 200)
-                return 0
-            }
-        }
+    if (serveMounted(conn, verb, target, where)) {
+        return 0
     }
     var parts = segments(where)
     for (route in routes) {
@@ -914,27 +938,43 @@ method dispatch(NvhConn conn, string verb, string target, string body, map<strin
             for (key in captured) {
                 params[key] = captured[key]
             }
-            var view = NvhView()
-            view.nvStart(newViewId(), route[1].nvNew())
-            var root = view.nvRoot()
-            for (key in params) {
-                guarded(root, "prop", key, params[key])
-            }
-            var first = view.nvRefresh()
-            if (first.has("error")) {
-                logRequest(verb, target, 500)
-                respond(conn, verb, 500, "text/html; charset=utf-8", "<!doctype html>\n<title>500</title>\n<h1>500 - the page failed</h1>\n<pre>" + escape(first["error"]) + "</pre>\n")
-                return 0
-            }
-            views[view.nvId()] = view
-            logRequest(verb, target, 200)
-            respond(conn, verb, 200, "text/html; charset=utf-8", document(view, true))
+            servePage(conn, verb, target, route[1], params)
             return 0
         }
     }
-    logRequest(verb, target, 404)
-    respond(conn, verb, 404, "text/html; charset=utf-8", "<!doctype html>\n<title>404</title>\n<h1>404 - not found</h1>\n<p>" + escape(where) + "</p>\n")
+    logRequest(verb, target, HTTP_NOT_FOUND)
+    respond(conn, verb, HTTP_NOT_FOUND, HTML_TYPE, "<!doctype html>\n<title>404</title>\n<h1>404 - not found</h1>\n<p>" + escape(where) + "</p>\n")
     return 0
+}
+
+// Answers with a file of a web.files() mount; false when none has it.
+method serveMounted(NvhConn conn, string verb, string target, string where): bool {
+    for (m in mounts) {
+        if (where.startsWith(m[0]) && serveFile(conn, verb, where.substring(m[0].length(), where.length()), m[1])) {
+            logRequest(verb, target, HTTP_OK)
+            return true
+        }
+    }
+    return false
+}
+
+// A new view of the page `route`, rendered once, or a 500 when that fails.
+method servePage(NvhConn conn, string verb, string target, NvhComponent route, map<string, string> params) {
+    var view = NvhView()
+    view.nvStart(newViewId(), route.nvNew())
+    var root = view.nvRoot()
+    for (key in params) {
+        guarded(root, "prop", key, params[key])
+    }
+    var first = view.nvRefresh()
+    if (first.has("error")) {
+        logRequest(verb, target, HTTP_FAILED)
+        respond(conn, verb, HTTP_FAILED, HTML_TYPE, "<!doctype html>\n<title>500</title>\n<h1>500 - the page failed</h1>\n<pre>" + escape(first["error"]) + "</pre>\n")
+        return
+    }
+    views[view.nvId()] = view
+    logRequest(verb, target, HTTP_OK)
+    respond(conn, verb, HTTP_OK, HTML_TYPE, document(view, true))
 }
 
 method logRequest(string verb, string target, integer status) {
@@ -948,9 +988,10 @@ method respond(NvhConn conn, string verb, integer status, string kind, string bo
     var head = "HTTP/1.1 " + status + " " + reason(status) + "\r\nContent-Type: " + kind + "\r\nContent-Length: " + bytes.size(body) + "\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n"
     if (verb == "HEAD") {
         conn.output(bytes.join([conn.output(), head]))
-    } else {
-        conn.output(bytes.join([conn.output(), head, body]))
+        conn.closing(true)
+        return
     }
+    conn.output(bytes.join([conn.output(), head, body]))
     conn.closing(true)
 }
 
@@ -1036,7 +1077,8 @@ method flush(map<string, object> conns): integer {
             }
             if (written >= size) {
                 c.output("")
-            } else {
+            }
+            if (written < size) {
                 c.output(bytes.slice(c.output(), written, size))
             }
         }
@@ -1141,10 +1183,11 @@ method matches(array<string> pattern, array<string> parts, map<string, string> c
     while (i < pattern.length()) {
         if (pattern[i].startsWith(":")) {
             captured[pattern[i].substring(1, pattern[i].length())] = parts[i]
-        } else {
-            if (pattern[i] != parts[i]) {
-                return false
-            }
+            i = i + 1
+            continue
+        }
+        if (pattern[i] != parts[i]) {
+            return false
         }
         i = i + 1
     }
@@ -1160,9 +1203,9 @@ method parseQuery(string query): map<string, string> {
         var eq = pair.indexOf("=")
         if (eq < 0) {
             out[urlDecode(pair)] = ""
-        } else {
-            out[urlDecode(pair.substring(0, eq))] = urlDecode(pair.substring(eq + 1, pair.length()))
+            continue
         }
+        out[urlDecode(pair.substring(0, eq))] = urlDecode(pair.substring(eq + 1, pair.length()))
     }
     return out
 }

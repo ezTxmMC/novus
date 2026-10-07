@@ -1,0 +1,156 @@
+package expr
+
+import ast
+import parser
+import std
+
+// Calls: builtins, constructors, user methods and overloads.
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+// How many arguments nv_construct0..3 take.
+final MAX_DIRECT_CONSTRUCTOR_ARGS = 3
+
+method genArgs(string node, integer from, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    var out = ""
+    var i = from
+    var count = nodeCount(node)
+    while (i < count) {
+        if (i > from) {
+            out = out + ", "
+        }
+        out = out + genExpr(nodeChild(node, i), prog, ctx, locals)
+        i = i + 1
+    }
+    return out
+}
+
+// The C call for a resolved user method `func:<name>/<nargs>` (native or generated).
+method genResolvedCall(string name, integer nargs, string args, map<string, string> prog): string {
+    var m = ""
+    if (prog.has("func:" + name + "/" + nargs)) {
+        m = prog["fnode:" + name + "/" + nargs + "/0"]
+    }
+    if (m == "") {
+        m = prog["fnode:" + name + "/*/0"]
+    }
+    if (isNativeMethod(m)) {
+        var body = nodeChild(m, 5)
+        var cfn = sexpUnescape(nodeChild(body, 1))
+        if (nodeCount(body) > 2) {
+            if (nargs == 0) {
+                return cfn + "(0)"
+            }
+            return cfn + "(" + nargs + ", " + args + ")"
+        }
+        return cfn + "(" + args + ")"
+    }
+    return "f_" + cName(name) + "_" + nargs + "(" + args + ")"
+}
+
+// module.function(args): functions of imported modules are namespaced.
+method genQualifiedCall(string module, string fname, string node, integer from, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    var nargs = nodeCount(node) - from
+    var name = module + "." + fname
+    if (prog.has("func:" + name + "/" + nargs) || prog.has("func:" + name + "/*")) {
+        return genResolvedCall(name, nargs, genArgs(node, from, prog, ctx, locals), prog)
+    }
+    if (prog.has("hasfunc:" + name)) {
+        fail("no overload of " + name + "() takes " + nargs + " argument(s)", ctx["pos"])
+    }
+    if (prog.has("pkg:" + module)) {
+        fail("module '" + module + "' has no function '" + fname + "'", ctx["pos"])
+    }
+    fail("module '" + module + "' is not imported - add 'import " + module + "'", ctx["pos"])
+    return ""
+}
+
+method genCall(string node, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    var name = nodeChild(node, 1)
+    var nargs = nodeCount(node) - 2
+    var key = name + "/" + nargs
+    // inside a module, its own functions come first
+    if (isOwnModuleFunction(name, nargs, ctx, prog)) {
+        return genResolvedCall(ctx["pkg"] + "." + name, nargs, genArgs(node, 2, prog, ctx, locals), prog)
+    }
+    if (ctx["class"] != "" && findMethod(prog, ctx["class"], name) != "") {
+        return genImplicitThisCall(node, name, nargs, prog, ctx, locals)
+    }
+    if (prog.has("func:" + key) == false && prog.has("unq:" + key)) {
+        return genUnqualifiedCall(node, name, nargs, prog, ctx, locals)
+    }
+    if (isCoreBuiltin(name) || (prog.has("hasfunc:" + name) == false && isClassLike(prog, name) == false)) {
+        var builtin = genBuiltinCall(name, nargs, genArgs(node, 2, prog, ctx, locals), ctx)
+        if (builtin != "") {
+            return builtin
+        }
+    }
+    if (prog.has("class:" + name)) {
+        return genConstruction(node, name, nargs, prog, ctx, locals)
+    }
+    if (prog.has("enum:" + name)) {
+        fail("'" + name + "' is an enum and cannot be constructed", ctx["pos"])
+    }
+    if (prog.has("func:" + key)) {
+        return genResolvedCall(name, nargs, genArgs(node, 2, prog, ctx, locals), prog)
+    }
+    failUnresolvedCall(name, nargs, prog, ctx)
+    return ""
+}
+
+method isOwnModuleFunction(string name, integer nargs, map<string, string> ctx, map<string, string> prog): bool {
+    if (ctx["pkg"] == "") {
+        return false
+    }
+    return prog.has("func:" + ctx["pkg"] + "." + name + "/" + nargs) || prog.has("func:" + ctx["pkg"] + "." + name + "/*")
+}
+
+// Inside a class a bare call means this.name(...); own methods win.
+method genImplicitThisCall(string node, string name, integer nargs, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    if (nargs > 0) {
+        return invokeCall("self", name, nargs, genArgs(node, 2, prog, ctx, locals), prog)
+    }
+    if (fieldSlot(prog, ctx["class"], name) >= 0) {
+        return nv_fieldSlotCode(prog, ctx, name)
+    }
+    return invokeCall0("self", name, prog)
+}
+
+// A function of one of the program's packages, called unqualified.
+method genUnqualifiedCall(string node, string name, integer nargs, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    var candidates = prog["unq:" + name + "/" + nargs]
+    if (candidates.contains(" ")) {
+        ambiguousName(name, candidates, ctx["pos"])
+    }
+    return genResolvedCall(candidates, nargs, genArgs(node, 2, prog, ctx, locals), prog)
+}
+
+method genConstruction(string node, string name, integer nargs, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    if (classIsAbstract(prog["class:" + name])) {
+        fail("cannot instantiate abstract class '" + name + "'", ctx["pos"])
+    }
+    if (nargs > MAX_DIRECT_CONSTRUCTOR_ARGS) {
+        return "nv_construct_cached(&nv_cls_" + name + ", " + cstr(name) + ", " + nargs + ", " + genArgs(node, 2, prog, ctx, locals) + ")"
+    }
+    // nv_construct0..3 avoid the va_list of the general form
+    var direct = "nv_construct" + nargs + "(&nv_cls_" + name + ", " + cstr(name)
+    if (nargs > 0) {
+        direct = direct + ", " + genArgs(node, 2, prog, ctx, locals)
+    }
+    return direct + ")"
+}
+
+method failUnresolvedCall(string name, integer nargs, map<string, string> prog, map<string, string> ctx): integer {
+    if (prog.has("hasfunc:" + name)) {
+        fail("no overload of '" + name + "' takes " + nargs + " argument(s)", ctx["pos"])
+    }
+    if (prog.has("iface:" + name)) {
+        fail("cannot instantiate interface '" + name + "'", ctx["pos"])
+    }
+    if (prog.has("unqname:" + name)) {
+        fail("no overload of '" + name + "' (" + prog["unqname:" + name].split(" ").join(", ") + ") takes " + nargs + " argument(s)", ctx["pos"])
+    }
+    fail("unknown method '" + name + "()'", ctx["pos"])
+    return 0
+}

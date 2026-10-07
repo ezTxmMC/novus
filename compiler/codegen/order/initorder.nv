@@ -1,0 +1,141 @@
+package order
+
+import ast
+import parser
+
+// The order of the start-up initialisation: a unit runs after the units it uses (see initscan.nv for how uses are read off the C).
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+define class InitOrder {
+    private final map<string, string> sources
+    private final map<string, array<string>> references
+    private final map<string, string> state
+    private final array<string> chain
+    private final array<bool> chainDirect
+    private final array<string> order: get
+
+    construct(map<string, string> sources) {
+        this.sources = sources
+        this.references = {}
+        this.state = {}
+        this.chain = []
+        this.chainDirect = []
+        this.order = []
+    }
+
+    method referencesOf(string key): array<string> {
+        if (references.has(key)) {
+            return references[key]
+        }
+        var found = referencedKeys(sources[key], sources)
+        references[key] = found
+        return found
+    }
+
+    // The units that `key` leads to through functions and classes, not past
+    // another unit.
+    method collectUnits(string key, map<string, string> visited, array<string> into) {
+        for (ref in referencesOf(key)) {
+            if (visited.has(ref)) {
+                continue
+            }
+            visited[ref] = "1"
+            if (isUnitKey(ref)) {
+                into.append(ref)
+                continue
+            }
+            collectUnits(ref, visited, into)
+        }
+    }
+
+    method dependenciesOf(string unit): array<string> {
+        var visited = {}
+        var found = []
+        visited[unit] = "1"
+        collectUnits(unit, visited, found)
+        return found
+    }
+
+    method usesDirectly(string unit, string other): bool {
+        return referencesOf(unit).contains(other)
+    }
+
+    // Reached `dep` again while it is still being ordered: a cycle, which is
+    // an error only when every step of it is a direct use.
+    method rejectCycle(string dep, bool closingDirect) {
+        if (closingDirect == false) {
+            return
+        }
+        var start = chain.indexOf(dep)
+        var at = start + 1
+        while (at < chain.length()) {
+            if (chainDirect[at] == false) {
+                return
+            }
+            at = at + 1
+        }
+        var names = []
+        var i = start
+        while (i < chain.length()) {
+            names.append(unitLabel(chain[i]))
+            i = i + 1
+        }
+        names.append(unitLabel(dep))
+        fail("initialisers use each other: " + names.join(" -> "), unitPosition(dep))
+    }
+
+    method visitDependency(string unit, string dep) {
+        var status = ""
+        if (state.has(dep)) {
+            status = state[dep]
+        }
+        if (status == STATE_DONE) {
+            return
+        }
+        var direct = usesDirectly(unit, dep)
+        if (status == STATE_VISITING) {
+            rejectCycle(dep, direct)
+            return
+        }
+        visit(dep, direct)
+    }
+
+    method visit(string unit, bool direct) {
+        state[unit] = STATE_VISITING
+        chain.append(unit)
+        chainDirect.append(direct)
+        for (dep in dependenciesOf(unit)) {
+            visitDependency(unit, dep)
+        }
+        chain.pop()
+        chainDirect.pop()
+        state[unit] = STATE_DONE
+        order.append(unit)
+    }
+
+    // A global that its own initialiser uses reads itself before it has a value.
+    method rejectSelfUse(string unit) {
+        if (unit.startsWith("g:") && usesDirectly(unit, unit)) {
+            fail("the initialiser uses the global itself", unitPosition(unit))
+        }
+    }
+
+    method run(array<string> units) {
+        for (unit in units) {
+            rejectSelfUse(unit)
+            if (state.has(unit) == false) {
+                visit(unit, false)
+            }
+        }
+    }
+}
+
+// `units` in source order (globals first, then enums), reordered so that
+// every unit follows the units it uses.
+method initOrder(array<string> units, map<string, string> sources): array<string> {
+    var ordering = InitOrder(sources)
+    ordering.run(units)
+    return ordering.order()
+}

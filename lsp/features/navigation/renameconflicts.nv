@@ -96,7 +96,7 @@ define class NavigationRenameConflicts {
             return false
         }
         var syntax = navigationTokenSyntax(this.context, file)
-        var tokens = targetsIslandAt(syntax.tokens, location.span.start)
+        var tokens = targetsIslandAtIn(syntax, location.span.start)
         if (isNone(tokens)) {
             tokens = syntax.tokens
         }
@@ -139,7 +139,7 @@ define class NavigationRenameConflicts {
         if (isSome(this.context.resolver().localNamed(scope, this.newName))) {
             return "a variable named '" + this.newName + "' is already visible here"
         }
-        for (tokens in navigationStreams(this.context.syntax.tokens)) {
+        for (tokens in navigationStreamsOf(this.context.syntax)) {
             var i = 0
             while (i < tokens.length()) {
                 if (this.usesNameIn(tokens, i, local)) {

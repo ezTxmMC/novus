@@ -302,7 +302,7 @@ a keyword: 5 while (Keyword) keyword | `while (condition) { ... }` re
 manifest directive: project version main lib output novus require replace
 manifest module string: 0
 #### LexicalSources.snippetItems
-statement: 104 snippets
+statement: 106 snippets
 expression: 3 snippets
 classMember: 20 snippets
 topLevel: 49 snippets
@@ -373,7 +373,7 @@ a statement has no type names: 0
 == an annotation of the project (0)
 == another kind (0)
 #### no label appears twice (7.7)
-statement: 130 offered, 120 ranked, duplicates []
+statement: 132 offered, 122 ranked, duplicates []
 expression: 23 offered, 23 ranked, duplicates []
 classMember: 26 offered, 24 ranked, duplicates []
 topLevel: 58 offered, 53 ranked, duplicates []

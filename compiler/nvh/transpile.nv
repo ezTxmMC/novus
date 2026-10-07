@@ -1,0 +1,192 @@
+package nvh
+
+import lexer
+import loader
+import parser
+
+// .nvh files: HTML with Novus in it, compiled into a component class.
+//
+//     <?nv
+//     import strings
+//     prop string title = "Todo"          // set by the parent / the URL
+//     ref array<string> items = []         // state; the page updates when it changes
+//     ref string draft = ""
+//
+//     method add() {
+//         items.append(draft)
+//         draft = ""
+//     }
+//     ?>
+//     <head><title>{title}</title></head>
+//     <section class="todo">
+//         <h1>{title} ({items.length()})</h1>
+//         <input bind="draft" @keydown.enter="add">
+//         {#for item, i in items}
+//             <Item text={item} @remove="removeAt(i)" />
+//         {/for}
+//     </section>
+//     <style> .todo { max-width: 30rem } </style>
+//
+// The file Todo.nvh becomes `define class Todo based NvhComponent` (see
+// std/web.nv). The <?nv ... ?> block at the very start holds the members:
+// prop and ref (or var) declarations become fields, methods stay methods,
+// imports and define blocks move to the file level. Everything after it is
+// the template, compiled into nvRender(out), which appends the HTML to `out`:
+//
+//   {expr}               escaped text           {@html expr}   raw HTML
+//   <?= expr ?>          escaped text (PHP)     <?nv code ?>   statements
+//   {#if c} {:else if c} {:else} {/if}          {#for x in xs} {#for x, i in xs} {/for}
+//   attr={expr}          true/false toggle a bare attribute, nothing drops it
+//   attr="a {expr} b"    interpolated           class:name={cond}   class toggle
+//   @click="handler"     @click="handler(arg, $value)"   @click={count = count + 1}
+//   @keydown.enter.prevent="..."                modifiers
+//   bind="ref"           two-way binding of an input, textarea or select
+//   <Child prop={x} key={id} @event="handler">slot content</Child>   <slot/>
+//                        (Child.nvh next to the file, in components/ or in
+//                        ../components/ is imported by itself)
+//   <head>...</head>     goes into the document head; <style> at the top
+//                        level is the component's style sheet (sent once)
+//   \{ \}                literal braces
+//
+// The generated code keeps the line numbers of the .nvh file, so errors in
+// methods and template expressions point at the right line.
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+// The Novus source for a template file. `dir` is its directory and `root` the
+// project root: a component tag <Name> in the template imports Name.nvh
+// by itself when it is found next to the file or in components/.
+method transpileNvh(string source, string file, string dir, string root): string {
+    var name = nvhClassName(file)
+    var opener = "define class " + name + " based NvhComponent {"
+    var st = {"file": file, "out": [], "line": 1, "pending": [], "pline": 1, "n": 0,
+        "handlers": {}, "inline": [], "binds": [], "loops": [], "imports": [],
+        "props": [], "refs": [], "names": {}, "opened": false, "style": "", "tags": {}}
+    var members = nvhSplitMembers(source, file, opener, st)
+    st["line"] = members["line"]
+    st["pline"] = members["line"]
+    nvhEmitTop(st, nvhTree(nvhTokens(members["template"], members["line"], file), file))
+    nvhCheckBinds(st, name, file)
+    var render = st["out"].join("")
+    return nvhFileHeader(st, name, dir, root) + members["decls"] + " method nvRender(array out) { " + render + " }" + NVH_NEWLINE + nvhTail(st, name).join(NVH_NEWLINE) + NVH_NEWLINE + "}" + NVH_NEWLINE
+}
+
+// The members block at the start of the file and the template after it:
+// {decls, template, line} with `line` the line the template starts at.
+method nvhSplitMembers(string source, string file, string opener, map<string, object> st): map<string, object> {
+    var i = 0
+    while (i < source.length() && nvhIsSpace(source.charAt(i))) {
+        i = i + 1
+    }
+    var decls = ""
+    var template = source
+    var line = 1
+    if (source.substring(i, i + 4) == "<?nv") {
+        var end = source.indexOf("?>", i)
+        if (end < 0) {
+            fail("unclosed <?nv (missing ?>)", file + ":" + (1 + nvhNewlines(source.substring(0, i))))
+        }
+        var lead = nvhOnlyNewlines(source.substring(0, i))
+        decls = lead + nvhDecls(source.substring(i + 4, end), 1 + nvhNewlines(source.substring(0, i + 4)), file, opener, st)
+        template = source.substring(end + 2, source.length())
+        line = 1 + nvhNewlines(source.substring(0, end))
+    }
+    if (st["opened"] == false) {
+        decls = decls + " " + opener
+    }
+    return {"decls": decls, "template": template, "line": line}
+}
+
+// The imports of the generated file: web, what the members imported, and
+// the components the template uses.
+method nvhFileHeader(map<string, object> st, string name, string dir, string root): string {
+    var header = "import web "
+    for (imp in st["imports"]) {
+        header = header + imp + " "
+    }
+    for (tag in st["tags"]) {
+        if (tag != name) {
+            header = header + nvhComponentImport(tag, dir, root)
+        }
+    }
+    return header
+}
+
+// `import @Tag ` for a component found next to the file or in components/, "" when there is none.
+method nvhComponentImport(string tag, string dir, string root): string {
+    for (sub in [".", "components", "../components"]) {
+        var folder = joinPath(dir, sub)
+        if (hasSourceFile(folder, tag)) {
+            return nvhImportOf(tag, packagePath(root, folder))
+        }
+    }
+    return ""
+}
+
+method nvhImportOf(string tag, string pkg): string {
+    if (pkg == "") {
+        return "import @" + tag + " "
+    }
+    if (pkg == "?") {
+        return ""
+    }
+    return "import @" + pkg + "/" + tag + " "
+}
+
+// bind="x" needs a ref x, not a prop.
+method nvhCheckBinds(map<string, object> st, string name, string file) {
+    var names = st["names"]
+    for (b in st["binds"]) {
+        if (names.has(b[0]) == false || names[b[0]] == "prop") {
+            fail("bind=\"" + b[0] + "\": '" + b[0] + "' is not a ref of " + name + " (declare it: ref " + b[0] + " = ...)", file + ":" + b[1])
+        }
+    }
+}
+
+// The methods that make the class a component: its identity, props, state, handlers and style.
+method nvhTail(map<string, object> st, string name): array<string> {
+    var tail = []
+    tail.append("method nvName(): string { return " + nvhLit(name) + " }")
+    tail.append("method nvNew(): NvhComponent { return " + name + "() }")
+    nvhFieldMethods(tail, st["props"], "nvDefaults", "nvProp")
+    nvhFieldMethods(tail, st["refs"], "nvSetup", "nvSet")
+    tail.append("method nvCall(string nvkey, array nvargs): bool { " + nvhCalls(st["handlers"]).join(" ") + " return false }")
+    if (st["style"] != "") {
+        tail.append("method nvStyle(): string { return " + nvhLit(st["style"]) + " }")
+    }
+    for (m in st["inline"]) {
+        tail.append(m)
+    }
+    return tail
+}
+
+// The initialiser method and the setter method of a list of fields (props or refs).
+method nvhFieldMethods(array<string> tail, array<object> fields, string initName, string setName) {
+    var inits = []
+    var sets = []
+    for (f in fields) {
+        if (f["init"] != "") {
+            inits.append(f["name"] + " = " + f["init"])
+        }
+        sets.append("if (nvkey == " + nvhLit(f["name"]) + ") { " + f["name"] + " = " + nvhConvert(f["type"], "nvvalue") + " return true }")
+    }
+    tail.append("method " + initName + "() { " + inits.join(" ") + " }")
+    tail.append("method " + setName + "(string nvkey, object nvvalue): bool { " + sets.join(" ") + " return false }")
+}
+
+// The dispatch of events to handler methods: one branch per name and argument count.
+method nvhCalls(map<string, object> handlers): array<string> {
+    var calls = []
+    for (key in handlers) {
+        var h = handlers[key]
+        var args = []
+        var a = 0
+        while (a < h[1]) {
+            args.append("nvargs[" + a + "]")
+            a = a + 1
+        }
+        calls.append("if (nvkey == " + nvhLit(h[0]) + " && nvargs.length() == " + h[1] + ") { " + h[0] + "(" + args.join(", ") + ") return true }")
+    }
+    return calls
+}

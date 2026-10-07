@@ -1,0 +1,78 @@
+---
+title: "Tailwind CSS"
+description: "Tailwind 4.3 for nvh projects with nvh-tailwindcss"
+slug: "tailwind-css"
+---
+<?nv
+import @components/DocLayout
+import @components/Callout
+?>
+<DocLayout slug={slug} title={title} description={description}>
+
+[nvh-tailwindcss](https://github.com/ezTxmMC/nvh-tailwindcss) brings Tailwind CSS 4.3 to nvh projects. It is a Novus dependency: no Node, no `node_modules`. It runs the official standalone Tailwind binary (pinned to 4.3.3, downloaded once into `~/.novus/tools/tailwindcss/4.3.3/` and checked against its sha256) and adds what the bare CLI lacks for nvh sources.
+
+## Wiring
+
+```nv
+require "github.com/ezTxmMC/nvh-tailwindcss" "latest"
+replace "github.com/ezTxmMC/nvh-tailwindcss" "../nvh-tailwindcss"   // a local checkout, optional
+```
+
+```nv
+import "github.com/ezTxmMC/nvh-tailwindcss/tailwindcss"
+
+method buildStyles() {
+    var options = tailwindcss.options("styles/site.css", "public/site.css")
+    options..minify = true
+        ..sources = ["../nvh-markdown"]
+    var result = tailwindcss.build(options)
+    if (result.ok == false) {
+        eprintln result.output
+    }
+}
+```
+
+The layout links the result with `<link rel="stylesheet" href="/site.css">` (or `tailwindcss.link(href)`). `tailwindcss.watch(options)` rebuilds in the background while the dev server runs.
+
+## Why not just the CLI?
+
+Tailwind finds classes by scanning text, and nvh writes some of them in ways it does not understand:
+
+| nvh source | handed to Tailwind |
+|---|---|
+| `class:bg-primary-500={active}` | `bg-primary-500` |
+| `class="px-4 {extra} hover:underline"` | `px-4`, `hover:underline` |
+| `"flex items-center gap-2"` in `.nv` or `.nvh` | its classes, when the whole string is a class list |
+
+The package scans `.nvh`, `.nvmd` and `.nv` files and every extra source, writes `.nvh-tailwind/candidates.html` and an input CSS that registers it with `@source`. Add `.nvh-tailwind/` to your `.gitignore`.
+
+## A theme
+
+Tailwind 4 is configured in CSS. This site defines its three purples as tokens:
+
+```css
+@import "tailwindcss";
+
+@theme {
+    --color-primary-500: oklch(0.62 0.24 295);
+    --color-secondary-500: oklch(0.60 0.23 265);
+    --color-accent-500: oklch(0.66 0.25 330);
+}
+```
+
+and uses them as `bg-primary-500`, `text-accent-300`, `border-secondary-400` anywhere in a component.
+
+## Command line
+
+```sh
+novusc run tailwind.nv install
+novusc run tailwind.nv build --input styles/site.css --output public/site.css --minify
+novusc run tailwind.nv watch --input styles/site.css --output public/site.css
+```
+
+<Callout type="tip" title="Standalone plugins">
+The standalone binary bundles `@tailwindcss/typography` and `@tailwindcss/forms`: `@plugin "@tailwindcss/typography";`.
+</Callout>
+
+
+</DocLayout>

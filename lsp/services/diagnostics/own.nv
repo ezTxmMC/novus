@@ -24,7 +24,7 @@ define class OwnDiagnostics based DiagnosticProducer {
     construct(Workspace workspace, Settings settings) {
         this.workspace = workspace
         this.settings = settings
-        this.rules = [SyntaxDiagnosticRule(), ImportDiagnosticRule(settings), DefinitionDiagnosticRule(), CallDiagnosticRule(), MemberDiagnosticRule(), DiagnosticsBindRule()]
+        this.rules = [SyntaxDiagnosticRule(), ImportDiagnosticRule(settings), DefinitionDiagnosticRule(), CallDiagnosticRule(), MemberDiagnosticRule(), DiagnosticsBindRule(), DiagnosticsCBlockRule()]
     }
 
     method produce(Document document): array<Diagnostic> {

@@ -1,0 +1,119 @@
+package codegen
+
+import ast
+import parser
+
+// The unboxed workers of methods with numbers in their signature (typed/workers.nv decides which have one).
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+// The C type of what a worker returns.
+method rawResultType(string descriptor): string {
+    var kind = rawReturnKind(descriptor)
+    if (kind == KIND_INT) {
+        return "long long"
+    }
+    if (kind == KIND_FLOAT) {
+        return "double"
+    }
+    return "nv"
+}
+
+// One parameter of a worker: a C number, or the boxed argument.
+method rawParamDeclaration(string kind, string pname, integer index): string {
+    if (kind == KIND_INT) {
+        return "long long l_" + pname
+    }
+    if (kind == KIND_FLOAT) {
+        return "double l_" + pname
+    }
+    return "nv a" + index
+}
+
+// The parameter list of a worker: unboxed where the descriptor says so, the
+// boxed value otherwise.
+method rawParamList(string m, string descriptor): string {
+    var params = paramsNode(m)
+    var parts = []
+    var i = 1
+    var paramsCount = nodeCount(params)
+    while (i < paramsCount) {
+        parts.append(rawParamDeclaration(rawParamKind(descriptor, i - 1), nodeChild(nodeChild(params, i), 2), i - 1))
+        i = i + 1
+    }
+    if (parts.length() == 0) {
+        return "void"
+    }
+    return parts.join(", ")
+}
+
+// What the worker returns when the body falls off its end.
+method rawDefaultCode(string descriptor, string t): string {
+    var kind = rawReturnKind(descriptor)
+    if (kind == KIND_INT) {
+        return "0"
+    }
+    if (kind == KIND_FLOAT) {
+        return "0.0"
+    }
+    return defaultCode(t)
+}
+
+// A method with an unboxed worker (workers.nv): the worker `<name>_raw` takes
+// and returns what its descriptor says, and the function under the method's
+// own name - the one every boxed call reaches - converts the boxed arguments
+// the way the body used to, calls the worker and boxes its result.
+method genWorkerMethod(string m, string cname, string descriptor, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    var raw = cname + "_raw"
+    ctx["rawret"] = rawReturnKind(descriptor)
+    var params = paramsNode(m)
+    var out = "static " + rawResultType(descriptor) + " " + raw + "(" + rawParamList(m, descriptor) + ") {" + nl()
+    var i = 1
+    var paramsCount = nodeCount(params)
+    while (i < paramsCount) {
+        var p = nodeChild(params, i)
+        if (rawParamKind(descriptor, i - 1) == "n") {
+            out = out + "    nv l_" + nodeChild(p, 2) + " = " + coerceCode("a" + (i - 1), nodeChild(p, 1)) + ";" + nl()
+        }
+        i = i + 1
+    }
+    var dep = deprecationCode(m, "    ", "dep_" + cname)
+    if (dep != "") {
+        out = "static int dep_" + cname + " = 0;" + nl() + out + dep
+    }
+    var body = genBlock(nodeChild(m, 5), "    ", prog, ctx, locals)
+    out = out + tempDecls(ctx, "    ") + body
+    out = out + "    return " + rawDefaultCode(descriptor, methodRet(m)) + ";" + nl() + "}" + nl()
+    return out + genWorkerEntry(m, cname, raw, descriptor)
+}
+
+// A boxed argument as the worker takes it.
+method unboxedArgument(string kind, string arg): string {
+    if (kind == KIND_INT) {
+        return "nv_as_int(" + arg + ")"
+    }
+    if (kind == KIND_FLOAT) {
+        return "nv_as_double(" + arg + ")"
+    }
+    return arg
+}
+
+// The boxed function of a method that has a worker.
+method genWorkerEntry(string m, string cname, string raw, string descriptor): string {
+    var args = []
+    var i = 0
+    while (i < arityOf(m)) {
+        args.append(unboxedArgument(rawParamKind(descriptor, i), "a" + i))
+        i = i + 1
+    }
+    var call = raw + "(" + args.join(", ") + ")"
+    var kind = rawReturnKind(descriptor)
+    if (kind == KIND_INT) {
+        call = "nv_int(" + call + ")"
+    }
+    if (kind == KIND_FLOAT) {
+        call = "nv_float(" + call + ")"
+    }
+    return "static nv " + cname + "(" + cParamList(m) + ") {" + nl() + "    return " + call + ";" + nl() + "}" + nl()
+}

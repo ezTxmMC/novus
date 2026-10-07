@@ -7,7 +7,7 @@ import syntax/lexing
 
 // Whitespace-only, idempotent formatting of `.nv` text (5.7: no other file kind is formatted).
 private final FORMAT_KIND_NV = "nv"
-private final FORMAT_UNTERMINATED_CODES = { "unterminated-string": true, "unterminated-comment": true }
+private final FORMAT_UNTERMINATED_CODES = { "unterminated-string": true, "unterminated-comment": true, "unterminated-cblock": true }
 
 define class Formatter {
     FormatSettings settings

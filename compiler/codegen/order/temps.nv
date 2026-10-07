@@ -1,0 +1,87 @@
+package order
+
+// The temporaries of the evaluation order (see hoisting.nv). They are declared
+// once at the top of the C function - a comma expression cannot declare them,
+// and a GNU statement expression would tie the generated code to gcc and
+// clang. A function counts them in ctx["temps"]; whatever generates code
+// outside a function (a global's initialiser, an enum constant) declares its
+// own with tempNames().
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+final TEMP_PREFIX = "nvt"
+
+method newTemp(map<string, string> ctx): string {
+    var count = 0
+    if (ctx.has("temps")) {
+        count = parseInt(ctx["temps"])
+    }
+    ctx["temps"] = intToStr(count + 1)
+    return TEMP_PREFIX + count
+}
+
+// The names of the temporaries a function used, "nvt0, nvt1", or "" when it
+// used none.
+method tempNames(map<string, string> ctx): string {
+    if (ctx.has("temps") == false) {
+        return ""
+    }
+    var names = []
+    var i = 0
+    while (i < parseInt(ctx["temps"])) {
+        names.append(TEMP_PREFIX + i)
+        i = i + 1
+    }
+    return names.join(", ")
+}
+
+// The temporaries of unboxed operands (typed expressions, see kinds.nv): a
+// `double` or a `long long` each, counted apart from the boxed ones.
+final TEMP_PREFIX_FLOAT = "nvd"
+final TEMP_PREFIX_INT = "nvi"
+
+method newTypedTemp(map<string, string> ctx, string kind): string {
+    var prefix = TEMP_PREFIX_INT
+    if (kind == KIND_FLOAT) {
+        prefix = TEMP_PREFIX_FLOAT
+    }
+    var count = 0
+    if (ctx.has(prefix)) {
+        count = parseInt(ctx[prefix])
+    }
+    ctx[prefix] = intToStr(count + 1)
+    return prefix + count
+}
+
+method typedTempNames(map<string, string> ctx, string prefix): string {
+    if (ctx.has(prefix) == false) {
+        return ""
+    }
+    var names = []
+    var i = 0
+    while (i < parseInt(ctx[prefix])) {
+        names.append(prefix + i)
+        i = i + 1
+    }
+    return names.join(", ")
+}
+
+// The declaration lines to put at the top of the function whose body used
+// `ctx`.
+method tempDecls(map<string, string> ctx, string indent): string {
+    var out = ""
+    var names = tempNames(ctx)
+    if (names != "") {
+        out = indent + "nv " + names + ";" + nl()
+    }
+    var floats = typedTempNames(ctx, TEMP_PREFIX_FLOAT)
+    if (floats != "") {
+        out = out + indent + "double " + floats + ";" + nl()
+    }
+    var ints = typedTempNames(ctx, TEMP_PREFIX_INT)
+    if (ints != "") {
+        out = out + indent + "long long " + ints + ";" + nl()
+    }
+    return out
+}

@@ -1,4 +1,9 @@
 project "github.com/ezTxmMC/novus-website"
-version "0.1.0"
+version "0.2.0"
 main "main.nv"
 output "website"
+
+require "github.com/ezTxmMC/nvh-markdown" "latest"
+require "github.com/ezTxmMC/nvh-tailwindcss" "latest"
+replace "github.com/ezTxmMC/nvh-markdown" "../../nvh-markdown"
+replace "github.com/ezTxmMC/nvh-tailwindcss" "../../nvh-tailwindcss"

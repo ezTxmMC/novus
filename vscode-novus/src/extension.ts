@@ -212,7 +212,7 @@ async function executeCurrentFile(mode: 'run' | 'build'): Promise<void> {
   const terminal = vscode.window.terminals.find(t => t.name === 'Novus') ?? vscode.window.createTerminal({ name: 'Novus', cwd });
   terminal.show(true);
   if (mode === 'build') {
-    const output = document.uri.fsPath.replace(/\.nvh?$/, '');
+    const output = document.uri.fsPath.replace(/\.nv(?:h|md)?$/, '');
     terminal.sendText(`${quote(command)} build ${quote(document.uri.fsPath)} -o ${quote(output)}`);
   } else {
     terminal.sendText(`${quote(command)} run ${quote(document.uri.fsPath)}`);

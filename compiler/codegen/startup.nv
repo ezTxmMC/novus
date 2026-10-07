@@ -1,0 +1,95 @@
+package codegen
+
+import ast
+import parser
+
+// The start-up of a generated program: global initialisation and main.
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+// Records the C text of a body under `key` (the init order reads what a
+// function or class reaches from it, see initorder.nv).
+method addSource(map<string, string> sources, string key, string text) {
+    if (sources.has(key)) {
+        sources[key] = sources[key] + text
+        return
+    }
+    sources[key] = text
+}
+
+// The statements of an initialiser inside a block that declares the
+// temporaries (see order/hoisting.nv) they read; unchanged when there are none.
+method withTemps(string statements, string temps): string {
+    if (temps == "") {
+        return statements
+    }
+    return "    {" + nl() + "        nv " + temps + ";" + nl() + statements + "    }" + nl()
+}
+
+method genMainEntry(map<string, string> prog): string {
+    var hasMain0 = prog.has("func:main/0")
+    var hasMain1 = prog.has("func:main/1")
+    if (hasMain0 == false && hasMain1 == false) {
+        fail("no 'method main' found", "program")
+    }
+    var out = "int main(int argc, char **argv) {" + nl()
+    out = out + "    nv result = nv_nil;" + nl()
+    if (prog.has("litn")) {
+        out = out + "    nv_init_literals(nv_lits, nv_lit_text, " + prog["litn"] + ");" + nl()
+    }
+    out = out + "    nv_init_args(argc, argv);" + nl()
+    out = out + "    nv_register_classes();" + nl()
+    out = out + "    nv_init_globals();" + nl()
+    out = out + mainCallCode(hasMain0, hasMain1)
+    out = out + "    nv_terminate(nv_exit_code(result));" + nl()
+    out = out + "    return 0;" + nl()
+    return out + "}" + nl()
+}
+
+// The statement(s) that select and call the user's main method.
+method mainCallCode(bool hasMain0, bool hasMain1): string {
+    if (hasMain0 && hasMain1) {
+        return "    if (argc > 1) {" + nl() + "        result = f_main_1(nv_args());" + nl() + "    } else {" + nl() + "        result = f_main_0();" + nl() + "    }" + nl()
+    }
+    if (hasMain1) {
+        return "    result = f_main_1(nv_args());" + nl()
+    }
+    return "    result = f_main_0();" + nl()
+}
+
+// nv_init_globals: every global becomes a collector root, then the globals
+// and the enum constants are initialised, each after what it uses.
+method genInitFunction(array<string> rootsInit, array<string> globalUnits, array<string> enumUnits, map<string, string> sources): string {
+    var out = "static void nv_init_globals(void) {" + nl() + joinParts(rootsInit)
+    var units = globalUnits
+    for (enumUnit in enumUnits) {
+        units.append(enumUnit)
+    }
+    for (unit in initOrder(units, sources)) {
+        out = out + genUnitInit(unit, sources[unit], unitTemps(unit, sources))
+    }
+    return out + "}" + nl() + nl()
+}
+
+// The temporaries a global's initialiser uses (see order/hoisting.nv), "" when none.
+method unitTemps(string unit, map<string, string> sources): string {
+    var key = "t:" + unit.substring(2, unit.length())
+    if (unit.startsWith("g:") && sources.has(key)) {
+        return sources[key]
+    }
+    return ""
+}
+
+// The statement(s) that initialise one unit from its C text; `temps` names
+// the temporaries the text reads.
+method genUnitInit(string unit, string text, string temps): string {
+    if (unit.startsWith("e:")) {
+        return text
+    }
+    var assignment = "g_" + unit.substring(2, unit.length()) + " = " + text + ";"
+    if (temps == "") {
+        return "    " + assignment + nl()
+    }
+    return withTemps("        " + assignment + nl(), temps)
+}

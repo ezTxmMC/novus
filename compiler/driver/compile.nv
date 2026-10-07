@@ -1,0 +1,212 @@
+package driver
+
+import os
+import path
+
+import codegen
+import loader
+import nvh
+import manifest
+import runtime
+
+// Invoking the C compiler: flags, building, running.
+
+method quoted(string s): string {
+    return "\"" + s + "\""
+}
+
+method isWindows(map<string, string> options): bool {
+    if (options.has("--target")) {
+        return options["--target"].contains("windows")
+    }
+    return platform() == "windows"
+}
+
+method cCompiler(map<string, string> options): string {
+    if (options.has("--target")) {
+        var zig = env("NOVUS_ZIG")
+        if (zig == "") {
+            zig = "zig"
+        }
+        if (options.has("--cc")) {
+            zig = options["--cc"]
+        }
+        return zig + " cc -target " + options["--target"]
+    }
+    if (options.has("--cc")) {
+        return options["--cc"]
+    }
+    if (env("NOVUS_CC") != "") {
+        return env("NOVUS_CC")
+    }
+    if (platform() == "windows") {
+        return "gcc"
+    }
+    // gcc optimizes the generated code markedly better than clang - the
+    // tagged integer paths end up in registers there. Measured on the loop
+    // benchmark: 8 ms with gcc, 25 ms with clang, same C.
+    if (os.hasCommand("gcc")) {
+        return "gcc"
+    }
+    return "cc"
+}
+
+// -ffp-contract=off: a C compiler may fuse `a * b + c` into one fused
+// multiply-add (clang does by default, gcc does on hardware that has one).
+// That rounds once instead of twice, so the last digits differ from the
+// boxed arithmetic and from other platforms. Novus floats are IEEE doubles,
+// one operation at a time.
+final FLOAT_FLAGS = "-ffp-contract=off"
+
+// `build` optimizes hard, the program is built once and run often.
+final BUILD_OPTIMIZATION = "2"
+
+// `run` compiles on every change and often runs briefly: -O1 builds in about
+// half the time of -O2 and runs the benchmark programs within 20% of it (see
+// README). $NOVUS_RUN_OPT overrides it.
+final RUN_OPTIMIZATION = "1"
+final OPTIMIZATION_LEVELS = ["0", "1", "2", "3", "s"]
+
+method runOptimization(): string {
+    var level = env("NOVUS_RUN_OPT")
+    if (level == "") {
+        return RUN_OPTIMIZATION
+    }
+    if (OPTIMIZATION_LEVELS.contains(level) == false) {
+        eprintln "novusc: NOVUS_RUN_OPT must be one of 0, 1, 2, 3, s (got '${level}')"
+        exit(1)
+    }
+    return level
+}
+
+// Options carry the level of the command as "--opt" (an internal option).
+method cFlags(map<string, string> options): string {
+    var level = BUILD_OPTIMIZATION
+    if (options.has("--opt")) {
+        level = options["--opt"]
+    }
+    var flags = "-O" + level + " " + FLOAT_FLAGS
+    if (env("NOVUS_CFLAGS") != "") {
+        flags = flags + " " + env("NOVUS_CFLAGS")
+    }
+    if (options.has("--cflags")) {
+        flags = flags + " " + options["--cflags"]
+    }
+    return flags
+}
+
+method cLibraries(map<string, string> options): string {
+    if (isWindows(options)) {
+        // there the runtime's sockets are winsock, and its threads and fibers
+        // come from the system itself - nothing to link for them
+        return " -lm -lws2_32"
+    }
+    return " -lm -lpthread"
+}
+
+method defaultOutput(string source, map<string, string> options): string {
+    var out = path.stem(source)
+    var manifest = findManifest(path.dirname(source))
+    if (manifest != "") {
+        out = parseManifest(manifest).outputName()
+    }
+    if (options.has("-o")) {
+        out = options["-o"]
+    }
+    if (isWindows(options) && out.endsWith(".exe") == false) {
+        out = out + ".exe"
+    }
+    return out
+}
+
+method runtimeMode(map<string, string> options): string {
+    if (options.has("--no-runtime")) {
+        return "include"
+    }
+    return "embed"
+}
+
+// Compiles `source` to a native executable and returns its path.
+method buildBinary(string source, map<string, string> options): string {
+    rejectCacheConflicts(options)
+    var code = generate(source, runtimeMode(options), options.has("--offline"))
+    var output = defaultOutput(source, options)
+    if (options.has("--cache")) {
+        buildThroughCache(code, output, options)
+        return output
+    }
+    compileProgram(code, output, options)
+    return output
+}
+
+// The cache compiles in its own folder: the generated C file is not next to
+// the output (--keep-c) and does not find a runtime header next to the
+// program (--no-runtime).
+method rejectCacheConflicts(map<string, string> options) {
+    if (options.has("--cache") == false) {
+        return
+    }
+    for (conflict in ["--keep-c", "--no-runtime"]) {
+        if (options.has(conflict)) {
+            eprintln "novusc: --cache cannot be combined with ${conflict}"
+            exit(1)
+        }
+    }
+}
+
+// Writes `code` next to `output`, compiles it and removes it again (kept
+// with --keep-c or when the C compiler fails).
+method compileProgram(string code, string output, map<string, string> options) {
+    var cFile = output + ".c"
+    if (output.endsWith(".exe")) {
+        cFile = output.substring(0, output.length() - 4) + ".c"
+    }
+    writeFile(cFile, code)
+    var command = cCompiler(options) + " " + cFlags(options) + " " + quoted(cFile) + " -o " + quoted(output) + cLibraries(options)
+    var rc = exec(command)
+    if (rc != 0) {
+        eprintln "novusc: C compilation failed (generated file kept at ${cFile})"
+        eprintln "  command: ${command}"
+        exit(1)
+    }
+    if (options.has("--keep-c") == false) {
+        removeFile(cFile)
+    }
+}
+
+// build --cache: the executable comes from the cache of `run` and is copied
+// to `output`; without a usable cache the program is compiled directly.
+method buildThroughCache(string code, string output, map<string, string> options) {
+    var cached = cachedExecutable(code, options)
+    if (cached == "") {
+        compileProgram(code, output, options)
+        return
+    }
+    copyExecutable(cached, output)
+    if (isStagingFile(cached)) {
+        removeFile(cached)
+    }
+}
+
+method runCommand(string source, array<string> arguments): integer {
+    var options = {}
+    options["--opt"] = runOptimization()
+    var code = generate(source, "embed")
+    var exe = cachedExecutable(code, options)
+    var temporary = exe == "" || isStagingFile(exe)
+    if (exe == "") {
+        exe = temporaryProgram(source, options)
+        compileProgram(code, exe, options)
+    }
+    var command = quoted(exe)
+    var i = optionStart(arguments)
+    while (i < arguments.length()) {
+        command = command + " " + quoted(arguments[i])
+        i = i + 1
+    }
+    var rc = exec(command)
+    if (temporary) {
+        removeFile(exe)
+    }
+    return rc
+}

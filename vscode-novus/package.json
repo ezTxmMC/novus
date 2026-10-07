@@ -1,7 +1,7 @@
 {
   "name": "novus-language",
   "displayName": "Novus Language",
-  "description": "Full language support for the self-hosting Novus programming language (.nv) and its server rendered components (.nvh): syntax highlighting, IntelliSense, diagnostics, navigation, and run/build commands via novusc.",
+  "description": "Full language support for the self-hosting Novus programming language (.nv) and its server rendered components (.nvh) and Markdown pages (.nvmd): syntax highlighting, IntelliSense, diagnostics, navigation, and run/build commands via novusc.",
   "version": "0.1.2",
   "publisher": "NovusLang",
   "author": "ezTxmMC",
@@ -23,7 +23,8 @@
     "nv",
     "language server",
     "lsp",
-    "nvh"
+    "nvh",
+    "nvmd"
   ],
   "main": "./out/extension.js",
   "activationEvents": [
@@ -62,13 +63,31 @@
           "light": "./icons/novus-light.svg",
           "dark": "./icons/novus-dark.svg"
         }
+      },
+      {
+        "id": "novus-markdown",
+        "aliases": [
+          "Novus Markdown",
+          "nvmd"
+        ],
+        "extensions": [
+          ".nvmd"
+        ],
+        "configuration": "./language-configuration-nvmd.json",
+        "icon": {
+          "light": "./icons/novus-light.svg",
+          "dark": "./icons/novus-dark.svg"
+        }
       }
     ],
     "grammars": [
       {
         "language": "novus",
         "scopeName": "source.novus",
-        "path": "./syntaxes/novus.tmLanguage.json"
+        "path": "./syntaxes/novus.tmLanguage.json",
+        "embeddedLanguages": {
+          "meta.embedded.block.c": "c"
+        }
       },
       {
         "language": "novus-html",
@@ -78,6 +97,16 @@
           "source.novus": "novus",
           "source.css": "css",
           "source.js": "javascript"
+        }
+      },
+      {
+        "language": "novus-markdown",
+        "scopeName": "source.nvmd",
+        "path": "./syntaxes/nvmd.tmLanguage.json",
+        "embeddedLanguages": {
+          "source.novus": "novus",
+          "source.yaml": "yaml",
+          "meta.embedded.block.frontmatter": "yaml"
         }
       }
     ],
@@ -326,7 +355,8 @@
     "watch": "tsc -watch -p ./",
     "test": "npm run compile && node ./out/test/run.js",
     "package": "npm run copy-std && vsce package",
-    "copy-std": "node scripts/copy-std.js"
+    "copy-std": "node scripts/copy-std.js",
+    "test:grammars": "node test/grammars/run.js"
   },
   "dependencies": {
     "vscode-languageclient": "^10.1.0",
@@ -338,6 +368,9 @@
     "@types/node": "^22.0.0",
     "@types/vscode": "^1.90.0",
     "@vscode/vsce": "^3.6.0",
-    "typescript": "^5.9.0"
+    "tm-grammars": "^1.32.22",
+    "typescript": "^5.9.0",
+    "vscode-oniguruma": "^2.0.1",
+    "vscode-textmate": "^9.3.2"
   }
 }

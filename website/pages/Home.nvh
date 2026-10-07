@@ -1,34 +1,97 @@
 <?nv
-import components
-prop string title = "Novus"
-?>
-<Layout title="{title}" section="home">
-  <section class="hero">
-    <h1>Novus</h1>
-    <p class="tagline">A fast, expressive compiled language.</p>
-    <div class="features">
-      <div class="feature">
-        <h3>⚡ Fast</h3>
-        <p>Compiles to optimized C. Performance comparable to Rust and C++.</p>
-      </div>
-      <div class="feature">
-        <h3>🧠 Expressive</h3>
-        <p>Modern syntax with classes, methods, modules, and first-class functions.</p>
-      </div>
-      <div class="feature">
-        <h3>🔒 Safe</h3>
-        <p>Memory-safe by default, no garbage collector.</p>
-      </div>
-    </div>
-    <p><a href="/docs/introduction">Learn Novus →</a></p>
-  </section>
-</Layout>
+import data
 
-<style>
-.hero { text-align: center; padding: 3rem 0; }
-.tagline { font-size: 1.25rem; color: #c084fc; margin-bottom: 2rem; }
-.features { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 2rem; margin: 2rem 0; }
-.feature { padding: 1.5rem; background: rgba(168, 85, 247, 0.05); border: 1px solid rgba(168, 85, 247, 0.1); border-radius: 8px; }
-.feature h3 { margin-top: 0; }
-.feature p { color: #d8b4fe; font-size: 0.95rem; }
-</style>
+method features(): array {
+    return [
+        ["Self-hosting", "The compiler is written in Novus and compiles itself byte-identically. A checked-in C snapshot bootstraps everything.", "/docs/bootstrapping"],
+        ["Compiles to portable C", "Every program becomes one self-contained C file with an embedded runtime - hand it to any C compiler on any platform.", "/docs/architecture"],
+        ["No dependencies", "A C compiler is all you need. No LLVM, no runtime to install, no package manager to set up first.", "/docs/installation"],
+        ["Familiar syntax", "Classes, interfaces, enums, overloading, string interpolation and cascades (a..b()..c) - type inference where it helps.", "/docs/language/basics"],
+        ["Batteries included", data.stdModules().length() + " standard modules with " + data.functionCount() + " functions: files, processes, JSON, HTTP, math, time and more.", "/stdlib"],
+        ["Web in Novus", "HTML with Novus (.nvh), Markdown with Novus (.nvmd) and Tailwind: this very site is built with them.", "/docs/web/components"]
+    ]
+}
+?>
+<Layout title="A language that compiles itself" section="home">
+    <section class="relative overflow-hidden border-b border-ink-700/70">
+        <div class="glow-blob top-[-8rem] left-[-6rem] h-80 w-80 bg-primary-600/25" aria-hidden="true"></div>
+        <div class="glow-blob right-[-5rem] bottom-[-6rem] h-72 w-72 bg-accent-600/20 [animation-direction:alternate-reverse]" aria-hidden="true"></div>
+        <div class="mx-auto grid max-w-[90rem] items-center gap-12 px-4 py-20 sm:px-6 lg:grid-cols-2 lg:px-8 lg:py-28">
+            <div class="rise">
+                <p class="inline-flex items-center gap-2 rounded-full border border-primary-500/40 bg-primary-500/10 px-3 py-1 font-mono text-xs text-primary-200">
+                    <span class="live-dot size-1.5 rounded-full bg-accent-400"></span>
+                    novusc {data.compilerVersion()}
+                </p>
+                <h1 class="rise mt-6 [--rise-delay:100ms] text-5xl leading-[1.05] font-semibold tracking-tight text-ink-50 sm:text-6xl">
+                    A language that<br>
+                    <span class="bg-gradient-to-r from-primary-300 via-accent-300 to-secondary-300 bg-clip-text text-transparent">compiles itself</span>
+                </h1>
+                <p class="mt-6 max-w-xl text-lg leading-relaxed text-ink-300">Novus is a small, self-hosting programming language. Its compiler is written in Novus, emits portable C and reproduces itself byte for byte. All you need to build it is a C compiler.</p>
+                <div class="rise mt-8 flex flex-wrap gap-3 [--rise-delay:250ms]">
+                    <a href="/docs/introduction" class="shine rounded-lg bg-gradient-to-r from-primary-500 to-secondary-500 px-5 py-2.5 text-sm font-medium text-white no-underline shadow-glow transition hover:brightness-110 hover:text-white">Get started</a>
+                    <a href="/examples" class="rounded-lg border border-ink-600 px-5 py-2.5 text-sm font-medium text-ink-100 no-underline transition hover:border-primary-400 hover:text-ink-50">Browse {data.examples().length()} examples</a>
+                </div>
+                <dl class="mt-12 flex flex-wrap gap-x-10 gap-y-6">
+                    <div><dt class="eyebrow">examples</dt><dd class="font-mono text-2xl font-semibold text-ink-50">{data.examples().length()}</dd></div>
+                    <div><dt class="eyebrow">std functions</dt><dd class="font-mono text-2xl font-semibold text-ink-50">{data.functionCount()}</dd></div>
+                    <div><dt class="eyebrow">lines of compiler</dt><dd class="font-mono text-2xl font-semibold text-ink-50">{data.compilerKiloLines()}</dd></div>
+                    <div><dt class="eyebrow">dependency</dt><dd class="font-mono text-2xl font-semibold text-ink-50">cc</dd></div>
+                </dl>
+            </div>
+            <div class="rise [--rise-delay:350ms]">
+                <Code code={data.helloSource()} lang="nv" />
+                <div class="mt-4 rounded-xl border border-ink-700 bg-ink-900/80 p-4 font-mono text-[13px] text-ink-300">
+                    <p class="text-ink-500">$ novusc run hello.nv</p>
+                    <pre class="mt-1 whitespace-pre-wrap">{data.helloOutput()}</pre>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section class="mx-auto max-w-[90rem] px-4 py-20 sm:px-6 lg:px-8" aria-labelledby="why">
+        <h2 id="why" class="text-3xl font-semibold tracking-tight text-ink-50">Why Novus</h2>
+        <ul class="mt-8 grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+            {#for feature in features()}
+                <li>
+                    <a href={feature[2]} class="card block h-full no-underline">
+                        <span class="font-mono text-sm font-semibold text-primary-200">{feature[0]}</span>
+                        <span class="mt-2 block text-sm leading-relaxed text-ink-400">{feature[1]}</span>
+                    </a>
+                </li>
+            {/for}
+        </ul>
+    </section>
+
+    <section class="border-y border-ink-700/70 bg-ink-900/40">
+        <div class="mx-auto grid max-w-[90rem] items-center gap-10 px-4 py-20 sm:px-6 lg:grid-cols-2 lg:px-8">
+            <div>
+                <h2 class="text-3xl font-semibold tracking-tight text-ink-50">Install in one command</h2>
+                <p class="mt-4 text-ink-300">The repository carries the C that the compiler generates for itself. Compile that snapshot, let it build the current sources, and let the result rebuild itself - three stages, a few seconds.</p>
+                <a href="/docs/installation" class="mt-6 inline-block text-sm">Installation guide →</a>
+            </div>
+            <Code code={data.installSource()} lang="sh" />
+        </div>
+    </section>
+
+    <section class="mx-auto max-w-[90rem] px-4 py-20 sm:px-6 lg:px-8">
+        <div class="grid items-center gap-10 lg:grid-cols-2">
+            <div>
+                <h2 class="text-3xl font-semibold tracking-tight text-ink-50">The bootstrap fixpoint</h2>
+                <p class="mt-4 text-ink-300">Stage 2 and stage 3 of the build produce the same {data.thousands(data.snapshotLines())} lines of C, byte for byte - the proof that the compiler is a fixpoint of itself. Every commit checks it.</p>
+                <a href="/docs/bootstrapping" class="mt-6 inline-block text-sm">How bootstrapping works →</a>
+            </div>
+            <Code code={data.fixpointSource()} lang="text" />
+        </div>
+    </section>
+
+    <section class="border-t border-ink-700/70 bg-ink-900/40">
+        <div class="mx-auto grid max-w-[90rem] items-center gap-10 px-4 py-20 sm:px-6 lg:grid-cols-2 lg:px-8">
+            <Code code={data.cascadeSource()} lang="nv" />
+            <div>
+                <h2 class="text-3xl font-semibold tracking-tight text-ink-50">Cascades, markdown, Tailwind</h2>
+                <p class="mt-4 text-ink-300">The <code class="rounded border border-ink-700 bg-ink-800 px-1.5 font-mono text-sm text-accent-200">..</code> operator runs several calls on one receiver and hands the receiver back. Documents are <code class="rounded border border-ink-700 bg-ink-800 px-1.5 font-mono text-sm text-accent-200">.nvmd</code>: Markdown with Novus in it. Styling comes from Tailwind 4.3 through nvh-tailwindcss.</p>
+                <a href="/docs/web/markdown" class="mt-6 inline-block text-sm">Markdown documents →</a>
+            </div>
+        </div>
+    </section>
+</Layout>

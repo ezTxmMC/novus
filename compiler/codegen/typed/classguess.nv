@@ -1,0 +1,110 @@
+package typed
+
+import ast
+import parser
+
+// Class guesses of the locals of a method body.
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+// How many rounds of guessing a body gets: a guess only helps the next one along.
+final MAX_CLASS_ROUNDS = 8
+
+// The locals map as the analysis sees it: the names bound so far, every name
+// the body declares (a name used before its declaration still means the
+// field or global until then, but taking it for a local only makes the
+// analysis more cautious), and the marks.
+method analysisView(map<string, string> locals, map<string, string> flags): map<string, string> {
+    var view = {}
+    for (key in locals.keys()) {
+        view[key] = locals[key]
+    }
+    for (flag in flags.keys()) {
+        if (flag.startsWith(FLAG_DECLARED)) {
+            var name = flag.substring(FLAG_DECLARED.length(), flag.length())
+            if (view.has(name) == false) {
+                view[name] = "l_" + name
+            }
+        }
+    }
+    return view
+}
+
+// The class a loop over `iterable` binds its variable to, "" when unknown.
+method loopElementClass(string iterable, map<string, string> view): string {
+    if (isList(iterable) == false && view.has("elem:" + iterable)) {
+        return view["elem:" + iterable]
+    }
+    return ""
+}
+
+// One round of class guesses: a local gets the class that all of its
+// assignments (and loops) agree on, as far as the guesses so far tell.
+method guessLocalClasses(array<string> names, array<string> values, array<string> loops, map<string, string> flags, map<string, string> parameters, map<string, string> prog, map<string, string> ctx, map<string, string> view): bool {
+    var claims = {}
+    var i = 0
+    while (i < names.length()) {
+        claimClass(claims, names[i], classOf(values[i], prog, ctx, view))
+        i = i + 1
+    }
+    var k = 0
+    while (k < loops.length()) {
+        claimClass(claims, loops[k], loopElementClass(loops[k + 1], view))
+        k = k + 2
+    }
+    var changed = false
+    for (name in claims.keys()) {
+        var cls = claims[name]
+        var known = view.has("cls:" + name)
+        if (cls != "" && known == false && parameters.has(name) == false && flags.has(FLAG_TYPE + name) == false) {
+            view["cls:" + name] = cls
+            changed = true
+        }
+    }
+    return changed
+}
+
+// A claim is the one class every assignment of a name has; "" once two
+// disagree or one has no known class.
+method claimClass(map<string, string> claims, string name, string cls) {
+    if (claims.has(name) == false) {
+        claims[name] = cls
+        return
+    }
+    if (claims[name] != cls) {
+        claims[name] = ""
+    }
+}
+
+// The class guesses of a body, added to `view` (and so to `locals`).
+method inferClasses(array<string> names, array<string> values, array<string> loops, map<string, string> flags, map<string, string> parameters, map<string, string> prog, map<string, string> ctx, map<string, string> view, map<string, string> locals) {
+    addDeclaredClasses(flags, prog, view)
+    var rounds = 0
+    while (rounds < MAX_CLASS_ROUNDS && guessLocalClasses(names, values, loops, flags, parameters, prog, ctx, view)) {
+        rounds = rounds + 1
+    }
+    for (key in view.keys()) {
+        if (key.startsWith("cls:") || key.startsWith("elem:")) {
+            locals[key] = view[key]
+        }
+    }
+}
+
+// A local declared with a class type holds an object of it.
+method addDeclaredClasses(map<string, string> flags, map<string, string> prog, map<string, string> view) {
+    for (flag in flags.keys()) {
+        if (flag.startsWith(FLAG_TYPE) == false) {
+            continue
+        }
+        var name = flag.substring(FLAG_TYPE.length(), flag.length())
+        var cls = declaredClass(prog, flags[flag])
+        var element = declaredElementClass(prog, flags[flag])
+        if (cls != "") {
+            view["cls:" + name] = cls
+        }
+        if (element != "") {
+            view["elem:" + name] = element
+        }
+    }
+}

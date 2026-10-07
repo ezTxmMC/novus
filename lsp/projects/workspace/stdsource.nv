@@ -7,6 +7,8 @@ import projects/stdlib
 
 private final WORKSPACE_STD_DIRECTORY_PREFIX = "novus-lsp-std-"
 private final WORKSPACE_STD_EXTENSION = ".nv"
+private final WORKSPACE_PROJECT_MODULE = "project"
+private final WORKSPACE_PROJECT_SUFFIX = "-module"
 
 // Materialises std module sources once into a temp directory so that the editor can open them: the copy is for the
 // editor only (nothing reads it back), it is written on first use and rewritten when its content differs. The
@@ -36,7 +38,7 @@ define class StdSourceStore {
         if (folder == "") {
             return ""
         }
-        var target = manifestJoinPath(folder, moduleName + WORKSPACE_STD_EXTENSION)
+        var target = manifestJoinPath(folder, this.fileNameOf(moduleName))
         if (this.materialise(target, module.source) == false) {
             return ""
         }
@@ -45,6 +47,14 @@ define class StdSourceStore {
     }
 
     // The cached path while the file is still there; a temp directory cleaner may have removed it.
+    // A file named project.nv is a manifest to an editor: the description of `import project` gets another name.
+    method fileNameOf(string moduleName): string {
+        if (moduleName == WORKSPACE_PROJECT_MODULE) {
+            return moduleName + WORKSPACE_PROJECT_SUFFIX + WORKSPACE_STD_EXTENSION
+        }
+        return moduleName + WORKSPACE_STD_EXTENSION
+    }
+
     method writtenAndPresent(string moduleName): string {
         var target = this.written.get(moduleName, "")
         if (target != "" && DiskTextSource().exists(target)) {

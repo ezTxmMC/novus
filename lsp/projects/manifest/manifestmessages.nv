@@ -8,7 +8,7 @@ private final MANIFEST_ONE_VALUE_SUFFIX = "' takes exactly one value"
 private final MANIFEST_REQUIRE_ARITY = "require needs a module path and an optional version"
 private final MANIFEST_REPLACE_ARITY = "replace needs a module path and a local directory"
 
-// The wording of novusc for what it rejects in project.nv (compiler/project/manifest.nv), kept in one place together
+// The wording of novusc for what it rejects in project.nv (compiler/manifest/manifest.nv), kept in one place together
 // with the stable code of each kind: the diagnostics layer names a problem by its code, never by its text.
 method manifestNotASettingMessage(string found): string {
     return MANIFEST_NOT_A_SETTING_PREFIX + " project, version, main, require or replace but found '" + found + "'"

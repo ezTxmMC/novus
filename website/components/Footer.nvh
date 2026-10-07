@@ -1,0 +1,28 @@
+<footer class="border-t border-ink-700/70 bg-ink-950/60">
+    <div class="mx-auto grid max-w-[90rem] gap-8 px-4 py-12 sm:px-6 md:grid-cols-4 lg:px-8">
+        <div class="md:col-span-2">
+            <p class="font-mono text-lg font-semibold text-ink-50">Novus</p>
+            <p class="mt-2 max-w-sm text-sm text-ink-400">A small language that compiles itself. Written in Novus, emitting portable C, built with nothing but a C compiler.</p>
+        </div>
+        <nav aria-label="Learn">
+            <p class="eyebrow">Learn</p>
+            <ul class="mt-3 space-y-2 text-sm">
+                <li><a href="/docs/introduction">Introduction</a></li>
+                <li><a href="/docs/first-program">First program</a></li>
+                <li><a href="/examples">Examples</a></li>
+                <li><a href="/stdlib">Standard library</a></li>
+            </ul>
+        </nav>
+        <nav aria-label="Project">
+            <p class="eyebrow">Project</p>
+            <ul class="mt-3 space-y-2 text-sm">
+                <li><a href="https://github.com/ezTxmMC/novus" rel="noreferrer">GitHub</a></li>
+                <li><a href="https://github.com/ezTxmMC/lumen-ide" rel="noreferrer">Lumen IDE</a></li>
+                <li><a href="/benchmarks">Benchmarks</a></li>
+                <li><a href="/docs/bootstrapping">Bootstrapping</a></li>
+                <li><a href="/docs/projects/editor">Editor support</a></li>
+            </ul>
+        </nav>
+    </div>
+    <p class="border-t border-ink-800 py-4 text-center text-xs text-ink-500">This site is written in Novus: nvh components, .nvmd documents and Tailwind.</p>
+</footer>

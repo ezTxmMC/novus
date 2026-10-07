@@ -1,0 +1,188 @@
+package nvh
+
+import lexer
+import loader
+import parser
+
+// Code generation for the template: output buffering, blocks and the top level.
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+// Appends generated code, first adding line breaks until the output is at
+// `line` of the .nvh file.
+method nvhEmit(map<string, object> st, integer line, string code) {
+    var out = st["out"]
+    var at = st["line"]
+    while (at < line) {
+        out.append(NVH_NEWLINE)
+        at = at + 1
+    }
+    out.append(code + " ")
+    st["line"] = at + nvhNewlines(code)
+}
+
+// Static HTML, collected until something dynamic follows.
+method nvhStatic(map<string, object> st, integer line, string html) {
+    var pending = st["pending"]
+    if (pending.length() == 0) {
+        st["pline"] = line
+    }
+    pending.append(html)
+}
+
+method nvhFlush(map<string, object> st, string buf) {
+    var pending = st["pending"]
+    if (pending.length() == 0) {
+        return
+    }
+    var html = pending.join("")
+    st["pending"] = []
+    nvhEmit(st, st["pline"], buf + ".append(" + nvhLit(html) + ")")
+}
+
+method nvhNext(map<string, object> st): integer {
+    var n = st["n"] + 1
+    st["n"] = n
+    return n
+}
+
+private final BLOCK_KINDS = {"if": true, "elif": true, "else": true, "endif": true, "for": true, "endfor": true, "code": true}
+
+method nvhIsBlock(array<object> nodes, integer i): bool {
+    if (i < 0 || i >= nodes.length()) {
+        return false
+    }
+    return BLOCK_KINDS.has(nodes[i]["k"])
+}
+
+// `blocks` and `lines` track the {#if} and {#for} that are open at this level.
+method nvhEmitNodes(map<string, object> st, array<object> nodes, string buf) {
+    var blocks = []
+    var lines = []
+    var index = 0
+    while (index < nodes.length()) {
+        nvhEmitNode(st, nodes, index, buf, blocks, lines)
+        index = index + 1
+    }
+    if (blocks.length() == 0) {
+        return
+    }
+    var open = blocks[blocks.length() - 1]
+    fail("{#" + open + "} is not closed with {/" + open + "} (blocks must close inside the element they open in)", st["file"] + ":" + lines[lines.length() - 1])
+}
+
+method nvhEmitNode(map<string, object> st, array<object> nodes, integer index, string buf, array<string> blocks, array<object> lines) {
+    var node = nodes[index]
+    var k = node["k"]
+    var line = node["line"]
+    if (k == "text" && nvhBlank(node["text"]) && node["text"].contains(NVH_NEWLINE) && (nvhIsBlock(nodes, index - 1) || nvhIsBlock(nodes, index + 1))) {
+        // the line breaks around {#if}/{#for}/<?nv ?> lines
+        return
+    }
+    if (k == "text" || k == "comment") {
+        nvhStatic(st, line, node["text"])
+        return
+    }
+    if (k == "open") {
+        nvhEmitOpen(st, node, buf)
+        return
+    }
+    nvhEmitDynamic(st, node, buf, blocks, lines)
+}
+
+// A node that is code: an expression, a statement, a branch or a loop.
+method nvhEmitDynamic(map<string, object> st, map<string, object> node, string buf, array<string> blocks, array<object> lines) {
+    var k = node["k"]
+    var line = node["line"]
+    if (k == "expr" || k == "echo" || k == "html" || k == "code") {
+        nvhEmitValue(st, node, buf)
+        return
+    }
+    if (k == "if") {
+        nvhFlush(st, buf)
+        blocks.append("if")
+        lines.append(line)
+        nvhEmit(st, line, "if (" + node["code"] + ") {")
+        return
+    }
+    if (k == "elif" || k == "else" || k == "endif") {
+        nvhEmitBranch(st, node, buf, blocks, lines)
+        return
+    }
+    if (k == "for") {
+        blocks.append("for")
+        lines.append(line)
+        nvhEmitFor(st, node, buf)
+        return
+    }
+    if (k == "endfor") {
+        nvhEmitEndFor(st, node, buf, blocks, lines)
+    }
+}
+
+method nvhEmitValue(map<string, object> st, map<string, object> node, string buf) {
+    var k = node["k"]
+    var line = node["line"]
+    nvhFlush(st, buf)
+    if (k == "code") {
+        nvhEmit(st, line, node["code"])
+        return
+    }
+    if (k == "html") {
+        nvhEmit(st, line, buf + ".append(web.text((" + node["code"] + ")))")
+        return
+    }
+    nvhEmit(st, line, buf + ".append(web.escape((" + node["code"] + ")))")
+}
+
+method nvhEmitBranch(map<string, object> st, map<string, object> node, string buf, array<string> blocks, array<object> lines) {
+    var k = node["k"]
+    var line = node["line"]
+    if (blocks.length() == 0 || blocks[blocks.length() - 1] != "if") {
+        fail("{" + k + "} without {#if} at the same level", st["file"] + ":" + line)
+    }
+    nvhFlush(st, buf)
+    if (k == "elif") {
+        nvhEmit(st, line, "} else if (" + node["code"] + ") {")
+        return
+    }
+    if (k == "else") {
+        nvhEmit(st, line, "} else {")
+        return
+    }
+    blocks.pop()
+    lines.pop()
+    nvhEmit(st, line, "}")
+}
+
+method nvhEmitEndFor(map<string, object> st, map<string, object> node, string buf, array<string> blocks, array<object> lines) {
+    var line = node["line"]
+    if (blocks.length() == 0 || blocks[blocks.length() - 1] != "for") {
+        fail("{/for} without {#for} at the same level", st["file"] + ":" + line)
+    }
+    blocks.pop()
+    lines.pop()
+    nvhFlush(st, buf)
+    var index = st["loops"].pop()
+    if (index == "") {
+        nvhEmit(st, line, "}")
+        return
+    }
+    nvhEmit(st, line, index + " = " + index + " + 1 } }")
+}
+
+// An element: <slot>, a component or plain HTML.
+method nvhEmitOpen(map<string, object> st, map<string, object> node, string buf) {
+    var tag = node["tag"]
+    if (tag == "slot") {
+        nvhFlush(st, buf)
+        nvhEmit(st, node["line"], "this.nvEmitSlot(" + buf + ")")
+        return
+    }
+    if (nvhIsComponent(tag)) {
+        nvhEmitComponent(st, node, buf)
+        return
+    }
+    nvhEmitElement(st, node, buf, false)
+}

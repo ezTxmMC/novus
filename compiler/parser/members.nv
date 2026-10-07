@@ -12,32 +12,36 @@ import lexer
 method parseAnnotation(array<string> tokens, integer pos): map<string, string> {
     var p = expectIdent(tokens, pos + 1, "annotation name after '@'")
     var node = "(anno " + tokVal(tokens[p - 1])
-    if (isSym(tokens, p, "{")) {
-        p = p + 1
-        while (isSym(tokens, p, "}") == false) {
-            if (atEnd(tokens, p)) {
-                fail("unterminated annotation arguments", posOf(tokens, p))
-            }
-            if (isIdent(tokens, p) && isSym(tokens, p + 1, "=")) {
-                var key = tokVal(tokens[p])
-                p = p + 2
-                if (tokKind(tokens[p]) == "STRING") {
-                    node = node + " (a " + key + " " + sexpStr(tokVal(tokens[p])) + ")"
-                    p = p + 1
-                } else {
-                    var ignored = parseExpr(tokens, p, 0)
-                    p = parseInt(ignored["pos"])
-                }
-            } else {
-                p = p + 1
-            }
-            if (isSym(tokens, p, ",")) {
-                p = p + 1
-            }
-        }
-        p = p + 1
+    if (isSym(tokens, p, "{") == false) {
+        return { "node": node + ")", "pos": p }
     }
-    return { "node": node + ")", "pos": p }
+    p = p + 1
+    while (isSym(tokens, p, "}") == false) {
+        if (atEnd(tokens, p)) {
+            fail("unterminated annotation arguments", posOf(tokens, p))
+        }
+        var argument = parseAnnotationArgument(tokens, p)
+        node = node + argument["node"]
+        p = parseInt(argument["pos"])
+        if (isSym(tokens, p, ",")) {
+            p = p + 1
+        }
+    }
+    return { "node": node + ")", "pos": p + 1 }
+}
+
+// `key = "value"` -> " (a key "value")" (any other value is parsed and ignored); a stray token is skipped.
+method parseAnnotationArgument(array<string> tokens, integer p): map<string, string> {
+    if (isIdent(tokens, p) == false || isSym(tokens, p + 1, "=") == false) {
+        return { "node": "", "pos": p + 1 }
+    }
+    var key = tokVal(tokens[p])
+    var valueAt = p + 2
+    if (tokKind(tokens[valueAt]) == "STRING") {
+        return { "node": " (a " + key + " " + sexpStr(tokVal(tokens[valueAt])) + ")", "pos": valueAt + 1 }
+    }
+    var ignored = parseExpr(tokens, valueAt, 0)
+    return { "node": "", "pos": parseInt(ignored["pos"]) }
 }
 
 // method name[(params)][: type] { body }   (pos points at 'method')
@@ -74,104 +78,123 @@ method parseMethodDecl(array<string> tokens, integer pos, string annos): map<str
     return { "node": node, "pos": parseInt(b["pos"]) }
 }
 
+private final NO_ANNOTATIONS = "(annos)"
+
 // Class or enum body up to (not including) the closing '}'.
 // Returns node "(fields ...) (ctor ...)|(noctor) (methods ...)".
 method parseMembers(array<string> tokens, integer pos): map<string, string> {
     var p = pos
-    var fields = "(fields"
-    var ctor = "(noctor)"
-    var methods = "(methods"
-    var annos = "(annos)"
+    // what has been read so far; annotations wait here for the member they belong to
+    var body = { "fields": "(fields", "ctor": "(noctor)", "methods": "(methods", "annos": NO_ANNOTATIONS }
     while (isSym(tokens, p, "}") == false) {
         if (atEnd(tokens, p)) {
             fail("unterminated class body (missing '}')", posOf(tokens, p))
         }
-        if (isSym(tokens, p, "@")) {
-            var an = parseAnnotation(tokens, p)
-            annos = annos.substring(0, annos.length() - 1) + " " + an["node"] + ")"
-            p = parseInt(an["pos"])
-            continue
-        }
-        if (isSym(tokens, p, ";")) {
-            p = p + 1
-            continue
-        }
-        while (isKw(tokens, p, "private") || isKw(tokens, p, "final")) {
-            p = p + 1
-        }
-        if (isIdentNamed(tokens, p, "abstract") && isKw(tokens, p + 1, "method")) {
-            p = expectIdent(tokens, p + 2, "method name after 'abstract method'")
-            var aname = tokVal(tokens[p - 1])
-            var aparams = "(params)"
-            if (isSym(tokens, p, "(")) {
-                var apr = parseParams(tokens, p)
-                aparams = apr["node"]
-                p = parseInt(apr["pos"])
-            }
-            var aret = "void"
-            if (isSym(tokens, p, ":")) {
-                var art = parseType(tokens, p + 1)
-                aret = art["node"]
-                p = parseInt(art["pos"])
-            }
-            methods = methods + " (method " + aname + " " + aret + " " + aparams + " " + annos + " (abstract))"
-            annos = "(annos)"
-            continue
-        }
-        if (isIdentNamed(tokens, p, "async") && isKw(tokens, p + 1, "method")) {
-            fail("'async' marks a method outside a class; inside one, start the call instead: virtual object.method(...)", posOf(tokens, p))
-        }
-        if (isKw(tokens, p, "method")) {
-            var m = parseMethodDecl(tokens, p, annos)
-            methods = methods + " " + m["node"]
-            annos = "(annos)"
-            p = parseInt(m["pos"])
-            continue
-        }
-        if (isIdentNamed(tokens, p, "construct") && isSym(tokens, p + 1, "(")) {
-            var cpr = parseParams(tokens, p + 1)
-            var cb = parseBlock(tokens, parseInt(cpr["pos"]))
-            ctor = "(ctor " + cpr["node"] + " " + cb["node"] + ")"
-            annos = "(annos)"
-            p = parseInt(cb["pos"])
-            continue
-        }
-        if (isIdent(tokens, p) && isSym(tokens, p + 1, "(")) {
-            // method without the keyword: name(params)[: type] [{ body }]
-            var iname = tokVal(tokens[p])
-            var ipr = parseParams(tokens, p + 1)
-            p = parseInt(ipr["pos"])
-            var iret = "void"
-            if (isSym(tokens, p, ":")) {
-                var irt = parseType(tokens, p + 1)
-                iret = irt["node"]
-                p = parseInt(irt["pos"])
-            }
-            var ibody = "(abstract)"
-            if (isSym(tokens, p, "{")) {
-                var ib = parseBlock(tokens, p)
-                ibody = ib["node"]
-                p = parseInt(ib["pos"])
-            }
-            methods = methods + " (method " + iname + " " + iret + " " + ipr["node"] + " " + annos + " " + ibody + ")"
-            annos = "(annos)"
-            continue
-        }
-        // field: Type name [: get[, set]]
-        var ft = parseType(tokens, p)
-        p = expectIdent(tokens, parseInt(ft["pos"]), "field name")
-        fields = fields + " (f " + ft["node"] + " " + tokVal(tokens[p - 1]) + ")"
-        if (isSym(tokens, p, ":")) {
-            p = p + 1
-            while (isIdentNamed(tokens, p, "get") || isIdentNamed(tokens, p, "set")) {
-                p = p + 1
-                if (isSym(tokens, p, ",") == false) {
-                    break
-                }
-                p = p + 1
-            }
-        }
-        annos = "(annos)"
+        p = parseMember(tokens, p, body)
     }
-    return { "node": fields + ") " + ctor + " " + methods + ")", "pos": p }
+    return { "node": body["fields"] + ") " + body["ctor"] + " " + body["methods"] + ")", "pos": p }
+}
+
+// One member (or annotation, or stray ';') at `p` recorded in `body`; returns the position after it.
+method parseMember(array<string> tokens, integer pos, map<string, string> body): integer {
+    var p = pos
+    if (isSym(tokens, p, "@")) {
+        var an = parseAnnotation(tokens, p)
+        body["annos"] = body["annos"].substring(0, body["annos"].length() - 1) + " " + an["node"] + ")"
+        return parseInt(an["pos"])
+    }
+    if (isSym(tokens, p, ";")) {
+        return p + 1
+    }
+    while (isKw(tokens, p, "private") || isKw(tokens, p, "final")) {
+        p = p + 1
+    }
+    if (isIdentNamed(tokens, p, "abstract") && isKw(tokens, p + 1, "method")) {
+        return parseAbstractMethod(tokens, p, body)
+    }
+    if (isIdentNamed(tokens, p, "async") && isKw(tokens, p + 1, "method")) {
+        fail("'async' marks a method outside a class; inside one, start the call instead: virtual object.method(...)", posOf(tokens, p))
+    }
+    if (isKw(tokens, p, "method")) {
+        var m = parseMethodDecl(tokens, p, body["annos"])
+        body["methods"] = body["methods"] + " " + m["node"]
+        body["annos"] = NO_ANNOTATIONS
+        return parseInt(m["pos"])
+    }
+    if (isIdentNamed(tokens, p, "construct") && isSym(tokens, p + 1, "(")) {
+        return parseConstructor(tokens, p, body)
+    }
+    if (isIdent(tokens, p) && isSym(tokens, p + 1, "(")) {
+        return parseShortMethod(tokens, p, body)
+    }
+    return parseField(tokens, p, body)
+}
+
+// abstract method name(params)[: type]
+method parseAbstractMethod(array<string> tokens, integer pos, map<string, string> body): integer {
+    var p = expectIdent(tokens, pos + 2, "method name after 'abstract method'")
+    var name = tokVal(tokens[p - 1])
+    var params = "(params)"
+    if (isSym(tokens, p, "(")) {
+        var parsed = parseParams(tokens, p)
+        params = parsed["node"]
+        p = parseInt(parsed["pos"])
+    }
+    var returned = parseReturnType(tokens, p)
+    body["methods"] = body["methods"] + " (method " + name + " " + returned["node"] + " " + params + " " + body["annos"] + " (abstract))"
+    body["annos"] = NO_ANNOTATIONS
+    return parseInt(returned["pos"])
+}
+
+// `: type` after a signature; void when there is none.
+method parseReturnType(array<string> tokens, integer p): map<string, string> {
+    if (isSym(tokens, p, ":") == false) {
+        return { "node": "void", "pos": p }
+    }
+    return parseType(tokens, p + 1)
+}
+
+method parseConstructor(array<string> tokens, integer pos, map<string, string> body): integer {
+    var params = parseParams(tokens, pos + 1)
+    var block = parseBlock(tokens, parseInt(params["pos"]))
+    body["ctor"] = "(ctor " + params["node"] + " " + block["node"] + ")"
+    body["annos"] = NO_ANNOTATIONS
+    return parseInt(block["pos"])
+}
+
+// A method without the keyword: name(params)[: type] [{ body }]
+method parseShortMethod(array<string> tokens, integer pos, map<string, string> body): integer {
+    var name = tokVal(tokens[pos])
+    var params = parseParams(tokens, pos + 1)
+    var returned = parseReturnType(tokens, parseInt(params["pos"]))
+    var p = parseInt(returned["pos"])
+    var code = "(abstract)"
+    if (isSym(tokens, p, "{")) {
+        var block = parseBlock(tokens, p)
+        code = block["node"]
+        p = parseInt(block["pos"])
+    }
+    body["methods"] = body["methods"] + " (method " + name + " " + returned["node"] + " " + params["node"] + " " + body["annos"] + " " + code + ")"
+    body["annos"] = NO_ANNOTATIONS
+    return p
+}
+
+// field: Type name [: get[, set]]
+method parseField(array<string> tokens, integer pos, map<string, string> body): integer {
+    var fieldType = parseType(tokens, pos)
+    var p = expectIdent(tokens, parseInt(fieldType["pos"]), "field name")
+    body["fields"] = body["fields"] + " (f " + fieldType["node"] + " " + tokVal(tokens[p - 1]) + ")"
+    body["annos"] = NO_ANNOTATIONS
+    if (isSym(tokens, p, ":") == false) {
+        return p
+    }
+    p = p + 1
+    while (isIdentNamed(tokens, p, "get") || isIdentNamed(tokens, p, "set")) {
+        p = p + 1
+        if (isSym(tokens, p, ",") == false) {
+            break
+        }
+        p = p + 1
+    }
+    return p
 }

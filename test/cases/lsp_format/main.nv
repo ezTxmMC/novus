@@ -11,6 +11,7 @@ import @corpus_cases
 // the edits, and the whitespace-only and idempotence invariants over every .nv file of the repository.
 method main(): integer {
     runSpacingCases()
+    runCascadeCases()
     runLayoutCases()
     runIndentCases()
     runEditCases()

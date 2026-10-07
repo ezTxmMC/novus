@@ -1,0 +1,109 @@
+package index
+
+import ast
+import parser
+
+// The fields of a class: slots, types and the implicit use of a field inside a method.
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+// Number of fields of a class including its bases.
+method classFieldCount(map<string, string> prog, string cls): integer {
+    var cached = "fieldcount:" + cls
+    if (prog.has(cached)) {
+        return parseInt(prog[cached])
+    }
+    var node = typeNode(prog, cls)
+    if (node == "") {
+        return 0
+    }
+    var count = nodeCount(classFields(node)) - 1
+    var base = classBase(node)
+    if (base != "" && isClassLike(prog, base)) {
+        count = count + classFieldCount(prog, base)
+    }
+    prog[cached] = intToStr(count)
+    return count
+}
+
+// The field slots of a class, worked out once and kept in `prog`.
+//
+// Every identifier inside a class method has to be asked whether it names a
+// field, and the answer used to be a linear walk of the field list. That made
+// compiling a class quadratic in the number of its members - a class with
+// ninety of them cost tens of gigabytes - so the walk happens once per class
+// and the answers are looked up.
+method indexClassFields(map<string, string> prog, string cls): integer {
+    if (prog.has("fieldsindexed:" + cls)) {
+        return 0
+    }
+    prog["fieldsindexed:" + cls] = "1"
+    var node = typeNode(prog, cls)
+    if (node == "") {
+        return 0
+    }
+    var base = classBase(node)
+    var offset = 0
+    if (base != "" && isClassLike(prog, base)) {
+        indexClassFields(prog, base)
+        offset = classFieldCount(prog, base)
+    }
+    var fields = classFields(node)
+    var fieldsCount = nodeCount(fields)
+    var i = 1
+    while (i < fieldsCount) {
+        var field = nodeChild(fields, i)
+        var name = nodeChild(field, 2)
+        prog["fieldslot:" + cls + "." + name] = intToStr(offset + i - 1)
+        prog["fieldtype:" + cls + "." + name] = normType(nodeChild(field, 1))
+        i = i + 1
+    }
+    return 0
+}
+
+// Index of `name` in the object's field slots, -1 when it is not a field.
+// The layout is base classes first, which is why a slot stays valid for
+// every subclass (see nv_field_index in the runtime).
+method fieldSlot(map<string, string> prog, string cls, string name): integer {
+    indexClassFields(prog, cls)
+    var key = "fieldslot:" + cls + "." + name
+    if (prog.has(key)) {
+        return parseInt(prog[key])
+    }
+    var node = typeNode(prog, cls)
+    if (node == "") {
+        return -1
+    }
+    var base = classBase(node)
+    if (base != "" && isClassLike(prog, base)) {
+        return fieldSlot(prog, base, name)
+    }
+    return -1
+}
+
+// The declared type of the field `name` of `cls` or its bases, "" when there
+// is no such field.
+method fieldType(map<string, string> prog, string cls, string name): string {
+    if (fieldSlot(prog, cls, name) < 0) {
+        return ""
+    }
+    var key = "fieldtype:" + cls + "." + name
+    if (prog.has(key)) {
+        return prog[key]
+    }
+    return fieldType(prog, classBase(typeNode(prog, cls)), name)
+}
+
+// Is `name` a field of class `cls` or one of its bases?
+method classHasField(map<string, string> prog, string cls, string name): bool {
+    return fieldSlot(prog, cls, name) >= 0
+}
+
+// Inside a class, a bare identifier may refer to a field of `this`.
+method isImplicitField(string name, map<string, string> prog, map<string, string> ctx, map<string, string> locals): bool {
+    if (ctx["class"] == "" || locals.has(name) || prog.has("global:" + name)) {
+        return false
+    }
+    return classHasField(prog, ctx["class"], name)
+}

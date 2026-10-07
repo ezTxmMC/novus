@@ -1,0 +1,59 @@
+package emit
+
+import ast
+import parser
+
+// Declared types: converting a value into a field or a result, and what a type defaults to.
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+method isPrimitiveType(string t): bool {
+    var n = normType(t)
+    return n == "integer" || n == "float" || n == "string"
+}
+
+// Conversion to a declared primitive type, the expression otherwise.
+method coerceCode(string expr, string t): string {
+    var n = normType(t)
+    if (n == "integer") {
+        return "nv_coerce_int(" + expr + ")"
+    }
+    if (n == "float") {
+        return "nv_coerce_float(" + expr + ")"
+    }
+    if (n == "string") {
+        return "nv_coerce_string(" + expr + ")"
+    }
+    return expr
+}
+
+// A value stored into a field. A numeric field converts what it is given like
+// its setter and the constructor do (`integer` truncates a float, `float`
+// widens an integer), so that a field declared numeric holds a number of that
+// kind; any other type keeps the value as it is.
+method coerceFieldCode(string expr, string t): string {
+    var n = normType(t)
+    if (n == "integer" || n == "float") {
+        return coerceCode(expr, n)
+    }
+    return expr
+}
+
+// The value a method returns when it falls off the end.
+method defaultCode(string t): string {
+    var n = normType(t)
+    if (n == "integer") {
+        return "nv_int(0)"
+    }
+    if (n == "float") {
+        return "nv_float(0.0)"
+    }
+    if (n == "string") {
+        return "(&nv_empty_str_val)"
+    }
+    if (n == "bool") {
+        return "nv_bool(0)"
+    }
+    return "nv_nil"
+}

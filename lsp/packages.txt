@@ -26,7 +26,7 @@ server/rpc: maybe model platform text
 server/session: model protocol text workspace
 server/wiring: actions candidates checker completion diagnostics edits format hover jobs lifecycle model navigation platform protocol pureline queries rpc semtok session snippets stdlib structure text workspace
 services/checker: model platform text
-services/diagnostics: closure lexing model modules outline platform semantic text workspace
+services/diagnostics: closure lexing model modules outline platform scanning semantic text workspace
 services/format: lexing model text
 services/pureline: lexing model outline platform text
 services/snippets: 

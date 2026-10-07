@@ -1,0 +1,94 @@
+package driver
+
+import os
+import path
+
+import codegen
+import loader
+import nvh
+import manifest
+import runtime
+
+// The commands init, deps, nvh and emit.
+
+// novusc init [module-path]: creates project.nv and a hello-world main.nv.
+method initProject(array<string> arguments): integer {
+    if (fileExists("project.nv")) {
+        eprintln "novusc: project.nv already exists"
+        return 1
+    }
+    var name = path.basename(path.absolute)
+    if (arguments.length() >= 2) {
+        name = arguments[1]
+    }
+    writeFile("project.nv", "project \"${name}\"\nversion \"0.1.0\"\nmain \"main.nv\"\n\n// require \"github.com/user/library\" \"v1.0.0\"\n")
+    if (fileExists("main.nv") == false) {
+        writeFile("main.nv", "package main\n\nmethod main {\n    println \"Hello from ${name}!\"\n}\n")
+    }
+    println "created project.nv (project \"${name}\") - next: novusc run"
+    return 0
+}
+
+// novusc deps [update | add <module> [version]]
+method depsCommand(array<string> arguments): integer {
+    var m = currentProject()
+    if (arguments.length() >= 2 && arguments[1] == "add") {
+        if (arguments.length() < 3) {
+            eprintln "usage: novusc deps add <module> [version]"
+            return 1
+        }
+        var version = "latest"
+        if (arguments.length() >= 4) {
+            version = arguments[3]
+        }
+        os.appendFile(m.file(), "require \"${arguments[2]}\" \"${version}\"\n")
+        println "added require \"${arguments[2]}\" \"${version}\" to ${m.file()}"
+        m = parseManifest(m.file())
+    }
+    if (arguments.length() >= 2 && arguments[1] == "update") {
+        for (d in m.requires()) {
+            if (m.replaces().has(d.module()) == false) {
+                os.removeAll(dependencyDir(d.module(), d.version()))
+            }
+        }
+    }
+    var modules = {}
+    resolveModules(m, modules)
+    if (m.requires().length() == 0) {
+        println "no dependencies (add one with: novusc deps add <module> [version])"
+        return 0
+    }
+    for (key in modules) {
+        if (key.endsWith("/") == false) {
+            println "${key} -> ${modules[key]}"
+        }
+    }
+    return 0
+}
+
+// novusc nvh <file.nvh>: prints the Novus source a component compiles to.
+method nvhCommand(array<string> arguments): integer {
+    if (arguments.length() < 2 || isComponentName(arguments[1]) == false) {
+        eprintln "usage: novusc nvh <file.nvh>"
+        return 1
+    }
+    var file = arguments[1]
+    if (fileExists(file) == false) {
+        eprintln "novusc: cannot open '${file}'"
+        return 1
+    }
+    print sourceText(file, path.dirname(file), projectRoot(file))
+    return 0
+}
+
+method emitCommand(string source, map<string, string> options): integer {
+    var code = generate(source, runtimeMode(options), options.has("--offline"))
+    if (options.has("-o") == false) {
+        print code
+        return 0
+    }
+    var target = options["-o"]
+    writeFile(target, code)
+    println "wrote ${target}"
+    return 0
+}

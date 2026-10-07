@@ -26,7 +26,7 @@ define class CallDiagnosticRule based DiagnosticRule {
             return found
         }
         var judge = DiagnosticsNameJudge(context)
-        for (use in DiagnosticsUseScanner(context.syntax.tokens).usesOfFile(context.syntax)) {
+        for (use in diagnosticsUsesOf(context.syntax)) {
             var finding = judge.judge(use)
             if (isSome(finding)) {
                 found.append(finding)

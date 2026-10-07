@@ -10,7 +10,7 @@ private final MANIFEST_PARENT_SEGMENT = ".."
 private final MANIFEST_DRIVE_COLON = ":"
 private final MANIFEST_DRIVE_ROOT_LENGTH = 3
 
-// The folder of a file path, the way dirOf of compiler/project/manifest.nv cuts it: "." for a bare name.
+// The folder of a file path, the way dirOf of compiler/manifest/manifest.nv cuts it: "." for a bare name.
 // "" stays "" because a scratch buffer has no folder at all.
 method manifestDirectoryOf(string filePath): string {
     if (filePath == "") {

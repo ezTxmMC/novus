@@ -1,0 +1,174 @@
+package lexing
+
+import base/text
+
+// `c { ... }` is raw C inside a Novus file (the compiler's lexer makes it one token). Here it is kept as
+// a comment item that runs to the matching brace: the parser, the checks and the completion see no code
+// in it, folding and the formatter treat it like a block comment, and the semantic tokens skip it.
+private final LEXING_C_BYTE = 99
+private final LEXING_APOSTROPHE_BYTE = 39
+private final LEXING_C_BLOCK_NAME_CONTEXT = { "method": true, "class": true, "construct": true, "async": true }
+private final LEXING_C_BLOCK_NAME_PUNCT = { ".": true, "@": true }
+
+// Does the word at the cursor open a C block? Then the block is consumed and true is returned.
+method lexingScanCBlock(LexingCursor cursor): bool {
+    var open = lexingCBlockOpen(cursor)
+    if (open < 0 || lexingIsNameContext(cursor)) {
+        return false
+    }
+    var start = cursor.pos
+    var close = lexingCBlockClose(cursor, open + 1)
+    var end = cursor.limit
+    if (close >= 0) {
+        end = close + 1
+    }
+    if (close < 0) {
+        cursor.addIssue(LexIssue(Span(start, open + 1), "unterminated-cblock", "unterminated c { } block: the closing '}' is missing", false))
+    }
+    cursor.addComment(start, end)
+    var block = cursor.comments[cursor.comments.length() - 1]
+    block.interpolations = lexingCBlockNames(block)
+    cursor.countLines(start, end)
+    cursor.lastItemLine = cursor.line
+    return true
+}
+
+// The offset of the `{` after the one-letter word `c` at the cursor, -1 when it is another word or no brace follows.
+method lexingCBlockOpen(LexingCursor cursor): integer {
+    var at = cursor.pos
+    if (cursor.byteAt(at) != LEXING_C_BYTE) {
+        return -1
+    }
+    at = at + 1
+    if (at < cursor.limit && lexingIsWordPart(cursor.byteAt(at))) {
+        return -1
+    }
+    while (at < cursor.limit && (cursor.byteAt(at) == LEXING_SPACE_BYTE || cursor.byteAt(at) == LEXING_TAB_BYTE)) {
+        at = at + 1
+    }
+    if (at < cursor.limit && cursor.byteAt(at) == LEXING_OPEN_BRACE_BYTE) {
+        return at
+    }
+    return -1
+}
+
+// `method c {`, `define class c {`, `x.c {`: the word names something.
+method lexingIsNameContext(LexingCursor cursor): bool {
+    if (cursor.tokens.length() == 0) {
+        return false
+    }
+    var last = cursor.tokens[cursor.tokens.length() - 1]
+    if (last.kind == TokenKind.Punct) {
+        return LEXING_C_BLOCK_NAME_PUNCT.has(last.value)
+    }
+    return LEXING_C_BLOCK_NAME_CONTEXT.has(last.text)
+}
+
+// The offset of the `}` that closes the block whose text starts at `from`, -1 when there is none.
+// Braces inside C strings, character literals and comments do not count.
+method lexingCBlockClose(LexingCursor cursor, integer from): integer {
+    var depth = 1
+    var at = from
+    while (at < cursor.limit) {
+        var code = cursor.byteAt(at)
+        if (code == LEXING_QUOTE_BYTE || code == LEXING_APOSTROPHE_BYTE) {
+            at = lexingSkipCQuoted(cursor, at)
+            continue
+        }
+        if (code == LEXING_SLASH_BYTE && at + 1 < cursor.limit) {
+            at = lexingSkipCComment(cursor, at)
+            continue
+        }
+        if (code == LEXING_OPEN_BRACE_BYTE) {
+            depth = depth + 1
+        }
+        if (code == LEXING_CLOSE_BRACE_BYTE) {
+            depth = depth - 1
+        }
+        if (depth == 0) {
+            return at
+        }
+        at = at + 1
+    }
+    return -1
+}
+
+// After the string or character literal at `at`; a backslash escapes the next byte, a line feed ends it.
+method lexingSkipCQuoted(LexingCursor cursor, integer at): integer {
+    var quote = cursor.byteAt(at)
+    var i = at + 1
+    while (i < cursor.limit && cursor.byteAt(i) != quote && cursor.byteAt(i) != LEXING_NEWLINE_BYTE) {
+        if (cursor.byteAt(i) == LEXING_BACKSLASH_BYTE) {
+            i = i + 1
+        }
+        i = i + 1
+    }
+    return i + 1
+}
+
+// After the comment that starts at `at`; `at + 1` when the slash starts none.
+method lexingSkipCComment(LexingCursor cursor, integer at): integer {
+    var next = cursor.byteAt(at + 1)
+    if (next == LEXING_SLASH_BYTE) {
+        var lineFeed = cursor.search.find(LEXING_LINE_FEED, at)
+        if (lineFeed < 0 || lineFeed >= cursor.limit) {
+            return cursor.limit
+        }
+        return lineFeed
+    }
+    if (next != LEXING_STAR_BYTE) {
+        return at + 1
+    }
+    var close = cursor.search.find("*/", at + 2)
+    if (close < 0 || close + 2 > cursor.limit) {
+        return cursor.limit
+    }
+    return close + 2
+}
+
+// A comment item that is a C block: it opens with the word `c` (the other comments open with a slash).
+method lexingIsCBlock(Token comment): bool {
+    return comment.kind == TokenKind.Comment && comment.text.startsWith("c")
+}
+
+private final LEXING_DOLLAR = "$"
+
+// The names of the `$name` variables of a C block, without the dollar (the compiler's `expandCBlock`): `$$` is a dollar
+// sign, a `$` that no name follows stays. The spans are absolute, like the spans of the `${...}` of a string.
+method lexingCBlockNames(Token block): array<Span> {
+    var spans = []
+    var text = block.text
+    var at = 0
+    while (at < text.length()) {
+        var next = at + 1
+        if (text.charAt(at) != LEXING_DOLLAR) {
+            at = next
+            continue
+        }
+        if (next < text.length() && text.charAt(next) == LEXING_DOLLAR) {
+            at = next + 1
+            continue
+        }
+        var end = lexingNameEnd(text, next)
+        if (end > next) {
+            spans.append(Span(block.start + next, block.start + end))
+        }
+        at = end
+        if (end == next) {
+            at = next
+        }
+    }
+    return spans
+}
+
+// The end of the name that starts at `from`; `from` itself when none does (a name starts with a letter or `_`).
+method lexingNameEnd(string text, integer from): integer {
+    if (from >= text.length() || lexingIsWordStart(ord(text.charAt(from))) == false) {
+        return from
+    }
+    var end = from
+    while (end < text.length() && lexingIsWordPart(ord(text.charAt(end)))) {
+        end = end + 1
+    }
+    return end
+}

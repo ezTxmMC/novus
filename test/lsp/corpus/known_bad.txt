@@ -4,3 +4,4 @@
 # rejects them for unknown names, and a syntax parser correctly reports nothing for them (see DESIGN-NOTES.md).
 vscode-novus/test/fixtures/errors.nv
 vscode-novus/test/fixtures/features.nv
+test/cases/c_inline_unterminated.nv

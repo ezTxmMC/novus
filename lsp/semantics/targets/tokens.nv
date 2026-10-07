@@ -55,3 +55,26 @@ method targetsIslandAt(array<Token> tokens, integer offset): array<Token> {
     }
     return nothing()
 }
+
+// The tokens of the interpolation or of the `$name` of a C block that holds the offset; nil when it is in neither.
+method targetsIslandAtIn(SourceFile syntax, integer offset): array<Token> {
+    var tokens = targetsIslandAt(syntax.tokens, offset)
+    if (isSome(tokens)) {
+        return tokens
+    }
+    for (block in syntax.comments) {
+        if (lexingIsCBlock(block) && block.start <= offset && offset <= block.end) {
+            return targetsCBlockIslandAt(block, offset)
+        }
+    }
+    return nothing()
+}
+
+method targetsCBlockIslandAt(Token block, integer offset): array<Token> {
+    for (island in block.interpolations) {
+        if (island.touches(offset)) {
+            return targetsIslandTokens(block, island)
+        }
+    }
+    return nothing()
+}

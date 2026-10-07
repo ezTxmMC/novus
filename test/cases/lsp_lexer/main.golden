@@ -64,6 +64,22 @@ ok   comments/token-after-a-block-comment-is-not-first
 ok   comments/stray-close-lexes-as-operators
 ok   comments/empty-block
 ok   comments/slash-is-division
+ok   cblock/is-kept-aside-like-a-comment
+ok   cblock/text-and-span
+ok   cblock/is-recognised
+ok   cblock/a-comment-is-none
+ok   cblock/no-space-needed-before-the-brace
+ok   cblock/braces-in-strings-chars-and-comments
+ok   cblock/lines-are-counted
+ok   cblock/method-named-c
+ok   cblock/class-named-c
+ok   cblock/member-named-c
+ok   cblock/longer-words-are-words
+ok   cblock/c-alone-is-a-word
+ok   cblock/dollar-names-are-islands
+ok   cblock/a-dollar-sign-and-a-digit-are-no-names
+ok   cblock/unterminated-runs-to-the-end
+ok   cblock/unterminated-is-an-error-at-the-opener
 ok   unterminated-comment/runs-to-the-end
 ok   unterminated-comment/warning-at-the-opener
 ok   unterminated-comment/slash-star-slash
@@ -160,4 +176,4 @@ ok   linear/lines-of-escaped-quotes-are-fast
 ok   linear/nul-at-the-end-keeps-every-token
 ok   linear/nul-at-the-end-keeps-every-comment
 ok   linear/nul-at-the-end-does-not-slow-the-searches
-162 checks, 0 failed
+178 checks, 0 failed

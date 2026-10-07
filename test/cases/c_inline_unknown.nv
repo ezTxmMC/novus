@@ -1,0 +1,9 @@
+package main
+
+method main {
+    var known = 1
+    c {
+        $missing = nv_int(2);
+    }
+    println known
+}

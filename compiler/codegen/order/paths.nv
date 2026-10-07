@@ -1,0 +1,85 @@
+package order
+
+import ast
+import parser
+
+// Paths into an expression tree: the child indexes from a node down, so [1, 2] is the second child of the first child.
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+method pathBelow(array<integer> base, integer index): array<integer> {
+    var path = []
+    for (step in base) {
+        path.append(step)
+    }
+    path.append(index)
+    return path
+}
+
+method pathsBelow(array<integer> base, array<array<integer>> relative): array<array<integer>> {
+    var paths = []
+    for (path in relative) {
+        var absolute = []
+        for (step in base) {
+            absolute.append(step)
+        }
+        for (step in path) {
+            absolute.append(step)
+        }
+        paths.append(absolute)
+    }
+    return paths
+}
+
+method nodeAt(string node, array<integer> path): string {
+    var current = node
+    for (index in path) {
+        current = nodeChild(current, index)
+    }
+    return current
+}
+
+// The node with the one operand at `path` (from step `depth` on) swapped for
+// `replacement`; everything else is kept as it was.
+method replaceAt(string node, array<integer> path, integer depth, string replacement): string {
+    if (depth == path.length()) {
+        return replacement
+    }
+    var pieces = ["(" + nodeHead(node)]
+    var i = 1
+    var count = nodeCount(node)
+    while (i < count) {
+        var child = nodeChild(node, i)
+        if (i == path[depth]) {
+            child = replaceAt(child, path, depth + 1, replacement)
+        }
+        pieces.append(child)
+        i = i + 1
+    }
+    return pieces.join(" ") + ")"
+}
+
+// A child per index from `from` on: the argument list of a call, the elements
+// of an array.
+method childPaths(string node, integer from): array<array<integer>> {
+    var paths = []
+    var i = from
+    var count = nodeCount(node)
+    while (i < count) {
+        paths.append([i])
+        i = i + 1
+    }
+    return paths
+}
+
+method childrenFrom(string node, integer from): array<string> {
+    var children = []
+    var i = from
+    var count = nodeCount(node)
+    while (i < count) {
+        children.append(nodeChild(node, i))
+        i = i + 1
+    }
+    return children
+}

@@ -1,35 +1,125 @@
 <?nv
-prop string section = "benchmarks"
+import data
+
+method languages(): array {
+    return data.benchLanguages()
+}
+
+method workloadName(map workload): string {
+    return workload["name"]
+}
+
+method hasRun(map workload, string language): bool {
+    return data.benchRuns(workload["name"]).has(language)
+}
+
+method isBest(map workload, string language): bool {
+    var runs = data.benchRuns(workload["name"])
+    return runs[language]["ms"] == data.bestValue(runs, "ms")
+}
+
+method measure(map workload, string language): string {
+    return data.formatMeasure(data.benchRuns(workload["name"])[language]["ms"], "ms")
+}
+
+method workloadField(map workload, string field): string {
+    return workload[field]
+}
 ?>
-<Layout title="Benchmarks" section="{section}">
-  <h1>Benchmarks</h1>
-  <p>Performance comparison: Novus vs Rust, C++, Go, Crystal, Java, Node, Python.</p>
+<Layout title="Benchmarks" description="Twelve workloads implemented once in each language and run on the same machine." section="benchmarks">
+    <div class="mx-auto max-w-[90rem] px-4 py-12 sm:px-6 lg:px-8">
+        <h1 class="text-4xl font-semibold tracking-tight text-ink-50">Benchmarks</h1>
+        <p class="mt-3 max-w-3xl text-ink-400">{data.benchWorkloads().length()} workloads, implemented once in each language, run on the same machine. Every implementation prints the same output - the runner refuses to compare results that disagree. Times are the best of five runs and include process start; memory is the peak RSS of the child process.</p>
+        <ul class="mt-6 flex flex-wrap gap-x-6 gap-y-1 text-xs text-ink-400">
+            {#for language in languages()}
+                <li class="flex items-center gap-2"><span class="size-2.5 rounded-full" style="background: {data.benchColor(language)}"></span><span class="font-mono">{data.benchVersion(language)}</span></li>
+            {/for}
+        </ul>
 
-  <div class="benchmark-summary">
-    <div class="stat">
-      <div class="stat-value">7 languages</div>
-      <div class="stat-label">Compared</div>
-    </div>
-    <div class="stat">
-      <div class="stat-value">8 workloads</div>
-      <div class="stat-label">Benchmarked</div>
-    </div>
-    <div class="stat">
-      <div class="stat-value">Fastest compile</div>
-      <div class="stat-label">Novus strength</div>
-    </div>
-    <div class="stat">
-      <div class="stat-value">Competitive runtime</div>
-      <div class="stat-label">C++-class speed</div>
-    </div>
-  </div>
+        <div class="mt-8 grid gap-4 md:grid-cols-2">
+            <section class="rounded-xl border border-ink-700 bg-ink-900/60 p-5" aria-label="Fastest">
+                <p class="eyebrow">Fastest, wins across {data.benchWorkloads().length()} workloads</p>
+                <dl class="mt-4 flex flex-wrap gap-6">
+                    {#for language in languages()}
+                        {#if data.winsOf(data.benchWins("ms"), language) > 0}
+                            <div><dd class="font-mono text-2xl font-semibold" style="color: {data.benchColor(language)}">{data.winsOf(data.benchWins("ms"), language)}</dd><dt class="text-xs text-ink-400">{data.benchLabel(language)}</dt></div>
+                        {/if}
+                    {/for}
+                </dl>
+            </section>
+            <section class="rounded-xl border border-ink-700 bg-ink-900/60 p-5" aria-label="Leanest">
+                <p class="eyebrow">Leanest, wins across {data.benchWorkloads().length()} workloads</p>
+                <dl class="mt-4 flex flex-wrap gap-6">
+                    {#for language in languages()}
+                        {#if data.winsOf(data.benchWins("mb"), language) > 0}
+                            <div><dd class="font-mono text-2xl font-semibold" style="color: {data.benchColor(language)}">{data.winsOf(data.benchWins("mb"), language)}</dd><dt class="text-xs text-ink-400">{data.benchLabel(language)}</dt></div>
+                        {/if}
+                    {/for}
+                </dl>
+            </section>
+        </div>
 
-  <p>See benchmarks/results.json for detailed metrics.</p>
+        <div class="mt-8 overflow-x-auto rounded-xl border border-ink-700">
+            <table class="w-full text-left text-sm">
+                <caption class="sr-only">Wall clock time per workload and language</caption>
+                <thead>
+                    <tr class="border-b border-ink-700">
+                        <th scope="col" class="px-4 py-3 eyebrow">Workload</th>
+                        {#for language in languages()}
+                            <th scope="col" class="px-3 py-3 eyebrow">{data.benchLabel(language)}</th>
+                        {/for}
+                    </tr>
+                </thead>
+                <tbody>
+                    {#for workload in data.benchWorkloads()}
+                        <tr class="border-b border-ink-800 last:border-0">
+                            <th scope="row" class="px-4 py-2 font-normal"><a href="#{workloadName(workload)}">{workloadField(workload, "title")}</a></th>
+                            {#for language in languages()}
+                                {#if hasRun(workload, language)}
+                                    <td class="px-3 py-2 font-mono text-xs text-ink-400" class:font-semibold={isBest(workload, language)} class:text-primary-200={isBest(workload, language)}>{measure(workload, language)}</td>
+                                {:else}
+                                    <td class="px-3 py-2 text-ink-600">-</td>
+                                {/if}
+                            {/for}
+                        </tr>
+                    {/for}
+                </tbody>
+            </table>
+        </div>
+
+        {#for workload in data.benchWorkloads()}
+            <section id={workloadName(workload)} class="mt-12 border-t border-ink-700 pt-10" aria-labelledby="h-{workloadName(workload)}">
+                <h2 id="h-{workloadName(workload)}" class="text-2xl font-semibold text-ink-50">{workloadField(workload, "title")}</h2>
+                <p class="mt-1 text-sm text-ink-400">{workloadField(workload, "description")} - every language prints <code class="font-mono text-xs text-ink-200">{data.benchOutput(workloadName(workload))}</code></p>
+                <div class="mt-5 grid gap-4 lg:grid-cols-2">
+                    <Chart title="Wall clock time" workload={workloadName(workload)} metric="ms" />
+                    <Chart title="Peak memory (RSS)" workload={workloadName(workload)} metric="mb" />
+                </div>
+                <details class="mt-4" data-tabs>
+                    <summary class="cursor-pointer font-mono text-xs text-primary-300">show the code</summary>
+                    <div class="mt-3 flex flex-wrap gap-1.5" role="tablist" aria-label="Language">
+                        {#for language in languages()}
+                            <button type="button" role="tab" class="chip" data-tab={language} aria-selected={language == "novus"}>{data.benchLabel(language)}</button>
+                        {/for}
+                    </div>
+                    {#for language in languages()}
+                        <div data-tab-panel={language} hidden={language != "novus"} class="mt-3">
+                            <Code code={data.benchSource(workloadName(workload), language)} lang={data.benchHighlight(language)} />
+                        </div>
+                    {/for}
+                </details>
+            </section>
+        {/for}
+
+        <section class="mt-12 border-t border-ink-700 pt-10">
+            <h2 class="text-2xl font-semibold text-ink-50">How to read this</h2>
+            <div class="mt-4 max-w-3xl space-y-4 text-sm text-ink-300">
+                <p>These are microbenchmarks. They say something about the code a compiler generates for tight loops, allocation and standard library calls - and nothing about how a language feels in a large program, how good its tooling is, or how it behaves under a real workload.</p>
+                <p>Times include process start, which is what a user waits for. That is the honest number for a command line tool and an unfair one for the JVM and Node, whose JITs need a long running process to pay off.</p>
+                <p><strong class="text-ink-50">Where Novus does well:</strong> integer and float arithmetic, because the compiler proves which locals are numbers and emits plain C for them, and memory, because values are tagged pointers and objects are a single flat block.</p>
+                <p><strong class="text-ink-50">Where it does not:</strong> sorting and allocation heavy code, where every element is still a boxed value behind a pointer, and hash maps, which store more per entry than a C++ <code class="font-mono text-xs text-ink-200">unordered_map</code>.</p>
+                <p>Everything here lives in <a href="https://github.com/ezTxmMC/novus/tree/master/benchmarks" rel="noreferrer">benchmarks/</a> - sources, the runner and the raw results.</p>
+            </div>
+        </section>
+    </div>
 </Layout>
-
-<style>
-.benchmark-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 2rem; margin: 3rem 0; }
-.stat { text-align: center; }
-.stat-value { font-size: 1.5rem; font-weight: 700; color: #f5d0fe; }
-.stat-label { font-size: 0.9rem; color: #a78bfa; margin-top: 0.5rem; }
-</style>

@@ -1,0 +1,51 @@
+package publish
+
+import os
+import web
+
+// Writes rendered pages and copies files into the output folder.
+
+private final INDEX_FILE = "index.html"
+
+// "/docs/cli" -> <root>/docs/cli/index.html, "/" -> <root>/index.html
+method pageFile(string root, string path): string {
+    var folder = root + path
+    if (path == "/") {
+        folder = root
+    }
+    return folder + "/" + INDEX_FILE
+}
+
+method renderPage(NvhComponent component): string {
+    return web.document(web.view(component), false)
+}
+
+method writePage(string root, string path, NvhComponent component) {
+    writeText(pageFile(root, path), renderPage(component))
+}
+
+method writeText(string file, string text) {
+    os.mkdir(parentOf(file))
+    os.writeFile(file, text)
+}
+
+method parentOf(string file): string {
+    var cut = file.length()
+    while (cut > 0 && file.charAt(cut - 1) != "/") {
+        cut = cut - 1
+    }
+    return file.substring(0, cut - 1)
+}
+
+// Every file below `from` goes below `to` under the same name.
+method copyTree(string from, string to) {
+    os.mkdir(to)
+    for (entry in os.listDir(from)) {
+        var source = from + "/" + entry
+        if (os.isDir(source)) {
+            copyTree(source, to + "/" + entry)
+            continue
+        }
+        os.copy(source, to + "/" + entry)
+    }
+}

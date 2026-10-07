@@ -1,0 +1,37 @@
+<?nv
+import data
+
+prop string title = ""
+prop string workload = ""
+prop string metric = "ms"
+
+// A long bar carries its label inside, a short one leaves room behind it.
+method labelPosition(string language): string {
+    var insideFromPercent = 60.0
+    var percent = data.barPercent(runs(), language, metric)
+    if (percent > insideFromPercent) {
+        return "right: 0.5rem; color: oklch(0.15 0.02 295)"
+    }
+    return "left: calc(" + data.percentText(percent) + "% + 0.5rem)"
+}
+
+method runs(): map {
+    return data.benchRuns(workload)
+}
+?>
+<figure class="rounded-xl border border-ink-700 bg-ink-900/60 p-4">
+    <figcaption class="eyebrow mb-4">{title}</figcaption>
+    <ul class="space-y-1.5">
+        {#for language in data.benchLanguages()}
+            {#if runs().has(language)}
+                <li class="flex items-center gap-3">
+                    <span class="w-20 shrink-0 font-mono text-xs text-ink-400">{data.benchLabel(language)}</span>
+                    <span class="relative h-6 flex-1 rounded bg-ink-800">
+                        <span class="absolute inset-y-0 left-0 rounded" style="width: {data.percentText(data.barPercent(runs(), language, metric))}%; background: {data.benchColor(language)}"></span>
+                        <span class="absolute inset-y-0 flex items-center font-mono text-[11px] text-ink-100" style={labelPosition(language)}>{data.formatMeasure(runs()[language][metric], metric)}</span>
+                    </span>
+                </li>
+            {/if}
+        {/for}
+    </ul>
+</figure>

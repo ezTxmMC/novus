@@ -1,0 +1,93 @@
+package index
+
+import ast
+import parser
+
+// Classes and enums: the nodes of the index and their parts.
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+// The standard module a class was declared in, "" for program classes.
+method classPackage(map<string, string> prog, string cls): string {
+    if (prog.has("classpkg:" + cls)) {
+        return prog["classpkg:" + cls]
+    }
+    return ""
+}
+
+method isClassLike(map<string, string> prog, string name): bool {
+    return prog.has("class:" + name) || prog.has("enum:" + name)
+}
+
+// The class or enum node, "" if unknown.
+method typeNode(map<string, string> prog, string name): string {
+    if (prog.has("class:" + name)) {
+        return prog["class:" + name]
+    }
+    if (prog.has("enum:" + name)) {
+        return prog["enum:" + name]
+    }
+    return ""
+}
+
+method classBase(string node): string {
+    if (nodeHead(node) == "class") {
+        var base = nodeChild(node, 2)
+        if (base == "-") {
+            return ""
+        }
+        return base
+    }
+    return ""
+}
+
+method classFields(string node): string {
+    if (nodeHead(node) == "enum") {
+        return nodeChild(node, 3)
+    }
+    return nodeChild(node, 4)
+}
+
+method classCtor(string node): string {
+    if (nodeHead(node) == "enum") {
+        return nodeChild(node, 4)
+    }
+    return nodeChild(node, 5)
+}
+
+method classMethods(string node): string {
+    if (nodeHead(node) == "enum") {
+        return nodeChild(node, 5)
+    }
+    return nodeChild(node, 6)
+}
+
+method classIsAbstract(string node): bool {
+    return nodeHead(node) == "class" && nodeChild(node, 3) == "true"
+}
+
+// The most-derived method node named `name` reachable from class `cls`.
+method findMethod(map<string, string> prog, string cls, string name): string {
+    var current = cls
+    var guard = 0
+    while (current != "" && guard < 64) {
+        var node = typeNode(prog, current)
+        if (node == "") {
+            return ""
+        }
+        var methods = classMethods(node)
+        var i = 1
+        var methodsCount = nodeCount(methods)
+        while (i < methodsCount) {
+            var m = nodeChild(methods, i)
+            if (methodName(m) == name) {
+                return m
+            }
+            i = i + 1
+        }
+        current = classBase(node)
+        guard = guard + 1
+    }
+    return ""
+}

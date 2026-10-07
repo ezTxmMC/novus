@@ -1,0 +1,185 @@
+package typed
+
+import ast
+import parser
+
+// Which locals are unboxed integers or floats.
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+// How many rounds of dropping candidates a body gets.
+final MAX_KIND_ROUNDS = 16
+
+// The locals (and integer parameters) of a method body that can be unboxed.
+// `parameters` are the names bound by the signature, `intCandidates` those of
+// them declared `integer`.
+method inferIntLocals(array<string> names, array<string> values, map<string, string> flags, map<string, string> parameters, map<string, string> intCandidates, map<string, string> prog, map<string, string> ctx, map<string, string> view): map<string, string> {
+    var ints = {}
+    for (name in intCandidates) {
+        ints[name] = "1"
+        markInt(view, name)
+    }
+    seedIntLocals(names, flags, parameters, ints, view)
+    // drop candidates whose assignments are not integer expressions, until
+    // the set is stable
+    var changed = true
+    var rounds = 0
+    while (changed && rounds < MAX_KIND_ROUNDS) {
+        changed = dropNonIntegers(names, values, ints, prog, ctx, view)
+        rounds = rounds + 1
+    }
+    return ints
+}
+
+method seedIntLocals(array<string> names, map<string, string> flags, map<string, string> parameters, map<string, string> ints, map<string, string> view) {
+    for (name in names) {
+        var typed = flags.has(FLAG_TYPE + name) == false || flags[FLAG_TYPE + name] == "integer"
+        if (flags.has(FLAG_DECLARED + name) && flags.has(FLAG_LOOP + name) == false && parameters.has(name) == false && typed) {
+            ints[name] = "1"
+            markInt(view, name)
+        }
+        if (flags.has(FLAG_LOOP + name) || typed == false) {
+            ints.remove(name)
+            view.remove("int:" + name)
+        }
+    }
+}
+
+// One round: is any candidate dropped?
+method dropNonIntegers(array<string> names, array<string> values, map<string, string> ints, map<string, string> prog, map<string, string> ctx, map<string, string> view): bool {
+    var changed = false
+    var k = 0
+    while (k < names.length()) {
+        var candidate = names[k]
+        if (ints.has(candidate) && valueKind(values[k], prog, ctx, view) != KIND_INT) {
+            ints.remove(candidate)
+            view.remove("int:" + candidate)
+            changed = true
+        }
+        k = k + 1
+    }
+    return changed
+}
+
+// The locals (and float parameters) that can be unboxed doubles. `ints` are
+// the names already claimed by the integer pass.
+method inferFloatLocals(array<string> names, array<string> values, map<string, string> flags, map<string, string> parameters, map<string, string> floatCandidates, map<string, string> ints, map<string, string> prog, map<string, string> ctx, map<string, string> view): map<string, string> {
+    var floats = {}
+    for (name in floatCandidates) {
+        floats[name] = "1"
+        markFloat(view, name)
+    }
+    seedFloatLocals(names, flags, parameters, ints, floats, view)
+    var changed = true
+    var rounds = 0
+    while (changed && rounds < MAX_KIND_ROUNDS) {
+        changed = dropNonFloats(names, values, flags, floats, prog, ctx, view)
+        rounds = rounds + 1
+    }
+    return floats
+}
+
+method seedFloatLocals(array<string> names, map<string, string> flags, map<string, string> parameters, map<string, string> ints, map<string, string> floats, map<string, string> view) {
+    for (name in names) {
+        var typed = flags.has(FLAG_TYPE + name) == false || flags[FLAG_TYPE + name] == "float"
+        var local = flags.has(FLAG_DECLARED + name) && flags.has(FLAG_LOOP + name) == false
+        if (local && parameters.has(name) == false && ints.has(name) == false && typed) {
+            floats[name] = "1"
+            markFloat(view, name)
+        }
+        if (flags.has(FLAG_LOOP + name) || ints.has(name) || typed == false) {
+            floats.remove(name)
+            view.remove("float:" + name)
+        }
+    }
+}
+
+method dropNonFloats(array<string> names, array<string> values, map<string, string> flags, map<string, string> floats, map<string, string> prog, map<string, string> ctx, map<string, string> view): bool {
+    var changed = false
+    var k = 0
+    while (k < names.length()) {
+        var candidate = names[k]
+        // a `float` declaration also accepts integer expressions (cast)
+        var declaredFloat = flags.has(FLAG_TYPE + candidate) && flags[FLAG_TYPE + candidate] == "float"
+        var kind = valueKind(values[k], prog, ctx, view)
+        var ok = kind == KIND_FLOAT || (declaredFloat && kind == KIND_INT)
+        if (floats.has(candidate) && ok == false) {
+            floats.remove(candidate)
+            view.remove("float:" + candidate)
+            changed = true
+        }
+        k = k + 1
+    }
+    return changed
+}
+
+// Marks what the code generator can say about the locals of `body`: the
+// parameters of the signature have been bound in `locals` already. With
+// `unboxParams` the parameters declared integer or float may be unboxed too
+// (the free methods take them that way), otherwise they stay boxed.
+//
+// `returnKinds` receives the kind of every `return` of the body (a bare return
+// has none), which workers.nv decides the result of an unboxed worker by.
+method markLocalKinds(string body, string params, bool unboxParams, map<string, string> prog, map<string, string> ctx, map<string, string> locals, array<string> returnKinds) {
+    // C written in the method assigns to its variables as values: none is unboxed
+    if (hasCBlock(body)) {
+        return
+    }
+    var names = []
+    var values = []
+    var flags = {}
+    var loops = []
+    var returns = []
+    collectAssignments(body, names, values, flags, loops, returns)
+    var parameters = {}
+    var intCandidates = {}
+    var floatCandidates = {}
+    bindParameters(params, unboxParams, prog, locals, parameters, intCandidates, floatCandidates)
+    var view = analysisView(locals, flags)
+    inferClasses(names, values, loops, flags, parameters, prog, ctx, view, locals)
+    var ints = inferIntLocals(names, values, flags, parameters, intCandidates, prog, ctx, view)
+    var floats = inferFloatLocals(names, values, flags, parameters, floatCandidates, ints, prog, ctx, view)
+    for (name in ints) {
+        markInt(locals, name)
+    }
+    for (name in floats) {
+        markFloat(locals, name)
+    }
+    for (returned in returns) {
+        returnKinds.append(returnedKind(returned, prog, ctx, view))
+    }
+}
+
+// The parameters of the signature: which can be unboxed, which hold objects.
+method bindParameters(string params, bool unboxParams, map<string, string> prog, map<string, string> locals, map<string, string> parameters, map<string, string> intCandidates, map<string, string> floatCandidates) {
+    var i = 1
+    var count = nodeCount(params)
+    while (i < count) {
+        var param = nodeChild(params, i)
+        var name = nodeChild(param, 2)
+        var paramType = nodeChild(param, 1)
+        parameters[name] = "1"
+        if (unboxParams && kindOfType(paramType) == KIND_INT) {
+            intCandidates[name] = "1"
+        }
+        if (unboxParams && kindOfType(paramType) == KIND_FLOAT) {
+            floatCandidates[name] = "1"
+        }
+        if (declaredClass(prog, paramType) != "") {
+            locals["cls:" + name] = declaredClass(prog, paramType)
+        }
+        if (declaredElementClass(prog, paramType) != "") {
+            locals["elem:" + name] = declaredElementClass(prog, paramType)
+        }
+        i = i + 1
+    }
+}
+
+// The kind of a returned expression; a bare `return` has none.
+method returnedKind(string returned, map<string, string> prog, map<string, string> ctx, map<string, string> view): string {
+    if (returned == NO_VALUE) {
+        return KIND_NONE
+    }
+    return valueKind(returned, prog, ctx, view)
+}

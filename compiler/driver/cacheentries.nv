@@ -1,0 +1,62 @@
+package driver
+
+import crypto
+import os
+import path
+import strings
+
+// Reading and trimming the entries of the cache.
+
+// The entries of the cache, least recently used first (a map iterates in key
+// order, and the key starts with the zero padded time of the last use).
+method cacheEntries(string directory): map<string, CacheEntry> {
+    var entries = {}
+    if (os.isDir(directory) == false) {
+        return entries
+    }
+    for (name in os.listDir(directory)) {
+        var file = path.join(directory, name)
+        if (isStagingName(name) && os.isFile(file)) {
+            removeStaleStaging(file)
+            continue
+        }
+        if (isEntryName(name) && os.isFile(file)) {
+            var used = lastUse(file)
+            entries[strings.padLeftWith("" + used, USED_DIGITS, "0") + "-" + name] = CacheEntry(name, os.fileSize(file), used)
+        }
+    }
+    return entries
+}
+
+method removeStaleStaging(string file) {
+    var age = os.time() * 1000 - os.modifiedMillis(file)
+    if (age > STALE_STAGING_MILLIS) {
+        os.remove(file)
+    }
+}
+
+method removeEntry(string directory, string name) {
+    var file = path.join(directory, name)
+    os.remove(file)
+    os.remove(file + USE_SUFFIX)
+}
+
+// Deletes the least recently used executables until the cache fits its
+// limit; the one just stored (`keepKey`) always stays.
+method evictOldEntries(string directory, string keepKey, integer limit) {
+    var entries = cacheEntries(directory)
+    var total = 0
+    for (id in entries) {
+        total = total + entries[id].size()
+    }
+    for (id in entries) {
+        if (total <= limit) {
+            return
+        }
+        var entry = entries[id]
+        if (entry.name().startsWith(keepKey) == false) {
+            removeEntry(directory, entry.name())
+            total = total - entry.size()
+        }
+    }
+}

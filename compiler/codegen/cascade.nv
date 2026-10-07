@@ -1,0 +1,49 @@
+package codegen
+
+import ast
+import parser
+
+// The cascade `receiver..a()..b = 1`: the receiver is evaluated once into a
+// temporary, every section runs against it in order, and the value of the
+// whole expression is the receiver itself, not the result of a section.
+//
+//     (casc r s1 s2)     ->     (nvt0 = r, s1[nvt0], s2[nvt0], nvt0)
+//
+// A section is written against CASCADE_TARGET (parser/expressions.nv); that
+// placeholder is the receiver of its innermost selector, so replacing it is a
+// walk down the first child of each selector.
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+method genCascade(string node, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    var temp = newTemp(ctx)
+    var target = "(craw " + sexpStr(temp) + ")"
+    var steps = [temp + " = " + genExpr(nodeChild(node, 1), prog, ctx, locals)]
+    for (section in childrenFrom(node, 2)) {
+        steps.append(genCascadeSection(retarget(section, target), prog, ctx, locals))
+    }
+    steps.append(temp)
+    return "(" + steps.join(", ") + ")"
+}
+
+// An assignment has no value of its own, so it is generated the way the
+// statement is; everything else is an expression whose value is dropped.
+method genCascadeSection(string section, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    if (nodeHead(section) == "setexpr") {
+        return genSetCode(nodeChild(section, 1), nodeChild(section, 2), prog, ctx, locals)
+    }
+    return genExpr(section, prog, ctx, locals)
+}
+
+// The section with its innermost receiver, the placeholder, replaced.
+method retarget(string section, string target): string {
+    if (section == CASCADE_TARGET) {
+        return target
+    }
+    var pieces = ["(" + nodeHead(section), retarget(nodeChild(section, 1), target)]
+    for (child in childrenFrom(section, 2)) {
+        pieces.append(child)
+    }
+    return pieces.join(" ") + ")"
+}

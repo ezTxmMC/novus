@@ -1,0 +1,1 @@
+error: c_inline_toplevel.nv:3: $answer in a c { } block outside of a method: only methods have variables (write $$ for a dollar sign)

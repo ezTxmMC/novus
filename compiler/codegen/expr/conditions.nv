@@ -1,0 +1,75 @@
+package expr
+
+import ast
+import parser
+
+// Conditions: a C int instead of the boxed bool for comparisons and logical operators.
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+// The runtime functions of the comparison nodes. Built once: genCondition runs for every condition.
+private final CONDITION_FUNCTIONS = {"<": "nv_lt_bool", ">": "nv_gt_bool", "<=": "nv_le_bool", ">=": "nv_ge_bool",
+    "==": "nv_eq_bool", "!=": "nv_ne_bool"}
+
+private final LOGICAL_OPERATORS = {"&&": true, "||": true}
+
+// A condition as a C int, avoiding the boxed bool for comparisons and
+// logical operators: `while (nv_lt_bool(i, n))` instead of
+// `while (nv_truthy(nv_lt(i, n)))`.
+method genCondition(string node, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    var head = nodeHead(node)
+    if (LOGICAL_OPERATORS.has(head)) {
+        return "(" + genCondition(nodeChild(node, 1), prog, ctx, locals) + " " + head + " " + genCondition(nodeChild(node, 2), prog, ctx, locals) + ")"
+    }
+    if (head == "!") {
+        return "(!(" + genCondition(nodeChild(node, 1), prog, ctx, locals) + "))"
+    }
+    if (CONDITION_FUNCTIONS.has(head) && nodeCount(node) == 3) {
+        return genComparison(node, head, prog, ctx, locals)
+    }
+    if (node == "true") {
+        return "1"
+    }
+    if (node == "false") {
+        return "0"
+    }
+    return "nv_truthy(" + genExpr(node, prog, ctx, locals) + ")"
+}
+
+method genComparison(string node, string head, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    var sequence = sequenceOperands(node, prog, ctx, locals)
+    if (sequence.length() > 0) {
+        return sequencedExpr(sequence, genCondition(sequence[0], prog, ctx, locals))
+    }
+    var left = nodeChild(node, 1)
+    var right = nodeChild(node, 2)
+    var leftKind = kindOf(left, prog, ctx, locals)
+    var rightKind = kindOf(right, prog, ctx, locals)
+    if (comparesValues(head, left, right, prog, ctx, locals)) {
+        return genValueComparison(head, left, right, prog, ctx, locals)
+    }
+    if (leftKind == KIND_INT && rightKind == KIND_INT) {
+        // both sides are unboxed integers: compare them directly (no outer
+        // parentheses - comparisons bind tighter than && and ||)
+        return genInt(left, prog, ctx, locals) + " " + head + " " + genInt(right, prog, ctx, locals)
+    }
+    if (isNumericKind(leftKind) && isNumericKind(rightKind)) {
+        return genFloatOperand(left, prog, ctx, locals) + " " + head + " " + genFloatOperand(right, prog, ctx, locals)
+    }
+    return genValueComparison(head, left, right, prog, ctx, locals)
+}
+
+method genValueComparison(string head, string left, string right, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    return CONDITION_FUNCTIONS[head] + "(" + genExpr(left, prog, ctx, locals) + ", " + genExpr(right, prog, ctx, locals) + ")"
+}
+
+// Does `left == right` compare values as they are? A field that holds no
+// number is a value like any other there, so equality with a bare read of a
+// numeric field is not a numeric comparison.
+method comparesValues(string head, string left, string right, map<string, string> prog, map<string, string> ctx, map<string, string> locals): bool {
+    if (head != "==" && head != "!=") {
+        return false
+    }
+    return isBareRead(left, prog, ctx, locals) || isBareRead(right, prog, ctx, locals)
+}

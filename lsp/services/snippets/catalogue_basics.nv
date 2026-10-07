@@ -37,6 +37,8 @@ method snippetsVariableSnippets(): array<Snippet> {
             "var #{1:name} = #{2:value}"),
         Snippet("vart", ["vart", "tvar"], "Variable with an explicit type", statement,
             "var #{1:name}: #{2:integer} = #{3:value}"),
+        Snippet("cascade", ["cascade", "casc"], "Cascade: several calls on one receiver, which stays the value", statement,
+            "#{1:items}..append(#{2:value})..append(#{3:value})"),
         Snippet("local", ["local", "typed"], "Typed local declaration", statement,
             "#{1:integer} #{2:name} = #{3:value}"),
         Snippet("return", ["ret", "return"], "Return a value", statement,

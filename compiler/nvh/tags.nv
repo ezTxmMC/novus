@@ -1,0 +1,192 @@
+package nvh
+
+import lexer
+import loader
+import parser
+
+// The tags of the template: attributes of an opening tag, the nesting of
+// the tokens into elements, and the {block} tokens.
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+// The opening tag at `i`: {tag, attrs, self, end} with `end` after the '>'.
+method nvhScanTag(string t, integer i, string pos): map<string, object> {
+    var n = t.length()
+    var j = i + 1
+    while (j < n && nvhTagChar(t.charAt(j))) {
+        j = j + 1
+    }
+    var tag = t.substring(i + 1, j)
+    var attrs = []
+    while (true) {
+        j = nvhSkipSpaces(t, j)
+        if (j >= n) {
+            fail("unclosed tag <" + tag + ">", pos)
+        }
+        if (t.charAt(j) == ">") {
+            return {"tag": tag, "attrs": attrs, "self": false, "end": j + 1}
+        }
+        if (t.charAt(j) == "/" && j + 1 < n && t.charAt(j + 1) == ">") {
+            return {"tag": tag, "attrs": attrs, "self": true, "end": j + 2}
+        }
+        var scanned = nvhScanAttr(t, j, pos)
+        if (scanned["attr"].has("name")) {
+            attrs.append(scanned["attr"])
+        }
+        j = scanned["end"]
+    }
+    return {}
+}
+
+method nvhSkipSpaces(string t, integer from): integer {
+    var j = from
+    while (j < t.length() && nvhIsSpace(t.charAt(j))) {
+        j = j + 1
+    }
+    return j
+}
+
+// Does the attribute name end before t[j]?
+method nvhEndsName(string t, integer j): bool {
+    var c = t.charAt(j)
+    if (nvhIsSpace(c) || c == "=" || c == ">") {
+        return true
+    }
+    return c == "/" && j + 1 < t.length() && t.charAt(j + 1) == ">"
+}
+
+// The attribute that starts at `j`: {attr, end}; attr is empty when there is no name (a stray character is skipped).
+method nvhScanAttr(string t, integer j, string pos): map<string, object> {
+    var start = j
+    var end = j
+    while (end < t.length() && nvhEndsName(t, end) == false) {
+        end = end + 1
+    }
+    var name = t.substring(start, end)
+    if (name == "") {
+        return {"attr": {}, "end": end + 1}
+    }
+    var eq = nvhSkipSpaces(t, end)
+    if (eq >= t.length() || t.charAt(eq) != "=") {
+        return {"attr": {"name": name, "kind": "none", "value": ""}, "end": end}
+    }
+    return nvhScanAttrValue(t, nvhSkipSpaces(t, eq + 1), name, pos)
+}
+
+// The value of attribute `name` that starts at `j`: quoted, in braces, or bare.
+method nvhScanAttrValue(string t, integer j, string name, string pos): map<string, object> {
+    var quote = ""
+    if (j < t.length()) {
+        quote = t.charAt(j)
+    }
+    if (quote == NVH_QUOTE || quote == "'") {
+        var close = nvhQuotedEnd(t, j, quote, name, pos)
+        return {"attr": {"name": name, "kind": "str", "value": t.substring(j + 1, close)}, "end": close + 1}
+    }
+    if (quote == "{") {
+        var brace = nvhCloseBrace(t, j)
+        if (brace < 0) {
+            fail("unclosed '{' in attribute " + name, pos)
+        }
+        return {"attr": {"name": name, "kind": "expr", "value": t.substring(j + 1, brace - 1).trim()}, "end": brace}
+    }
+    var u = j
+    while (u < t.length() && nvhIsSpace(t.charAt(u)) == false && t.charAt(u) != ">") {
+        u = u + 1
+    }
+    return {"attr": {"name": name, "kind": "str", "value": t.substring(j, u)}, "end": u}
+}
+
+// The index of the quote that closes the value starting at `j`; braces inside may hold quotes.
+method nvhQuotedEnd(string t, integer j, string quote, string name, string pos): integer {
+    var e = j + 1
+    while (e < t.length() && t.charAt(e) != quote) {
+        if (t.charAt(e) != "{" || t.charAt(e - 1) == NVH_BACKSLASH) {
+            e = e + 1
+            continue
+        }
+        var brace = nvhCloseBrace(t, e)
+        if (brace < 0) {
+            fail("unclosed '{' in attribute " + name, pos)
+        }
+        e = brace
+    }
+    return e
+}
+
+// Nests the tokens: an element gets the tokens up to its closing tag as
+// "kids". Void, self-closing and raw elements have none.
+method nvhTree(array<object> toks, string file): array<object> {
+    var top = []
+    var stack = []
+    for (tok in toks) {
+        var kids = top
+        if (stack.length() > 0) {
+            kids = stack[stack.length() - 1]["kids"]
+        }
+        if (tok["k"] == "open") {
+            tok["kids"] = []
+            kids.append(tok)
+            if (tok["self"] == false && tok["israw"] == false && nvhIsVoid(tok["tag"]) == false) {
+                stack.append(tok)
+            }
+            continue
+        }
+        if (tok["k"] == "close") {
+            nvhCloseElement(stack, tok, file)
+            continue
+        }
+        kids.append(tok)
+    }
+    return top
+}
+
+// A closing tag ends the innermost open element of its name, and those inside it.
+method nvhCloseElement(array<object> stack, map<string, object> tok, string file) {
+    var at = stack.length() - 1
+    while (at >= 0 && stack[at]["tag"] != tok["tag"]) {
+        at = at - 1
+    }
+    if (at < 0 && nvhIsVoid(tok["tag"])) {
+        return
+    }
+    if (at < 0) {
+        fail("</" + tok["tag"] + "> without an open <" + tok["tag"] + ">", file + ":" + tok["line"])
+    }
+    while (stack.length() > at) {
+        stack.pop()
+    }
+}
+
+method nvhBlockToken(string inner, integer line, string pos): map<string, object> {
+    var t = inner.trim()
+    if (t.startsWith("@html ")) {
+        return {"k": "html", "code": t.substring(6, t.length()).trim(), "line": line}
+    }
+    if (t.startsWith("#if ")) {
+        return {"k": "if", "code": t.substring(4, t.length()).trim(), "line": line}
+    }
+    if (t.startsWith(":else if ")) {
+        return {"k": "elif", "code": t.substring(9, t.length()).trim(), "line": line}
+    }
+    if (t == ":else") {
+        return {"k": "else", "line": line}
+    }
+    if (t == "/if") {
+        return {"k": "endif", "line": line}
+    }
+    if (t.startsWith("#for ")) {
+        return {"k": "for", "code": t.substring(5, t.length()).trim(), "line": line}
+    }
+    if (t == "/for") {
+        return {"k": "endfor", "line": line}
+    }
+    if (t.startsWith("#") || t.startsWith(":") || t.startsWith("/")) {
+        fail("unknown template block {" + t + "} (blocks: {#if}, {:else if}, {:else}, {/if}, {#for}, {/for})", pos)
+    }
+    if (t == "") {
+        fail("empty {} in the template (write \\{ for a literal brace)", pos)
+    }
+    return {"k": "expr", "code": t, "line": line}
+}

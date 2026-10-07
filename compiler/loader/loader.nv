@@ -44,14 +44,14 @@ method moduleOf(string rel, map<string, string> modules): string {
     return best
 }
 
-// The .nv and .nvh files of a folder, sorted ([] when it is none).
+// The source files of a folder (.nv, .nvh), sorted ([] when it is none).
 method sourceFilesIn(string dir): array<string> {
     var out = []
     if (os.isDir(dir) == false) {
         return out
     }
     for (entry in os.listDir(dir)) {
-        if (entry.endsWith(".nv") || entry.endsWith(".nvh")) {
+        if (isSourceName(entry)) {
             if (os.isFile(joinPath(dir, entry))) {
                 out.append(entry)
             }
@@ -70,29 +70,35 @@ method loadFile(string path, string root, string importedFrom, map<string, strin
         fail("cannot open '" + path + "'", importedFrom)
     }
     var dir = dirName(path)
-    var source = readFile(path)
-    if (path.endsWith(".nvh")) {
-        source = transpileNvh(source, fileLabel(path), dir, root)
-    }
-    var decls = parseFile(source, fileLabel(path))
-    var qualifier = packageQualifier(packagePath(root, dir))
-    for (d in decls) {
-        if (nodeHead(d) == "package") {
-            var declared = nodeChild(d, 1)
-            if (declared == "main") {
-                // the program's main package, wherever its files live
-                qualifier = ""
-            } else if (qualifier != "" && declared != qualifier) {
-                fail("the file declares package " + declared + " but lives in the folder of package " + qualifier + " - a folder is a package, so write 'package " + qualifier + "'", sexpUnescape(nodeChild(d, 2)))
-            }
-        }
-    }
+    var decls = parseFile(sourceText(path, dir, root), fileLabel(path))
+    var qualifier = declaredQualifier(decls, packageQualifier(packagePath(root, dir)))
     if (qualifier != "" && loaded.has("userpkg:" + qualifier) == false) {
         loaded["userpkg:" + qualifier] = "1"
         out.append("(userpkg " + qualifier + ")")
     }
     addDecls(decls, dir, root, qualifier, fileLabel(path), loaded, out, modules)
     return 0
+}
+
+// The package prefix of a file's declarations: the one of its folder, "" when it declares
+// `package main`. A declared name that is not the folder's is an error.
+method declaredQualifier(array<string> decls, string folderQualifier): string {
+    var qualifier = folderQualifier
+    for (d in decls) {
+        if (nodeHead(d) != "package") {
+            continue
+        }
+        var declared = nodeChild(d, 1)
+        if (declared == "main") {
+            // the program's main package, wherever its files live
+            qualifier = ""
+            continue
+        }
+        if (qualifier != "" && declared != qualifier) {
+            fail("the file declares package " + declared + " but lives in the folder of package " + qualifier + " - a folder is a package, so write 'package " + qualifier + "'", sexpUnescape(nodeChild(d, 2)))
+        }
+    }
+    return qualifier
 }
 
 // Every file of the package folder `dir`.
@@ -108,151 +114,6 @@ method loadPackageDir(string dir, string root, string from, map<string, string> 
     return 0
 }
 
-// import name: the package folder below the root, else the standard module.
-method loadPackage(string name, string root, string from, map<string, string> loaded, array<string> out, map<string, string> modules): integer {
-    if (root != "") {
-        var dir = joinPath(root, name)
-        if (sourceFilesIn(dir).length() > 0) {
-            return loadPackageDir(dir, root, from, loaded, out, modules)
-        }
-    }
-    if (name.contains("/") == false && stdSource(name) != "") {
-        return loadStdModule(name, from, loaded, out, modules)
-    }
-    var where = "."
-    if (root != "") {
-        where = root
-    }
-    fail("no package '" + name + "': there is no folder " + joinPath(where, name) + " with .nv files and no standard module of that name (standard modules: " + stdModules().join(", ") + ")", from)
-    return 0
-}
-
-// import @pkg/file: one file of a package, without its extension.
-method loadSingleFile(string rel, string root, string from, map<string, string> loaded, array<string> out, map<string, string> modules): integer {
-    if (rel.endsWith(".nv") || rel.endsWith(".nvh")) {
-        var cut = 3
-        if (rel.endsWith(".nvh")) {
-            cut = 4
-        }
-        fail("import @" + rel + ": leave the extension out (import @" + rel.substring(0, rel.length() - cut) + ")", from)
-    }
-    for (candidate in [joinPath(root, rel + ".nv"), joinPath(root, rel + ".nvh")]) {
-        if (fileExists(candidate)) {
-            return loadFile(candidate, root, from, loaded, out, modules)
-        }
-    }
-    fail("import @" + rel + ": there is no " + joinPath(root, rel + ".nv") + " (or .nvh)", from)
-    return 0
-}
-
-// import "module[/package[/file]]" of a dependency.
-method loadModuleImport(string rel, string module, string from, map<string, string> loaded, array<string> out, map<string, string> modules): integer {
-    var moduleRoot = modules[module + "/"]
-    if (rel == module) {
-        return loadFile(modules[module], moduleRoot, from, loaded, out, modules)
-    }
-    var sub = rel.substring(module.length() + 1, rel.length())
-    var dir = joinPath(moduleRoot, sub)
-    if (sourceFilesIn(dir).length() > 0) {
-        return loadPackageDir(dir, moduleRoot, from, loaded, out, modules)
-    }
-    if (fileExists(joinPath(moduleRoot, sub + ".nv")) || fileExists(joinPath(moduleRoot, sub + ".nvh"))) {
-        return loadSingleFile(sub, moduleRoot, from, loaded, out, modules)
-    }
-    fail("module " + module + " has no package or file '" + sub + "'", from)
-    return 0
-}
-
-// Appends declarations, following the imports. `qualifier` is the package
-// the declarations belong to ("" for the main package and std modules).
-method addDecls(array<string> decls, string dir, string root, string qualifier, string from, map<string, string> loaded, array<string> out, map<string, string> modules): integer {
-    for (d in decls) {
-        var head = nodeHead(d)
-        if (head == "package") {
-            continue
-        }
-        if (head == "import") {
-            var rel = sexpUnescape(nodeChild(d, 1))
-            var module = moduleOf(rel, modules)
-            if (module != "") {
-                loadModuleImport(rel, module, from, loaded, out, modules)
-                continue
-            }
-            if (rel.endsWith(".nv") || rel.endsWith(".nvh")) {
-                var cut = 3
-                if (rel.endsWith(".nvh")) {
-                    cut = 4
-                }
-                var stem = rel.substring(0, rel.length() - cut)
-                fail("import \"" + rel + "\": file paths are not imported - a folder is a package: import it (import " + dirName(stem) + ") or one file of it (import @" + stem + ", relative to the project root)", from)
-            }
-            fail("import \"" + rel + "\": no dependency module of that name in project.nv (packages of this project are imported without quotes: import " + rel + ")", from)
-            continue
-        }
-        if (head == "importmod") {
-            loadPackage(nodeChild(d, 1), root, from, loaded, out, modules)
-            continue
-        }
-        if (head == "importfile") {
-            if (root == "") {
-                fail("import @" + sexpUnescape(nodeChild(d, 1)) + " is not possible in a standard module", from)
-            }
-            loadSingleFile(sexpUnescape(nodeChild(d, 1)), root, sexpUnescape(nodeChild(d, 2)), loaded, out, modules)
-            continue
-        }
-        if (qualifier != "") {
-            if (head == "method") {
-                out.append("(method " + qualifier + "." + d.substring(8, d.length()))
-                continue
-            }
-            if (head == "global") {
-                out.append("(global " + qualifier + "." + d.substring(8, d.length()))
-                continue
-            }
-            if (head == "class" || head == "enum") {
-                // its methods see the package's functions and globals first
-                out.append("(classpkg " + nodeChild(d, 1) + " " + qualifier + ")")
-            }
-        }
-        out.append(d)
-    }
-    return 0
-}
-
-// Loads an embedded standard library module (`import os`). Its methods and
-// globals are namespaced: `(method os.mkdir ...)`, used as os.mkdir(...).
-method loadStdModule(string name, string from, map<string, string> loaded, array<string> out, map<string, string> modules): integer {
-    var key = "std:" + name
-    if (loaded.has(key)) {
-        return 0
-    }
-    loaded[key] = "1"
-    var source = stdSource(name)
-    if (source == "") {
-        fail("unknown module '" + name + "' (standard modules: " + stdModules().join(", ") + ")", from)
-    }
-    var decls = []
-    for (d in parseFile(source, "std/" + name + ".nv")) {
-        var head = nodeHead(d)
-        if (head == "method") {
-            decls.append("(method " + name + "." + d.substring(8, d.length()))
-            continue
-        }
-        if (head == "global") {
-            decls.append("(global " + name + "." + d.substring(8, d.length()))
-            continue
-        }
-        if (head == "class" || head == "enum") {
-            // its methods see the module's functions and globals unqualified
-            decls.append("(classpkg " + nodeChild(d, 1) + " " + name + ")")
-        }
-        decls.append(d)
-    }
-    // a standard module's imports are standard modules: root ""
-    addDecls(decls, "std", "", "", "std/" + name + ".nv", loaded, out, modules)
-    return 0
-}
-
 // All top-level declarations of the program rooted at mainFile.
 method loadProgram(string mainFile): array<string> {
     return loadProgramWith(mainFile, {})
@@ -265,7 +126,7 @@ method loadProgramWith(string mainFile, map<string, string> modules): array<stri
     var root = projectRoot(mainFile)
     loaded["main"] = normalizePath(mainFile)
     loadFile(mainFile, root, "command line", loaded, decls, modules)
-    if (mainFile.endsWith(".nvh")) {
+    if (isComponentName(mainFile)) {
         // a component run on its own: serve it as the page at /
         var serve = "import web\nmethod main {\n    web.page(\"/\", " + nvhClassName(mainFile) + "())\n    web.serve(web.port(8080))\n}\n"
         addDecls(parseFile(serve, fileLabel(mainFile) + "#serve"), ".", "", "", "command line", loaded, decls, modules)

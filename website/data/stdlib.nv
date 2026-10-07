@@ -1,0 +1,138 @@
+package data
+
+import arrays
+import os
+import strings
+
+// The reference of the standard library, read from std/*.nv: the comment
+// block above a method (or the comment after its signature) is its
+// documentation, `native` marks what the C runtime implements.
+
+define class StdFunction {
+    string name
+    string signature
+    string doc
+    bool native
+
+    construct(string name, string signature, string doc, bool native) {
+        this.name = name
+        this.signature = signature
+        this.doc = doc
+        this.native = native
+    }
+}
+
+define class StdModule {
+    string name
+    string summary
+    array<StdFunction> functions
+
+    construct(string name, string summary, array<StdFunction> functions) {
+        this.name = name
+        this.summary = summary
+        this.functions = functions
+    }
+}
+
+private final STD_FOLDER = "../std"
+private final METHOD_PREFIX = "method "
+private final NATIVE_MARK = " native "
+private final CLASS_PREFIX = "define "
+private final CLASS_END = "}"
+
+private var loadedModules = []
+
+method stdModules(): array<StdModule> {
+    if (loadedModules.length() > 0) {
+        return loadedModules
+    }
+    for (file in arrays.sort(os.listDir(STD_FOLDER))) {
+        if (file.endsWith(".nv")) {
+            loadedModules.append(readModule(strings.stripSuffix(file, ".nv"), os.readFile(STD_FOLDER + "/" + file)))
+        }
+    }
+    return loadedModules
+}
+
+method readModule(string name, string source): StdModule {
+    return StdModule(name, leadingComment(source, 1), moduleFunctions(source.split(chr(10))))
+}
+
+// The functions of a module; the methods of a `define class` are not among them.
+method moduleFunctions(array<string> lines): array<StdFunction> {
+    var found = []
+    var pending = []
+    var inClass = false
+    for (raw in lines) {
+        if (raw.startsWith(CLASS_PREFIX)) {
+            inClass = true
+            pending = []
+            continue
+        }
+        if (inClass) {
+            inClass = raw != CLASS_END
+            continue
+        }
+        var line = raw.trim()
+        if (line.startsWith("//")) {
+            pending.append(commentText(line))
+            continue
+        }
+        if (line.startsWith(METHOD_PREFIX)) {
+            found.append(readFunction(line, pending))
+        }
+        pending = []
+    }
+    return found
+}
+
+method readFunction(string line, array<string> pending): StdFunction {
+    var code = withoutTrailingComment(line)
+    var native = code.contains(NATIVE_MARK)
+    var signature = withoutNative(code).substring(METHOD_PREFIX.length(), withoutNative(code).length())
+    var doc = pending.join(" ")
+    if (doc == "") {
+        doc = trailingComment(line)
+    }
+    return StdFunction(identifierAt(signature), signature, withoutFinalDot(doc), native)
+}
+
+method withoutTrailingComment(string line): string {
+    var cut = line.indexOf(" //")
+    if (cut >= 0) {
+        line = line.substring(0, cut)
+    }
+    return strings.stripSuffix(line.trim(), "{").trim()
+}
+
+method trailingComment(string line): string {
+    var cut = line.indexOf(" //")
+    if (cut < 0) {
+        return ""
+    }
+    return commentText(line.substring(cut, line.length()))
+}
+
+method withoutNative(string code): string {
+    var cut = code.indexOf(NATIVE_MARK)
+    if (cut < 0) {
+        return code
+    }
+    return code.substring(0, cut)
+}
+
+method identifierAt(string signature): string {
+    var end = 0
+    while (end < signature.length() && (strings.isAlpha(signature.charAt(end)) || strings.isDigit(signature.charAt(end)))) {
+        end = end + 1
+    }
+    return signature.substring(0, end)
+}
+
+method functionCount(): integer {
+    var count = 0
+    for (module in stdModules()) {
+        count = count + module.functions.length()
+    }
+    return count
+}

@@ -1,0 +1,160 @@
+package expr
+
+import ast
+import parser
+
+// Expressions of kind integer or float (typed/kinds.nv): plain C arithmetic, no boxing.
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+// Integer arithmetic that wraps around (see nv_iadd).
+private final WRAPPING_FUNCTIONS = {"+": "nv_iadd", "-": "nv_isub", "*": "nv_imul"}
+
+// The runtime functions of a float operand next to any value (suffix _du:
+// the value is on the right, _ud: on the left).
+private final MIXED_FUNCTIONS = {"-": "nv_fsub", "*": "nv_fmul", "/": "nv_fdiv", "%": "nv_fmod"}
+
+// The integer operators that need a checked runtime function.
+private final CHECKED_INTEGER_FUNCTIONS = {"/": "nv_idiv", "%": "nv_imod", "<<": "nv_ishl", ">>": "nv_ishr"}
+
+// The C expression for a node of kind float (kinds.nv): plain double
+// arithmetic. Integer sub-expressions are cast.
+method genFloat(string node, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    if (isList(node) == false) {
+        return genNumericAtom(node, KIND_FLOAT, prog, ctx, locals)
+    }
+    var sequence = sequenceOperands(node, prog, ctx, locals)
+    if (sequence.length() > 0) {
+        return sequencedExpr(sequence, genFloat(sequence[0], prog, ctx, locals))
+    }
+    var head = nodeHead(node)
+    if (head == "rawd") {
+        return nodeChild(node, 1)
+    }
+    if (head == "neg") {
+        return "(-" + genFloat(nodeChild(node, 1), prog, ctx, locals) + ")"
+    }
+    if (head == "call" || head == "mcall") {
+        return genTypedCall(node, KIND_FLOAT, prog, ctx, locals)
+    }
+    return genFloatOperation(node, head, prog, ctx, locals)
+}
+
+// The operands of a float operation: unboxed doubles, a cast integer, or - on
+// one side only - any value, which the runtime checks (nv_fmul_du).
+method genFloatOperation(string node, string head, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    var left = nodeChild(node, 1)
+    var right = nodeChild(node, 2)
+    var leftKind = kindOf(left, prog, ctx, locals)
+    var rightKind = kindOf(right, prog, ctx, locals)
+    if (isNumericKind(leftKind) && isNumericKind(rightKind)) {
+        return genFloatArithmetic(head, genFloatOperand(left, prog, ctx, locals), genFloatOperand(right, prog, ctx, locals))
+    }
+    var helper = MIXED_FUNCTIONS[head]
+    if (isNumericKind(rightKind) == false) {
+        return helper + "_du(" + genFloatOperand(left, prog, ctx, locals) + ", " + genExpr(right, prog, ctx, locals) + ")"
+    }
+    return helper + "_ud(" + genExpr(left, prog, ctx, locals) + ", " + genFloatOperand(right, prog, ctx, locals) + ")"
+}
+
+method genFloatArithmetic(string head, string l, string r): string {
+    if (head == "/") {
+        return "nv_fdiv(" + l + ", " + r + ")"
+    }
+    if (head == "%") {
+        return "nv_fmod_(" + l + ", " + r + ")"
+    }
+    return "(" + l + " " + head + " " + r + ")"
+}
+
+// The C expression for a node of kind integer: plain long long arithmetic,
+// no boxing at all.
+method genInt(string node, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    if (isList(node) == false) {
+        return genNumericAtom(node, KIND_INT, prog, ctx, locals)
+    }
+    var sequence = sequenceOperands(node, prog, ctx, locals)
+    if (sequence.length() > 0) {
+        return sequencedExpr(sequence, genInt(sequence[0], prog, ctx, locals))
+    }
+    var head = nodeHead(node)
+    if (head == "rawi") {
+        return nodeChild(node, 1)
+    }
+    if (head == "neg") {
+        return "nv_ineg(" + genInt(nodeChild(node, 1), prog, ctx, locals) + ")"
+    }
+    if (head == "call" || head == "mcall") {
+        return genTypedCall(node, KIND_INT, prog, ctx, locals)
+    }
+    var left = genInt(nodeChild(node, 1), prog, ctx, locals)
+    var right = genInt(nodeChild(node, 2), prog, ctx, locals)
+    return genIntOperation(head, left, right)
+}
+
+method genIntOperation(string head, string left, string right): string {
+    if (WRAPPING_FUNCTIONS.has(head)) {
+        return WRAPPING_FUNCTIONS[head] + "(" + left + ", " + right + ")"
+    }
+    if (CHECKED_INTEGER_FUNCTIONS.has(head)) {
+        return CHECKED_INTEGER_FUNCTIONS[head] + "(" + left + ", " + right + ")"
+    }
+    return "(" + left + " " + head + " " + right + ")"
+}
+
+// A number literal, an unboxed local or a numeric field of `this`.
+method genNumericAtom(string node, string kind, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    if (isNumberAtom(node)) {
+        if (kind == KIND_INT) {
+            return node + "LL"
+        }
+        return node
+    }
+    if (isIntLocal(locals, node) || isFloatLocal(locals, node)) {
+        return locals[node]
+    }
+    if (isTypedContext(ctx) && isImplicitField(node, prog, ctx, locals)) {
+        return unboxCode(nv_fieldSlotCode(prog, ctx, node), kind)
+    }
+    fail("internal: '" + node + "' inferred as a number but not a local", ctx["pos"])
+    return ""
+}
+
+// The C code that reads a numeric value out of a boxed one of the kind the
+// declaration promises.
+method unboxCode(string boxed, string kind): string {
+    if (kind == KIND_INT) {
+        return "nv_unbox_int(" + boxed + ")"
+    }
+    return "nv_unbox_float(" + boxed + ")"
+}
+
+// The slot of a field of `this` as C.
+method nv_fieldSlotCode(map<string, string> prog, map<string, string> ctx, string name): string {
+    return "nv_fields(self->o)[" + fieldSlot(prog, ctx["class"], name) + "]"
+}
+
+// The unboxed expression of a node whose kind is `kind`.
+method genTyped(string node, string kind, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    if (kind == KIND_INT) {
+        return genInt(node, prog, ctx, locals)
+    }
+    return genFloat(node, prog, ctx, locals)
+}
+
+// The head of the node that stands for a temporary holding a value of `kind`.
+method rawHead(string kind): string {
+    if (kind == KIND_INT) {
+        return "rawi"
+    }
+    return "rawd"
+}
+
+// A comparison operand as a double, casting an integer side.
+method genFloatOperand(string node, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    if (kindOf(node, prog, ctx, locals) == KIND_FLOAT) {
+        return genFloat(node, prog, ctx, locals)
+    }
+    return "nv_i2d(" + genInt(node, prog, ctx, locals) + ")"
+}

@@ -1,0 +1,48 @@
+package data
+
+// The code of the landing page.
+
+method helloSource(): string {
+    return "package main
+
+import strings
+
+// Novus reads like a scripting language and compiles like C.
+method main {
+    var languages = [\"novus\", \"c\", \"rust\"]
+    for (language in languages) {
+        println \"Hello from $" + "{strings.capitalize(language)}!\"
+    }
+}"
+}
+
+method helloOutput(): string {
+    return "Hello from Novus!
+Hello from C!
+Hello from Rust!"
+}
+
+method installSource(): string {
+    return "git clone https://github.com/ezTxmMC/novus
+cd novus
+scripts/bootstrap.sh          # or: make
+
+build/novusc run examples/01-basics/001-hello-world.nv
+build/novusc build app.nv -o app --target x86_64-windows-gnu"
+}
+
+method fixpointSource(): string {
+    return "bootstrap/novusc.c ──cc──▶ novusc0 ──build──▶ novusc1 ──▶ novusc2
+
+stage 0 ok: snapshot builds
+stage 1 ok: snapshot compiles the current sources
+stage 2 ok: the compiler compiles itself
+stage 3 ok: FIXPOINT - novusc compiles itself byte-identically"
+}
+
+method cascadeSource(): string {
+    return "var page = Page{title=\"Home\"}
+    ..addSection(\"intro\")
+    ..addSection(\"usage\")
+    ..footer = \"made with Novus\""
+}

@@ -3,7 +3,17 @@
 Editor support for the [Novus](../README.md) programming language (`.nv` files): the client of the language
 server `novus-lsp` (written in Novus; see [Installation](#installation)), run/build commands and syntax highlighting, plus
 highlighting for its web components (`.nvh`: HTML with `<?nv ?>` blocks, `{expressions}`, `{#if}`/`{#for}`
-blocks and `@event`/`bind=`/`class:` directives) and Run/Build for them.
+blocks and `@event`/`bind=`/`class:` directives) and Run/Build for them. Markdown pages with Novus in
+them (`.nvmd`: a `---` frontmatter, an `<?nv ?>` header, `{expressions}`, `{#if}`/`{#for}` blocks, `<Component>` tags and
+` ```nv ` fences) are highlighted as Markdown with embedded Novus; the compiler does not read them, the dependency nvh-markdown generates `.nvh` files from them.
+
+The cascade operator `receiver..a()..b = 1` (every section runs against the receiver, which is the value) has its own
+token (`keyword.operator.cascade.novus`), completion after `..` and the formatter keeps `..` tight and indents
+`..section` lines like a method chain.
+
+A raw C block `c { ... }` (with `$name` for a Novus variable) is highlighted as C inside Novus; the language server
+treats it like a block comment: no diagnostics, completion or semantic tokens in it, the formatter leaves it as it is.
+`import project` (the values of `project.nv`) is a known module for completion and hover.
 
 ## Installation
 

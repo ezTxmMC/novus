@@ -1,0 +1,163 @@
+package data
+
+// The documentation tree: it drives the sidebar, the prev/next links, the
+// sitemap and the search index. A page with a file is a .nvmd document.
+
+define class NavItem {
+    string title
+    string path
+    string summary
+    string file
+
+    construct(string title, string path, string summary, string file) {
+        this.title = title
+        this.path = path
+        this.summary = summary
+        this.file = file
+    }
+
+    method isDocument(): bool {
+        return this.file != ""
+    }
+}
+
+define class NavSection {
+    string title
+    array<NavItem> items
+
+    construct(string title, array<NavItem> items) {
+        this.title = title
+        this.items = items
+    }
+}
+
+private final CONTENT_FOLDER = "content"
+private final DOCUMENT_EXTENSION = ".nvmd"
+
+method document(string title, string path, string summary, string folder, string slug): NavItem {
+    return NavItem(title, path, summary, CONTENT_FOLDER + "/" + folder + "/" + slug + DOCUMENT_EXTENSION)
+}
+
+method reference(string title, string path, string summary): NavItem {
+    return NavItem(title, path, summary, "")
+}
+
+private var sections = []
+
+method navSections(): array<NavSection> {
+    if (sections.length() > 0) {
+        return sections
+    }
+    sections.append(NavSection("Getting started", [
+        document("Introduction", "/docs/introduction", "What Novus is and why it exists", "start", "introduction"),
+        document("Installation", "/docs/installation", "Bootstrap from source or grab a binary", "start", "installation"),
+        document("Your first program", "/docs/first-program", "From hello world to a native binary", "start", "first-program"),
+        document("The novusc CLI", "/docs/cli", "run, build, emit, check, nvh, init, deps", "start", "cli")]))
+    sections.append(NavSection("Language", [
+        document("Basics", "/docs/language/basics", "Values, variables, operators, strings, cascades", "language", "basics"),
+        document("Control flow", "/docs/language/control-flow", "if, while, for..in, break, continue", "language", "control-flow"),
+        document("Methods", "/docs/language/methods", "Parameters, returns, overloading, recursion", "language", "methods"),
+        document("Collections", "/docs/language/collections", "Arrays and maps", "language", "collections"),
+        document("Classes and objects", "/docs/language/classes", "Fields, inheritance, interfaces, enums", "language", "classes"),
+        document("C blocks", "/docs/language/c-blocks", "Raw C inside Novus: c block and $name", "language", "c-blocks"),
+        document("Modules and imports", "/docs/language/modules", "Packages (folders), @file imports, std modules", "language", "modules"),
+        document("Concurrency", "/docs/language/concurrency", "thread, virtual, async, await, sync, channels", "language", "concurrency")]))
+    sections.append(NavSection("Web", [
+        document(".nvh components", "/docs/web/components", "HTML with Novus: server rendered, live components", "frontend", "nvh-components"),
+        document(".nvmd documents", "/docs/web/markdown", "Markdown with Novus, rendered by nvh-markdown", "frontend", "nvmd-documents"),
+        document("Tailwind CSS", "/docs/web/tailwind", "Tailwind 4.3 for nvh projects with nvh-tailwindcss", "frontend", "tailwind-css")]))
+    sections.append(NavSection("Projects", [
+        document("project.nv", "/docs/projects/manifest", "The project manifest", "projects", "manifest"),
+        document("Project values", "/docs/projects/project-values", "import project: the settings of project.nv in your code", "projects", "project-values"),
+        document("Dependencies", "/docs/projects/dependencies", "require, replace and the module cache", "projects", "dependencies"),
+        document("Editor support", "/docs/projects/editor", "VS Code, Neovim, Helix and every LSP client", "projects", "editor"),
+        document("Language server", "/docs/projects/language-server", "novus-lsp: features, diagnostics, settings", "projects", "language-server")]))
+    sections.append(NavSection("Reference", [
+        reference("Standard library", "/stdlib", "Every module and function of std/"),
+        reference("Examples", "/examples", "Programs from hello world to a VM"),
+        reference("Benchmarks", "/benchmarks", "Twelve workloads across the languages"),
+        document("Architecture", "/docs/architecture", "How the compiler is put together", "internals", "architecture"),
+        document("Bootstrapping", "/docs/bootstrapping", "The self-hosting ladder and the fixpoint", "internals", "bootstrapping")]))
+    return sections
+}
+
+method navItems(): array<NavItem> {
+    var items = []
+    for (section in navSections()) {
+        for (item in section.items) {
+            items.append(item)
+        }
+    }
+    return items
+}
+
+method documents(): array<NavItem> {
+    var found = []
+    for (item in navItems()) {
+        if (item.isDocument()) {
+            found.append(item)
+        }
+    }
+    return found
+}
+
+method navIndex(array<NavItem> items, string path): integer {
+    var index = 0
+    while (index < items.length()) {
+        if (items[index].path == path) {
+            return index
+        }
+        index = index + 1
+    }
+    return 0 - 1
+}
+
+method documentAt(string path): NavItem {
+    var items = documents()
+    var index = navIndex(items, path)
+    if (index < 0) {
+        return NavItem("", "", "", "")
+    }
+    return items[index]
+}
+
+// The document before `path` in reading order, an empty item at the start.
+method previousOf(string path): NavItem {
+    var items = documents()
+    var index = navIndex(items, path)
+    if (index <= 0) {
+        return NavItem("", "", "", "")
+    }
+    return items[index - 1]
+}
+
+method nextOf(string path): NavItem {
+    var items = documents()
+    var index = navIndex(items, path)
+    if (index < 0 || index >= items.length() - 1) {
+        return NavItem("", "", "", "")
+    }
+    return items[index + 1]
+}
+
+// The page of a document by its file name, content/<folder>/<slug>.nvmd.
+method documentBySlug(string slug): NavItem {
+    for (item in documents()) {
+        if (item.file.endsWith("/" + slug + DOCUMENT_EXTENSION)) {
+            return item
+        }
+    }
+    return NavItem("", "", "", "")
+}
+
+// The title of the sidebar section a path belongs to.
+method sectionOf(string path): string {
+    for (section in navSections()) {
+        for (item in section.items) {
+            if (item.path == path) {
+                return section.title
+            }
+        }
+    }
+    return ""
+}

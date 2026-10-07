@@ -231,6 +231,26 @@ next.next.total -> total: property
 11:21 string type +defaultLibrary
 12:4 return keyword
 12:11 s parameter
+== C blocks
+== variables of a C block
+1:0 define keyword
+1:7 class keyword
+1:13 Counter class +declaration
+2:4 integer type +defaultLibrary
+2:12 total property +declaration
+4:4 method keyword
+4:11 bump method +declaration
+4:16 integer type +defaultLibrary
+4:24 by parameter +declaration
+5:8 var keyword
+5:12 local variable +declaration
+5:18 = operator
+5:20 1 number
+6:24 total property
+6:48 local variable
+6:63 by parameter
+7:8 println keyword
+7:16 local variable
 == scopes
 LIMIT = 10 -> LIMIT: variable +declaration +readonly
 counter = 0 -> counter: variable +declaration

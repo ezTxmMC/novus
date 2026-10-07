@@ -1,0 +1,179 @@
+package parser
+
+import ast
+import lexer
+
+// Primary expressions: parentheses, literals, names, calls and the postfix selectors.
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+method parsePrimary(array<string> tokens, integer pos): map<string, string> {
+    if (atEnd(tokens, pos)) {
+        fail("unexpected end of file in expression", posOf(tokens, pos))
+    }
+    var t = tokens[pos]
+    var kind = tokKind(t)
+    if (kind == "SYM") {
+        return parseSymbolPrimary(tokens, pos, tokVal(t))
+    }
+    if (kind == "STRING") {
+        return parsePostfix(tokens, parseInterpolated(tokVal(t), tokPos(t)), pos + 1)
+    }
+    if (kind == "INT" || kind == "FLOAT") {
+        return parsePostfix(tokens, tokVal(t), pos + 1)
+    }
+    if (kind == "KEYWORD") {
+        return parseKeywordPrimary(tokens, pos, tokVal(t))
+    }
+    if (kind == "IDENT") {
+        return parseNamePrimary(tokens, pos, tokVal(t))
+    }
+    fail("unexpected " + describe(tokens, pos) + " in expression", posOf(tokens, pos))
+    return { "node": "", "pos": pos + 1 }
+}
+
+method parseSymbolPrimary(array<string> tokens, integer pos, string val): map<string, string> {
+    if (val == "(") {
+        var inner = parseExpr(tokens, pos + 1, 0)
+        return parsePostfix(tokens, inner["node"], expectSym(tokens, parseInt(inner["pos"]), ")"))
+    }
+    if (val == "!") {
+        var operand = parseUnary(tokens, pos + 1)
+        return { "node": "(! " + operand["node"] + ")", "pos": parseInt(operand["pos"]) }
+    }
+    if (val == "-") {
+        var negated = parseUnary(tokens, pos + 1)
+        return { "node": "(neg " + negated["node"] + ")", "pos": parseInt(negated["pos"]) }
+    }
+    if (val == "[") {
+        return parseArrayLiteral(tokens, pos)
+    }
+    if (val == "{") {
+        return parseMapLiteral(tokens, pos)
+    }
+    fail("unexpected " + describe(tokens, pos) + " in expression", posOf(tokens, pos))
+    return { "node": "", "pos": pos + 1 }
+}
+
+method parseKeywordPrimary(array<string> tokens, integer pos, string val): map<string, string> {
+    if (val == "true" || val == "false") {
+        return { "node": val, "pos": pos + 1 }
+    }
+    fail("unexpected keyword '" + val + "' in expression", posOf(tokens, pos))
+    return { "node": "", "pos": pos + 1 }
+}
+
+method parseArrayLiteral(array<string> tokens, integer pos): map<string, string> {
+    var node = "(arr"
+    var p = pos + 1
+    while (isSym(tokens, p, "]") == false) {
+        if (atEnd(tokens, p)) {
+            fail("unterminated array literal", posOf(tokens, p))
+        }
+        var e = parseExpr(tokens, p, 0)
+        node = node + " " + e["node"]
+        p = afterListItem(tokens, parseInt(e["pos"]), "]", "array literal")
+    }
+    return parsePostfix(tokens, node + ")", p + 1)
+}
+
+method parseMapLiteral(array<string> tokens, integer pos): map<string, string> {
+    var node = "(mapl"
+    var p = pos + 1
+    while (isSym(tokens, p, "}") == false) {
+        if (atEnd(tokens, p)) {
+            fail("unterminated map literal", posOf(tokens, p))
+        }
+        var key = parseExpr(tokens, p, 0)
+        node = node + " " + key["node"]
+        p = expectSym(tokens, parseInt(key["pos"]), ":")
+        var value = parseExpr(tokens, p, 0)
+        node = node + " " + value["node"]
+        p = afterListItem(tokens, parseInt(value["pos"]), "}", "map literal")
+    }
+    return parsePostfix(tokens, node + ")", p + 1)
+}
+
+// A name, a call `name(args)` or an object literal `Name{field=value, ...}`.
+method parseNamePrimary(array<string> tokens, integer pos, string val): map<string, string> {
+    if (isSym(tokens, pos + 1, "{")) {
+        return parseObjectLiteral(tokens, pos, val)
+    }
+    if (isSym(tokens, pos + 1, "(")) {
+        var args = parseArgs(tokens, pos + 2)
+        return parsePostfix(tokens, "(call " + val + args["node"] + ")", parseInt(args["pos"]))
+    }
+    return parsePostfix(tokens, val, pos + 1)
+}
+
+method parseObjectLiteral(array<string> tokens, integer pos, string className): map<string, string> {
+    var node = "(obj " + className
+    var p = pos + 2
+    while (isSym(tokens, p, "}") == false) {
+        if (atEnd(tokens, p)) {
+            fail("unterminated object literal", posOf(tokens, p))
+        }
+        p = expectIdent(tokens, p, "field name in object literal")
+        var field = tokVal(tokens[p - 1])
+        p = expectSym(tokens, p, "=")
+        var value = parseExpr(tokens, p, 0)
+        node = node + " (f " + field + " " + value["node"] + ")"
+        p = afterListItem(tokens, parseInt(value["pos"]), "}", "object literal")
+    }
+    return parsePostfix(tokens, node + ")", p + 1)
+}
+
+// The value the sections of a cascade are written against, see codegen/cascade.nv.
+final CASCADE_TARGET = "(cself)"
+
+// An operand, and the cascade that follows it: `receiver..a()..b = 1..[0] = 2` runs every section
+// against the receiver, which is also the value of the whole expression -> (casc receiver section...).
+// A section is a selector chain that starts at the receiver (CASCADE_TARGET), optionally ending in
+// an assignment. `cascading` is false for the value of such an assignment, so that
+// `..width = 10..height = 20` is two sections and not a cascade on the 10.
+method parseOperand(array<string> tokens, integer pos, bool cascading): map<string, string> {
+    var operand = parseUnary(tokens, pos)
+    var after = parseInt(operand["pos"])
+    if (cascading == false || isSym(tokens, after, "..") == false) {
+        return operand
+    }
+    var node = "(casc " + operand["node"]
+    while (isSym(tokens, after, "..")) {
+        var section = parseCascadeSection(tokens, after + 1)
+        node = node + " " + section["node"]
+        after = parseInt(section["pos"])
+    }
+    return { "node": node + ")", "pos": after }
+}
+
+method parseCascadeSection(array<string> tokens, integer pos): map<string, string> {
+    var start = parseCascadeStart(tokens, pos)
+    var selected = parsePostfix(tokens, start["node"], parseInt(start["pos"]))
+    var after = parseInt(selected["pos"])
+    if (isSym(tokens, after, "=") == false) {
+        return selected
+    }
+    var target = selected["node"]
+    var targetHead = nodeHead(target)
+    if (targetHead != "mget" && targetHead != "idx") {
+        fail("a cascade section can only assign to a member or an element", posOf(tokens, after))
+    }
+    var value = parseExprWith(tokens, after + 1, 0, false)
+    return { "node": "(setexpr " + target + " " + value["node"] + ")", "pos": parseInt(value["pos"]) }
+}
+
+// What follows `..`: `[index]`, `name` or `name(args)`, applied to the receiver.
+method parseCascadeStart(array<string> tokens, integer pos): map<string, string> {
+    if (isSym(tokens, pos, "[")) {
+        var index = parseExpr(tokens, pos + 1, 0)
+        return { "node": "(idx " + CASCADE_TARGET + " " + index["node"] + ")", "pos": expectSym(tokens, parseInt(index["pos"]), "]") }
+    }
+    var after = expectIdent(tokens, pos, "member name after '..'")
+    var name = tokVal(tokens[after - 1])
+    if (isSym(tokens, after, "(") == false) {
+        return { "node": "(mget " + CASCADE_TARGET + " " + name + ")", "pos": after }
+    }
+    var args = parseArgs(tokens, after + 1)
+    return { "node": "(mcall " + CASCADE_TARGET + " " + name + args["node"] + ")", "pos": parseInt(args["pos"]) }
+}

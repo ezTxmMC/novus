@@ -41,6 +41,11 @@ method main(array<string> arguments) {
     if (command == "cache") {
         return cacheCommand(arguments)
     }
+    return runBuildCommand(command, arguments)
+}
+
+// The commands that work on a source file.
+method runBuildCommand(string command, array<string> arguments): integer {
     if (command == "emit") {
         return emitCommand(sourceFor(arguments), optionsFrom(arguments, optionStart(arguments)))
     }

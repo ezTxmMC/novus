@@ -1,0 +1,81 @@
+package typed
+
+import ast
+import parser
+
+// The class a value is guessed to be an instance of.
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+// The class a value is guessed to be an instance of, "" when there is no
+// guess. A guess only decides which code is generated first: the code checks
+// the class of the object it gets, and asks the object the general way when
+// it is another one.
+method classOf(string node, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    if (isList(node) == false) {
+        return classOfAtom(node, prog, ctx, locals)
+    }
+    var head = nodeHead(node)
+    if (head == "idx" && isIdentAtom(nodeChild(node, 1))) {
+        return elementClassOf(nodeChild(node, 1), prog, ctx, locals)
+    }
+    if (head == "obj") {
+        return plainClass(prog, nodeChild(node, 1))
+    }
+    if (head == "call" && prog.has("func:" + nodeChild(node, 1) + "/" + (nodeCount(node) - 2)) == false) {
+        return plainClass(prog, nodeChild(node, 1))
+    }
+    return ""
+}
+
+method classOfAtom(string node, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    if (node == "this") {
+        return plainClass(prog, ctx["class"])
+    }
+    if (locals.has("cls:" + node)) {
+        return locals["cls:" + node]
+    }
+    if (locals.has(node) || isImplicitField(node, prog, ctx, locals) == false) {
+        return ""
+    }
+    return plainClass(prog, fieldType(prog, ctx["class"], node))
+}
+
+// The class an `array<Class>` name holds, "" for anything else.
+method elementClassOf(string name, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    if (locals.has("elem:" + name)) {
+        return locals["elem:" + name]
+    }
+    if (locals.has(name) || isImplicitField(name, prog, ctx, locals) == false) {
+        return ""
+    }
+    return plainClass(prog, arrayElementType(fieldType(prog, ctx["class"], name)))
+}
+
+// `cls` when it names a class of the program (enums are left out: their
+// objects carry one more slot behind the fields), "" otherwise.
+method plainClass(map<string, string> prog, string cls): string {
+    if (cls != "" && prog.has("class:" + cls)) {
+        return cls
+    }
+    return ""
+}
+
+// "Body" for "array<Body>", "" for anything else.
+method arrayElementType(string t): string {
+    if (t.startsWith("array<") == false || t.endsWith(">") == false) {
+        return ""
+    }
+    return t.substring(6, t.length() - 1)
+}
+
+// The class a declared type names, "" when it names none.
+method declaredClass(map<string, string> prog, string t): string {
+    return plainClass(prog, normType(t))
+}
+
+// The class of the elements a declared type holds, "" when it is no array of a class.
+method declaredElementClass(map<string, string> prog, string t): string {
+    return plainClass(prog, arrayElementType(normType(t)))
+}

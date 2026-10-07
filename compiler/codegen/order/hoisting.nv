@@ -1,0 +1,169 @@
+package order
+
+import ast
+import parser
+
+// Evaluation order: the operands of an expression are evaluated left to right.
+//
+// C does not promise that for the arguments of a call or the operands of an
+// operator - gcc picks right to left, clang left to right - so an operand
+// list in which an operand can have an effect is split up: every operand
+// that has to keep its place is evaluated into a temporary by a comma
+// expression, in order, and the operation then reads the temporaries.
+//
+//     a() + b()     ->     (nvt0 = a(), nv_add_fast(nvt0, b()))
+//
+// Operands that can neither have an effect nor see one stay where they are:
+// literals, locals, `this` and arithmetic on them. The loops over unboxed
+// integers the compiler generates therefore get no temporaries at all.
+//
+// operands.nv says what the operands of a node are, effects.nv how they relate
+// to the order, temps.nv owns the temporaries.
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+private final CONDITION_OPERATORS = {"==": true, "!=": true, "<": true, ">": true, "<=": true, ">=": true}
+
+method countKind(array<integer> kinds, integer kind): integer {
+    var count = 0
+    for (candidate in kinds) {
+        if (candidate == kind) {
+            count = count + 1
+        }
+    }
+    return count
+}
+
+// The index of the last operand that is not stable, -1 when there is none.
+method lastUnstable(array<integer> kinds): integer {
+    var i = kinds.length() - 1
+    while (i >= 0) {
+        if (kinds[i] != OPERAND_STABLE) {
+            return i
+        }
+        i = i - 1
+    }
+    return -1
+}
+
+// Which operands are evaluated into temporaries, as indexes in evaluation
+// order. An order only has to be enforced when an operand has effects and
+// another operand is not stable; then every operand that is not stable,
+// except the last of them, is evaluated first. None when the order is free.
+method operandsToHoist(array<integer> kinds): array<integer> {
+    var unstable = kinds.length() - countKind(kinds, OPERAND_STABLE)
+    if (countKind(kinds, OPERAND_EFFECTS) == 0 || unstable < 2) {
+        return []
+    }
+    var last = lastUnstable(kinds)
+    var hoisted = []
+    var i = 0
+    while (i < kinds.length()) {
+        if (kinds[i] != OPERAND_STABLE && i != last) {
+            hoisted.append(i)
+        }
+        i = i + 1
+    }
+    return hoisted
+}
+
+// Does the node compute with its operands as unboxed numbers? Then a numeric
+// operand may be held in a temporary that is unboxed too; anything else takes
+// its operands as values (genCondition and genExpr decide the same way).
+method computesWithNumbers(string node, map<string, string> prog, map<string, string> ctx, map<string, string> locals): bool {
+    var head = nodeHead(node)
+    if (isBinaryOperator(head) == false || nodeCount(node) != 3) {
+        return false
+    }
+    var left = nodeChild(node, 1)
+    var right = nodeChild(node, 2)
+    if (head == "==" || head == "!=") {
+        return isNumericKind(kindOf(left, prog, ctx, locals)) && isNumericKind(kindOf(right, prog, ctx, locals)) && isBareRead(left, prog, ctx, locals) == false && isBareRead(right, prog, ctx, locals) == false
+    }
+    if (CONDITION_OPERATORS.has(head)) {
+        return isNumericKind(kindOf(left, prog, ctx, locals)) && isNumericKind(kindOf(right, prog, ctx, locals))
+    }
+    return isNumericKind(kindOf(node, prog, ctx, locals))
+}
+
+// The node rewritten to read temporaries, followed by the assignments that
+// evaluate them in order - or an empty array when the node's operands need no
+// ordering.
+method sequenceOperands(string node, map<string, string> prog, map<string, string> ctx, map<string, string> locals): array<string> {
+    if (hasEffects(node, prog, ctx, locals) == false) {
+        return []
+    }
+    var paths = operandPaths(node, prog, ctx, locals)
+    if (paths.length() < 2) {
+        return []
+    }
+    var operands = []
+    var kinds = []
+    for (path in paths) {
+        var operand = nodeAt(node, path)
+        operands.append(operand)
+        kinds.append(operandClass(operand, prog, ctx, locals))
+    }
+    var hoisted = operandsToHoist(kinds)
+    if (hoisted.length() == 0) {
+        return []
+    }
+    return hoistOperands(node, paths, operands, hoisted, prog, ctx, locals)
+}
+
+// The rewritten node first, then one assignment per hoisted operand.
+method hoistOperands(string node, array<array<integer>> paths, array<string> operands, array<integer> hoisted, map<string, string> prog, map<string, string> ctx, map<string, string> locals): array<string> {
+    var rewritten = node
+    var assignments = []
+    var numeric = isTypedContext(ctx) && computesWithNumbers(node, prog, ctx, locals)
+    for (index in hoisted) {
+        var kind = hoistedKind(operands[index], numeric, prog, ctx, locals)
+        if (isNumericKind(kind)) {
+            // an unboxed operand keeps its representation in the temporary
+            var typedTemp = newTypedTemp(ctx, kind)
+            assignments.append(typedTemp + " = " + genTyped(operands[index], kind, prog, ctx, locals))
+            rewritten = replaceAt(rewritten, paths[index], 0, "(" + rawHead(kind) + " " + typedTemp + ")")
+            continue
+        }
+        var temp = newTemp(ctx)
+        assignments.append(temp + " = " + genExpr(operands[index], prog, ctx, locals))
+        rewritten = replaceAt(rewritten, paths[index], 0, "(craw " + sexpStr(temp) + ")")
+    }
+    var sequence = [rewritten]
+    for (assignment in assignments) {
+        sequence.append(assignment)
+    }
+    return sequence
+}
+
+method hoistedKind(string operand, bool numeric, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    if (isTypedContext(ctx) && (numeric || isBareRead(operand, prog, ctx, locals) == false)) {
+        return kindOf(operand, prog, ctx, locals)
+    }
+    return KIND_NONE
+}
+
+// The C expression that performs the assignments of a sequenceOperands()
+// result and then yields `code`, the expression generated from its node.
+method sequencedExpr(array<string> sequence, string code): string {
+    var steps = []
+    var i = 1
+    while (i < sequence.length()) {
+        steps.append(sequence[i])
+        i = i + 1
+    }
+    steps.append(code)
+    return "(" + steps.join(", ") + ")"
+}
+
+// The same as statements, for a node that is itself a statement.
+method sequencedStatements(array<string> sequence, string indent): string {
+    var out = ""
+    var i = 1
+    while (i < sequence.length()) {
+        out = out + indent + sequence[i] + ";" + nl()
+        i = i + 1
+    }
+    return out
+}

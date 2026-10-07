@@ -6,7 +6,7 @@ import projects/manifest
 private final WORKSPACE_SCAN_DEPTH = 12
 private final WORKSPACE_SCAN_FILE_LIMIT = 20000
 private final WORKSPACE_SCAN_EXTENSIONS = [".nv", ".nvh"]
-private final WORKSPACE_COMPONENT_EXTENSION = ".nvh"
+private final WORKSPACE_COMPONENT_EXTENSIONS = [".nvh"]
 private final WORKSPACE_MANIFEST_NAME = "project.nv"
 private final WORKSPACE_SLASH = "/"
 
@@ -71,12 +71,21 @@ define class WorkspaceScanner {
             if (this.isManifest(filePath)) {
                 continue
             }
-            if (filePath.endsWith(WORKSPACE_COMPONENT_EXTENSION)) {
+            if (this.isComponent(filePath)) {
                 components.append(filePath)
             }
             this.place(root, filePath, folders, rootFiles)
         }
         return ProjectScan(folders.keys(), rootFiles, components)
+    }
+
+    method isComponent(string filePath): bool {
+        for (extension in WORKSPACE_COMPONENT_EXTENSIONS) {
+            if (filePath.endsWith(extension)) {
+                return true
+            }
+        }
+        return false
     }
 
     method place(string root, string filePath, map<string, bool> folders, array<string> rootFiles) {

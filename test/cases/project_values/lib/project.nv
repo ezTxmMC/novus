@@ -1,0 +1,4 @@
+// A library project: imported by others as "example.com/geo"
+project "example.com/geo"
+version "1.0.0"
+lib "lib.nv"

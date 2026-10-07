@@ -1,0 +1,156 @@
+package nvh
+
+import lexer
+import loader
+import parser
+
+// Event handlers and attribute values: what an attribute hands to Novus code.
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+// The browser's value of an event, written $value in a handler.
+private final EVENT_VALUE = "$value"
+
+// An event handler: "name", "name(args)" or statements. Returns
+// [method, "[args]"] and records the method for nvCall.
+method nvhHandler(string text, integer line, map<string, object> st): array<string> {
+    var h = text.trim()
+    if (h == "") {
+        fail("empty event handler", st["file"] + ":" + line)
+    }
+    var call = nvhHandlerCall(h)
+    var name = ""
+    var codes = []
+    if (call.has("name")) {
+        name = call["name"]
+        codes = nvhArgumentCodes(call["args"])
+    }
+    if (call.has("name") == false) {
+        name = "nvInline" + (st["inline"].length() + 1)
+        codes = nvhInlineHandler(h, name, st)
+    }
+    var handlers = st["handlers"]
+    handlers[name + "/" + codes.length()] = [name, codes.length()]
+    return [name, "[" + codes.join(", ") + "]"]
+}
+
+// {name, args} when the handler is one method call - `name` or `name(args)` -
+// and {} when it is statements. $value may only stand as a whole argument.
+method nvhHandlerCall(string h): map<string, object> {
+    if (nvhIsIdent(h)) {
+        return {"name": h, "args": []}
+    }
+    var open = h.indexOf("(")
+    if (open <= 0 || h.endsWith(")") == false || nvhIsIdent(h.substring(0, open).trim()) == false) {
+        return {}
+    }
+    if (nvhCallCoversAll(h, open) == false) {
+        return {}
+    }
+    var args = nvhSplitArgs(h.substring(open + 1, h.length() - 1))
+    for (a in args) {
+        if (a != EVENT_VALUE && a.contains(EVENT_VALUE)) {
+            return {}
+        }
+    }
+    return {"name": h.substring(0, open).trim(), "args": args}
+}
+
+// Do the parentheses opened at `open` close only at the very end?
+method nvhCallCoversAll(string h, integer open): bool {
+    var depth = 0
+    var i = open
+    while (i < h.length()) {
+        var c = h.charAt(i)
+        if (c == NVH_QUOTE) {
+            i = nvhSkipString(h, i)
+            continue
+        }
+        if (c == "(") {
+            depth = depth + 1
+        }
+        if (c == ")") {
+            depth = depth - 1
+            if (depth == 0 && i != h.length() - 1) {
+                return false
+            }
+        }
+        i = i + 1
+    }
+    return true
+}
+
+method nvhArgumentCodes(array<string> args): array<string> {
+    var codes = []
+    for (a in args) {
+        if (a == EVENT_VALUE) {
+            codes.append("web.VALUE")
+            continue
+        }
+        codes.append("(" + a + ")")
+    }
+    return codes
+}
+
+// Statements become a method of their own, which gets $value as its parameter. Returns the argument codes.
+method nvhInlineHandler(string h, string name, map<string, object> st): array<string> {
+    var body = h.replace(EVENT_VALUE, "nvvalue")
+    if (h.contains(EVENT_VALUE) == false) {
+        st["inline"].append("method " + name + "() { " + body + " }")
+        return []
+    }
+    st["inline"].append("method " + name + "(object nvvalue) { " + body + " }")
+    return ["web.VALUE"]
+}
+
+// Novus code for an attribute's value as it is handed to a prop.
+method nvhValueCode(map<string, object> a, string pos): string {
+    if (a["kind"] == "none") {
+        return "true"
+    }
+    if (a["kind"] == "expr") {
+        return "(" + a["value"] + ")"
+    }
+    var parts = nvhInterpolate(a["value"], pos)
+    if (parts.length() == 0) {
+        return nvhLit("")
+    }
+    if (parts.length() == 1 && parts[0][0] == "e") {
+        // "{x}" hands over the value itself, not its text
+        return "(" + parts[0][1] + ")"
+    }
+    var codes = []
+    for (p in parts) {
+        codes.append(nvhPartCode(p))
+    }
+    return codes.join(" + ")
+}
+
+method nvhPartCode(array<string> part): string {
+    if (part[0] == "t") {
+        return nvhLit(part[1])
+    }
+    return "web.text((" + part[1] + "))"
+}
+
+// Static text and escaped expressions of an interpolated attribute value.
+method nvhEmitParts(map<string, object> st, array<object> parts, integer line, string buf) {
+    for (p in parts) {
+        if (p[0] == "t") {
+            nvhStatic(st, line, p[1])
+            continue
+        }
+        nvhFlush(st, buf)
+        nvhEmit(st, line, buf + ".append(web.escape((" + p[1] + ")))")
+    }
+}
+
+method nvhFindAttr(array<object> attrs, string name): object {
+    for (a in attrs) {
+        if (a["name"] == name) {
+            return a
+        }
+    }
+    return {}
+}

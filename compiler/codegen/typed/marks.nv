@@ -1,0 +1,119 @@
+package typed
+
+import ast
+import parser
+
+// The marks of the inference in the locals map, and what it gathers about a method body.
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+// Names of locals that are unboxed integers are stored in the same map the
+// C names live in, under an "int:" prefix.
+method markInt(map<string, string> locals, string name) {
+    locals["int:" + name] = "1"
+}
+
+method isIntLocal(map<string, string> locals, string name): bool {
+    return locals.has("int:" + name)
+}
+
+// Floats work the same way, under a "float:" prefix.
+method markFloat(map<string, string> locals, string name) {
+    locals["float:" + name] = "1"
+}
+
+method isFloatLocal(map<string, string> locals, string name): bool {
+    return locals.has("float:" + name)
+}
+
+// What collectAssignments gathers about a method body.
+final FLAG_DECLARED = "declared:"
+final FLAG_LOOP = "loop:"
+final FLAG_TYPE = "type:"
+final NO_VALUE = "(none)"
+
+// The child that holds the body of `at`, `while` and `sync` nodes.
+final WRAPPED_BODY = 2
+
+// The child of the node at `index`, NO_VALUE when it has none.
+method childOrNone(string node, integer index): string {
+    if (nodeCount(node) > index) {
+        return nodeChild(node, index)
+    }
+    return NO_VALUE
+}
+
+// Collects the assignments of a method body: every assigned name into
+// `names`, the assigned expression into `values`, plus flags for names that
+// are declared locally ("declared:") or bound by a loop ("loop:"). The loops
+// themselves go to `loops` as "variable expression" pairs of nodes, and the
+// value of every `return` to `returns` (NO_VALUE for a bare one).
+method collectAssignments(string node, array<string> names, array<string> values, map<string, string> flags, array<string> loops, array<string> returns) {
+    var head = nodeHead(node)
+    if (head == "at" || head == "while" || head == "sync") {
+        collectAssignments(nodeChild(node, WRAPPED_BODY), names, values, flags, loops, returns)
+        return
+    }
+    if (head == "block") {
+        collectBlock(node, names, values, flags, loops, returns)
+        return
+    }
+    if (head == "if") {
+        collectAssignments(nodeChild(node, 2), names, values, flags, loops, returns)
+        if (nodeCount(node) > 3) {
+            collectAssignments(nodeChild(node, 3), names, values, flags, loops, returns)
+        }
+        return
+    }
+    if (head == "forin") {
+        flags[FLAG_LOOP + nodeChild(node, 1)] = "1"     // holds arbitrary elements
+        loops.append(nodeChild(node, 1))
+        loops.append(nodeChild(node, 2))
+        collectAssignments(nodeChild(node, 3), names, values, flags, loops, returns)
+        return
+    }
+    if (head == "return") {
+        returns.append(childOrNone(node, 1))
+        return
+    }
+    if (head == "var" || head == "assign") {
+        collectVariable(node, head, names, values, flags)
+        return
+    }
+    if (head == "tvar") {
+        collectTypedVariable(node, names, values, flags)
+    }
+}
+
+method collectBlock(string node, array<string> names, array<string> values, map<string, string> flags, array<string> loops, array<string> returns) {
+    var i = 1
+    var count = nodeCount(node)
+    while (i < count) {
+        collectAssignments(nodeChild(node, i), names, values, flags, loops, returns)
+        i = i + 1
+    }
+}
+
+method collectVariable(string node, string head, array<string> names, array<string> values, map<string, string> flags) {
+    var name = nodeChild(node, 1)
+    names.append(name)
+    values.append(childOrNone(node, 2))
+    if (head == "var") {
+        flags[FLAG_DECLARED + name] = "1"           // a bare assignment may target a global
+    }
+}
+
+method collectTypedVariable(string node, array<string> names, array<string> values, map<string, string> flags) {
+    var name = nodeChild(node, 2)
+    names.append(name)
+    values.append(childOrNone(node, 3))
+    flags[FLAG_DECLARED + name] = "1"
+    // a declared type decides the representation and must be honoured:
+    // `integer x = 2.9` truncates, so x can never be an unboxed double
+    var declared = normType(nodeChild(node, 1))
+    if (flags.has(FLAG_TYPE + name) && flags[FLAG_TYPE + name] != declared) {
+        declared = "mixed"
+    }
+    flags[FLAG_TYPE + name] = declared
+}

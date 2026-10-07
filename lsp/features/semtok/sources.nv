@@ -31,6 +31,7 @@ define class SemtokSources {
         var window = this.windowOf(lexed.tokens, range)
         var streams = [window]
         this.addInterpolations(streams, window, range)
+        this.addCBlockNames(streams, lexed.comments, range)
         return SemtokSource(streams, this.commentsIn(lexed.comments, range))
     }
 
@@ -67,6 +68,24 @@ define class SemtokSources {
         while (i < window.last) {
             this.addInterpolationsOf(streams, window.tokens[i], range)
             i = i + 1
+        }
+    }
+
+    // The `$name` of a C block is an identifier like the ones in `${...}`: it is classified by the resolver.
+    method addCBlockNames(array<SemtokStream> streams, array<Token> comments, Span range) {
+        for (comment in comments) {
+            if (lexingIsCBlock(comment) && semtokOverlaps(comment, range)) {
+                this.addNames(streams, comment, range)
+            }
+        }
+    }
+
+    method addNames(array<SemtokStream> streams, Token block, Span range) {
+        for (name in block.interpolations) {
+            var stream = this.streamOf(name, range)
+            if (isSome(stream)) {
+                streams.append(stream)
+            }
         }
     }
 

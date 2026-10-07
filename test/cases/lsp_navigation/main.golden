@@ -126,3 +126,14 @@ field to a contextual word: span radius | refusal '' | problem ''sync' is a rese
 class to a primitive type name: span Circle | refusal '' | problem ''string' is a reserved word' | (none)
 local to nil: span count | refusal '' | problem ''nil' is a reserved word' | (none)
 member whose namesake belongs to a std value: span size | refusal '' | problem '' | /t/main.nv [4:13 11:15] -> width
+== C blocks: $name resolves like a name in the code
+a local from its use in the block: /p/main.nv:5:13 "local"
+a parameter from its use in the block: /p/main.nv:4:25 "by"
+a field from its use in the block: /p/main.nv:2:13 "total"
+the dollar itself is no name: (none)
+a local reaches into the block: /p/main.nv:5:13 "local"; /p/main.nv:7:17 "local"; /p/main.nv:6:38 "local"
+a local from the block: /p/main.nv:5:13 "local"; /p/main.nv:7:17 "local"; /p/main.nv:6:38 "local"
+a parameter from its declaration: /p/main.nv:4:25 "by"; /p/main.nv:6:56 "by"
+a local is renamed in the block too: span local | refusal '' | problem '' | /p/main.nv [5:13 6:38 7:17] -> sum
+a parameter from its use in the block: span by | refusal '' | problem '' | /p/main.nv [4:25 6:56] -> step
+a field from its use in the block: span total | refusal '' | problem '' | /p/main.nv [2:13 6:14] -> count

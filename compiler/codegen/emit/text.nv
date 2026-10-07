@@ -1,0 +1,50 @@
+package emit
+
+import ast
+import parser
+
+// Names and text of the generated C.
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+method nl(): string {
+    return chr(10)
+}
+
+method cstr(string text): string {
+    return q() + text + q()
+}
+
+// C identifier for a (possibly package qualified) Novus name: os.mkdir -> os__mkdir
+method cName(string name): string {
+    return name.replace(".", "__")
+}
+
+// Package part of a qualified name ("os" for "os.mkdir"), "" when plain.
+method packageOf(string name): string {
+    var dot = name.indexOf(".")
+    if (dot < 0) {
+        return ""
+    }
+    return name.substring(0, dot)
+}
+
+method intToStr(integer i): string {
+    return "" + i
+}
+
+// "a[0], a[1], ..." - how a spawned body reaches the arguments the thread
+// that spawned it evaluated.
+method argSlots(integer arity): string {
+    var out = ""
+    var i = 0
+    while (i < arity) {
+        if (i > 0) {
+            out = out + ", "
+        }
+        out = out + "a[" + i + "]"
+        i = i + 1
+    }
+    return out
+}

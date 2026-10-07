@@ -114,6 +114,14 @@ a base type outside the program: nothing is judged
   (none)
 an interface-typed receiver
   7:21 warning unknown-member: 'Handler' has no member 'other' [other]
+cascades: a cascade has the type of its receiver, a value ends at the next ..
+  13:19 warning unknown-member: 'Crate' has no member 'nowhere' [nowhere]
+  15:17 warning unknown-member: 'Crate' has no member 'nowhere' [nowhere]
+  20:19 warning unknown-member: 'Crate' has no member 'nowhere' [nowhere]
+  21:20 warning unknown-member: 'Crate' has no member 'nowhere' [nowhere]
+C blocks: $name is a variable of the method, an unknown one and one outside of a method are errors
+  6:57 warning unknown-name: unknown variable 'missing': nothing of that name is declared here [missing]
+  11:25 error cblock-variable-outside-method: $nothing in a c block outside of a method: only methods have variables (write $$ for a dollar sign)
 == ManifestDiagnostics: reader issues, derived notes, dependency states
 project.nv
   9:1 error unknown-setting: unknown setting 'bogus' (known: project, version, main, lib, output, novus, require, replace)

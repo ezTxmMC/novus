@@ -1,0 +1,78 @@
+package codegen
+
+import ast
+import parser
+
+// Blocks and the locals they declare.
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+// What blockVars records about a name declared in the block: it is new, or it
+// shadows a local of an enclosing block (which then stays after the block).
+final LOCAL_NEW = "new"
+final LOCAL_SHADOWS = "shadows"
+
+// One level of indentation in the generated C.
+final INDENT_STEP = "    "
+
+// The block adds its declarations to the map of the enclosing blocks and takes
+// them out again at its end. Copying the whole map for every block made a
+// method with many locals and many blocks quadratic.
+method genBlock(string block, string indent, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    var blockVars = {}
+    var parts = []
+    var i = 1
+    var blockCount = nodeCount(block)
+    while (i < blockCount) {
+        var at = nodeChild(block, i)
+        var stmt = at
+        if (nodeHead(at) == "at") {
+            ctx["pos"] = nodeChild(at, 1)
+            stmt = nodeChild(at, 2)
+        }
+        parts.append(genStatement(stmt, indent, prog, ctx, locals, blockVars))
+        i = i + 1
+    }
+    forgetBlockLocals(locals, blockVars)
+    return joinParts(parts)
+}
+
+method forgetBlockLocals(map<string, string> locals, map<string, string> blockVars) {
+    for (name in blockVars.keys()) {
+        if (blockVars[name] == LOCAL_NEW) {
+            locals.remove(name)
+        }
+    }
+}
+
+method declareLocal(string name, string init, string indent, map<string, string> locals, map<string, string> blockVars): string {
+    var type = "nv "
+    if (isIntLocal(locals, name)) {
+        type = "long long "
+    }
+    if (isFloatLocal(locals, name)) {
+        type = "double "
+    }
+    if (blockVars.has(name)) {
+        return indent + "l_" + name + " = " + init + ";" + nl()
+    }
+    blockVars[name] = LOCAL_SHADOWS
+    if (locals.has(name) == false) {
+        blockVars[name] = LOCAL_NEW
+    }
+    locals[name] = "l_" + name
+    return indent + type + "l_" + name + " = " + init + ";" + nl()
+}
+
+// Initializer or assigned value, unboxed when the local is an integer.
+method genValueFor(string name, string node, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    if (isIntLocal(locals, name)) {
+        return genInt(node, prog, ctx, locals)
+    }
+    if (isFloatLocal(locals, name)) {
+        // an integer expression is computed as one and converted: `float x = 7 / 2` is 3.0
+        return genNumberAs(node, KIND_FLOAT, prog, ctx, locals)
+    }
+    return genExpr(node, prog, ctx, locals)
+}

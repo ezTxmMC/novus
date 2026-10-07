@@ -1,0 +1,51 @@
+---
+title: "C blocks"
+description: "Raw C inside Novus: c blocks and $name"
+slug: "c-blocks"
+---
+<?nv
+import @components/DocLayout
+import @components/Callout
+?>
+<DocLayout slug={slug} title={title} description={description}>
+
+`c { ... }` is raw C inside Novus - for a system call, a library or a hot
+loop that the language does not offer. The text up to the matching brace is
+copied into the generated C unchanged (braces in C strings, character literals
+and comments do not count):
+
+```nv
+c {
+    #include <unistd.h>                    // outside of methods: before all declarations,
+    static long long pid(void) {           // after the runtime, in the order of the source
+        return (long long)getpid();
+    }
+}
+
+method processId(): integer {
+    c { return nv_int(pid()); }            // the whole body may be C
+}
+
+method bump(integer by) {
+    var total = 0
+    c {                                    // a statement: a C block at this place
+        $total = nv_int(nv_ival($total) + nv_ival($by));
+    }
+    println total
+}
+```
+
+`$name` is the value (an `nv`) of a variable, parameter, field or global of the
+program, written exactly like Novus reads it, so it can be assigned to as well;
+`$$` is a dollar sign. An unknown name is a compile error. A method that
+contains a C block keeps all its variables boxed, so `$x = ...` always works.
+Outside of methods there are no variables: only `$$`. The runtime that every
+program embeds is in scope (`runtime/novus_rt.h`): `nv` is the value type,
+`nv_int(long long)`/`nv_ival(nv)`, `nv_float(double)`/`nv_fval(nv)`,
+`nv_str(const char *)`, `nv_bool(int)`, `nv_nil`, `nv_println(nv)`. The C is not
+checked by Novus: its mistakes are the C compiler's, and a program with C
+blocks is exactly as safe as the C in it. `novusc check --offline` does not
+compile it and `novusc emit` prints it as it is. In a `.nvh` header the same
+`c { }` works inside its methods.
+
+</DocLayout>

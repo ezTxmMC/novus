@@ -150,6 +150,10 @@ define class SemanticLocalTyper {
         if (chainFirst > last) {
             return unknownType()
         }
+        var cascade = scanningCascadeIndex(tokens, chainFirst, last)
+        if (cascade > chainFirst) {
+            return this.spanTypeOf(scope, offset, chainFirst, cascade - 1)
+        }
         var chain = chainEndingAt(tokens, last)
         if (chain.length() > 0 && chainStartIndex(tokens, last) == chainFirst) {
             var inner = this.resolver.scopeAt(scope.file, offset)

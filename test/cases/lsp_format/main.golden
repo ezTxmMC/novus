@@ -113,6 +113,11 @@ ok   unknown character without spaces stays joined
 ok   unknown character on one side
 ok   several unknown characters
 ok   non-ascii text outside a string
+ok   cascade call
+ok   cascade assignment
+ok   cascade index
+ok   cascade lines continue the chain
+ok   cascade lines is stable
 --- layout
 ok   blank lines collapse to one
 ok   a single blank line stays

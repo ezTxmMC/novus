@@ -1,0 +1,221 @@
+package nvh
+
+import lexer
+import loader
+import parser
+
+// The template as a flat list of tokens: text, comment, expr, html, echo,
+// code, if/elif/else/endif, for/endfor, open (with attrs), close.
+//
+// A scan keeps its position in a map: t (the template), lower (its lower
+// case, for raw elements), n, i, line, file, toks, text (the characters of
+// the text token being collected) and textLine.
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+method nvhTokens(string t, integer startLine, string file): array<object> {
+    var lx = {"t": t, "lower": t.toLower(), "n": t.length(), "i": 0, "line": startLine, "file": file,
+        "toks": [], "text": [], "textLine": startLine}
+    while (lx["i"] < lx["n"]) {
+        nvhLexStep(lx)
+    }
+    nvhFlushText(lx)
+    return lx["toks"]
+}
+
+// The token that starts at the scan position, or one more character of text.
+method nvhLexStep(map<string, object> lx) {
+    var t = lx["t"]
+    var i = lx["i"]
+    var c = t.charAt(i)
+    if (c == NVH_BACKSLASH && i + 1 < lx["n"] && (t.charAt(i + 1) == "{" || t.charAt(i + 1) == "}")) {
+        nvhAddText(lx, t.charAt(i + 1))
+        lx["i"] = i + 2
+        return
+    }
+    var special = nvhSpecialAt(t, i, lx["n"])
+    if (special == "") {
+        nvhAddText(lx, c)
+        if (c == NVH_NEWLINE) {
+            lx["line"] = lx["line"] + 1
+        }
+        lx["i"] = i + 1
+        return
+    }
+    nvhFlushText(lx)
+    nvhLexSpecial(lx, special)
+}
+
+method nvhAddText(map<string, object> lx, string piece) {
+    if (lx["text"].length() == 0) {
+        lx["textLine"] = lx["line"]
+    }
+    lx["text"].append(piece)
+}
+
+method nvhFlushText(map<string, object> lx) {
+    if (lx["text"].length() == 0) {
+        return
+    }
+    lx["toks"].append({"k": "text", "text": lx["text"].join(""), "line": lx["textLine"]})
+    lx["text"] = []
+}
+
+// What starts at `i`: brace, code, comment, bang, close, open, or "" for plain text.
+method nvhSpecialAt(string t, integer i, integer n): string {
+    var c = t.charAt(i)
+    if (c == "{") {
+        return "brace"
+    }
+    if (c != "<" || i + 1 >= n) {
+        return ""
+    }
+    var next = t.charAt(i + 1)
+    if (t.substring(i, i + 4) == "<?nv" || t.substring(i, i + 3) == "<?=") {
+        return "code"
+    }
+    if (t.substring(i, i + 4) == "<!--") {
+        return "comment"
+    }
+    if (next == "!") {
+        return "bang"
+    }
+    if (next == "/" && i + 2 < n && isAlpha(t.charAt(i + 2))) {
+        return "close"
+    }
+    if (isAlpha(next)) {
+        return "open"
+    }
+    return ""
+}
+
+method nvhLexSpecial(map<string, object> lx, string special) {
+    if (special == "brace") {
+        nvhLexBrace(lx)
+        return
+    }
+    if (special == "code") {
+        nvhLexCode(lx)
+        return
+    }
+    if (special == "comment") {
+        nvhLexComment(lx)
+        return
+    }
+    if (special == "bang") {
+        nvhLexBang(lx)
+        return
+    }
+    if (special == "close") {
+        nvhLexClose(lx)
+        return
+    }
+    nvhLexOpen(lx)
+}
+
+method nvhScanPos(map<string, object> lx): string {
+    return lx["file"] + ":" + lx["line"]
+}
+
+method nvhLexBrace(map<string, object> lx) {
+    var t = lx["t"]
+    var i = lx["i"]
+    var pos = nvhScanPos(lx)
+    var close = nvhCloseBrace(t, i)
+    if (close < 0) {
+        fail("unclosed '{' in the template (write \\{ for a literal brace)", pos)
+    }
+    var inner = t.substring(i + 1, close - 1)
+    lx["toks"].append(nvhBlockToken(inner, lx["line"], pos))
+    lx["line"] = lx["line"] + nvhNewlines(inner)
+    lx["i"] = close
+}
+
+method nvhLexCode(map<string, object> lx) {
+    var t = lx["t"]
+    var i = lx["i"]
+    var end = t.indexOf("?>", i)
+    if (end < 0) {
+        fail("unclosed <?nv (missing ?>)", nvhScanPos(lx))
+    }
+    var token = {"k": "code", "code": t.substring(i + 4, end), "line": lx["line"]}
+    if (t.substring(i, i + 3) == "<?=") {
+        token = {"k": "echo", "code": t.substring(i + 3, end).trim(), "line": lx["line"]}
+    }
+    lx["toks"].append(token)
+    lx["line"] = lx["line"] + nvhNewlines(t.substring(i, end))
+    lx["i"] = end + 2
+}
+
+method nvhLexComment(map<string, object> lx) {
+    var t = lx["t"]
+    var i = lx["i"]
+    var end = t.indexOf("-->", i)
+    if (end < 0) {
+        fail("unclosed <!-- comment", nvhScanPos(lx))
+    }
+    var comment = t.substring(i, end + 3)
+    lx["toks"].append({"k": "comment", "text": comment, "line": lx["line"]})
+    lx["line"] = lx["line"] + nvhNewlines(comment)
+    lx["i"] = end + 3
+}
+
+// <!doctype html>: the document shell has its own
+method nvhLexBang(map<string, object> lx) {
+    var t = lx["t"]
+    var i = lx["i"]
+    var end = t.indexOf(">", i)
+    if (end < 0) {
+        end = lx["n"] - 1
+    }
+    lx["line"] = lx["line"] + nvhNewlines(t.substring(i, end))
+    lx["i"] = end + 1
+}
+
+method nvhLexClose(map<string, object> lx) {
+    var t = lx["t"]
+    var i = lx["i"]
+    var gt = t.indexOf(">", i)
+    if (gt < 0) {
+        fail("unclosed tag", nvhScanPos(lx))
+    }
+    lx["toks"].append({"k": "close", "tag": t.substring(i + 2, gt).trim(), "line": lx["line"]})
+    lx["i"] = gt + 1
+}
+
+// An opening tag with its attributes; script and style keep their text as it is.
+method nvhLexOpen(map<string, object> lx) {
+    var t = lx["t"]
+    var i = lx["i"]
+    var pos = nvhScanPos(lx)
+    var scanned = nvhScanTag(t, i, pos)
+    var end = scanned["end"]
+    var tag = scanned["tag"]
+    var node = {"k": "open", "tag": tag, "attrs": scanned["attrs"], "self": scanned["self"], "line": lx["line"], "raw": "", "israw": false}
+    lx["line"] = lx["line"] + nvhNewlines(t.substring(i, end))
+    lx["i"] = end
+    lx["toks"].append(node)
+    var lowerTag = tag.toLower()
+    if ((lowerTag == "script" || lowerTag == "style") && scanned["self"] == false) {
+        nvhLexRaw(lx, node, lowerTag, pos)
+    }
+}
+
+// The text up to the closing tag of a raw element, and the closing tag.
+method nvhLexRaw(map<string, object> lx, map<string, object> node, string lowerTag, string pos) {
+    var t = lx["t"]
+    var i = lx["i"]
+    var rawEnd = lx["lower"].indexOf("</" + lowerTag, i)
+    if (rawEnd < 0) {
+        fail("unclosed <" + lowerTag + ">", pos)
+    }
+    node["raw"] = t.substring(i, rawEnd)
+    node["israw"] = true
+    lx["line"] = lx["line"] + nvhNewlines(t.substring(i, rawEnd))
+    var gt = t.indexOf(">", rawEnd)
+    if (gt < 0) {
+        gt = lx["n"] - 1
+    }
+    lx["i"] = gt + 1
+}

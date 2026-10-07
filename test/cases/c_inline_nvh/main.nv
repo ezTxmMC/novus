@@ -1,0 +1,8 @@
+package main
+
+import web
+import @Page
+
+method main {
+    println web.renderHtml(Page())
+}

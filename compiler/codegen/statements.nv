@@ -3,234 +3,132 @@ package codegen
 import ast
 import parser
 
-// Statements and blocks -> C.
+// Statements -> C: the dispatch on the kind of statement.
 //
 // NOTE: this file is part of the bootstrap chain: it must stay compilable
 // by the previous compiler snapshot (bootstrap/novusc.c).
 
-// What blockVars records about a name declared in the block: it is new, or it
-// shadows a local of an enclosing block (which then stays after the block).
-final LOCAL_NEW = "new"
-final LOCAL_SHADOWS = "shadows"
-
-// The block adds its declarations to the map of the enclosing blocks and takes
-// them out again at its end. Copying the whole map for every block made a
-// method with many locals and many blocks quadratic.
-method genBlock(string block, string indent, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
-    var blockVars = {}
-    var parts = []
-    var i = 1
-    var blockCount = nodeCount(block)
-    while (i < blockCount) {
-        var at = nodeChild(block, i)
-        var stmt = at
-        if (nodeHead(at) == "at") {
-            ctx["pos"] = nodeChild(at, 1)
-            stmt = nodeChild(at, 2)
-        }
-        parts.append(genStatement(stmt, indent, prog, ctx, locals, blockVars))
-        i = i + 1
-    }
-    forgetBlockLocals(locals, blockVars)
-    return joinParts(parts)
-}
-
-method forgetBlockLocals(map<string, string> locals, map<string, string> blockVars) {
-    for (name in blockVars.keys()) {
-        if (blockVars[name] == LOCAL_NEW) {
-            locals.remove(name)
-        }
-    }
-}
-
-method declareLocal(string name, string init, string indent, map<string, string> locals, map<string, string> blockVars): string {
-    var type = "nv "
-    if (isIntLocal(locals, name)) {
-        type = "long long "
-    }
-    if (isFloatLocal(locals, name)) {
-        type = "double "
-    }
-    if (blockVars.has(name)) {
-        return indent + "l_" + name + " = " + init + ";" + nl()
-    }
-    blockVars[name] = LOCAL_SHADOWS
-    if (locals.has(name) == false) {
-        blockVars[name] = LOCAL_NEW
-    }
-    locals[name] = "l_" + name
-    return indent + type + "l_" + name + " = " + init + ";" + nl()
-}
-
-// Initializer or assigned value, unboxed when the local is an integer.
-method genValueFor(string name, string node, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
-    if (isIntLocal(locals, name)) {
-        return genInt(node, prog, ctx, locals)
-    }
-    if (isFloatLocal(locals, name)) {
-        // an integer expression is computed as one and converted: `float x = 7 / 2` is 3.0
-        return genNumberAs(node, KIND_FLOAT, prog, ctx, locals)
-    }
-    return genExpr(node, prog, ctx, locals)
-}
-
 method genStatement(string node, string indent, map<string, string> prog, map<string, string> ctx, map<string, string> locals, map<string, string> blockVars): string {
     if (isList(node) == false) {
-        return indent + "(void)" + genExpr(node, prog, ctx, locals) + ";" + nl()
+        return genExpressionStatement(node, indent, prog, ctx, locals)
     }
     var head = nodeHead(node)
     if (head == "nop") {
         return ""
     }
+    if (head == CBLOCK_NODE) {
+        return genCBlockStatement(node, indent, prog, ctx, locals)
+    }
     if (head == "var") {
-        var name = nodeChild(node, 1)
-        if (nodeCount(node) > 2) {
-            return declareLocal(name, genValueFor(name, nodeChild(node, 2), prog, ctx, locals), indent, locals, blockVars)
-        }
-        if (isIntLocal(locals, name)) {
-            return declareLocal(name, "0", indent, locals, blockVars)
-        }
-        if (isFloatLocal(locals, name)) {
-            return declareLocal(name, "0.0", indent, locals, blockVars)
-        }
-        return declareLocal(name, "nv_nil", indent, locals, blockVars)
+        return genVarStatement(node, indent, prog, ctx, locals, blockVars)
     }
     if (head == "tvar") {
-        var tname = nodeChild(node, 2)
-        var ttype = nodeChild(node, 1)
-        if (nodeCount(node) > 3) {
-            if (isIntLocal(locals, tname)) {
-                return declareLocal(tname, genInt(nodeChild(node, 3), prog, ctx, locals), indent, locals, blockVars)
-            }
-            if (isFloatLocal(locals, tname)) {
-                return declareLocal(tname, genNumberAs(nodeChild(node, 3), KIND_FLOAT, prog, ctx, locals), indent, locals, blockVars)
-            }
-            return declareLocal(tname, coerceCode(genExpr(nodeChild(node, 3), prog, ctx, locals), ttype), indent, locals, blockVars)
-        }
-        return declareLocal(tname, defaultCode(ttype), indent, locals, blockVars)
+        return genTypedVarStatement(node, indent, prog, ctx, locals, blockVars)
     }
     if (head == "assign") {
-        var target = nodeChild(node, 1)
-        var cname = resolveVar(target, prog, ctx, locals)
-        if (cname == "" && isImplicitField(target, prog, ctx, locals)) {
-            var stored = coerceFieldCode(genExpr(nodeChild(node, 2), prog, ctx, locals), fieldType(prog, ctx["class"], target))
-            return indent + "nv_fields(self->o)[" + fieldSlot(prog, ctx["class"], target) + "] = " + stored + ";" + nl()
-        }
-        if (cname == "" || cname == "self") {
-            fail("unknown variable '" + target + "'", ctx["pos"])
-        }
-        return indent + cname + " = " + genValueFor(target, nodeChild(node, 2), prog, ctx, locals) + ";" + nl()
+        return genAssignStatement(node, indent, prog, ctx, locals)
     }
     if (head == "setexpr") {
-        var sequence = sequenceOperands(node, prog, ctx, locals)
-        if (sequence.length() > 0) {
-            return sequencedStatements(sequence, indent) + genStatement(sequence[0], indent, prog, ctx, locals, blockVars)
-        }
-        var lhs = nodeChild(node, 1)
-        var value = genExpr(nodeChild(node, 2), prog, ctx, locals)
-        if (nodeHead(lhs) == "idx") {
-            return indent + "nv_index_set(" + genExpr(nodeChild(lhs, 1), prog, ctx, locals) + ", " + genExpr(nodeChild(lhs, 2), prog, ctx, locals) + ", " + value + ");" + nl()
-        }
-        if (nodeHead(lhs) == "mget") {
-            var receiver = nodeChild(lhs, 1)
-            var member = nodeChild(lhs, 2)
-            if (receiver == "this" && ctx["class"] != "" && fieldSlot(prog, ctx["class"], member) >= 0) {
-                return indent + "nv_fields(self->o)[" + fieldSlot(prog, ctx["class"], member) + "] = " + coerceFieldCode(value, fieldType(prog, ctx["class"], member)) + ";" + nl()
-            }
-            return indent + "nv_set_member(" + genExpr(receiver, prog, ctx, locals) + ", " + cstr(member) + ", " + value + ");" + nl()
-        }
-        fail("invalid assignment target", ctx["pos"])
+        return genSetStatement(node, indent, prog, ctx, locals, blockVars)
     }
     if (head == "return") {
-        // leaving a method leaves every sync block it is inside
-        var leaveAll = syncUnwind(syncHeld(ctx), "")
-        if (nodeCount(node) > 1 && ctx.has("rawret") && ctx["rawret"] != "") {
-            // the unboxed worker of a method returns the number itself
-            return indent + leaveAll + "return " + genNumberAs(nodeChild(node, 1), ctx["rawret"], prog, ctx, locals) + ";" + nl()
-        }
-        if (nodeCount(node) > 1) {
-            return indent + leaveAll + "return " + coerceCode(genExpr(nodeChild(node, 1), prog, ctx, locals), ctx["ret"]) + ";" + nl()
-        }
+        return genReturnStatement(node, indent, prog, ctx, locals)
+    }
+    if (head == "println" || head == "print" || head == "eprintln") {
+        return indent + PRINT_FUNCTIONS[head] + "(" + genExpr(nodeChild(node, 1), prog, ctx, locals) + ");" + nl()
+    }
+    return genControlStatement(node, head, indent, prog, ctx, locals, blockVars)
+}
+
+// The runtime function of each print statement.
+private final PRINT_FUNCTIONS = {"println": "nv_println", "print": "nv_print", "eprintln": "nv_eprintln"}
+
+method genExpressionStatement(string node, string indent, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    return indent + "(void)" + genExpr(node, prog, ctx, locals) + ";" + nl()
+}
+
+// `var name [= value]`
+method genVarStatement(string node, string indent, map<string, string> prog, map<string, string> ctx, map<string, string> locals, map<string, string> blockVars): string {
+    var name = nodeChild(node, 1)
+    if (nodeCount(node) > 2) {
+        return declareLocal(name, genValueFor(name, nodeChild(node, 2), prog, ctx, locals), indent, locals, blockVars)
+    }
+    if (isIntLocal(locals, name)) {
+        return declareLocal(name, "0", indent, locals, blockVars)
+    }
+    if (isFloatLocal(locals, name)) {
+        return declareLocal(name, "0.0", indent, locals, blockVars)
+    }
+    return declareLocal(name, "nv_nil", indent, locals, blockVars)
+}
+
+// `Type name [= value]`
+method genTypedVarStatement(string node, string indent, map<string, string> prog, map<string, string> ctx, map<string, string> locals, map<string, string> blockVars): string {
+    var name = nodeChild(node, 2)
+    var declaredType = nodeChild(node, 1)
+    if (nodeCount(node) <= 3) {
+        return declareLocal(name, defaultCode(declaredType), indent, locals, blockVars)
+    }
+    var value = nodeChild(node, 3)
+    if (isIntLocal(locals, name)) {
+        return declareLocal(name, genInt(value, prog, ctx, locals), indent, locals, blockVars)
+    }
+    if (isFloatLocal(locals, name)) {
+        return declareLocal(name, genNumberAs(value, KIND_FLOAT, prog, ctx, locals), indent, locals, blockVars)
+    }
+    return declareLocal(name, coerceCode(genExpr(value, prog, ctx, locals), declaredType), indent, locals, blockVars)
+}
+
+// `name = value` for a local, a global or a field of `this`.
+method genAssignStatement(string node, string indent, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    var target = nodeChild(node, 1)
+    var cname = resolveVar(target, prog, ctx, locals)
+    if (cname == "" && isImplicitField(target, prog, ctx, locals)) {
+        var stored = coerceFieldCode(genExpr(nodeChild(node, 2), prog, ctx, locals), fieldType(prog, ctx["class"], target))
+        return indent + nv_fieldSlotCode(prog, ctx, target) + " = " + stored + ";" + nl()
+    }
+    if (cname == "" || cname == "self") {
+        fail("unknown variable '" + target + "'", ctx["pos"])
+    }
+    return indent + cname + " = " + genValueFor(target, nodeChild(node, 2), prog, ctx, locals) + ";" + nl()
+}
+
+// `target.member = value` and `target[index] = value`
+method genSetStatement(string node, string indent, map<string, string> prog, map<string, string> ctx, map<string, string> locals, map<string, string> blockVars): string {
+    var sequence = sequenceOperands(node, prog, ctx, locals)
+    if (sequence.length() > 0) {
+        return sequencedStatements(sequence, indent) + genStatement(sequence[0], indent, prog, ctx, locals, blockVars)
+    }
+    return indent + genSetCode(nodeChild(node, 1), nodeChild(node, 2), prog, ctx, locals) + ";" + nl()
+}
+
+method genReturnStatement(string node, string indent, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    // leaving a method leaves every sync block it is inside
+    var leaveAll = syncUnwind(syncHeld(ctx), "")
+    if (nodeCount(node) <= 1) {
         return indent + leaveAll + "return nv_nil;" + nl()
     }
-    if (head == "sync") {
-        var lock = "nv_nil"
-        if (nodeChild(node, 1) != "-") {
-            lock = genExpr(nodeChild(node, 1), prog, ctx, locals)
-        }
-        var held = syncHeld(ctx)
-        var guard = "sy" + syncDepth(ctx)
-        var inner = indent + "    "
-        var out = indent + "{" + nl()
-        out = out + inner + "NvLock *" + guard + " = nv_sync_enter(" + lock + ");" + nl()
-        if (held == "") {
-            ctx["sync"] = guard
-        } else {
-            ctx["sync"] = held + " " + guard
-        }
-        out = out + genBlock(nodeChild(node, 2), inner, prog, ctx, locals)
-        ctx["sync"] = held
-        out = out + inner + "nv_sync_leave(" + guard + ");" + nl()
-        return out + indent + "}" + nl()
+    if (ctx.has("rawret") && ctx["rawret"] != "") {
+        // the unboxed worker of a method returns the number itself
+        return indent + leaveAll + "return " + genNumberAs(nodeChild(node, 1), ctx["rawret"], prog, ctx, locals) + ";" + nl()
     }
-    if (head == "println") {
-        return indent + "nv_println(" + genExpr(nodeChild(node, 1), prog, ctx, locals) + ");" + nl()
+    return indent + leaveAll + "return " + coerceCode(genExpr(nodeChild(node, 1), prog, ctx, locals), ctx["ret"]) + ";" + nl()
+}
+
+// The C expression that stores `valueNode` into a member (`o.f`) or an
+// element (`a[i]`).
+method genSetCode(string lhs, string valueNode, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    var value = genExpr(valueNode, prog, ctx, locals)
+    if (nodeHead(lhs) == "idx") {
+        return "nv_index_set(" + genExpr(nodeChild(lhs, 1), prog, ctx, locals) + ", " + genExpr(nodeChild(lhs, 2), prog, ctx, locals) + ", " + value + ")"
     }
-    if (head == "print") {
-        return indent + "nv_print(" + genExpr(nodeChild(node, 1), prog, ctx, locals) + ");" + nl()
+    if (nodeHead(lhs) != "mget") {
+        fail("invalid assignment target", ctx["pos"])
     }
-    if (head == "eprintln") {
-        return indent + "nv_eprintln(" + genExpr(nodeChild(node, 1), prog, ctx, locals) + ");" + nl()
+    var receiver = nodeChild(lhs, 1)
+    var member = nodeChild(lhs, 2)
+    if (receiver == "this" && ctx["class"] != "" && fieldSlot(prog, ctx["class"], member) >= 0) {
+        return "nv_fields(self->o)[" + fieldSlot(prog, ctx["class"], member) + "] = " + coerceFieldCode(value, fieldType(prog, ctx["class"], member))
     }
-    if (head == "if") {
-        var out = indent + "if (" + genCondition(nodeChild(node, 1), prog, ctx, locals) + ") {" + nl()
-        out = out + genBlock(nodeChild(node, 2), indent + "    ", prog, ctx, locals)
-        out = out + indent + "}"
-        if (nodeCount(node) > 3) {
-            var elseNode = nodeChild(node, 3)
-            if (nodeHead(elseNode) == "if") {
-                var ec = genStatement(elseNode, indent, prog, ctx, locals, blockVars)
-                return out + " else " + ec.substring(indent.length(), ec.length())
-            }
-            out = out + " else {" + nl() + genBlock(elseNode, indent + "    ", prog, ctx, locals) + indent + "}"
-        }
-        return out + nl()
-    }
-    if (head == "while") {
-        var wout = indent + "while (" + genCondition(nodeChild(node, 1), prog, ctx, locals) + ") {" + nl()
-        var wouter = syncLoopHeld(ctx)
-        ctx["syncloop"] = syncHeld(ctx)
-        wout = wout + genBlock(nodeChild(node, 2), indent + "    ", prog, ctx, locals)
-        ctx["syncloop"] = wouter
-        return wout + indent + "}" + nl()
-    }
-    if (head == "forin") {
-        var v = nodeChild(node, 1)
-        var iter = genExpr(nodeChild(node, 2), prog, ctx, locals)
-        var inner = indent + "    "
-        var fout = indent + "{" + nl()
-        fout = fout + inner + "NvArr *it_" + v + " = " + iterCall(nodeChild(node, 3), iter) + ";" + nl()
-        fout = fout + inner + "int n_" + v + " = it_" + v + "->len;" + nl()
-        fout = fout + inner + "for (int i_" + v + " = 0; i_" + v + " < n_" + v + "; i_" + v + "++) {" + nl()
-        fout = fout + inner + "    nv l_" + v + " = it_" + v + "->items[i_" + v + "];" + nl()
-        var loopVarIsNew = locals.has(v) == false
-        locals[v] = "l_" + v
-        var fouter = syncLoopHeld(ctx)
-        ctx["syncloop"] = syncHeld(ctx)
-        fout = fout + genBlock(nodeChild(node, 3), inner + "    ", prog, ctx, locals)
-        if (loopVarIsNew) {
-            locals.remove(v)
-        }
-        ctx["syncloop"] = fouter
-        fout = fout + inner + "}" + nl()
-        return fout + indent + "}" + nl()
-    }
-    if (head == "break") {
-        // only the sync blocks entered inside the loop are left behind
-        return indent + syncUnwind(syncHeld(ctx), syncLoopHeld(ctx)) + "break;" + nl()
-    }
-    if (head == "continue") {
-        return indent + syncUnwind(syncHeld(ctx), syncLoopHeld(ctx)) + "continue;" + nl()
-    }
-    return indent + "(void)" + genExpr(node, prog, ctx, locals) + ";" + nl()
+    return "nv_set_member(" + genExpr(receiver, prog, ctx, locals) + ", " + cstr(member) + ", " + value + ")"
 }

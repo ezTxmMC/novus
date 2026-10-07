@@ -1,0 +1,92 @@
+---
+title: ".nvmd documents"
+description: "Markdown with Novus, rendered by nvh-markdown"
+slug: "nvmd-documents"
+---
+<?nv
+import @components/DocLayout
+import @components/Callout
+?>
+<DocLayout slug={slug} title={title} description={description}>
+
+A `.nvmd` file is Markdown with Novus in it, the way `.mdx` is Markdown with JSX. It is a component like a `.nvh` file: `Intro.nvmd` becomes `define class Intro based NvhComponent`. This documentation is written in it.
+
+```md
+---
+title: Control flow
+description: if, while and for
+---
+<?nv
+import strings
+prop integer level = 1
+?>
+
+# {title}
+
+Plain **Markdown**, `inline code` and a value: {strings.capitalize(title)} / {level + 1}.
+
+{#if level > 0}
+Shown when `level` is positive.
+{:else}
+Shown otherwise.
+{/if}
+
+<Callout type="warning">
+Children are **Markdown** as well.
+</Callout>
+```
+
+## Wiring
+
+`novusc` reads `.nv` and `.nvh` only. A `.nvmd` file is translated to the `.nvh` next to it by the generator of the dependency [nvh-markdown](https://github.com/ezTxmMC/nvh-markdown), and the generated component renders its Markdown with that package at run time, so a project with `.nvmd` files requires it:
+
+```nv
+require "github.com/ezTxmMC/nvh-markdown" "latest"
+replace "github.com/ezTxmMC/nvh-markdown" "../nvh-markdown"     // a local checkout, optional
+```
+
+Run the generator before the compiler, and again whenever a `.nvmd` changes:
+
+```bash
+novusc run nvh-markdown/nvmd.nv build content      # name.nvmd -> name.nvh, only what changed
+novusc run nvh-markdown/nvmd.nv watch content      # while writing
+novusc run nvh-markdown/nvmd.nv translate Intro.nvmd   # print the .nvh of one file
+novusc run nvh-markdown/nvmd.nv clean content      # remove the generated files
+```
+
+The `.nvh` files are build output: put them in `.gitignore`. A generated file starts with `<?nv /* nvmd-generated */`; the generator never overwrites or removes a `.nvh` without it. The line numbers of the `.nvh` are those of the `.nvmd`, so compiler errors point at the right line (inside a Markdown segment at its first line).
+
+## Anatomy
+
+1. **Frontmatter** (optional, first line `---`): `key: value` lines. Every key becomes `prop string key = "value"` of the component, so a parent can override it and `{key}` works.
+2. **Header block** `<?nv ... ?>` (optional, right after the frontmatter): exactly the header of a `.nvh` file - imports, `prop`/`ref`, methods.
+3. **Body**: Markdown with Novus constructs.
+
+| Construct | Meaning |
+|---|---|
+| `{expr}` in text | the HTML-escaped value of the Novus expression; `\{` and `\}` are literal braces, braces in code are always literal |
+| `{#if c}` `{:else}` `{/if}`, `{#for x in xs}` `{/for}`, `{@html e}` | blocks, each alone on its line |
+| `<Name prop={x}>` ... `</Name>` | a component, alone on its line; its children are Markdown again |
+| `<?nv statements ?>` | statements |
+| lower-case tags | raw HTML, passed through the renderer; an HTML block with `@click`, `bind=` or `class:` is nvh and stays as written (up to the next blank line) |
+
+The generator cuts the body into Markdown segments and Novus constructs. Every segment becomes a `markdown.render(...)` call; an inline `{expr}` is a marker that `markdown.fill` replaces by the escaped value.
+
+## The renderer
+
+CommonMark plus GFM tables, task lists, strikethrough and autolinks, fenced code with syntax highlighting (`nv`, `nvh`, `sh`, `json`, `c`, `js`, `toml`, `yaml`), heading anchors and containers:
+
+```md
+:::tip Optional title
+Containers are `note`, `tip`, `warning` and `danger`.
+:::
+```
+
+The package also gives you `markdown.headings(source)` for a table of contents, `markdown.text(source)` for a search index and `markdown.frontmatter(source)`. The output is plain HTML with stable class names (`code-block`, `callout`, `tok-kw`, ...), so any CSS styles it.
+
+<Callout type="note">
+Code blocks and inline code are never interpolated, so `{braces}` in examples need no escaping there.
+</Callout>
+
+
+</DocLayout>

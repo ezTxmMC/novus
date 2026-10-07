@@ -1,0 +1,82 @@
+package index
+
+import ast
+import parser
+
+// Semantic checks: base types, interfaces, abstract methods.
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+// How many bases a class may have before the walk up gives up (a cycle).
+final MAX_BASE_DEPTH = 64
+
+method checkClasses(map<string, string> prog, array<string> decls): integer {
+    for (d in decls) {
+        if (nodeHead(d) == "class") {
+            checkClass(d, prog)
+        }
+    }
+    return 0
+}
+
+method checkClass(string d, map<string, string> prog) {
+    var name = nodeChild(d, 1)
+    var base = classBase(d)
+    var where = "class " + name
+    if (base != "" && isClassLike(prog, base) == false && prog.has("iface:" + base) == false) {
+        fail("unknown base type '" + base + "'", where)
+    }
+    if (classIsAbstract(d)) {
+        return
+    }
+    if (prog.has("iface:" + base)) {
+        checkInterface(name, base, where, prog)
+    }
+    checkAbstractMethods(name, where, prog)
+}
+
+method checkInterface(string name, string iface, string where, map<string, string> prog) {
+    var names = nodeChild(prog["iface:" + iface], 2)
+    var i = 1
+    var count = nodeCount(names)
+    while (i < count) {
+        var required = nodeChild(names, i)
+        var found = findMethod(prog, name, required)
+        if (found == "" || isAbstractMethod(found)) {
+            fail("class '" + name + "' does not implement '" + required + "()' from interface " + iface, where)
+        }
+        i = i + 1
+    }
+}
+
+// Every abstract method of the class and its bases is implemented by the class.
+method checkAbstractMethods(string name, string where, map<string, string> prog) {
+    var current = name
+    var depth = 0
+    while (current != "" && depth < MAX_BASE_DEPTH) {
+        var node = typeNode(prog, current)
+        if (node == "") {
+            return
+        }
+        checkAbstractMethodsOf(node, name, where, prog)
+        current = classBase(node)
+        depth = depth + 1
+    }
+}
+
+method checkAbstractMethodsOf(string node, string name, string where, map<string, string> prog) {
+    var methods = classMethods(node)
+    var k = 1
+    var count = nodeCount(methods)
+    while (k < count) {
+        var m = nodeChild(methods, k)
+        if (isAbstractMethod(m)) {
+            var resolved = findMethod(prog, name, methodName(m))
+            if (resolved == "" || isAbstractMethod(resolved)) {
+                fail("class '" + name + "' must implement abstract method '" + methodName(m) + "()'", where)
+            }
+        }
+        k = k + 1
+    }
+}

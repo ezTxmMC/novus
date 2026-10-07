@@ -103,3 +103,78 @@ method scanningHasSemicolon(ScanningWalker walker, integer first, integer close)
     }
     return false
 }
+
+// Is the token at `index` the first dot of a cascade `..`? The lexer keeps the two dots apart, so they must touch.
+method scanningIsCascadeAt(array<Token> tokens, integer index): bool {
+    if (index < 0 || index + 1 >= tokens.length()) {
+        return false
+    }
+    return tokens[index].isPunct(".") && tokens[index + 1].isPunct(".") && tokens[index].end == tokens[index + 1].start
+}
+
+// The first `..` outside brackets between `first` and `last`, -1 when there is none: a cascade has the type of its receiver.
+method scanningCascadeIndex(array<Token> tokens, integer first, integer last): integer {
+    var depth = 0
+    var i = first
+    while (i < last) {
+        if (tokens[i].kind == TokenKind.Punct && scanningIsOpener(tokens[i].value)) {
+            depth = depth + 1
+        }
+        if (tokens[i].kind == TokenKind.Punct && scanningIsCloser(tokens[i].value)) {
+            depth = depth - 1
+        }
+        if (depth == 0 && scanningIsCascadeAt(tokens, i)) {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+private final SCANNING_NAME_OFFSET = 2
+
+// The member tokens of the sections of the cascade `receiver..m()..n = 1` whose receiver name is at `index`: one index per
+// section, stopping at a section that continues (`..m().x`, `..m()[0]`) or assigns, because what follows is not the receiver's.
+method scanningCascadeMembers(array<Token> tokens, integer index): array<integer> {
+    var found = []
+    var dot = index + 1
+    while (scanningIsCascadeAt(tokens, dot) && dot + SCANNING_NAME_OFFSET < tokens.length() && tokens[dot + SCANNING_NAME_OFFSET].kind == TokenKind.Ident) {
+        found.append(dot + SCANNING_NAME_OFFSET)
+        dot = scanningSectionEnd(tokens, dot + SCANNING_NAME_OFFSET)
+    }
+    return found
+}
+
+// The index after the section whose member is at `member`; -1 when no further section of the cascade can follow.
+method scanningSectionEnd(array<Token> tokens, integer member): integer {
+    var next = member + 1
+    if (next < tokens.length() && tokens[next].isPunct("(")) {
+        next = scanningCloseOf(tokens, next) + 1
+    }
+    if (next >= tokens.length() || tokens[next].isPunct("=") || tokens[next].isPunct("[")) {
+        return -1
+    }
+    if (tokens[next].isPunct(".") && scanningIsCascadeAt(tokens, next) == false) {
+        return -1
+    }
+    return next
+}
+
+// The index of the bracket that closes the one at `open`; the last token when it never closes.
+method scanningCloseOf(array<Token> tokens, integer open): integer {
+    var depth = 0
+    var index = open
+    while (index < tokens.length()) {
+        if (tokens[index].kind == TokenKind.Punct && scanningIsOpener(tokens[index].value)) {
+            depth = depth + 1
+        }
+        if (tokens[index].kind == TokenKind.Punct && scanningIsCloser(tokens[index].value)) {
+            depth = depth - 1
+        }
+        if (depth == 0) {
+            return index
+        }
+        index = index + 1
+    }
+    return tokens.length() - 1
+}

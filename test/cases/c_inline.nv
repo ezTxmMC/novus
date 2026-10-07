@@ -1,0 +1,100 @@
+package main
+
+// Raw C inside Novus: `c { ... }` as a declaration and as a statement; `$name` is the value
+// of a variable, parameter, field or global.
+
+c {
+    #include <stdio.h>
+    #include <string.h>
+
+    static long long nv_demo_calls = 0;
+
+    static long long demo_square(long long value) {
+        nv_demo_calls++;
+        return value * value;
+    }
+}
+
+c {
+    /* a second block stays behind the first one: } braces in comments, "}" and '}' do not count */
+    static const char *demo_greeting(void) { return "{hello}"; }
+}
+
+var counter = 10
+
+define class Box {
+    private integer size
+    private string label
+
+    construct(integer size, string label) {
+        this.size = size
+        this.label = label
+    }
+
+    method grow(integer by) {
+        c {
+            long long now = nv_ival($size) + nv_ival($by);
+            $size = nv_int(now);
+        }
+    }
+
+    method describe(): string {
+        return label + ":" + size
+    }
+}
+
+// the whole body is C
+method twice(integer n): integer {
+    c {
+        return nv_int(nv_ival($n) * 2);
+    }
+}
+
+method greeting(): string {
+    c {
+        return nv_str(demo_greeting());
+    }
+}
+
+method squares() {
+    var total = 0
+    var i = 1
+    while (i <= 3) {
+        var value = i
+        c {
+            $total = nv_int(nv_ival($total) + demo_square(nv_ival($value)));
+        }
+        i = i + 1
+    }
+    println "total ${total}"
+}
+
+method globals() {
+    c {
+        $counter = nv_int(nv_ival($counter) + 5);
+        printf("dollar $$ and $ alone\n");
+    }
+    println counter
+}
+
+method order() {
+    println "before"
+    c { printf("in c\n"); fflush(stdout); }
+    println "after"
+}
+
+method main {
+    println twice(21)
+    println greeting()
+    squares()
+    globals()
+    var box = Box(2, "box")
+    box.grow(40)
+    println box.describe()
+    order()
+    var number = 4.5
+    c {
+        $number = nv_float(nv_fval($number) * 2.0);
+    }
+    println number
+}

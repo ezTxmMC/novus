@@ -8,6 +8,7 @@ import @rename_cases
 import @import_cases
 import @member_cases
 import @assign_cases
+import @cblock_cases
 
 method main() {
     runDefinitionCases()
@@ -23,4 +24,5 @@ method main() {
     runManifestCases()
     runAssignmentCases()
     runRenameShadowCases()
+    runCBlockCases()
 }

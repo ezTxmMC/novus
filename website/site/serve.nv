@@ -1,0 +1,31 @@
+package site
+
+import web
+import os
+import pages
+import "github.com/ezTxmMC/nvh-tailwindcss/tailwindcss"
+
+// The development server: live components on port 8080 and Tailwind
+// rebuilding public/site.css whenever a source changes.
+
+private final DEFAULT_PORT = 8080
+private final DEV_STYLES_OUTPUT = "public/site.css"
+
+// The browser fetches this file for the search; the export writes it into dist/ as well.
+private final DEV_SEARCH_INDEX = "public/search-index.json"
+
+method serveSite() {
+    os.writeFile(DEV_SEARCH_INDEX, searchIndex())
+    var watcher = startStyles()
+    for (route in allRoutes()) {
+        web.page(route.path, route.page)
+    }
+    web.page("/examples/:chapter/:name", ExampleDetail())
+    web.files("/", "public")
+    web.serve(web.port(DEFAULT_PORT))
+    watcher.stop()
+}
+
+method startStyles(): TailwindWatch {
+    return tailwindcss.watch(styleOptions(DEV_STYLES_OUTPUT, false))
+}

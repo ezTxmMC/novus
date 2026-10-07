@@ -1,8 +1,11 @@
 package driver
 
+import project
+
 // Command line: usage text and option parsing.
 
-private final VERSION = "0.1.0-pre.alpha.8"
+// The version of compiler/project.nv, which is its only place.
+private final VERSION = project.version()
 
 method printUsage() {
     println "novusc ${VERSION} - the Novus compiler"

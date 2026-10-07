@@ -1,0 +1,8 @@
+package main
+
+method main {
+    println 1
+    c {
+        if (1) { printf("never closed\n");
+    println 2
+}

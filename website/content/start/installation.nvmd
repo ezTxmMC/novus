@@ -1,0 +1,152 @@
+---
+title: "Installation"
+description: "Bootstrap from source or grab a binary"
+slug: "installation"
+---
+<?nv
+import @components/DocLayout
+import @components/Callout
+?>
+<DocLayout slug={slug} title={title} description={description}>
+
+Novus needs one thing: a C compiler. `gcc`, `clang` and `zig cc` all work.
+
+## From source (recommended)
+
+```bash
+git clone https://github.com/ezTxmMC/novus
+cd novus
+scripts/bootstrap.sh          # or: make
+```
+
+That runs three stages and leaves `build/novusc`:
+
+| Stage | What happens |
+|---|---|
+| 0 | `cc bootstrap/novusc.c -o build/novusc0` - the checked-in snapshot |
+| 1 | the snapshot compiles the current `compiler/*.nv` sources |
+| 2 | the result compiles itself again - that binary is `build/novusc` |
+
+```bash
+build/novusc version
+# novusc 0.1.0-pre.alpha.8
+```
+
+### Windows
+
+With `gcc` from MinGW-w64 / MSYS2 on the `PATH`:
+
+```bash
+scripts\bootstrap.cmd
+# or
+powershell -ExecutionPolicy Bypass -File scripts\bootstrap.ps1
+```
+
+`set NOVUS_CC=clang` picks a different compiler.
+
+## Download a release
+
+Tagged releases on [GitHub](https://github.com/ezTxmMC/novus/releases) carry a
+binary of the compiler and of the language server for every target. Releases
+whose tag has a suffix (`v0.1.0-pre.alpha.8`) are marked as pre-releases.
+
+| Target | Files |
+|---|---|
+| Linux x86-64 (glibc 2.17+) | `novusc-x86_64-linux-gnu`, `novus-lsp-x86_64-linux-gnu` |
+| Linux x86-64 (musl, static) | `novusc-x86_64-linux-musl`, `novus-lsp-x86_64-linux-musl` |
+| Linux ARM64 | `novusc-aarch64-linux-gnu`, `novus-lsp-aarch64-linux-gnu` |
+| macOS Intel / Apple silicon | `novusc-x86_64-macos`, `novusc-aarch64-macos` (and `novus-lsp-...`) |
+| Windows x86-64 / ARM64 | `novusc-x86_64-windows-gnu.exe`, `novusc-aarch64-windows-gnu.exe` (and `novus-lsp-...`) |
+
+### Linux
+
+Download the file for your machine (`uname -m` prints `x86_64` or `aarch64`),
+make it executable and move it into a directory on the `PATH` under the name
+`novusc`. `/usr/bin` needs root:
+
+```bash
+TARGET=x86_64-linux-gnu                         # or aarch64-linux-gnu, x86_64-linux-musl
+BASE=https://github.com/ezTxmMC/novus/releases/latest/download
+
+curl -fLO $BASE/novusc-$TARGET
+curl -fLO $BASE/novus-lsp-$TARGET               # the language server, optional
+
+chmod +x novusc-$TARGET novus-lsp-$TARGET
+sudo mv novusc-$TARGET /usr/bin/novusc
+sudo mv novus-lsp-$TARGET /usr/bin/novus-lsp
+
+novusc version
+```
+
+`releases/latest/download/<file>` always points at the newest release; replace
+`latest/download` by `download/<tag>` (for example `download/v0.1.0-pre.alpha.8`)
+to pin a version. GitHub does not count pre-releases as "latest": while only
+pre-releases exist, the `latest` URL answers 404 and the tag has to be named.
+
+`/usr/local/bin` works the same way and keeps the files apart from the ones of
+the package manager. Without root, use `~/.local/bin` (no `sudo`) and make sure
+it is on the `PATH`. `novusc` compiles to C, so a C compiler (`gcc`, `clang`
+or `zig cc`) still has to be installed.
+
+### macOS
+
+The system folders are protected, so use `/usr/local/bin`:
+
+```bash
+curl -fLO https://github.com/ezTxmMC/novus/releases/latest/download/novusc-aarch64-macos
+chmod +x novusc-aarch64-macos
+sudo mv novusc-aarch64-macos /usr/local/bin/novusc
+xattr -d com.apple.quarantine /usr/local/bin/novusc
+```
+
+### Windows
+
+Download `novusc-x86_64-windows-gnu.exe`, rename it to `novusc.exe` and put it
+into a folder that is on the `PATH`. `gcc` from MinGW-w64 / MSYS2 has to be on
+the `PATH` as well.
+
+<Callout type="note">
+Every push to the repository also builds these binaries: the `artifacts` of the
+CI run on GitHub hold the same files for the latest commit.
+</Callout>
+
+### Build the binaries yourself
+
+Seven targets are cross compiled from a single machine with
+[zig](https://ziglang.org):
+
+```bash
+scripts/cross.sh              # -> dist/
+scripts/cross.sh aarch64-macos  # just one target
+```
+
+<Callout type="warning">
+macOS binaries built through zig are not code signed. Run
+`xattr -d com.apple.quarantine novusc-aarch64-macos` once after downloading.
+</Callout>
+
+## Environment variables
+
+| Variable | Meaning |
+|---|---|
+| `NOVUS_CC` | C compiler used to build programs (default `cc`, `gcc` on Windows) |
+| `NOVUS_CFLAGS` | extra flags handed to the C compiler |
+| `NOVUS_ZIG` | zig executable used for `--target` cross builds |
+| `NOVUS_DEPS` | module cache for dependencies (default `~/.novus/deps`) |
+
+## Verifying the installation
+
+```bash
+make test
+```
+
+runs the golden tests, all 258 examples and the self-hosting ladder including
+the fixpoint check.
+
+## Editor support
+
+The VS Code extension in `vscode-novus/` provides highlighting, a language
+server with diagnostics and navigation, and run/build commands - see
+[Editor support](/docs/projects/editor).
+
+</DocLayout>

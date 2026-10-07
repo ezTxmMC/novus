@@ -1,0 +1,36 @@
+---
+title: "Project values"
+description: "import project: the settings of project.nv in your code"
+slug: "project-values"
+---
+<?nv
+import @components/DocLayout
+import @components/Callout
+?>
+<DocLayout slug={slug} title={title} description={description}>
+
+`import project` gives a program the settings of the `project.nv` it is built
+from, fixed at compile time:
+
+```nv
+import project
+
+method main {
+    println project.name() + " " + project.version()    // "github.com/user/app 0.1.0"
+    for (dep in project.requires()) {                    // maps with "module" and "version"
+        println dep["module"] + " " + dep["version"]
+    }
+}
+```
+
+`name()`, `version()`, `main()`, `lib()`, `output()`, `novus()` are strings (`""`
+when the manifest does not set them; `main` and `output` as the build uses them),
+`requires()` and `replaces()` are arrays of maps (`module`/`version` and
+`module`/`path`), `get(key)` reads one setting by its `project.nv` name
+(`"project"`, `"version"`, ...) and `all()` is the map of them. Without a
+`project.nv` the import is a compile error; a dependency that imports `project`
+sees the manifest of the program that is built, not its own. `novusc version`
+and `novus-lsp --version` are `project.version()` of `compiler/project.nv` and
+`lsp/project.nv`.
+
+</DocLayout>

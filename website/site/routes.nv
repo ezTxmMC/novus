@@ -1,0 +1,51 @@
+package site
+
+import web
+import data
+import pages
+import content/start
+import content/language
+import content/frontend
+import content/projects
+import content/internals
+
+// Every URL of the site and the component that renders it. The dev server
+// registers them as pages, the export visits the same list.
+
+define class Route {
+    string path
+    NvhComponent page
+
+    construct(string path, NvhComponent page) {
+        this.path = path
+        this.page = page
+    }
+}
+
+method pageRoutes(): array<Route> {
+    return [Route("/", Home()), Route("/examples", Examples()), Route("/stdlib", Stdlib()), Route("/benchmarks", Benchmarks())]
+}
+
+// A .nvmd file compiles to the class named after the file, dashes turned into underscores.
+method documentRoutes(): array<Route> {
+    return [
+        Route("/docs/introduction", introduction()), Route("/docs/installation", installation()),
+        Route("/docs/first-program", first_program()), Route("/docs/cli", cli()),
+        Route("/docs/language/basics", basics()), Route("/docs/language/control-flow", control_flow()), Route("/docs/language/c-blocks", c_blocks()),
+        Route("/docs/language/methods", methods()), Route("/docs/language/collections", collections()),
+        Route("/docs/language/classes", classes()), Route("/docs/language/modules", modules()),
+        Route("/docs/language/concurrency", concurrency()),
+        Route("/docs/web/components", nvh_components()), Route("/docs/web/markdown", nvmd_documents()),
+        Route("/docs/web/tailwind", tailwind_css()),
+        Route("/docs/projects/manifest", manifest()), Route("/docs/projects/project-values", project_values()), Route("/docs/projects/dependencies", dependencies()),
+        Route("/docs/projects/editor", editor()), Route("/docs/projects/language-server", language_server()),
+        Route("/docs/architecture", architecture()), Route("/docs/bootstrapping", bootstrapping())]
+}
+
+method allRoutes(): array<Route> {
+    var routes = pageRoutes()
+    for (route in documentRoutes()) {
+        routes.append(route)
+    }
+    return routes
+}

@@ -1,0 +1,9 @@
+package main
+
+c {
+    static long long answer = $answer;
+}
+
+method main {
+    println 1
+}

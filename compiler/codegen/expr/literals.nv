@@ -1,0 +1,65 @@
+package expr
+
+import ast
+import parser
+
+// Literals: arrays, maps, objects.
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+method genArrayLiteral(string node, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    var count = nodeCount(node) - 1
+    if (count == 0) {
+        return "nv_arr()"
+    }
+    return "nv_arr_of(" + count + ", " + genArgs(node, 1, prog, ctx, locals) + ")"
+}
+
+method genMapLiteral(string node, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    var pairs = (nodeCount(node) - 1) / 2
+    if (pairs == 0) {
+        return "nv_map()"
+    }
+    return "nv_map_of(" + pairs + ", " + genArgs(node, 1, prog, ctx, locals) + ")"
+}
+
+// Name{field=value, ...}
+method genObjectLiteral(string node, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    var className = nodeChild(node, 1)
+    checkConstructible(className, prog, ctx)
+    var out = "nv_new_object_fields_cached(&nv_cls_" + className + ", " + cstr(className) + ", " + (nodeCount(node) - 2)
+    var i = 2
+    var count = nodeCount(node)
+    while (i < count) {
+        var field = nodeChild(node, i)
+        out = out + ", " + cstr(nodeChild(field, 1)) + ", " + genExpr(nodeChild(field, 2), prog, ctx, locals)
+        i = i + 1
+    }
+    return out + ")"
+}
+
+method checkConstructible(string className, map<string, string> prog, map<string, string> ctx): integer {
+    if (isClassLike(prog, className) == false) {
+        fail("unknown class '" + className + "'", ctx["pos"])
+    }
+    if (prog.has("enum:" + className)) {
+        fail("'" + className + "' is an enum and cannot be constructed", ctx["pos"])
+    }
+    if (classIsAbstract(prog["class:" + className])) {
+        fail("cannot instantiate abstract class '" + className + "'", ctx["pos"])
+    }
+    return 0
+}
+
+// `a + b + c + ...` becomes one runtime call. Chains like this are how
+// strings are built, and every step of the nested form allocates a value and
+// walks the accumulated text again; the fused call fills one buffer.
+method genAddChain(string node, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    var parts = chainParts(node)
+    var args = []
+    for (part in parts) {
+        args.append(genExpr(part, prog, ctx, locals))
+    }
+    return "nv_add_chain(" + parts.length() + ", " + args.join(", ") + ")"
+}

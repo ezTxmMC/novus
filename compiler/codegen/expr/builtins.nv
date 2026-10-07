@@ -1,0 +1,40 @@
+package expr
+
+import parser
+
+// Free builtin functions.
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+// name -> [C function, number of arguments]
+private final BUILTINS = {"readFile": ["nv_read_file", 1], "writeFile": ["nv_write_file", 2],
+    "fileExists": ["nv_file_exists", 1], "args": ["nv_args", 0], "parseInt": ["nv_parse_int", 1],
+    "parseFloat": ["nv_parse_float", 1], "chr": ["nv_chr", 1], "ord": ["nv_ord", 1],
+    "typeOf": ["nv_typeof_builtin", 1], "exec": ["nv_exec", 1], "env": ["nv_env", 1],
+    "exit": ["nv_exit", 1], "platform": ["nv_platform", 0], "readLine": ["nv_read_line", 0],
+    "removeFile": ["nv_remove_file", 1]}
+
+private final CORE_BUILTINS = {"readFile": true, "writeFile": true, "fileExists": true, "args": true,
+    "parseInt": true, "chr": true, "ord": true, "typeOf": true}
+
+method expectArgs(string what, integer got, integer want, map<string, string> ctx): integer {
+    if (got != want) {
+        fail(what + " expects " + want + " argument(s) but got " + got, ctx["pos"])
+    }
+    return 0
+}
+
+// The C call of a builtin, "" when `name` is none.
+method genBuiltinCall(string name, integer nargs, string args, map<string, string> ctx): string {
+    if (BUILTINS.has(name) == false) {
+        return ""
+    }
+    var builtin = BUILTINS[name]
+    expectArgs(name, nargs, parseInt(builtin[1]), ctx)
+    return builtin[0] + "(" + args + ")"
+}
+
+method isCoreBuiltin(string name): bool {
+    return CORE_BUILTINS.has(name)
+}

@@ -1,0 +1,52 @@
+package index
+
+import ast
+import parser
+
+// The parts of a method node.
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+method paramsNode(string m): string {
+    return nodeChild(m, 3)
+}
+
+method arityOf(string m): integer {
+    return nodeCount(paramsNode(m)) - 1
+}
+
+method isAbstractMethod(string m): bool {
+    return nodeChild(m, 5) == "(abstract)"
+}
+
+method methodName(string m): string {
+    return nodeChild(m, 1)
+}
+
+method methodRet(string m): string {
+    return nodeChild(m, 2)
+}
+
+// Is `name` among the method's annotations? `async method` records itself
+// as one, so nothing else in the node had to change shape.
+method hasAnnotation(string m, string name): bool {
+    var annos = nodeChild(m, 4)
+    var i = 1
+    var count = nodeCount(annos)
+    while (i < count) {
+        if (nodeChild(nodeChild(annos, i), 1) == name) {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+
+method isAsyncMethod(string m): bool {
+    return hasAnnotation(m, "Async")
+}
+
+method isNativeMethod(string m): bool {
+    return nodeHead(nodeChild(m, 5)) == "native"
+}

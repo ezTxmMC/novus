@@ -1,0 +1,54 @@
+package driver
+
+import crypto
+import os
+import path
+import strings
+
+// Names of cache entries and staging files.
+
+// The name without the first of `suffixes` it ends with.
+method withoutSuffix(string name, array<string> suffixes): string {
+    for (suffix in suffixes) {
+        if (name.endsWith(suffix)) {
+            return name.substring(0, name.length() - suffix.length())
+        }
+    }
+    return name
+}
+
+method isKey(string text): bool {
+    return text.length() == KEY_LENGTH && isHexKey(text)
+}
+
+// Whether a directory entry is a cache executable: a lower case hex key,
+// with ".exe" on Windows.
+method isEntryName(string name): bool {
+    return isKey(withoutSuffix(name, [EXE_SUFFIX]))
+}
+
+method isHexKey(string text): bool {
+    var i = 0
+    while (i < text.length()) {
+        var c = text.charAt(i)
+        if ((c >= "0" && c <= "9") || (c >= "a" && c <= "f")) {
+            i = i + 1
+            continue
+        }
+        return false
+    }
+    return true
+}
+
+// A leftover of a compile that was killed: "tmp-<pid>-<key>" with ".exe" or
+// the generated ".c". Anything else that starts with "tmp-" is not ours.
+method isStagingName(string name): bool {
+    if (name.startsWith(STAGING_PREFIX) == false) {
+        return false
+    }
+    var parts = name.split("-")
+    if (parts.length() != 3 || strings.isNumeric(parts[1]) == false) {
+        return false
+    }
+    return isKey(withoutSuffix(parts[2], [EXE_SUFFIX, C_SUFFIX]))
+}

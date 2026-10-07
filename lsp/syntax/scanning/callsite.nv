@@ -118,3 +118,29 @@ method scanningCalleeChain(array<Token> tokens, integer open, integer count, int
     steps[steps.length() - 1] = ChainStep(last.text, "call", count, Span(last.span.start, calleeEnd))
     return steps
 }
+
+// Number of arguments between the brackets at `open` and `close`: top-level commas plus one, none for `()`.
+method scanningArgumentCount(array<Token> tokens, integer open, integer close): integer {
+    if (close <= open + 1) {
+        return 0
+    }
+    var commas = 0
+    var depth = 0
+    var index = open + 1
+    while (index < close) {
+        if (tokens[index].kind == TokenKind.Punct && scanningIsOpener(tokens[index].value)) {
+            depth = depth + 1
+        }
+        if (tokens[index].kind == TokenKind.Punct && scanningIsCloser(tokens[index].value)) {
+            depth = depth - 1
+        }
+        if (depth == 0 && tokens[index].isPunct(",")) {
+            commas = commas + 1
+        }
+        index = index + 1
+    }
+    if (tokens[close - 1].isPunct(",")) {
+        return commas
+    }
+    return commas + 1
+}

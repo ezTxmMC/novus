@@ -1,0 +1,122 @@
+package index
+
+import ast
+import parser
+
+// The program index: methods, classes, enums, interfaces, globals.
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+method indexProgram(array<string> decls, map<string, string> prog): integer {
+    for (d in decls) {
+        indexDeclaration(d, nodeHead(d), nodeChild(d, 1), prog)
+    }
+    indexUnqualified(decls, prog)
+    return 0
+}
+
+method indexDeclaration(string d, string head, string name, map<string, string> prog) {
+    if (head == "method") {
+        indexMethod(d, name, prog)
+        return
+    }
+    if (head == "class" || head == "enum") {
+        indexType(d, head, name, prog)
+        return
+    }
+    if (head == "classpkg") {
+        prog["classpkg:" + name] = nodeChild(d, 2)
+        return
+    }
+    if (head == "userpkg") {
+        prog["userpkg:" + name] = "1"
+        return
+    }
+    if (head == "iface" || head == "annodef" || head == "global") {
+        prog[head + ":" + name] = d
+        indexGlobalPackage(head, name, prog)
+    }
+}
+
+// Overloads are told apart by their number of parameters: fnode:name/arity/n.
+method indexMethod(string d, string name, map<string, string> prog) {
+    var key = name + "/" + arityOf(d)
+    var count = 0
+    if (prog.has("func:" + key)) {
+        count = parseInt(prog["func:" + key])
+    }
+    prog["fnode:" + key + "/" + count] = d
+    prog["func:" + key] = intToStr(count + 1)
+    prog["hasfunc:" + name] = "1"
+    notePackage(name, prog)
+    if (isNativeMethod(d) && nodeCount(nodeChild(d, 5)) > 2) {
+        // variadic native: callable with any number of arguments
+        prog["fnode:" + name + "/*/0"] = d
+        prog["func:" + name + "/*"] = "1"
+    }
+}
+
+method indexType(string d, string head, string name, map<string, string> prog) {
+    if (isClassLike(prog, name) || prog.has("iface:" + name)) {
+        fail("duplicate definition of '" + name + "'", head + " " + name)
+    }
+    prog[head + ":" + name] = d
+}
+
+method indexGlobalPackage(string head, string name, map<string, string> prog) {
+    if (head == "global") {
+        notePackage(name, prog)
+    }
+}
+
+method notePackage(string name, map<string, string> prog) {
+    if (packageOf(name) != "") {
+        prog["pkg:" + packageOf(name)] = "1"
+    }
+}
+
+// Functions and globals of the program's packages are namespaced
+// (geo.area) but called unqualified where one package alone has the name:
+// "unq:area/1" and "unqglobal:NAME" name the qualified candidates,
+// separated by spaces when there are several (the call is then ambiguous).
+method indexUnqualified(array<string> decls, map<string, string> prog): integer {
+    for (d in decls) {
+        var head = nodeHead(d)
+        if (head != "method" && head != "global") {
+            continue
+        }
+        var name = nodeChild(d, 1)
+        var pkg = packageOf(name)
+        if (pkg == "" || prog.has("userpkg:" + pkg) == false) {
+            continue
+        }
+        var short = name.substring(pkg.length() + 1, name.length())
+        var key = "unqglobal:" + short
+        if (head == "method") {
+            key = "unq:" + short + "/" + arityOf(d)
+            prog["unqname:" + short] = addCandidate(prog, "unqname:" + short, name)
+        }
+        prog[key] = addCandidate(prog, key, name)
+    }
+    return 0
+}
+
+method addCandidate(map<string, string> prog, string key, string name): string {
+    if (prog.has(key) == false) {
+        return name
+    }
+    for (c in prog[key].split(" ")) {
+        if (c == name) {
+            return prog[key]
+        }
+    }
+    return prog[key] + " " + name
+}
+
+// The error for a name several packages define.
+method ambiguousName(string name, string candidates, string pos): integer {
+    var list = candidates.split(" ")
+    fail("'" + name + "' is defined in more than one package (" + list.join(", ") + ") - call it qualified, e.g. " + list[0] + "(...)", pos)
+    return 0
+}

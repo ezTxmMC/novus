@@ -1,0 +1,89 @@
+package stdlib
+
+// `import project` is no file of std/: the compiler writes the module from the project.nv of the program
+// (compiler/manifest/module.nv). The editor gets this description of it, which is never the code that runs.
+// A file of std/ named project.nv would be taken for a manifest.
+private final STDLIB_PROJECT_MODULE_NAME = "project"
+private final STDLIB_PROJECT_MODULE_LINES = [
+    "package project",
+    "",
+    "// The values of the project.nv the program is built from, as strings fixed at compile time.",
+    "// Without a project.nv, `import project` is a compile error.",
+    "",
+    "// The module path of the project (`project \"...\"`).",
+    "method name(): string {",
+    "    return \"\"",
+    "}",
+    "",
+    "// `version \"...\"`, \"\" when the manifest has none.",
+    "method version(): string {",
+    "    return \"\"",
+    "}",
+    "",
+    "// The entry file of the application, main.nv unless `main` says otherwise.",
+    "method main(): string {",
+    "    return \"\"",
+    "}",
+    "",
+    "// The entry file when the project is imported as a dependency (`lib \"...\"`), \"\" when it has none.",
+    "method lib(): string {",
+    "    return \"\"",
+    "}",
+    "",
+    "// The name of the built executable: `output \"...\"`, else the last segment of the module path.",
+    "method output(): string {",
+    "    return \"\"",
+    "}",
+    "",
+    "// The minimum compiler version (`novus \"...\"`), \"\" when the manifest has none.",
+    "method novus(): string {",
+    "    return \"\"",
+    "}",
+    "",
+    "// The dependencies (`require`): one map per module with the keys \"module\" and \"version\".",
+    "method requires(): array {",
+    "    return []",
+    "}",
+    "",
+    "// The local replacements (`replace`): one map per module with the keys \"module\" and \"path\".",
+    "method replaces(): array {",
+    "    return []",
+    "}",
+    "",
+    "// One setting by its name in project.nv (\"project\", \"version\", \"main\", \"lib\", \"output\", \"novus\"), \"\" when unknown.",
+    "method get(string key): string {",
+    "    return \"\"",
+    "}",
+    "",
+    "// Every single-value setting, the keys as for get().",
+    "method all(): map {",
+    "    return {}",
+    "}",
+    ""
+]
+
+method stdlibIsProjectModule(string name): bool {
+    return name == STDLIB_PROJECT_MODULE_NAME
+}
+
+method stdlibProjectModuleSource(): string {
+    return STDLIB_PROJECT_MODULE_LINES.join("\n")
+}
+
+// The source of a module of the library: embedded in the compiler, or the description of `project`.
+method stdlibSourceOf(string name): string {
+    if (stdlibIsProjectModule(name)) {
+        return stdlibProjectModuleSource()
+    }
+    return stdSource(name)
+}
+
+// The names of all modules of the library.
+method stdlibAllNames(): array<string> {
+    var names = []
+    for (name in stdModules()) {
+        names.append(name)
+    }
+    names.append(STDLIB_PROJECT_MODULE_NAME)
+    return names
+}

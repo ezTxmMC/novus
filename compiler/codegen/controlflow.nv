@@ -1,0 +1,95 @@
+package codegen
+
+import ast
+import parser
+
+// Statements that control the flow: conditions, loops, sync blocks, jumps.
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+method genControlStatement(string node, string head, string indent, map<string, string> prog, map<string, string> ctx, map<string, string> locals, map<string, string> blockVars): string {
+    if (head == "sync") {
+        return genSyncStatement(node, indent, prog, ctx, locals)
+    }
+    if (head == "if") {
+        return genIfStatement(node, indent, prog, ctx, locals, blockVars)
+    }
+    if (head == "while") {
+        return genWhileStatement(node, indent, prog, ctx, locals)
+    }
+    if (head == "forin") {
+        return genForInStatement(node, indent, prog, ctx, locals)
+    }
+    if (head == "break" || head == "continue") {
+        // only the sync blocks entered inside the loop are left behind
+        return indent + syncUnwind(syncHeld(ctx), syncLoopHeld(ctx)) + head + ";" + nl()
+    }
+    return genExpressionStatement(node, indent, prog, ctx, locals)
+}
+
+method genSyncStatement(string node, string indent, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    var lock = "nv_nil"
+    if (nodeChild(node, 1) != "-") {
+        lock = genExpr(nodeChild(node, 1), prog, ctx, locals)
+    }
+    var held = syncHeld(ctx)
+    var guard = "sy" + syncDepth(ctx)
+    var inner = indent + INDENT_STEP
+    var out = indent + "{" + nl()
+    out = out + inner + "NvLock *" + guard + " = nv_sync_enter(" + lock + ");" + nl()
+    ctx["sync"] = guard
+    if (held != "") {
+        ctx["sync"] = held + " " + guard
+    }
+    out = out + genBlock(nodeChild(node, 2), inner, prog, ctx, locals)
+    ctx["sync"] = held
+    out = out + inner + "nv_sync_leave(" + guard + ");" + nl()
+    return out + indent + "}" + nl()
+}
+
+method genIfStatement(string node, string indent, map<string, string> prog, map<string, string> ctx, map<string, string> locals, map<string, string> blockVars): string {
+    var out = indent + "if (" + genCondition(nodeChild(node, 1), prog, ctx, locals) + ") {" + nl()
+    out = out + genBlock(nodeChild(node, 2), indent + INDENT_STEP, prog, ctx, locals)
+    out = out + indent + "}"
+    if (nodeCount(node) <= 3) {
+        return out + nl()
+    }
+    var elseNode = nodeChild(node, 3)
+    if (nodeHead(elseNode) == "if") {
+        var chained = genStatement(elseNode, indent, prog, ctx, locals, blockVars)
+        return out + " else " + chained.substring(indent.length(), chained.length())
+    }
+    return out + " else {" + nl() + genBlock(elseNode, indent + INDENT_STEP, prog, ctx, locals) + indent + "}" + nl()
+}
+
+method genWhileStatement(string node, string indent, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    var out = indent + "while (" + genCondition(nodeChild(node, 1), prog, ctx, locals) + ") {" + nl()
+    var outer = syncLoopHeld(ctx)
+    ctx["syncloop"] = syncHeld(ctx)
+    out = out + genBlock(nodeChild(node, 2), indent + INDENT_STEP, prog, ctx, locals)
+    ctx["syncloop"] = outer
+    return out + indent + "}" + nl()
+}
+
+method genForInStatement(string node, string indent, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    var v = nodeChild(node, 1)
+    var iter = genExpr(nodeChild(node, 2), prog, ctx, locals)
+    var inner = indent + INDENT_STEP
+    var out = indent + "{" + nl()
+    out = out + inner + "NvArr *it_" + v + " = " + iterCall(nodeChild(node, 3), iter) + ";" + nl()
+    out = out + inner + "int n_" + v + " = it_" + v + "->len;" + nl()
+    out = out + inner + "for (int i_" + v + " = 0; i_" + v + " < n_" + v + "; i_" + v + "++) {" + nl()
+    out = out + inner + INDENT_STEP + "nv l_" + v + " = it_" + v + "->items[i_" + v + "];" + nl()
+    var loopVarIsNew = locals.has(v) == false
+    locals[v] = "l_" + v
+    var outer = syncLoopHeld(ctx)
+    ctx["syncloop"] = syncHeld(ctx)
+    out = out + genBlock(nodeChild(node, 3), inner + INDENT_STEP, prog, ctx, locals)
+    if (loopVarIsNew) {
+        locals.remove(v)
+    }
+    ctx["syncloop"] = outer
+    out = out + inner + "}" + nl()
+    return out + indent + "}" + nl()
+}

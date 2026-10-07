@@ -28,7 +28,9 @@ define class SemanticTokenEngine {
             this.addStream(context, stream, spans)
         }
         for (comment in source.comments) {
-            spans.append(this.lexical.classify(comment))
+            if (lexingIsCBlock(comment) == false) {
+                spans.append(this.lexical.classify(comment))
+            }
         }
         return spans
     }

@@ -1,0 +1,184 @@
+package nvh
+
+import lexer
+import loader
+import parser
+
+// An HTML element of the template: its attributes - events, bindings, class
+// toggles - and its content.
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+private final KNOWN_EVENTS = {"click": true, "dblclick": true, "input": true, "change": true, "submit": true,
+    "keydown": true, "keyup": true, "focus": true, "blur": true}
+
+private final CLASS_TOGGLE_PREFIX_LENGTH = 6
+
+method nvhEmitElement(map<string, object> st, map<string, object> node, string buf, bool root) {
+    var tag = node["tag"]
+    var line = node["line"]
+    nvhStatic(st, line, "<" + tag)
+    var classAttr = {}
+    var toggles = []
+    for (a in node["attrs"]) {
+        var name = a["name"]
+        if (name.startsWith("@")) {
+            nvhEmitEvent(st, a, line, buf)
+            continue
+        }
+        if (name == "bind" || name.startsWith("bind:")) {
+            nvhEmitBind(st, node, a, buf)
+            continue
+        }
+        if (name.startsWith("class:")) {
+            toggles.append(a)
+            continue
+        }
+        if (name == "class") {
+            classAttr = a
+            continue
+        }
+        nvhEmitAttr(st, a, line, buf)
+    }
+    nvhEmitClass(st, classAttr, toggles, line, buf)
+    if (root) {
+        nvhFlush(st, buf)
+        nvhEmit(st, line, buf + ".append(this.nvMark())")
+    }
+    nvhEmitContent(st, node, buf)
+}
+
+// The element's end: raw text, nothing for a void element, or its children.
+method nvhEmitContent(map<string, object> st, map<string, object> node, string buf) {
+    var tag = node["tag"]
+    var line = node["line"]
+    if (node["israw"]) {
+        nvhStatic(st, line, ">" + node["raw"] + "</" + tag + ">")
+        return
+    }
+    nvhStatic(st, line, ">")
+    if (nvhIsVoid(tag)) {
+        return
+    }
+    nvhEmitNodes(st, node["kids"], buf)
+    nvhStatic(st, line, "</" + tag + ">")
+}
+
+// name, name={expr} or name="a {expr} b".
+method nvhEmitAttr(map<string, object> st, map<string, object> a, integer line, string buf) {
+    var name = a["name"]
+    if (a["kind"] == "none") {
+        nvhStatic(st, line, " " + name)
+        return
+    }
+    if (a["kind"] == "expr") {
+        nvhFlush(st, buf)
+        nvhEmit(st, line, buf + ".append(web.attr(" + nvhLit(name) + ", (" + a["value"] + ")))")
+        return
+    }
+    nvhStatic(st, line, " " + name + "=\"")
+    nvhEmitParts(st, nvhInterpolate(a["value"], st["file"] + ":" + line), line, buf)
+    nvhStatic(st, line, "\"")
+}
+
+// @click.prevent="handler": the browser reports the event, the handler runs on the server.
+method nvhEmitEvent(map<string, object> st, map<string, object> a, integer line, string buf) {
+    var pos = st["file"] + ":" + line
+    var bits = a["name"].substring(1, a["name"].length()).split(".")
+    var event = bits[0]
+    if (KNOWN_EVENTS.has(event) == false) {
+        fail("unsupported event @" + event + " (click, dblclick, input, change, submit, keydown, keyup, focus, blur)", pos)
+    }
+    if (a["kind"] == "none") {
+        fail("@" + event + " needs a handler: @" + event + "=\"method\"", pos)
+    }
+    var mods = []
+    var b = 1
+    while (b < bits.length()) {
+        mods.append(bits[b])
+        b = b + 1
+    }
+    var h = nvhHandler(a["value"], line, st)
+    nvhFlush(st, buf)
+    nvhEmit(st, line, buf + ".append(this.nvOn(" + nvhLit(event) + ", " + nvhLit(h[0]) + ", " + h[1] + ", " + nvhLit(mods.join(" ")) + "))")
+}
+
+// bind="ref": the value attribute that shows the ref, and the mark the browser reports changes by.
+method nvhEmitBind(map<string, object> st, map<string, object> node, map<string, object> a, string buf) {
+    var line = node["line"]
+    var pos = st["file"] + ":" + line
+    var ref = a["value"].trim()
+    if (nvhIsIdent(ref) == false) {
+        fail("bind needs the name of a ref: bind=\"name\"", pos)
+    }
+    st["binds"].append([ref, line])
+    nvhFlush(st, buf)
+    nvhEmit(st, line, buf + ".append(" + nvhBoundAttr(node, ref, pos) + ")")
+    nvhEmit(st, line, buf + ".append(this.nvBind(" + nvhLit(ref) + "))")
+}
+
+// The attribute that shows a bound ref: checked for a checkbox or radio, value for an input.
+method nvhBoundAttr(map<string, object> node, string ref, string pos): string {
+    var tag = node["tag"].toLower()
+    var type = ""
+    var typeAttr = nvhFindAttr(node["attrs"], "type")
+    if (typeAttr.has("kind") && typeAttr["kind"] == "str") {
+        type = typeAttr["value"].toLower()
+    }
+    if (tag == "input" && type == "checkbox") {
+        return "web.attr(\"checked\", web.toBool(" + ref + "))"
+    }
+    if (tag == "input" && type == "radio") {
+        var valueAttr = nvhFindAttr(node["attrs"], "value")
+        var valueCode = nvhLit("on")
+        if (valueAttr.has("kind")) {
+            valueCode = nvhValueCode(valueAttr, pos)
+        }
+        return "web.attr(\"checked\", web.toStr(" + ref + ") == web.toStr(" + valueCode + "))"
+    }
+    if (tag == "input") {
+        return "web.attr(\"value\", " + ref + ")"
+    }
+    return "web.attr(\"data-nv-value\", web.toStr(" + ref + "))"
+}
+
+// The class attribute: the written one and the class:name toggles in one.
+method nvhEmitClass(map<string, object> st, map<string, object> classAttr, array<object> toggles, integer line, string buf) {
+    if (classAttr.has("kind") == false && toggles.length() == 0) {
+        return
+    }
+    if (classAttr.has("kind") && classAttr["kind"] == "expr" && toggles.length() == 0) {
+        nvhFlush(st, buf)
+        nvhEmit(st, line, buf + ".append(web.attr(\"class\", (" + classAttr["value"] + ")))")
+        return
+    }
+    nvhStatic(st, line, " class=\"")
+    if (classAttr.has("kind")) {
+        nvhEmitClassValue(st, classAttr, line, buf)
+    }
+    for (toggle in toggles) {
+        nvhEmitToggle(st, toggle, line, buf)
+    }
+    nvhStatic(st, line, "\"")
+}
+
+method nvhEmitClassValue(map<string, object> st, map<string, object> classAttr, integer line, string buf) {
+    if (classAttr["kind"] == "expr") {
+        nvhFlush(st, buf)
+        nvhEmit(st, line, buf + ".append(web.escape((" + classAttr["value"] + ")))")
+        return
+    }
+    nvhEmitParts(st, nvhInterpolate(classAttr["value"], st["file"] + ":" + line), line, buf)
+}
+
+// class:name adds `name` when its value, or the ref of that name, is true.
+method nvhEmitToggle(map<string, object> st, map<string, object> toggle, integer line, string buf) {
+    var cls = toggle["name"].substring(CLASS_TOGGLE_PREFIX_LENGTH, toggle["name"].length())
+    var cond = cls
+    if (toggle["kind"] != "none") {
+        cond = toggle["value"]
+    }
+    nvhFlush(st, buf)
+    nvhEmit(st, line, "if (" + cond + ") { " + buf + ".append(" + nvhLit(" " + cls) + ") }")
+}

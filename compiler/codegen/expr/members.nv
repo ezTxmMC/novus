@@ -1,0 +1,97 @@
+package expr
+
+import ast
+import parser
+
+// Member access: `target.name`, `target.name(args)` and `target[index]`.
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+
+method genIndex(string node, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    return "nv_index(" + genExpr(nodeChild(node, 1), prog, ctx, locals) + ", " + genExpr(nodeChild(node, 2), prog, ctx, locals) + ")"
+}
+
+// `target.member` without parentheses: a field, an enum constant, a global of a
+// module or a call of a parameterless function.
+method genMemberGet(string node, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    var target = nodeChild(node, 1)
+    var member = nodeChild(node, 2)
+    if (isValueTarget(target, prog, ctx, locals) == false) {
+        return genNamedMemberGet(target, member, node, prog, ctx, locals)
+    }
+    if (target == "this" && ctx["class"] != "" && fieldSlot(prog, ctx["class"], member) >= 0) {
+        return nv_fieldSlotCode(prog, ctx, member)
+    }
+    return "nv_get_member(" + genExpr(target, prog, ctx, locals) + ", " + cstr(member) + ")"
+}
+
+// The target is a name that is no value: an enum or a module.
+method genNamedMemberGet(string target, string member, string node, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    if (prog.has("enum:" + target)) {
+        return "nv_enum_get(" + cstr(target) + ", " + cstr(member) + ")"
+    }
+    if (prog.has("pkg:" + target)) {
+        return genModuleMember(target, member, node, prog, ctx, locals)
+    }
+    failNotAValue(target, prog, ctx)
+    return ""
+}
+
+// module.name without parentheses: a global or a parameterless function
+method genModuleMember(string module, string member, string node, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    if (prog.has("global:" + module + "." + member)) {
+        return "g_" + cName(module + "." + member)
+    }
+    return genQualifiedCall(module, member, node, 3, prog, ctx, locals)
+}
+
+method failNotAValue(string name, map<string, string> prog, map<string, string> ctx): integer {
+    if (isClassLike(prog, name)) {
+        fail("'" + name + "' is a type, not a value", ctx["pos"])
+    }
+    failModuleUse(name, prog, ctx)
+    fail("unknown variable '" + name + "'", ctx["pos"])
+    return 0
+}
+
+method genMethodCall(string node, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    var target = nodeChild(node, 1)
+    var name = nodeChild(node, 2)
+    var nargs = nodeCount(node) - 3
+    if (isValueTarget(target, prog, ctx, locals) == false) {
+        return genNamedMethodCall(target, name, node, prog, ctx, locals)
+    }
+    if (nargs == 0) {
+        return genNoArgumentCall(target, name, prog, ctx, locals)
+    }
+    return invokeCall(genExpr(target, prog, ctx, locals), name, nargs, genArgs(node, 3, prog, ctx, locals), prog)
+}
+
+method genNoArgumentCall(string target, string name, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    if (target == "this" && ctx["class"] != "" && fieldSlot(prog, ctx["class"], name) >= 0) {
+        return nv_fieldSlotCode(prog, ctx, name)
+    }
+    return invokeCall0(genExpr(target, prog, ctx, locals), name, prog)
+}
+
+// The target is a name that is no value: a module function or an enum function.
+method genNamedMethodCall(string target, string name, string node, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    if (prog.has("pkg:" + target)) {
+        return genQualifiedCall(target, name, node, 3, prog, ctx, locals)
+    }
+    if (prog.has("enum:" + target)) {
+        return genEnumCall(target, name, ctx)
+    }
+    failNotAValue(target, prog, ctx)
+    return ""
+}
+
+method genEnumCall(string enumName, string name, map<string, string> ctx): string {
+    if (name == "values") {
+        return "nv_enum_values(" + cstr(enumName) + ")"
+    }
+    fail("unknown enum function " + enumName + "." + name + "()", ctx["pos"])
+    return ""
+}

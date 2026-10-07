@@ -73,7 +73,7 @@ context: importTarget prefix=[] replace=[]
   21_lib lib (Folder) package folder
   21_other other (Folder) package folder
   41_arrays arrays (Module) std module
-items: 35 incomplete=false
+items: 36 incomplete=false
 == importTarget with a prefix
 context: importTarget prefix=[ge] replace=[ge]
   21_geo geo (Folder) package folder
@@ -166,7 +166,7 @@ context: expression prefix=[] replace=[]
   21_color Color (Enum) define enum Color
   21_describe describe (Function) method describe(Shape shape): string => describe($1)
   21_geo geo (Module) package
-items: 68 incomplete=false
+items: 69 incomplete=false
 == the brace of a body is no object literal
 context: statement prefix=[] replace=[]
   21_a A (Class) define class A => A($1)
@@ -355,6 +355,20 @@ items: 1 incomplete=false
 == nothing before the dot
 context: suppressed
 items: 0 incomplete=false
+== members after a cascade
+context: member prefix=[] replace=[] receiver=1 steps
+  11_area area (Method) method area(): float => area()
+  11_name name (Field) string name
+  11_size size (Field) float size
+items: 3 incomplete=false
+== members of the receiver in a later section
+context: member prefix=[na] replace=[na] receiver=1 steps
+  11_name name (Field) string name
+items: 1 incomplete=false
+== members of a section result
+context: member prefix=[sub] replace=[sub] receiver=2 steps
+  11_substring substring (Method) method substring(integer start, integer end): string => substring($1)
+items: 1 incomplete=false
 == member inside an interpolation
 context: member prefix=[up] replace=[up] receiver=1 steps
   13_toupper toUpper (Method) method toUpper(): string => toUpper()
@@ -441,7 +455,7 @@ context: statement prefix=[ret] replace=[ret]
   61_return return (Snippet) Return a value => return ${1:value}
   63_ifret ifret (Snippet) Guard clause: leave early => if (${1:!condition}) {\n    return ${2}\n}\n$0
   63_jpretty jpretty (Snippet) Serialize a value to indented JSON => var ${1:text} = json.pretty(${2:value}) +edit@14[import json\n\n]
-items: 8 incomplete=false
+items: 9 incomplete=false
 == statement after a block
 context: statement prefix=[whi] replace=[whi]
   61_while while (Snippet) While loop => while (${1:condition}) {\n    $0\n}
@@ -556,7 +570,7 @@ inside a prefix: statement prefix=[co] replace=[count]
 right before an identifier: statement prefix=[] replace=[]
 a keyword is a prefix too: statement prefix=[ret] replace=[ret]
 a float literal before the dot: member prefix=[] replace=[] receiver=1 steps
-two dots: suppressed
+two dots are a cascade: member prefix=[] replace=[] receiver=1 steps
 #### the result cap
 default cap: true (more than 100 items), incomplete=false
 cap 10: 10 items, incomplete=true

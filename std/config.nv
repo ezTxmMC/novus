@@ -80,13 +80,24 @@ method get(object value, string path, object fallback): object {
     for (part in path.split(".")) {
         if (typeOf(current) == "map" && current.has(part)) {
             current = current[part]
-        } else if (typeOf(current) == "array" && part != "" && parseInt(part) >= 0 && parseInt(part) < current.length() && "" + parseInt(part) == part) {
-            current = current[parseInt(part)]
-        } else {
-            return fallback
+            continue
         }
+        if (isIndexInto(current, part)) {
+            current = current[parseInt(part)]
+            continue
+        }
+        return fallback
     }
     return current
+}
+
+// Is `part` the canonical decimal index of an element of the array `current`?
+method isIndexInto(object current, string part): bool {
+    if (typeOf(current) != "array" || part == "") {
+        return false
+    }
+    var index = parseInt(part)
+    return index >= 0 && index < current.length() && "" + index == part
 }
 
 method raise(string message) native "nv_try_raise"

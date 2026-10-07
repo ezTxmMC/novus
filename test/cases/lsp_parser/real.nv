@@ -63,7 +63,7 @@ method checkStandardModules() {
             continue
         }
         var source = readFile(STD_FOLDER + "/" + name)
-        var file = parseSourceText(name, source, indexParseOptions())
+        var file = parseSourceText("std:" + name, source, indexParseOptions())
         var expectedCount = countLinesStartingWith(source, "method ")
         var found = countKind(file, DeclKind.Method)
         modules = modules + 1

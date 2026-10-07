@@ -1,0 +1,24 @@
+package main
+
+import project
+
+method main {
+    println project.name()
+    println project.version()
+    println project.main()
+    println "[" + project.lib() + "]"
+    println project.output()
+    println project.novus()
+    for (dep in project.requires()) {
+        println "require " + dep["module"] + " " + dep["version"]
+    }
+    for (rep in project.replaces()) {
+        println "replace " + rep["module"] + " -> " + rep["path"]
+    }
+    println project.get("version")
+    println "[" + project.get("nothing") + "]"
+    var all = project.all()
+    for (key in all) {
+        println key + "=" + all[key]
+    }
+}

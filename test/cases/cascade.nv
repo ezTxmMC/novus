@@ -1,0 +1,81 @@
+package main
+
+// The cascade operator: `receiver..section..section` runs every section
+// against the receiver and yields the receiver itself.
+
+define class Builder {
+    private array<string> parts
+    private string label: get, set
+
+    method add(string part): Builder {
+        parts.append(part)
+        return this
+    }
+
+    method size(): integer {
+        return parts.length()
+    }
+
+    method join(): string {
+        return parts.join("-")
+    }
+}
+
+method create(string trace): Builder {
+    println "create " + trace
+    return Builder{parts=[], label=""}
+}
+
+method note(string text): string {
+    println "note " + text
+    return text
+}
+
+method calls() {
+    var builder = create("a")..add("x")..add("y")
+    println builder.join()
+    println builder.size()
+}
+
+// the section's own result is dropped, the receiver is the value
+method receiverWins() {
+    var size = create("b")..add("x").size()
+    println size.label
+    var list = [1]..append(2)..append(3)
+    println list.length()
+}
+
+method assignments() {
+    var builder = create("c")
+        ..label = "named"
+        ..add("p")
+        ..add("q")
+    println builder.label + ":" + builder.join()
+    var map = {"a": 1}
+    map..["b"] = 2..["c"] = 3
+    println map.length()
+    var items = [0, 0]
+    items..[1] = 9
+    println items[1]
+}
+
+method order() {
+    var builder = create("d")..add(note("first"))..add(note("second"))
+    println builder.size()
+    println create("e")..add(note("only")).size()
+}
+
+method nesting() {
+    var nested = []..append([]..append(1)..append(2))..append(3)
+    println nested.length()
+    var value = (create("f")..add("z")).join() + "!" + create("g")..label = "w"
+    println value
+}
+
+method main {
+    calls()
+    receiverWins()
+    assignments()
+    order()
+    nesting()
+}

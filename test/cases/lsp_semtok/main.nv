@@ -20,6 +20,7 @@ method main() {
     runResolvedCases()
     runMemberCases()
     runStringCases()
+    runCBlockCases()
     runScopeCases()
     runOddCases()
     runKindCases()

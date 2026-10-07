@@ -1,0 +1,75 @@
+package expr
+
+import ast
+import parser
+
+// thread f(a, b) and virtual f(a, b).
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+private final SPAWN_OS_THREAD = "0"
+private final SPAWN_VIRTUAL_THREAD = "1"
+
+// The body a spawned thread runs, registered for program.nv to emit. Every
+// spawn site gets one: it is the call with `a[0]`, `a[1]`, ... where the
+// arguments stood.
+method spawnBody(map<string, string> prog, string body): string {
+    var index = 0
+    if (prog.has("spawnn")) {
+        index = parseInt(prog["spawnn"])
+    }
+    prog["spawnat:" + index] = body
+    prog["spawnn"] = intToStr(index + 1)
+    return "nv_spawn_body_" + index
+}
+
+// The arguments are evaluated here, in the thread that spawns - the new one
+// has no access to these locals - and the call itself is generated a second
+// time with the argument slots of the new thread in their place. A method
+// call carries its receiver along as the first of them.
+method genSpawn(string node, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    var kind = SPAWN_VIRTUAL_THREAD
+    if (nodeChild(node, 1) == "os") {
+        kind = SPAWN_OS_THREAD
+    }
+    var call = nodeChild(node, 2)
+    var values = []
+    var moved = movedMethodCall(call, values, prog, ctx, locals)
+    if (nodeHead(call) != "mcall") {
+        moved = movedFunctionCall(call, values, prog, ctx, locals)
+    }
+    var body = spawnBody(prog, genExpr(moved, prog, ctx, locals))
+    var out = "nv_spawn(" + kind + ", " + body + ", " + values.length()
+    for (value in values) {
+        out = out + ", " + value
+    }
+    return out + ")"
+}
+
+// `values` receives the C code of the receiver and the arguments.
+method movedMethodCall(string call, array<string> values, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    if (nodeHead(call) != "mcall") {
+        return ""
+    }
+    values.append(genExpr(nodeChild(call, 1), prog, ctx, locals))
+    var moved = "(mcall (craw " + sexpStr("a[0]") + ") " + nodeChild(call, 2)
+    return moved + movedArguments(call, 3, values, prog, ctx, locals) + ")"
+}
+
+method movedFunctionCall(string call, array<string> values, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    return "(call " + nodeChild(call, 1) + movedArguments(call, 2, values, prog, ctx, locals) + ")"
+}
+
+// The arguments from `from` on, as slots of the new thread.
+method movedArguments(string call, integer from, array<string> values, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    var slots = ""
+    var i = from
+    var count = nodeCount(call)
+    while (i < count) {
+        values.append(genExpr(nodeChild(call, i), prog, ctx, locals))
+        slots = slots + " (craw " + sexpStr("a[" + (values.length() - 1) + "]") + ")"
+        i = i + 1
+    }
+    return slots
+}

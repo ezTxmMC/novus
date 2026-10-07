@@ -1,0 +1,17 @@
+<?nv
+import strings
+
+prop string type = "note"
+prop string title = ""
+
+method heading(): string {
+    if (title != "") {
+        return title
+    }
+    return strings.capitalize(type)
+}
+?>
+<aside class="callout callout-{type}" role="note">
+    <p class="callout-title">{heading()}</p>
+    <div class="callout-body"><slot /></div>
+</aside>

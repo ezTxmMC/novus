@@ -1,0 +1,55 @@
+package emit
+
+import ast
+import parser
+
+// The sync blocks a statement sits inside.
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+// How deeply the statement being generated sits inside sync blocks.
+method syncDepth(map<string, string> ctx): integer {
+    if (ctx.has("sync") == false || ctx["sync"] == "") {
+        return 0
+    }
+    return ctx["sync"].split(" ").length()
+}
+
+// The sync blocks the statement being generated sits inside, innermost last.
+method syncHeld(map<string, string> ctx): string {
+    if (ctx.has("sync")) {
+        return ctx["sync"]
+    }
+    return ""
+}
+
+// The same at the point the innermost enclosing loop began: what `break`
+// and `continue` have to leave behind, as opposed to `return`, which leaves
+// every one of them.
+method syncLoopHeld(map<string, string> ctx): string {
+    if (ctx.has("syncloop")) {
+        return ctx["syncloop"]
+    }
+    return ""
+}
+
+// C has no scope guards, so leaving a sync block early unlocks on the way
+// out: every lock between `held` and `outer`, innermost first.
+method syncUnwind(string held, string outer): string {
+    if (held == "") {
+        return ""
+    }
+    var names = held.split(" ")
+    var keep = 0
+    if (outer != "") {
+        keep = outer.split(" ").length()
+    }
+    var out = ""
+    var i = names.length() - 1
+    while (i >= keep) {
+        out = out + "nv_sync_leave(" + names[i] + "); "
+        i = i - 1
+    }
+    return out
+}

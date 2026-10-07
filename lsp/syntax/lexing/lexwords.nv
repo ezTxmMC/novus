@@ -3,6 +3,9 @@ package lexing
 import base/text
 
 method lexingScanWord(LexingCursor cursor) {
+    if (lexingScanCBlock(cursor)) {
+        return
+    }
     var start = cursor.pos
     var end = start + 1
     while (end < cursor.limit && lexingIsWordPart(cursor.byteAt(end))) {

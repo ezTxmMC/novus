@@ -8,6 +8,7 @@ import @locals
 
 method main(): integer {
     checkChains()
+    checkCascadeChains()
     checkArgumentCounts()
     checkChainBoundaries()
     checkChainStart()

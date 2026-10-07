@@ -1,0 +1,214 @@
+package nvh
+
+import lexer
+import loader
+import parser
+
+// Components used as tags (<Child prop={x} @event="h">slot</Child>), {#for} loops and the
+// top level of the template.
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+method nvhEmitComponent(map<string, object> st, map<string, object> node, string buf) {
+    var tag = node["tag"]
+    var line = node["line"]
+    var id = nvhNext(st)
+    var c = "nvc" + id
+    st["tags"][tag] = true
+    nvhFlush(st, buf)
+    nvhEmit(st, line, "if (true) { var " + c + " = this.nvChild(" + nvhComponentKey(node, st["file"] + ":" + line) + ", " + tag + "())")
+    for (a in node["attrs"]) {
+        if (a["name"] != "key") {
+            nvhEmitComponentAttr(st, node, a, c)
+        }
+    }
+    if (nvhHasSlotContent(node)) {
+        nvhEmitSlot(st, node, id, c)
+    }
+    nvhEmit(st, st["line"], buf + ".append(this.nvRenderChild(" + c + ")) }")
+}
+
+// What tells two instances of a component apart: its key attribute, else its place.
+method nvhComponentKey(map<string, object> node, string pos): string {
+    var tag = node["tag"]
+    var key = "this.nvKey(" + nvhLit(tag) + ")"
+    for (a in node["attrs"]) {
+        if (a["name"] == "key") {
+            key = "this.nvKeyed(" + nvhLit(tag) + ", " + nvhValueCode(a, pos) + ")"
+        }
+    }
+    return key
+}
+
+// A prop, or an @event of the child that one of our methods handles.
+method nvhEmitComponentAttr(map<string, object> st, map<string, object> node, map<string, object> a, string c) {
+    var name = a["name"]
+    var line = node["line"]
+    var pos = st["file"] + ":" + line
+    if (name.startsWith("@")) {
+        var event = name.substring(1, name.length()).split(".")[0]
+        if (a["kind"] == "none") {
+            fail("@" + event + " needs a handler", pos)
+        }
+        var h = nvhHandler(a["value"], line, st)
+        nvhEmit(st, line, c + ".nvListen(" + nvhLit(event) + ", this, " + nvhLit(h[0]) + ", " + h[1] + ")")
+        return
+    }
+    if (name == "bind" || name.startsWith("bind:") || name.startsWith("class:")) {
+        fail(name + " works on HTML elements, not on the component <" + node["tag"] + ">", pos)
+    }
+    nvhEmit(st, line, "web.prop(" + c + ", " + nvhLit(name) + ", " + nvhValueCode(a, pos) + ")")
+}
+
+method nvhHasSlotContent(map<string, object> node): bool {
+    for (kid in node["kids"]) {
+        if (kid["k"] != "text" || nvhBlank(kid["text"]) == false) {
+            return true
+        }
+    }
+    return false
+}
+
+// The children of the tag, rendered into the slot of the child.
+method nvhEmitSlot(map<string, object> st, map<string, object> node, integer id, string c) {
+    var s = "nvs" + id
+    nvhEmit(st, node["line"], "var " + s + " = []")
+    nvhEmitNodes(st, node["kids"], s)
+    nvhFlush(st, s)
+    nvhEmit(st, st["line"], c + ".nvSetSlot(" + s + ")")
+}
+
+// {#for x in xs} / {#for x, i in xs}
+method nvhEmitFor(map<string, object> st, map<string, object> tok, string buf) {
+    var code = tok["code"]
+    var pos = st["file"] + ":" + tok["line"]
+    var at = code.indexOf(" in ")
+    if (at < 0) {
+        fail("expected {#for item in items} or {#for item, index in items}", pos)
+    }
+    var vars = code.substring(0, at).split(",")
+    var items = code.substring(at + 4, code.length()).trim()
+    var item = vars[0].trim()
+    if (nvhIsIdent(item) == false) {
+        fail("expected a name before 'in' in {#for}", pos)
+    }
+    nvhFlush(st, buf)
+    if (vars.length() == 1) {
+        st["loops"].append("")
+        nvhEmit(st, tok["line"], "for (" + item + " in " + items + ") {")
+        return
+    }
+    var index = vars[1].trim()
+    if (nvhIsIdent(index) == false) {
+        fail("expected {#for item, index in items}", pos)
+    }
+    st["loops"].append(index)
+    nvhEmit(st, tok["line"], "if (true) { var " + index + " = 0 for (" + item + " in " + items + ") {")
+}
+
+// --- the top level -------------------------------------------------------------
+
+// The top level: <html> and <body> are unwrapped, <head> goes to the
+// document head, <style> becomes the component's style sheet, and a single
+// root element carries the component's data-nv id (otherwise a
+// display:contents <nv-c> wrapper does).
+method nvhEmitTop(map<string, object> st, array<object> nodes) {
+    var flat = []
+    nvhUnwrap(nodes, flat)
+    var root = nvhFindRoot(flat)
+    var wrapped = root.has("k") == false
+    if (wrapped) {
+        nvhOpenWrapper(st, flat)
+    }
+    var styles = []
+    // the nodes between the special ones go out together: a {#if} or {#for} at the top level
+    // closes in the same run
+    var pending = []
+    for (node in flat) {
+        if (nvhIsTopSkipped(node, styles)) {
+            continue
+        }
+        if (nvhIsTag(node, "head")) {
+            nvhEmitNodes(st, pending, "out")
+            pending = []
+            nvhEmitHead(st, node)
+            continue
+        }
+        if (node.has("isroot")) {
+            nvhEmitNodes(st, pending, "out")
+            pending = []
+            nvhEmitElement(st, node, "out", true)
+            continue
+        }
+        pending.append(node)
+    }
+    nvhEmitNodes(st, pending, "out")
+    if (wrapped) {
+        nvhStatic(st, st["line"], "</nv-c>")
+    }
+    nvhFlush(st, "out")
+    st["style"] = styles.join(NVH_NEWLINE)
+}
+
+method nvhIsTag(map<string, object> node, string tag): bool {
+    return node["k"] == "open" && node["tag"].toLower() == tag
+}
+
+// Blank text is dropped and a style sheet is collected into `styles`.
+method nvhIsTopSkipped(map<string, object> node, array<string> styles): bool {
+    if (node["k"] == "text" && nvhBlank(node["text"])) {
+        return true
+    }
+    if (nvhIsTag(node, "style") && node["israw"]) {
+        styles.append(node["raw"].trim())
+        return true
+    }
+    return false
+}
+
+// The one element that carries the component's id, marked "isroot"; {} when there is none.
+method nvhFindRoot(array<object> flat): map<string, object> {
+    var content = []
+    for (node in flat) {
+        var skipped = node["k"] == "comment" || (node["k"] == "text" && nvhBlank(node["text"])) || nvhIsTag(node, "head") || nvhIsTag(node, "style")
+        if (skipped == false) {
+            content.append(node)
+        }
+    }
+    if (content.length() != 1 || content[0]["k"] != "open" || nvhIsComponent(content[0]["tag"]) || content[0]["tag"] == "slot") {
+        return {}
+    }
+    content[0]["isroot"] = true
+    return content[0]
+}
+
+method nvhOpenWrapper(map<string, object> st, array<object> flat) {
+    var firstLine = st["line"]
+    if (flat.length() > 0) {
+        firstLine = flat[0]["line"]
+    }
+    nvhStatic(st, firstLine, "<nv-c")
+    nvhFlush(st, "out")
+    nvhEmit(st, firstLine, "out.append(this.nvMark())")
+    nvhStatic(st, firstLine, " style=\"display:contents\">")
+}
+
+method nvhEmitHead(map<string, object> st, map<string, object> node) {
+    nvhFlush(st, "out")
+    var h = "nvh" + nvhNext(st)
+    nvhEmit(st, node["line"], "if (true) { var " + h + " = this.nvHeadOut()")
+    nvhEmitNodes(st, node["kids"], h)
+    nvhFlush(st, h)
+    nvhEmit(st, st["line"], "}")
+}
+
+method nvhUnwrap(array<object> nodes, array<object> flat) {
+    for (node in nodes) {
+        if (nvhIsTag(node, "html") || nvhIsTag(node, "body")) {
+            nvhUnwrap(node["kids"], flat)
+            continue
+        }
+        flat.append(node)
+    }
+}

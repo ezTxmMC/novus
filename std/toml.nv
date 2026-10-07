@@ -79,9 +79,9 @@ method writeTable(map<string, object> table, string prefix, array<string> out): 
         var v = table[key]
         if (isTable(v) || isTableArray(v)) {
             tables.append(key)
-        } else {
-            out.append(quoteKey(key) + " = " + inline(v) + "\n")
+            continue
         }
+        out.append(quoteKey(key) + " = " + inline(v) + "\n")
     }
     for (key in tables) {
         var path = quoteKey(key)
@@ -92,11 +92,11 @@ method writeTable(map<string, object> table, string prefix, array<string> out): 
         if (isTable(v)) {
             out.append("\n[" + path + "]\n")
             writeTable(v, path, out)
-        } else {
-            for (item in v) {
-                out.append("\n[[" + path + "]]\n")
-                writeTable(item, path, out)
-            }
+            continue
+        }
+        for (item in v) {
+            out.append("\n[[" + path + "]]\n")
+            writeTable(item, path, out)
         }
     }
     return 0
@@ -233,11 +233,12 @@ define class TomlParser {
             var c = peek()
             if (c == " " || c == "\t" || c == "\r" || c == "\n") {
                 advance()
-            } else if (c == "#") {
-                comment()
-            } else {
+                continue
+            }
+            if (c != "#") {
                 return
             }
+            comment()
         }
     }
 
@@ -274,36 +275,12 @@ define class TomlParser {
                 return root
             }
             if (startsHere("[[")) {
-                at = at + 2
-                var path = keyPath()
-                spaces()
-                if (startsHere("]]") == false) {
-                    fail("expected ']]'")
-                }
-                at = at + 2
-                var parent = descend(root, path, path.length() - 1)
-                var last = path[path.length() - 1]
-                if (parent.has(last) == false) {
-                    parent[last] = []
-                }
-                if (typeOf(parent[last]) != "array") {
-                    fail("'" + last + "' is not an array of tables")
-                }
-                var entry = {}
-                parent[last].append(entry)
-                current = entry
+                current = tableArrayEntry(root)
                 endOfLine()
                 continue
             }
             if (peek() == "[") {
-                at = at + 1
-                var tpath = keyPath()
-                spaces()
-                if (peek() != "]") {
-                    fail("expected ']'")
-                }
-                at = at + 1
-                current = descend(root, tpath, tpath.length())
+                current = tableHeader(root)
                 endOfLine()
                 continue
             }
@@ -311,6 +288,40 @@ define class TomlParser {
             endOfLine()
         }
         return root
+    }
+
+    // [[a.b]]: appends a new table to the array a.b and returns it.
+    method tableArrayEntry(map<string, object> root): map<string, object> {
+        at = at + 2
+        var path = keyPath()
+        spaces()
+        if (startsHere("]]") == false) {
+            fail("expected ']]'")
+        }
+        at = at + 2
+        var parent = descend(root, path, path.length() - 1)
+        var last = path[path.length() - 1]
+        if (parent.has(last) == false) {
+            parent[last] = []
+        }
+        if (typeOf(parent[last]) != "array") {
+            fail("'" + last + "' is not an array of tables")
+        }
+        var entry = {}
+        parent[last].append(entry)
+        return entry
+    }
+
+    // [a.b]: the table the following key/values belong to.
+    method tableHeader(map<string, object> root): map<string, object> {
+        at = at + 1
+        var path = keyPath()
+        spaces()
+        if (peek() != "]") {
+            fail("expected ']'")
+        }
+        at = at + 1
+        return descend(root, path, path.length())
     }
 
     // The table `count` steps down `path` (the last entry of an array of
@@ -352,26 +363,31 @@ define class TomlParser {
         target[last] = value()
     }
 
+    // One part of a dotted key: quoted or bare.
+    method keyPart(string c): string {
+        if (c == "\"") {
+            return basicString()
+        }
+        if (c == "'") {
+            return literalString()
+        }
+        var start = at
+        while (bareChar(peek())) {
+            at = at + 1
+        }
+        if (at == start) {
+            fail("expected a key")
+        }
+        return text.substring(start, at)
+    }
+
     // a.b."c d" -> ["a", "b", "c d"]
     method keyPath(): array<string> {
         var path = []
         while (true) {
             spaces()
             var c = peek()
-            if (c == "\"") {
-                path.append(basicString())
-            } else if (c == "'") {
-                path.append(literalString())
-            } else {
-                var start = at
-                while (bareChar(peek())) {
-                    at = at + 1
-                }
-                if (at == start) {
-                    fail("expected a key")
-                }
-                path.append(text.substring(start, at))
-            }
+            path.append(keyPart(c))
             spaces()
             if (peek() != ".") {
                 return path
@@ -428,7 +444,9 @@ define class TomlParser {
             blank()
             if (peek() == ",") {
                 at = at + 1
-            } else if (peek() != "]") {
+                continue
+            }
+            if (peek() != "]") {
                 fail("expected ',' or ']' in an array")
             }
         }
@@ -472,43 +490,16 @@ define class TomlParser {
     }
 
     method number(string raw): object {
-        var s = raw.replace("_", "")
-        var body = s
-        var negative = false
-        if (body.startsWith("+")) {
-            body = body.substring(1, body.length())
-        } else if (body.startsWith("-")) {
-            negative = true
+        var body = raw.replace("_", "")
+        var negative = body.startsWith("-")
+        if (negative || body.startsWith("+")) {
             body = body.substring(1, body.length())
         }
         if (body == "inf" || body == "nan") {
-            if (negative) {
-                return parseFloat("-" + body)
-            }
-            return parseFloat(body)
+            return signedFloat(parseFloat(body), negative)
         }
         if (body.startsWith("0x") || body.startsWith("0o") || body.startsWith("0b")) {
-            var base = 16
-            if (body.startsWith("0o")) {
-                base = 8
-            }
-            if (body.startsWith("0b")) {
-                base = 2
-            }
-            var n = 0
-            var i = 2
-            while (i < body.length()) {
-                var d = digit(body.charAt(i))
-                if (d < 0 || d >= base) {
-                    fail("invalid number '" + raw + "'")
-                }
-                n = n * base + d
-                i = i + 1
-            }
-            if (negative) {
-                return 0 - n
-            }
-            return n
+            return signedInt(prefixedInteger(body, raw), negative)
         }
         if (isDateLike(body)) {
             return raw
@@ -517,15 +508,45 @@ define class TomlParser {
             fail("invalid value '" + raw + "'")
         }
         if (body.contains(".") || body.contains("e") || body.contains("E")) {
-            if (negative) {
-                return 0.0 - parseFloat(body)
-            }
-            return parseFloat(body)
+            return signedFloat(parseFloat(body), negative)
         }
+        return signedInt(parseInt(body), negative)
+    }
+
+    method signedInt(integer n, bool negative): integer {
         if (negative) {
-            return 0 - parseInt(body)
+            return 0 - n
         }
-        return parseInt(body)
+        return n
+    }
+
+    method signedFloat(float n, bool negative): float {
+        if (negative) {
+            return 0.0 - n
+        }
+        return n
+    }
+
+    // 0x1f, 0o17, 0b101 (the sign is already cut off).
+    method prefixedInteger(string body, string raw): integer {
+        var base = 16
+        if (body.startsWith("0o")) {
+            base = 8
+        }
+        if (body.startsWith("0b")) {
+            base = 2
+        }
+        var n = 0
+        var i = 2
+        while (i < body.length()) {
+            var d = digit(body.charAt(i))
+            if (d < 0 || d >= base) {
+                fail("invalid number '" + raw + "'")
+            }
+            n = n * base + d
+            i = i + 1
+        }
+        return n
     }
 
     method isDateLike(string s): bool {
@@ -562,9 +583,9 @@ define class TomlParser {
             }
             if (c == "\\") {
                 out.append(escape())
-            } else {
-                out.append(c)
+                continue
             }
+            out.append(c)
         }
         return ""
     }
@@ -601,18 +622,25 @@ define class TomlParser {
             }
             var c = advance()
             if (c == "\\") {
-                var n = peek()
-                if (n == "\n" || n == " " || n == "\t" || n == "\r") {
-                    // a line ending backslash eats the break and the indentation
-                    while (peek() == " " || peek() == "\t" || peek() == "\r" || peek() == "\n") {
-                        advance()
-                    }
-                } else {
-                    out.append(escape())
-                }
-            } else if (c != "\r") {
+                out.append(escapeOrContinuation())
+                continue
+            }
+            if (c != "\r") {
                 out.append(c)
             }
+        }
+        return ""
+    }
+
+    // After a backslash in a multi-line string: an escape, or a line ending backslash that eats
+    // the break and the indentation of the next line ("" then).
+    method escapeOrContinuation(): string {
+        var n = peek()
+        if (n != "\n" && n != " " && n != "\t" && n != "\r") {
+            return escape()
+        }
+        while (peek() == " " || peek() == "\t" || peek() == "\r" || peek() == "\n") {
+            advance()
         }
         return ""
     }

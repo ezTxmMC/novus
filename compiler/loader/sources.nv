@@ -1,0 +1,48 @@
+package loader
+
+// The kinds of source file: Novus code, and the component format that is
+// translated before it is parsed - .nvh (HTML with Novus).
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+final SOURCE_EXTENSIONS = [".nv", ".nvh"]
+
+// The extension of a source file name, "" when it is none.
+method sourceExtension(string name): string {
+    for (extension in SOURCE_EXTENSIONS) {
+        if (name.endsWith(extension)) {
+            return extension
+        }
+    }
+    return ""
+}
+
+method isSourceName(string name): bool {
+    return sourceExtension(name) != ""
+}
+
+// A component: it becomes a class based NvhComponent.
+method isComponentName(string name): bool {
+    var extension = sourceExtension(name)
+    return extension != "" && extension != ".nv"
+}
+
+// Is there `stem` + one of the source extensions below `folder`?
+method hasSourceFile(string folder, string stem): bool {
+    for (extension in SOURCE_EXTENSIONS) {
+        if (fileExists(joinPath(folder, stem + extension))) {
+            return true
+        }
+    }
+    return false
+}
+
+// The Novus source of a file: components are translated first.
+method sourceText(string path, string dir, string root): string {
+    var source = readFile(path)
+    if (path.endsWith(".nvh")) {
+        return transpileNvh(source, fileLabel(path), dir, root)
+    }
+    return source
+}

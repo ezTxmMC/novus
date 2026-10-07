@@ -1,0 +1,47 @@
+package publish
+
+import json
+import data
+
+// The index the browser searches: one entry per page, example and standard
+// library module or function, {t: title, u: url, k: kind, s: text}.
+
+private final DOCUMENT_TEXT_WIDTH = 2400
+private final EXAMPLE_TEXT_WIDTH = 400
+
+method entry(string title, string url, string kind, string text): map<string, string> {
+    return { "t": title, "u": url, "k": kind, "s": text }
+}
+
+method searchIndex(): string {
+    var entries = []
+    for (item in data.navItems()) {
+        entries.append(entry(item.title, item.path, "Docs", documentText(item)))
+    }
+    for (example in data.examples()) {
+        entries.append(entry(example.title, example.path(), "Example", exampleText(example)))
+    }
+    for (module in data.stdModules()) {
+        appendModule(entries, module)
+    }
+    return json.stringify(entries)
+}
+
+method documentText(NavItem item): string {
+    if (item.isDocument() == false) {
+        return item.summary
+    }
+    return item.summary + ". " + data.excerpt(data.documentText(item.file), DOCUMENT_TEXT_WIDTH)
+}
+
+method exampleText(Example example): string {
+    return example.chapter + ". " + data.excerpt(example.summary + " " + example.source, EXAMPLE_TEXT_WIDTH)
+}
+
+method appendModule(array<map<string, string>> entries, StdModule module) {
+    var url = "/stdlib#" + module.name
+    entries.append(entry(module.name, url, "Std", module.summary))
+    for (function in module.functions) {
+        entries.append(entry(module.name + "." + function.name, url, "Std", function.signature + " " + function.doc))
+    }
+}

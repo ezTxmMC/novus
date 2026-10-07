@@ -1,0 +1,29 @@
+package main
+
+import "novus/lsp/features/navigation"
+import "novus/lsp/base/model"
+import @support
+import @fixtures
+import @rename_cases
+
+private final NAV_CBLOCK_TEXT = "define class Counter {\n    integer total\n\n    method bump(integer by) {\n        var local = 1\n        c { $total = nv_int(nv_ival($local) + nv_ival($by)); }\n        println local\n    }\n}\n\nmethod main() {\n    Counter().bump(1)\n}\n"
+
+// The `$name` of a C block is a use of the variable, parameter or field of the method around it.
+method navCBlock(string needle, integer shift): map<string, string> {
+    var text = navMarked(NAV_CBLOCK_TEXT, needle, shift)
+    return { "/p/project.nv": "project \"p\"\n", "/p/main.nv": text }
+}
+
+method runCBlockCases() {
+    println("== C blocks: $name resolves like a name in the code")
+    navDefinition("a local from its use in the block", NavWorld(navCBlock("$local", 1)))
+    navDefinition("a parameter from its use in the block", NavWorld(navCBlock("$by", 1)))
+    navDefinition("a field from its use in the block", NavWorld(navCBlock("$total", 1)))
+    navDefinition("the dollar itself is no name", NavWorld(navCBlock("$local", 0)))
+    navReferences("a local reaches into the block", NavWorld(navCBlock("local = 1", 1)), true)
+    navReferences("a local from the block", NavWorld(navCBlock("$local", 2)), true)
+    navReferences("a parameter from its declaration", NavWorld(navCBlock("by)", 0)), true)
+    navRename("a local is renamed in the block too", NavWorld(navCBlock("local = 1", 1)), "sum")
+    navRename("a parameter from its use in the block", NavWorld(navCBlock("$by", 2)), "step")
+    navRename("a field from its use in the block", NavWorld(navCBlock("$total", 1)), "count")
+}

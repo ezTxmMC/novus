@@ -12,10 +12,12 @@ private final SCANNING_BINARY_OPERATORS = { "||": true, "&&": true, "|": true, "
 define class ScanningExpressions {
     ScanningCursor cursor
     array<ScanningProblem> problems
+    bool inCascadeValue
 
     construct(ScanningCursor cursor, array<ScanningProblem> problems) {
         this.cursor = cursor
         this.problems = problems
+        this.inCascadeValue = false
     }
 
     method report(Span span, string code, string message) {
@@ -76,7 +78,29 @@ define class ScanningExpressions {
         if (this.cursor.isKind(index, TokenKind.Keyword)) {
             return primary
         }
-        return this.postfixEnd(primary)
+        return this.cascadeEnd(this.postfixEnd(primary))
+    }
+
+    // `..section` parts after an operand: `..name`, `..name(args)` or `..[index]`, then more selectors, then
+    // optionally `= value`. The value of a section is no cascade itself, so `..a = 1..b = 2` are two sections.
+    method cascadeEnd(integer from): integer {
+        var index = from
+        while (this.inCascadeValue == false && scanningIsCascadeAt(this.cursor.tokens, index)) {
+            index = this.sectionEnd(index + 2)
+        }
+        return index
+    }
+
+    method sectionEnd(integer start): integer {
+        var index = this.sectionStartEnd(start)
+        index = this.postfixEnd(index)
+        if (this.cursor.isPunct(index, "=") == false) {
+            return index
+        }
+        this.inCascadeValue = true
+        var end = this.endOf(index + 1)
+        this.inCascadeValue = false
+        return end
     }
 
     method isPrefixAt(integer index): bool {
@@ -125,12 +149,19 @@ define class ScanningExpressions {
                 index = this.groupEnd(index)
                 continue
             }
-            if (this.cursor.isPunct(index, ".") == false) {
+            if (this.cursor.isPunct(index, ".") == false || scanningIsCascadeAt(this.cursor.tokens, index)) {
                 return index
             }
             index = this.memberEnd(index + 1)
         }
         return index
+    }
+
+    method sectionStartEnd(integer start): integer {
+        if (this.cursor.isPunct(start, "[")) {
+            return this.groupEnd(start)
+        }
+        return this.memberEnd(start)
     }
 
     method memberEnd(integer nameIndex): integer {

@@ -1,0 +1,21 @@
+create a
+x-y
+2
+create b
+
+3
+create c
+named:p-q
+3
+9
+create d
+note first
+note second
+2
+create e
+note only
+Builder{label: , parts: [only]}
+2
+create f
+create g
+z!Builder{label: w, parts: []}

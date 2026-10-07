@@ -1,37 +1,41 @@
 <?nv
-prop string section = "examples"
+import data
+import strings
+
+method searchText(Example example): string {
+    return (example.title + " " + example.name + " " + example.summary + " " + example.chapter).toLower()
+}
 ?>
-<Layout title="Examples" section="{section}">
-  <h1>Examples</h1>
-  <p>258 programs demonstrating Novus: from one-liners to a virtual machine.</p>
-
-  <div class="examples-grid">
-    <div class="example-card">
-      <h3>Basics</h3>
-      <p>Hello world, variables, operators, control flow.</p>
-      <a href="#">View chapter →</a>
+<Layout title="Examples" description="Programs from the first line of Novus to complete projects, each checked against its expected output." section="examples">
+    <div class="mx-auto max-w-[90rem] px-4 py-12 sm:px-6 lg:px-8" data-filter>
+        <h1 class="text-4xl font-semibold tracking-tight text-ink-50">Examples</h1>
+        <p class="mt-3 max-w-2xl text-ink-400">{data.examples().length()} programs, ordered from the first line of Novus to complete projects. Every one of them runs as it stands and is checked against its expected output on every commit.</p>
+        <div class="sticky top-16 z-30 -mx-4 mt-8 border-y border-ink-700 bg-ink-950/90 px-4 py-3 backdrop-blur sm:mx-0 sm:rounded-xl sm:border">
+            <div class="flex flex-col gap-3 lg:flex-row lg:items-center">
+                <label class="sr-only" for="example-filter">Filter the examples</label>
+                <input id="example-filter" class="input lg:max-w-sm" type="search" placeholder="Filter by name or description..." data-filter-input>
+                <div class="flex flex-wrap gap-1.5" role="group" aria-label="Chapter">
+                    <button type="button" class="chip" data-filter-group="all" aria-pressed="true">all</button>
+                    {#for chapterId in data.chapterIds()}
+                        <button type="button" class="chip" data-filter-group={chapterId} aria-pressed="false">{data.chapterTitle(chapterId)}</button>
+                    {/for}
+                </div>
+            </div>
+        </div>
+        <p class="mt-4 text-xs text-ink-500" data-filter-count aria-live="polite">{data.examples().length()} shown</p>
+        <ul class="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+            {#for example in data.examples()}
+                <li data-filter-item data-group={example.chapterId} data-text={searchText(example)}>
+                    <a href={example.path()} class="card block h-full no-underline">
+                        <span class="flex items-baseline gap-2">
+                            <span class="font-mono text-xs text-accent-300">{example.number}</span>
+                            <span class="font-mono text-sm font-medium text-ink-50">{example.name}</span>
+                        </span>
+                        <span class="mt-2 line-clamp-2 block text-sm text-ink-400">{example.summary}</span>
+                        <span class="eyebrow mt-3 block">{example.chapter}</span>
+                    </a>
+                </li>
+            {/for}
+        </ul>
     </div>
-    <div class="example-card">
-      <h3>Collections</h3>
-      <p>Arrays, maps, iteration, functional programming.</p>
-      <a href="#">View chapter →</a>
-    </div>
-    <div class="example-card">
-      <h3>Classes</h3>
-      <p>Object-oriented programming, methods, inheritance.</p>
-      <a href="#">View chapter →</a>
-    </div>
-    <div class="example-card">
-      <h3>Algorithms</h3>
-      <p>Sorting, searching, graphs, dynamic programming.</p>
-      <a href="#">View chapter →</a>
-    </div>
-  </div>
 </Layout>
-
-<style>
-.examples-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 2rem; margin: 2rem 0; }
-.example-card { padding: 1.5rem; background: rgba(168, 85, 247, 0.05); border: 1px solid rgba(168, 85, 247, 0.1); border-radius: 8px; }
-.example-card h3 { margin-top: 0; color: #d8b4fe; }
-.example-card a { display: inline-block; margin-top: 1rem; }
-</style>

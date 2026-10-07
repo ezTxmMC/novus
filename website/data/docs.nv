@@ -1,0 +1,75 @@
+package data
+
+import os
+import "github.com/ezTxmMC/nvh-markdown/markdown"
+
+// The text of a documentation page: the Markdown of its .nvmd file without
+// the Novus parts, for the table of contents and the search index.
+
+// a <?nv ... ?> block may span lines: its statements are not text
+private final CODE_OPENER = "<?"
+private final CODE_CLOSER = "?>"
+private final NOVUS_PART_STARTS = ["<?", "{#", "{:", "{/", "{@"]
+
+method documentSource(string file): string {
+    if (os.isFile(file) == false) {
+        return ""
+    }
+    return markdownOnly(markdown.body(os.readFile(file)))
+}
+
+method markdownOnly(string source): string {
+    var kept = []
+    var inFence = false
+    var inCode = false
+    for (line in source.split(chr(10))) {
+        var trimmed = line.trim()
+        if (inCode) {
+            inCode = trimmed.contains(CODE_CLOSER) == false
+            continue
+        }
+        if (inFence == false && trimmed.startsWith(CODE_OPENER)) {
+            inCode = trimmed.contains(CODE_CLOSER) == false
+            continue
+        }
+        if (trimmed.startsWith("```")) {
+            inFence = inFence == false
+        }
+        if (inFence || isMarkdownLine(trimmed)) {
+            kept.append(line)
+        }
+    }
+    return kept.join(chr(10))
+}
+
+method isMarkdownLine(string trimmed): bool {
+    if (isComponentTag(trimmed)) {
+        return false
+    }
+    for (start in NOVUS_PART_STARTS) {
+        if (trimmed.startsWith(start)) {
+            return false
+        }
+    }
+    return true
+}
+
+method isComponentTag(string trimmed): bool {
+    var name = 1
+    if (trimmed.startsWith("</")) {
+        name = 2
+    }
+    if (trimmed.length() <= name || trimmed.charAt(0) != "<") {
+        return false
+    }
+    var first = trimmed.charAt(name)
+    return first >= "A" && first <= "Z"
+}
+
+method documentHeadings(string file): array {
+    return markdown.headings(documentSource(file))
+}
+
+method documentText(string file): string {
+    return markdown.text(documentSource(file))
+}

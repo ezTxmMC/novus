@@ -1,0 +1,21 @@
+package publish
+
+import os
+import site
+
+// sitemap.xml: the absolute URLs need the address the site is served from.
+
+private final DEFAULT_SITE_URL = "https://novus-lang.dev"
+
+method siteUrl(): string {
+    return os.envOr("SITE_URL", DEFAULT_SITE_URL)
+}
+
+method sitemap(array<string> paths): string {
+    var lines = ["<?xml version=\"1.0\" encoding=\"UTF-8\"?>", "<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">"]
+    for (path in paths) {
+        lines.append("  <url><loc>" + siteUrl() + path + "</loc></url>")
+    }
+    lines.append("</urlset>")
+    return lines.join(chr(10)) + chr(10)
+}

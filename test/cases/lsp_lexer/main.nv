@@ -20,6 +20,7 @@ method main(): integer {
     checkMultiLine()
     checkInterpolation()
     checkComments()
+    checkCBlocks()
     checkUnterminated()
     checkUnterminatedStrings()
     checkPositions()

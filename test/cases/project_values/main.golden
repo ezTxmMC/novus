@@ -1,0 +1,18 @@
+example.com/values
+2.3.4-beta
+main.nv
+[]
+values-demo
+0.1.0-pre.alpha.2
+require example.com/geo v1.0.0
+require example.com/colors latest
+replace example.com/colors -> lib
+replace example.com/geo -> lib
+2.3.4-beta
+[]
+lib=
+main=main.nv
+novus=0.1.0-pre.alpha.2
+output=values-demo
+project=example.com/values
+version=2.3.4-beta

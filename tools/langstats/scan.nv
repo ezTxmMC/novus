@@ -1,0 +1,103 @@
+package langstats
+
+import os
+import path
+
+// Walking the tree and counting what is in it.
+
+private final SKIP_DIRS = { ".git": true, "build": true, "dist": true, "node_modules": true, "out": true, "mccloud-data": true, "generated": true }
+private final GENERATED = { "bootstrap/novusc.c": true, "compiler/runtime/runtime.nv": true, "compiler/std/stdlib.nv": true, "vscode-novus/package-lock.json": true }
+
+define class Stat {
+    private final string language: get
+    private final string kind: get
+    private integer files: get, set
+    private integer lines: get, set
+    private integer bytes: get, set
+}
+
+// Walks the tree; `rel` is the path relative to the root.
+method scan(string dir, string rel, map<string, Stat> stats, array<string> generated) {
+    for (entry in os.listDir(dir)) {
+        var full = path.join(dir, entry)
+        var relPath = entry
+        if (rel != "") {
+            relPath = rel + "/" + entry
+        }
+        if (os.isDir(full)) {
+            if (SKIP_DIRS.has(entry) || entry.startsWith(".")) {
+                continue
+            }
+            scan(full, relPath, stats, generated)
+            continue
+        }
+        if (isGenerated(relPath)) {
+            generated.append(relPath + " (" + formatBytes(os.fileSize(full)) + ")")
+            continue
+        }
+        var language = languageOf(entry)
+        if (language == "") {
+            continue
+        }
+        if (stats.has(language) == false) {
+            stats[language] = Stat(language, kindOf(language), 0, 0, 0)
+        }
+        var s = stats[language]
+        s.files(s.files() + 1)
+        s.lines(s.lines() + countLines(full))
+        s.bytes(s.bytes() + os.fileSize(full))
+    }
+}
+
+// Matches by suffix so scanning a subdirectory still recognizes the files.
+method isGenerated(string relPath): bool {
+    for (g in GENERATED) {
+        if (relPath == g || relPath.endsWith("/" + g) || g.endsWith("/" + relPath)) {
+            return true
+        }
+    }
+    return false
+}
+
+method languageOf(string name): string {
+    var byName = { "Makefile": "Makefile", "Dockerfile": "Dockerfile", "CMakeLists.txt": "CMake" }
+    if (byName.has(name)) {
+        return byName[name]
+    }
+    var byExt = { ".nv": "Novus", ".c": "C", ".h": "C", ".cpp": "C++", ".hpp": "C++", ".ts": "TypeScript",
+        ".js": "JavaScript", ".py": "Python", ".sh": "Shell", ".ps1": "PowerShell", ".cmd": "Batchfile",
+        ".bat": "Batchfile", ".java": "Java", ".rs": "Rust", ".go": "Go", ".zig": "Zig",
+        ".json": "JSON", ".yml": "YAML", ".yaml": "YAML", ".toml": "TOML", ".md": "Markdown", ".txt": "Text",
+        ".html": "HTML", ".css": "CSS", ".svg": "SVG", ".golden": "Test data", ".args": "Test data",
+        ".rc": "Test data", ".gitattributes": "Config", ".gitignore": "Config", ".vscodeignore": "Config" }
+    var ext = path.extension(name)
+    if (ext == "" && name.startsWith(".")) {
+        ext = name
+    }
+    if (byExt.has(ext)) {
+        return byExt[ext]
+    }
+    return ""
+}
+
+// programming | markup | data | prose  (GitHub counts programming, markup)
+method kindOf(string language): string {
+    var kinds = { "JSON": "data", "YAML": "data", "TOML": "data", "Test data": "data", "Config": "data",
+        "Markdown": "prose", "Text": "prose", "HTML": "markup", "CSS": "markup", "SVG": "markup" }
+    if (kinds.has(language)) {
+        return kinds[language]
+    }
+    return "programming"
+}
+
+method countLines(string file): integer {
+    var text = readFile(file)
+    if (text.length() == 0) {
+        return 0
+    }
+    var count = text.split("\n").length()
+    if (text.endsWith("\n")) {
+        count = count - 1
+    }
+    return count
+}

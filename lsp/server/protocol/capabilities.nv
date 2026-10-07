@@ -1,10 +1,12 @@
 package protocol
 
 import base/text
+import project
 
 // The initialize result, derived from the handlers that are actually registered.
 private final SERVER_NAME = "novus-lsp"
-private final SERVER_VERSION = "0.1.0"
+// the version of lsp/project.nv
+private final SERVER_VERSION = project.version()
 private final PROTOCOL_SYNC_INCREMENTAL = 2
 private final PROTOCOL_COMPLETION_TRIGGERS = [".", "@", "\"", "/", "<", ":"]
 private final PROTOCOL_SIGNATURE_TRIGGERS = ["(", ","]

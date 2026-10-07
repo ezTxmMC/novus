@@ -1,0 +1,68 @@
+package data
+
+import strings
+
+// Reads the `//` documentation of Novus sources, the way the examples and the
+// standard library describe themselves.
+
+private final COMMENT_MARK = "//"
+private final DECLARATION_WORDS = ["method", "define", "var", "private", "final"]
+
+method commentText(string line): string {
+    var text = line.trim()
+    while (text.startsWith("/")) {
+        text = text.substring(1, text.length())
+    }
+    return text.trim()
+}
+
+method startsDeclaration(string line): bool {
+    for (word in DECLARATION_WORDS) {
+        if (line == word || line.startsWith(word + " ")) {
+            return true
+        }
+    }
+    return false
+}
+
+// The first block of `//` lines above the first declaration, as one sentence.
+method leadingComment(string source, integer skipLines): string {
+    var collected = []
+    var lines = source.split(chr(10))
+    var index = skipLines
+    while (index < lines.length()) {
+        var line = lines[index].trim()
+        index = index + 1
+        if (line.startsWith(COMMENT_MARK)) {
+            appendNonEmpty(collected, commentText(line))
+            continue
+        }
+        if (collected.length() > 0 || startsDeclaration(line)) {
+            break
+        }
+    }
+    return withoutFinalDot(collected.join(" "))
+}
+
+method appendNonEmpty(array<string> parts, string text) {
+    if (text != "") {
+        parts.append(text)
+    }
+}
+
+method withoutFinalDot(string text): string {
+    return strings.stripSuffix(text, ".")
+}
+
+// `text` shortened to `width` characters on a word boundary.
+method excerpt(string text, integer width): string {
+    if (text.length() <= width) {
+        return text
+    }
+    var cut = text.substring(0, width)
+    var space = strings.lastIndexOf(cut, " ")
+    if (space > 0) {
+        cut = cut.substring(0, space)
+    }
+    return cut + "..."
+}

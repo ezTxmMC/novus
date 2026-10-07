@@ -1,0 +1,46 @@
+package publish
+
+import os
+import site
+import data
+import pages
+
+// The static site: every route as <path>/index.html, the example pages, the
+// styles, the search index, 404.html and sitemap.xml.
+
+private final PUBLIC_FOLDER = "public"
+private final STYLE_FILE = "site.css"
+private final SEARCH_FILE = "search-index.json"
+private final NOT_FOUND_FILE = "404.html"
+
+// Returns false when the styles could not be built.
+method exportSite(string root): bool {
+    os.removeAll(root)
+    os.mkdir(root)
+    copyTree(PUBLIC_FOLDER, root)
+    var paths = exportRoutes(root)
+    for (example in data.examples()) {
+        writeExample(root, example)
+        paths.append(example.path())
+    }
+    writeText(root + "/" + NOT_FOUND_FILE, renderPage(NotFound()))
+    writeText(root + "/" + SEARCH_FILE, searchIndex())
+    writeText(root + "/sitemap.xml", sitemap(paths))
+    return buildStyles(root + "/" + STYLE_FILE, true)
+}
+
+method exportRoutes(string root): array<string> {
+    var paths = []
+    for (route in site.allRoutes()) {
+        writePage(root, route.path, route.page)
+        paths.append(route.path)
+    }
+    return paths
+}
+
+method writeExample(string root, Example example) {
+    var page = ExampleDetail()
+    page.nvProp("chapter", example.chapterId)
+    page.nvProp("name", example.stem)
+    writePage(root, example.path(), page)
+}

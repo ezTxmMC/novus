@@ -1,0 +1,138 @@
+package expr
+
+import ast
+import lexer
+import parser
+import std
+
+// Atoms of the expression tree: names, numbers and what a name resolves to.
+//
+// NOTE: this file is part of the bootstrap chain: it must stay compilable
+// by the previous compiler snapshot (bootstrap/novusc.c).
+
+method isIdentAtom(string node): bool {
+    if (node.length() == 0 || isList(node)) {
+        return false
+    }
+    var c = node.charAt(0)
+    return isAlpha(c)
+}
+
+method isNumberAtom(string node): bool {
+    if (node.length() == 0 || isList(node)) {
+        return false
+    }
+    // A hexadecimal literal whose value has the top bit set is lexed into a
+    // negative decimal - the same bit pattern, written the way C wants it -
+    // so a leading minus is part of the number, not an operator.
+    if (node.charAt(0) == "-" && node.length() > 1) {
+        return isDigit(node.charAt(1))
+    }
+    return isDigit(node.charAt(0))
+}
+
+method hasDot(string s): bool {
+    var i = 0
+    while (i < s.length()) {
+        if (s.charAt(i) == ".") {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+
+// Is `name` a variable in scope (local, this or global)?
+method resolveVar(string name, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    if (locals.has(name)) {
+        return locals[name]
+    }
+    if (name == "this") {
+        if (ctx["class"] != "") {
+            return "self"
+        }
+        return ""
+    }
+    if (ctx["pkg"] != "" && prog.has("global:" + ctx["pkg"] + "." + name)) {
+        return "g_" + cName(ctx["pkg"] + "." + name)
+    }
+    if (prog.has("global:" + name)) {
+        return "g_" + cName(name)
+    }
+    if (prog.has("unqglobal:" + name) && prog["unqglobal:" + name].contains(" ") == false) {
+        // a global of one of the program's packages - unless a field of the
+        // class is meant
+        if (ctx["class"] != "" && fieldSlot(prog, ctx["class"], name) >= 0) {
+            return ""
+        }
+        return "g_" + cName(prog["unqglobal:" + name])
+    }
+    return ""
+}
+
+// Error for an identifier that names a module but is used like a value.
+method failModuleUse(string name, map<string, string> prog, map<string, string> ctx): integer {
+    if (prog.has("pkg:" + name)) {
+        fail("'" + name + "' is a module - call one of its functions, e.g. " + name + ".x()", ctx["pos"])
+    }
+    if (stdModules().contains(name) || name == "project") {
+        fail("module '" + name + "' is not imported - add 'import " + name + "'", ctx["pos"])
+    }
+    return 0
+}
+
+// The C expression of an atom: a literal, a variable or a field slot.
+method genAtom(string node, map<string, string> prog, map<string, string> ctx, map<string, string> locals): string {
+    if (node == "true") {
+        return "nv_bool(1)"
+    }
+    if (node == "false") {
+        return "nv_bool(0)"
+    }
+    if (isNumberAtom(node)) {
+        return genNumberLiteral(node)
+    }
+    var variable = resolveVar(node, prog, ctx, locals)
+    if (variable != "") {
+        return genVariable(node, variable, locals)
+    }
+    if (isImplicitField(node, prog, ctx, locals)) {
+        // the slot is known at compile time - no name lookup at run time
+        return nv_fieldSlotCode(prog, ctx, node)
+    }
+    failUnknownName(node, prog, ctx)
+    return ""
+}
+
+method genNumberLiteral(string node): string {
+    if (hasDot(node)) {
+        return "nv_float(" + node + ")"
+    }
+    return "nv_int(" + node + "LL)"
+}
+
+// An unboxed local entering a boxed context is boxed again.
+method genVariable(string name, string variable, map<string, string> locals): string {
+    if (isIntLocal(locals, name)) {
+        return "nv_int(" + variable + ")"
+    }
+    if (isFloatLocal(locals, name)) {
+        return "nv_float(" + variable + ")"
+    }
+    return variable
+}
+
+method failUnknownName(string name, map<string, string> prog, map<string, string> ctx): integer {
+    if (isClassLike(prog, name)) {
+        fail("'" + name + "' is a type, not a value", ctx["pos"])
+    }
+    if (name == "this") {
+        fail("'this' is only available inside classes", ctx["pos"])
+    }
+    failModuleUse(name, prog, ctx)
+    if (prog.has("unqglobal:" + name)) {
+        ambiguousName(name, prog["unqglobal:" + name], ctx["pos"])
+    }
+    fail("unknown variable '" + name + "'", ctx["pos"])
+    return 0
+}

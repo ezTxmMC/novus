@@ -23,6 +23,20 @@ method navigationStreams(array<Token> tokens): array<array<Token>> {
     return streams
 }
 
+// The streams of a file: its tokens, the tokens of the `${...}` of its strings and the `$name` of its C blocks.
+method navigationStreamsOf(SourceFile syntax): array<array<Token>> {
+    var streams = navigationStreams(syntax.tokens)
+    for (block in syntax.comments) {
+        if (lexingIsCBlock(block) == false) {
+            continue
+        }
+        for (island in block.interpolations) {
+            streams.append(targetsIslandTokens(block, island))
+        }
+    }
+    return streams
+}
+
 // A closure file whose syntax is the given token-keeping parse: the resolver reads the locals of `syntax`.
 method navigationFileWithSyntax(ClosureFile file, SourceFile syntax): ClosureFile {
     if (file.syntax == syntax) {
@@ -95,7 +109,7 @@ define class OccurrenceScanner {
     method scanFamily(Resolver resolver, ClosureFile file, SourceFile syntax, NavigationFamily family): array<Span> {
         var spans = []
         var navigator = TargetFinder(resolver)
-        for (tokens in navigationStreams(syntax.tokens)) {
+        for (tokens in navigationStreamsOf(syntax)) {
             var i = 0
             while (i < tokens.length()) {
                 if (tokens[i].kind == TokenKind.Ident && tokens[i].text == family.name && family.accepts(navigator.targetOfToken(file, tokens, i, false), tokens, i)) {
@@ -112,7 +126,7 @@ define class OccurrenceScanner {
         if (isNone(context.closureFile) || isNone(context.syntax)) {
             return spans
         }
-        for (tokens in navigationStreams(context.syntax.tokens)) {
+        for (tokens in navigationStreamsOf(context.syntax)) {
             var i = 0
             while (i < tokens.length()) {
                 if (this.isOccurrenceOf(context, local, tokens, i)) {

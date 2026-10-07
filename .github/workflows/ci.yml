@@ -107,22 +107,27 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
-      - name: Install
-        working-directory: website
-        run: bun install --frozen-lockfile
-      - name: Build
-        working-directory: website
-        run: bun run build
-      - name: Smoke test
-        working-directory: website
-        run: bun run smoke
+          path: novus
+      # website/project.nv replaces both modules with ../../<name>, i.e. siblings of the novus checkout
+      - uses: actions/checkout@v4
+        with:
+          repository: ezTxmMC/nvh-markdown
+          path: nvh-markdown
+      - uses: actions/checkout@v4
+        with:
+          repository: ezTxmMC/nvh-tailwindcss
+          path: nvh-tailwindcss
+      - name: Bootstrap
+        working-directory: novus
+        run: scripts/bootstrap.sh
+      - name: Build, export and link check
+        working-directory: novus/website
+        run: make export
       - uses: actions/upload-artifact@v4
         with:
           name: docs-site
-          path: website/dist
+          path: novus/website/dist
 
   cross:
     name: cross (zig)

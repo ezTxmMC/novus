@@ -29,9 +29,9 @@ method runDirectoryCommands() {
     var root = createTempDirectory("lsp-run-")
     var odd = root + "/it's a dir"
     makeDirectories(odd)
-    var here = runCommandIn(root, "pwd", 5)
+    var here = runCommandIn(root, "pwd -P", 5)
     showRun("runCommandIn pwd", here.exitCode + " " + (here.output.trim() == realPath(root)) + " " + here.started)
-    var quoted = runCommandIn(odd, "pwd", 5)
+    var quoted = runCommandIn(odd, "pwd -P", 5)
     showRun("runCommandIn in a directory with spaces and an apostrophe", quoted.exitCode + " " + (quoted.output.trim() == realPath(odd)))
     showRun("runCommandIn with a timeout prefix after cd", runCommandIn(root, "echo ran", 5).output.trim())
     removeTree(root)

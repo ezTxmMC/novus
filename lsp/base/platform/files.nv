@@ -110,7 +110,7 @@ method platformRemoveOrDescend(string entryPath, array<string> pending, array<st
 
 // A fresh directory below temporaryDirectory(); "" when none could be made.
 method createTempDirectory(string prefix): string {
-    var stem = os.temp() + PLATFORM_PATH_SEPARATOR + prefix + os.pid() + "-" + math.floor(os.clock() * PLATFORM_MICROS_PER_SECOND) + "-"
+    var stem = platformJoinPath(os.temp(), prefix) + os.pid() + "-" + math.floor(os.clock() * PLATFORM_MICROS_PER_SECOND) + "-"
     var attempt = 0
     while (attempt < PLATFORM_TEMP_ATTEMPTS) {
         var candidate = stem + attempt

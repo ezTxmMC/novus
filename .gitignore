@@ -14,9 +14,10 @@ lsp/novus-lsp
 lsp/novus-lsp.exe
 
 # Generated C: `novusc emit` / `novusc build --keep-c` next to the sources.
-# The bootstrap snapshot is the one C file that is tracked.
+# The bootstrap snapshot and the hand-written C tests of the runtime are tracked.
 *.c
 !bootstrap/novusc.c
+!test/runtime/*.c
 
 # Files the examples write while they run (they clean up themselves)
 examples/*/example-*

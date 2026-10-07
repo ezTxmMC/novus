@@ -111,6 +111,12 @@ lacks_memory() { # needs_mb file
     [ -n "$available" ] && [ "$available" -lt "$needed" ]
 }
 
+# Cases marked with <name>.posix_only drive a POSIX shell (VAR=value prefixes, sh, pwd, links).
+on_windows() {
+    case "$(uname -s 2>/dev/null)" in MINGW* | MSYS* | CYGWIN*) return 0 ;; esac
+    return 1
+}
+
 run_case() { # name, source, golden, rc-file, args-file, stdin-file, workdir
     local name="$1" source="$2" golden="$3" rcfile="$4" argsfile="$5" stdinfile="$6" dir="$7"
     local expected_rc=0 args=() seconds="$CASE_SECONDS" base="${source%.nv}"
@@ -118,6 +124,11 @@ run_case() { # name, source, golden, rc-file, args-file, stdin-file, workdir
     [ -f "$base.timeout" ] && seconds="$(cat "$base.timeout")"
     if lacks_memory "$base.needs_mb"; then
         echo "skip $name (needs $(cat "$base.needs_mb") MiB of free memory)"
+        skipped=$((skipped + 1))
+        return
+    fi
+    if [ -f "$base.posix_only" ] && on_windows; then
+        echo "skip $name (needs a POSIX shell)"
         skipped=$((skipped + 1))
         return
     fi

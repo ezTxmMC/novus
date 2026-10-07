@@ -1,0 +1,11 @@
+package main
+
+// Unary minus and the ! operator.
+
+method main {
+    var n = 5
+    println -n
+    println -(-n)
+    println !(n > 3)
+    println !false && !false
+}

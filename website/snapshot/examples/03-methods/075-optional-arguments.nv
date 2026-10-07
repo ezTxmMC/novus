@@ -1,0 +1,16 @@
+package main
+
+// Novus has no default values - a shorter overload provides them.
+
+method connect(string host, integer port): string {
+    return "connecting to ${host}:${port}"
+}
+
+method connect(string host): string {
+    return connect(host, 8080)
+}
+
+method main {
+    println connect("localhost")
+    println connect("example.com", 443)
+}

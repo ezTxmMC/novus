@@ -1,0 +1,12 @@
+package main
+
+// Removing entries and reading with a fallback.
+
+method main {
+    var settings = { "debug": "true", "level": "3" }
+    println settings.get("level", "0")
+    println settings.get("missing", "fallback")
+    settings.remove("debug")
+    println settings
+    println settings.has("debug")
+}

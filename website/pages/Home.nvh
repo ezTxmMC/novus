@@ -7,7 +7,7 @@ method features(): array {
         ["Compiles to portable C", "Every program becomes one self-contained C file with an embedded runtime - hand it to any C compiler on any platform.", "/docs/architecture"],
         ["No dependencies", "A C compiler is all you need. No LLVM, no runtime to install, no package manager to set up first.", "/docs/installation"],
         ["Familiar syntax", "Classes, interfaces, enums, overloading, string interpolation and cascades (a..b()..c) - type inference where it helps.", "/docs/language/basics"],
-        ["Batteries included", data.stdModules().length() + " standard modules with " + data.functionCount() + " functions: files, processes, JSON, HTTP, math, time and more.", "/stdlib"],
+        ["Batteries included", "Files, processes, JSON, HTTP, math, time and more are built in: import a module by name, nothing to install.", "/docs/language/modules"],
         ["Web in Novus", "HTML with Novus (.nvh), Markdown with Novus (.nvmd) and Tailwind: this very site is built with them.", "/docs/web/components"]
     ]
 }
@@ -33,7 +33,6 @@ method features(): array {
                 </div>
                 <dl class="mt-12 flex flex-wrap gap-x-10 gap-y-6">
                     <div><dt class="eyebrow">examples</dt><dd class="font-mono text-2xl font-semibold text-ink-50">{data.examples().length()}</dd></div>
-                    <div><dt class="eyebrow">std functions</dt><dd class="font-mono text-2xl font-semibold text-ink-50">{data.functionCount()}</dd></div>
                     <div><dt class="eyebrow">lines of compiler</dt><dd class="font-mono text-2xl font-semibold text-ink-50">{data.compilerKiloLines()}</dd></div>
                     <div><dt class="eyebrow">dependency</dt><dd class="font-mono text-2xl font-semibold text-ink-50">cc</dd></div>
                 </dl>

@@ -1,0 +1,19 @@
+package main
+
+// Adding the digits of a number.
+
+method digitSum(integer n): integer {
+    var rest = n
+    var sum = 0
+    while (rest > 0) {
+        sum = sum + rest % 10
+        rest = rest / 10
+    }
+    return sum
+}
+
+method main {
+    for (n in [7, 42, 12345, 99999]) {
+        println "${n} -> ${digitSum(n)}"
+    }
+}

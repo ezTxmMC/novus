@@ -1,0 +1,19 @@
+package main
+
+// Maps behave the same way.
+
+method increment(map<string, integer> counters, string key) {
+    if (counters.has(key)) {
+        counters[key] = counters[key] + 1
+        return
+    }
+    counters[key] = 1
+}
+
+method main {
+    var counts = {}
+    increment(counts, "a")
+    increment(counts, "b")
+    increment(counts, "a")
+    println counts
+}

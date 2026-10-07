@@ -1,0 +1,20 @@
+package main
+
+import arrays
+import strings
+
+method normalized(string text): string {
+    var letters = []
+    for (c in text.toLower()) {
+        if (strings.isAlpha(c)) {
+            letters.append(c)
+        }
+    }
+    return arrays.sort(letters).join("")
+}
+
+method main {
+    println normalized("listen") == normalized("silent")
+    println normalized("Dormitory") == normalized("dirty room")
+    println normalized("novus") == normalized("venus")
+}

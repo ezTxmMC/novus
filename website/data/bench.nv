@@ -4,10 +4,10 @@ import json
 import math
 import os
 
-// The benchmark results of benchmarks/results.json and the sources that
+// The benchmark results of snapshot/benchmarks/results.json and the sources that
 // produced them, so nobody has to trust the numbers.
 
-private final BENCHMARK_FOLDER = "../benchmarks"
+private final BENCHMARK_FOLDER = "snapshot/benchmarks"
 private final RESULTS_FILE = BENCHMARK_FOLDER + "/results.json"
 private final PREFERRED_ORDER = ["novus", "cpp", "rust", "go", "crystal", "java", "node", "python"]
 private final EXTENSIONS = { "novus": "nv", "cpp": "cpp", "rust": "rs", "go": "go", "crystal": "cr", "java": "java", "node": "js", "python": "py" }

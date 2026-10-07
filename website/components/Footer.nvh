@@ -10,7 +10,6 @@
                 <li><a href="/docs/introduction">Introduction</a></li>
                 <li><a href="/docs/first-program">First program</a></li>
                 <li><a href="/examples">Examples</a></li>
-                <li><a href="/stdlib">Standard library</a></li>
             </ul>
         </nav>
         <nav aria-label="Project">

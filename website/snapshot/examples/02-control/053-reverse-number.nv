@@ -1,0 +1,20 @@
+package main
+
+// Reversing the digits of a number.
+
+method reversed(integer n): integer {
+    var rest = n
+    var out = 0
+    while (rest > 0) {
+        out = out * 10 + rest % 10
+        rest = rest / 10
+    }
+    return out
+}
+
+method main {
+    println reversed(1234)
+    println reversed(1000)
+    println reversed(7)
+    println reversed(1221) == 1221
+}

@@ -1,0 +1,15 @@
+package main
+
+// Top level constants are visible in every method of the program.
+
+private final APP = "novus"
+final VERSION = "1.0"
+
+method main {
+    println "${APP} ${VERSION}"
+    printBanner()
+}
+
+method printBanner() {
+    println "running ${APP}"
+}

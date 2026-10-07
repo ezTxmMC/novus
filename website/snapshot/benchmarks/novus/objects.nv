@@ -1,0 +1,26 @@
+package main
+
+// Allocating a million small objects and reading a field from each.
+
+define class Point {
+    private final integer x: get
+    private final integer y: get
+
+    method sum(): integer {
+        return x + y
+    }
+}
+
+method main {
+    var points = []
+    var i = 0
+    while (i < 1000000) {
+        points.append(Point(i, i * 2))
+        i = i + 1
+    }
+    var total = 0
+    for (point in points) {
+        total = total + point.sum()
+    }
+    println total
+}

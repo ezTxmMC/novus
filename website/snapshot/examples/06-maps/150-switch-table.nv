@@ -1,0 +1,23 @@
+package main
+
+// A dispatch table: command name to a description.
+
+method run(string command): string {
+    var commands = {
+        "add": "adds an item",
+        "list": "lists all items",
+        "done": "marks an item as done"
+    }
+    if (commands.has(command)) {
+        var description = commands[command]
+        return "${command}: ${description}"
+    }
+    var known = commands.keys().join(", ")
+    return "unknown command '${command}' (try: ${known})"
+}
+
+method main {
+    println run("add")
+    println run("done")
+    println run("delete")
+}

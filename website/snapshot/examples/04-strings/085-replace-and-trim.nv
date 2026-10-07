@@ -1,0 +1,11 @@
+package main
+
+// Replacing substrings and removing surrounding whitespace.
+
+method main {
+    var text = "  hello world  "
+    println "[" + text.trim() + "]"
+    println text.trim().replace("world", "novus")
+    println "a-b-c".replace("-", "")
+    println "aaa".replace("a", "ab")
+}

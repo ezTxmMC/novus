@@ -1,0 +1,15 @@
+package main
+
+import cli
+
+// Parsing arguments, options and flags.
+
+method main {
+    var parsed = cli.parse(["build", "--out", "app", "--release", "src/main.nv"])
+    println parsed["args"]
+    println parsed["opts"]
+    println cli.option(parsed, "out", "a.out")
+    println cli.option(parsed, "target", "native")
+    println cli.flag(parsed, "release")
+    println cli.argument(parsed, 0, "help")
+}

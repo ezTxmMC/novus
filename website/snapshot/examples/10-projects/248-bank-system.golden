@@ -1,0 +1,11 @@
+true
+false
+account of Ada
+  deposit 150,000
+  withdraw 50,000
+  balance 100,000
+account of Grace
+  deposit 2,000
+  deposit 50,000
+  rejected 999
+  balance 52,000

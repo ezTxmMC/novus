@@ -1,0 +1,49 @@
+package main
+
+// A binary search tree with in-order traversal.
+
+define class TreeNode {
+    private final integer value: get
+    private TreeNode left: get, set
+    private TreeNode right: get, set
+
+    construct(integer value) {
+        this.value = value
+    }
+
+    method insert(integer other) {
+        if (other < value) {
+            if (typeOf(left) == "TreeNode") {
+                left.insert(other)
+                return
+            }
+            left = TreeNode(other)
+            return
+        }
+        if (typeOf(right) == "TreeNode") {
+            right.insert(other)
+            return
+        }
+        right = TreeNode(other)
+    }
+
+    method inorder(array<integer> out) {
+        if (typeOf(left) == "TreeNode") {
+            left.inorder(out)
+        }
+        out.append(value)
+        if (typeOf(right) == "TreeNode") {
+            right.inorder(out)
+        }
+    }
+}
+
+method main {
+    var root = TreeNode(8)
+    for (n in [3, 10, 1, 6, 14, 4]) {
+        root.insert(n)
+    }
+    var sorted = []
+    root.inorder(sorted)
+    println sorted
+}

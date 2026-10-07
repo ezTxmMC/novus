@@ -1,0 +1,16 @@
+package main
+
+import strings
+
+method main {
+    var text = "the rain in spain stays mainly in the plain"
+    println strings.count(text, "in")
+    println strings.count(text, "the")
+    var letters = 0
+    for (c in text) {
+        if (c != " ") {
+            letters = letters + 1
+        }
+    }
+    println "${letters} letters, ${text.length()} characters"
+}

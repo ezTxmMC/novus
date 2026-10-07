@@ -1,0 +1,12 @@
+package main
+
+import path
+
+// Collapsing . and .. in a path.
+
+method main {
+    println path.normalize("a/./b/../c//d/")
+    println path.normalize("/x/../../y")
+    println path.normalize("./same")
+    println path.normalize("")
+}

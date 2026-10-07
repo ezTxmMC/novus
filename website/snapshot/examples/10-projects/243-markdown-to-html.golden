@@ -1,0 +1,8 @@
+<h1>Novus</h1>
+<p>A <b>self hosting</b> language.</p>
+<h2>Features</h2>
+<ul>
+  <li>compiles to C</li>
+  <li><b>small</b> runtime</li>
+</ul>
+<p>The end.</p>

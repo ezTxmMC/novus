@@ -1,0 +1,32 @@
+package main
+
+import arrays
+import fmt
+import strings
+
+method main {
+    var text = "Novus compiles to C. Novus is small and fast. The compiler is written in Novus."
+    var words = strings.words(text.toLower().replace(".", ""))
+    var sentences = 0
+    for (c in text) {
+        if (c == ".") {
+            sentences = sentences + 1
+        }
+    }
+    var lengths = []
+    var counts = {}
+    for (word in words) {
+        lengths.append(word.length())
+        if (counts.has(word)) {
+            counts[word] = counts[word] + 1
+            continue
+        }
+        counts[word] = 1
+    }
+    println "characters: ${text.length()}"
+    println "words:      ${words.length()}"
+    println "sentences:  ${sentences}"
+    println "unique:     ${counts.length()}"
+    println "avg length: " + fmt.fixed(arrays.sum(lengths) * 1.0 / lengths.length(), 2)
+    println "longest:    ${arrays.max(lengths)}"
+}

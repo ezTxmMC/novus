@@ -1,0 +1,23 @@
+package main
+
+// The constructor runs when the object is created.
+
+define class Temperature {
+    private final float celsius: get
+
+    construct(float celsius) {
+        this.celsius = celsius
+        println "created ${celsius} C"
+    }
+
+    method fahrenheit(): float {
+        return celsius * 9.0 / 5.0 + 32.0
+    }
+}
+
+method main {
+    var boiling = Temperature(100.0)
+    println boiling.fahrenheit()
+    var freezing = Temperature(0.0)
+    println freezing.fahrenheit()
+}

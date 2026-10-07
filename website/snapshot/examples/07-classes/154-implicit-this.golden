@@ -1,0 +1,3 @@
+deposit 100 -> balance 100
+deposit 50 -> balance 150
+150

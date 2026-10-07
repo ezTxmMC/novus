@@ -1,0 +1,42 @@
+package main
+
+import arrays
+
+// Linear search versus binary search.
+
+method linearSearch(array<integer> items, integer target): integer {
+    var i = 0
+    while (i < items.length()) {
+        if (items[i] == target) {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+method binarySearch(array<integer> sorted, integer target): integer {
+    var low = 0
+    var high = sorted.length() - 1
+    var steps = 0
+    while (low <= high) {
+        steps = steps + 1
+        var middle = (low + high) / 2
+        if (sorted[middle] == target) {
+            println "binary search: ${steps} steps"
+            return middle
+        }
+        if (sorted[middle] < target) {
+            low = middle + 1
+            continue
+        }
+        high = middle - 1
+    }
+    return -1
+}
+
+method main {
+    var numbers = arrays.range(0, 100)
+    println linearSearch(numbers, 73)
+    println binarySearch(numbers, 73)
+}

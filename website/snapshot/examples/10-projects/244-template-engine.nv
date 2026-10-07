@@ -1,0 +1,43 @@
+package main
+
+// A template engine with variables and a repeat block.
+
+method renderRow(string template, map<string, object> values): string {
+    var out = template
+    for (key in values) {
+        var value = "" + values[key]
+        out = out.replace("{{" + key + "}}", value)
+    }
+    return out
+}
+
+method render(string template, map<string, object> context, array<object> rows): string {
+    var lines = []
+    for (raw in template.split("\n")) {
+        if (raw.trim() == "{{#rows}}") {
+            continue
+        }
+        if (raw.contains("{{row.")) {
+            for (row in rows) {
+                var line = raw
+                for (key in row) {
+                    var value = "" + row[key]
+                    line = line.replace("{{row." + key + "}}", value)
+                }
+                lines.append(line)
+            }
+            continue
+        }
+        lines.append(renderRow(raw, context))
+    }
+    return lines.join("\n")
+}
+
+method main {
+    var template = "Report for {{title}}\n{{#rows}}\n  {{row.name}}: {{row.value}}\nTotal: {{total}}"
+    var rows = [
+        { "name": "apples", "value": 12 },
+        { "name": "pears", "value": 8 }
+    ]
+    println render(template, { "title": "Fruit", "total": 20 }, rows)
+}

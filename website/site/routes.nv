@@ -23,7 +23,7 @@ define class Route {
 }
 
 method pageRoutes(): array<Route> {
-    return [Route("/", Home()), Route("/examples", Examples()), Route("/stdlib", Stdlib()), Route("/benchmarks", Benchmarks())]
+    return [Route("/", Home()), Route("/examples", Examples()), Route("/benchmarks", Benchmarks())]
 }
 
 // A .nvmd file compiles to the class named after the file, dashes turned into underscores.

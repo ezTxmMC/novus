@@ -1,0 +1,16 @@
+package main
+
+import strings
+
+// The helpers of the strings module.
+
+method main {
+    println strings.repeat("ab", 3)
+    println strings.reverse("novus")
+    println strings.capitalize("hello")
+    println strings.words("  a  b  c ")
+    println strings.count("banana", "an")
+    println strings.truncate("a long sentence", 8)
+    println strings.isNumeric("123")
+    println strings.chars("abc")
+}

@@ -1,0 +1,35 @@
+package main
+
+// A queue: first in, first out.
+
+define class Queue {
+    private final array<object> items: get
+
+    construct() {
+        this.items = []
+    }
+
+    method enqueue(object item) {
+        items.append(item)
+    }
+
+    method dequeue(): object {
+        var first = items[0]
+        items.remove(0)
+        return first
+    }
+
+    method size(): integer {
+        return items.length()
+    }
+}
+
+method main {
+    var queue = Queue()
+    queue.enqueue("a")
+    queue.enqueue("b")
+    queue.enqueue("c")
+    while (queue.size() > 0) {
+        println queue.dequeue()
+    }
+}

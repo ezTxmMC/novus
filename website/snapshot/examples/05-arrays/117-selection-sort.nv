@@ -1,0 +1,25 @@
+package main
+
+import arrays
+
+// Selection sort: repeatedly move the smallest element to the front.
+
+method selectionSort(array<integer> input): array<integer> {
+    var items = arrays.copy(input)
+    for (i in arrays.range(0, items.length())) {
+        var smallest = i
+        for (j in arrays.range(i + 1, items.length())) {
+            if (items[j] < items[smallest]) {
+                smallest = j
+            }
+        }
+        var t = items[i]
+        items[i] = items[smallest]
+        items[smallest] = t
+    }
+    return items
+}
+
+method main {
+    println selectionSort([64, 25, 12, 22, 11])
+}

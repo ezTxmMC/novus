@@ -1,0 +1,12 @@
+package main
+
+import arrays
+
+// Sorting numbers, floats and strings.
+
+method main {
+    println arrays.sort([3, 1, 4, 1, 5, 9, 2, 6])
+    println arrays.sortDesc([3, 1, 4, 1, 5])
+    println arrays.sort(["pear", "apple", "fig"])
+    println arrays.sort([2.5, 0.5, 1.5])
+}

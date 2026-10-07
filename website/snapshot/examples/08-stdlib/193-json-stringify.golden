@@ -1,0 +1,11 @@
+{"name":"novus","version":1}
+[1,2.5,"three",true]
+{"nested":{"deep":[1,2]}}
+"plain text"
+{
+  "a": 1,
+  "b": [
+    2,
+    3
+  ]
+}

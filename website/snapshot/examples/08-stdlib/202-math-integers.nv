@@ -1,0 +1,15 @@
+package main
+
+import math
+
+// Divisors, primes and integer helpers.
+
+method main {
+    println math.gcd(48, 18)
+    println math.lcm(4, 6)
+    println math.powInt(2, 16)
+    println math.isPrime(97)
+    println math.isEven(10)
+    println math.sign(-3)
+    println math.clamp(15, 0, 10)
+}

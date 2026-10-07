@@ -1,0 +1,17 @@
+package main
+
+method main {
+    var text = "The Novus Programming Language"
+    var vowels = 0
+    var consonants = 0
+    for (c in text.toLower()) {
+        if ("aeiou".contains(c)) {
+            vowels = vowels + 1
+            continue
+        }
+        if (c >= "a" && c <= "z") {
+            consonants = consonants + 1
+        }
+    }
+    println "${vowels} vowels, ${consonants} consonants"
+}

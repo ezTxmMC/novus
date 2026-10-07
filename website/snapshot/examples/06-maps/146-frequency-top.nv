@@ -1,0 +1,26 @@
+package main
+
+import arrays
+import strings
+
+// Finding the most frequent element.
+
+method main {
+    var text = "b a c a b a"
+    var counts = {}
+    for (word in strings.words(text)) {
+        if (counts.has(word)) {
+            counts[word] = counts[word] + 1
+            continue
+        }
+        counts[word] = 1
+    }
+    var best = ""
+    for (word in counts) {
+        if (best == "" || counts[word] > counts[best]) {
+            best = word
+        }
+    }
+    println counts
+    println "most frequent: ${best} (${counts[best]})"
+}

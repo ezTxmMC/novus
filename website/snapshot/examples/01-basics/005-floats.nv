@@ -1,0 +1,14 @@
+package main
+
+// Floats are doubles and print with six decimals.
+
+method main {
+    var x = 7.5
+    var y = 2.0
+    println x + y
+    println x / y
+    println x * y
+    println 1.0 / 3.0
+    println 10 / 4
+    println 10.0 / 4
+}

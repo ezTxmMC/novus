@@ -1,0 +1,13 @@
+package main
+
+// Swapping two variables needs a temporary.
+
+method main {
+    var a = "left"
+    var b = "right"
+    println a + " " + b
+    var temp = a
+    a = b
+    b = temp
+    println a + " " + b
+}

@@ -1,0 +1,23 @@
+package main
+
+// Testing a single number for primality.
+
+method isPrime(integer n): bool {
+    if (n < 2) {
+        return false
+    }
+    var i = 2
+    while (i * i <= n) {
+        if (n % i == 0) {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+method main {
+    for (n in [1, 2, 9, 17, 97, 100]) {
+        println "${n}: ${isPrime(n)}"
+    }
+}

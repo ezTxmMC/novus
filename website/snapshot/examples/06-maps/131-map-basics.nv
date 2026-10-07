@@ -1,0 +1,14 @@
+package main
+
+// Creating a map, reading, adding and testing keys.
+
+method main {
+    var capitals = { "france": "paris", "japan": "tokyo" }
+    println capitals
+    println capitals["japan"]
+    capitals["peru"] = "lima"
+    println capitals.length()
+    println capitals.has("peru")
+    println capitals.has("mars")
+    println {}
+}

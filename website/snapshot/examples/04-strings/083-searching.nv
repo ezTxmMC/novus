@@ -1,0 +1,13 @@
+package main
+
+import strings
+
+method main {
+    var text = "the quick brown fox jumps over the lazy dog"
+    println text.indexOf("quick")
+    println text.indexOf("cat")
+    println strings.lastIndexOf(text, "the")
+    println text.contains("fox")
+    println text.startsWith("the")
+    println text.endsWith("dog")
+}

@@ -1,0 +1,30 @@
+package main
+
+// Threads share the values they are given, so anything two of them write
+// needs a lock. `sync { ... }` takes the program-wide one for the length of
+// the block - and gives it back even when the block is left with `return`.
+
+var balance = 0
+
+method deposit(integer times) {
+    var i = 0
+    while (i < times) {
+        sync {
+            balance = balance + 1
+        }
+        i = i + 1
+    }
+}
+
+method main {
+    var workers = []
+    var w = 0
+    while (w < 4) {
+        workers.append(virtual deposit(2500))
+        w = w + 1
+    }
+    for (t in workers) {
+        await t
+    }
+    println "balance after four threads: ${balance}"
+}

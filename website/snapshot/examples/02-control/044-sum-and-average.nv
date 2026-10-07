@@ -1,0 +1,15 @@
+package main
+
+// Summing a list and computing its average.
+
+method main {
+    var numbers = [4, 8, 15, 16, 23, 42]
+    var sum = 0
+    for (n in numbers) {
+        sum = sum + n
+    }
+    println "count ${numbers.length()}"
+    println "sum ${sum}"
+    println "average ${sum / numbers.length()}"
+    println "average (float) ${sum * 1.0 / numbers.length()}"
+}

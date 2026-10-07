@@ -1,0 +1,9 @@
+package main
+
+// env reads environment variables, platform names the system.
+
+method main {
+    println env("NOVUS_EXAMPLE_UNSET") == ""
+    println typeOf(platform())
+    println platform().length() > 0
+}

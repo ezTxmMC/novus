@@ -1,0 +1,28 @@
+package main
+
+// Reaching through one object into another.
+
+define class Address {
+    private final string city: get, set
+
+    construct(string city) {
+        this.city = city
+    }
+}
+
+define class Person {
+    private final string name: get
+    private final Address address: get
+
+    construct(string name, Address address) {
+        this.name = name
+        this.address = address
+    }
+}
+
+method main {
+    var person = Person("Ada", Address("London"))
+    println person.address().city()
+    person.address().city("Cambridge")
+    println person.address().city()
+}

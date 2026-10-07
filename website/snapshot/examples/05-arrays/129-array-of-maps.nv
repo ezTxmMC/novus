@@ -1,0 +1,22 @@
+package main
+
+method main {
+    var people = [
+        { "name": "ada", "age": 36 },
+        { "name": "grace", "age": 45 },
+        { "name": "alan", "age": 41 }
+    ]
+    for (person in people) {
+        var name = person["name"]
+        var age = person["age"]
+        println "${name} (${age})"
+    }
+    var oldest = people[0]
+    for (person in people) {
+        if (person["age"] > oldest["age"]) {
+            oldest = person
+        }
+    }
+    var name = oldest["name"]
+    println "oldest: ${name}"
+}

@@ -1,0 +1,31 @@
+package main
+
+// Keeping objects in an array and updating them.
+
+define class Task {
+    private final string title: get
+    private bool done: get, set
+
+    construct(string title) {
+        this.title = title
+        this.done = false
+    }
+}
+
+method main {
+    var tasks = [Task("write"), Task("test"), Task("ship")]
+    tasks[0].done(true)
+    tasks[1].done(true)
+    var open = 0
+    for (task in tasks) {
+        var mark = "[ ]"
+        if (task.done()) {
+            mark = "[x]"
+        }
+        println "${mark} ${task.title()}"
+        if (task.done() == false) {
+            open = open + 1
+        }
+    }
+    println "${open} open"
+}

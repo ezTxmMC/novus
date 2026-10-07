@@ -105,7 +105,7 @@ method envOr(string name, string fallback): string {
 ```
 
 Using a module without importing it is a compile-time error that names the
-missing import. The full list is in the [standard library reference](/stdlib).
+missing import. The standard modules are arrays, base64, bits, bytes, cli, config, crypto, csv, fmt, hash, http, io, json, log, maps, math, net, os, path, properties, random, strings, test, thread, time, toml, unicode, web, yaml and zlib.
 
 ## Dependency modules
 

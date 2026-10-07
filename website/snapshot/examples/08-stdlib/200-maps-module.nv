@@ -1,0 +1,14 @@
+package main
+
+import maps
+
+// The helpers of the maps module.
+
+method main {
+    println maps.merge({ "a": 1 }, { "b": 2 })
+    println maps.invert({ "x": "1" })
+    println maps.entries({ "k": "v" })
+    println maps.countValues(["a", "b", "a"])
+    println maps.fromPairs(["one", "two"], [1, 2])
+    println maps.isEmpty({})
+}

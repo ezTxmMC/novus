@@ -1,0 +1,29 @@
+package main
+
+import arrays
+import strings
+
+// A realistic mix: read a file, count words, report the most frequent ones.
+
+method main {
+    var text = readFile("input.txt")
+    var counts = {}
+    for (word in strings.words(text)) {
+        if (counts.has(word)) {
+            counts[word] = counts[word] + 1
+            continue
+        }
+        counts[word] = 1
+    }
+    var ranked = []
+    for (word in counts) {
+        ranked.append(strings.padLeft("" + counts[word], 8) + " " + word)
+    }
+    var top = arrays.reverse(arrays.sort(ranked))
+    var i = 0
+    while (i < 3) {
+        println top[i].trim()
+        i = i + 1
+    }
+    println "" + counts.length() + " unique"
+}

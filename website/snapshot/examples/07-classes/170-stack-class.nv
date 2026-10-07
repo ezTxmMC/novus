@@ -1,0 +1,46 @@
+package main
+
+// A stack with push, pop and peek.
+
+define class Stack {
+    private final array<object> items: get
+
+    construct() {
+        this.items = []
+    }
+
+    method push(object item) {
+        items.append(item)
+    }
+
+    method pop(): object {
+        if (this.isEmpty()) {
+            eprintln "stack is empty"
+            return ""
+        }
+        return items.pop()
+    }
+
+    method peek(): object {
+        return items[items.length() - 1]
+    }
+
+    method isEmpty(): bool {
+        return items.length() == 0
+    }
+
+    method size(): integer {
+        return items.length()
+    }
+}
+
+method main {
+    var stack = Stack()
+    stack.push(1)
+    stack.push(2)
+    stack.push(3)
+    println stack.peek()
+    println stack.pop()
+    println stack.size()
+    println stack.isEmpty()
+}

@@ -1,0 +1,16 @@
+package main
+
+method main {
+    var visits = ["home", "about", "home", "shop", "about", "home"]
+    var seen = {}
+    var order = []
+    for (page in visits) {
+        if (seen.has(page)) {
+            continue
+        }
+        seen[page] = true
+        order.append(page)
+    }
+    println order
+    println "${visits.length()} visits, ${order.length()} unique pages"
+}

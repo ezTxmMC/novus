@@ -73,7 +73,6 @@ method navSections(): array<NavSection> {
         document("Editor support", "/docs/projects/editor", "VS Code, Neovim, Helix and every LSP client", "projects", "editor"),
         document("Language server", "/docs/projects/language-server", "novus-lsp: features, diagnostics, settings", "projects", "language-server")]))
     sections.append(NavSection("Reference", [
-        reference("Standard library", "/stdlib", "Every module and function of std/"),
         reference("Examples", "/examples", "Programs from hello world to a VM"),
         reference("Benchmarks", "/benchmarks", "Twelve workloads across the languages"),
         document("Architecture", "/docs/architecture", "How the compiler is put together", "internals", "architecture"),

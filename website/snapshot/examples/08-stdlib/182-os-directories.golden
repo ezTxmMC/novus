@@ -1,0 +1,6 @@
+true
+true
+[nested]
+[deep, file.txt]
+true
+false

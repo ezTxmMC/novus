@@ -1,0 +1,14 @@
+package main
+
+import maps
+
+// Building a map from two arrays.
+
+method main {
+    var keys = ["one", "two", "three"]
+    var values = [1, 2, 3]
+    var m = maps.fromPairs(keys, values)
+    println m
+    println m["two"]
+    println maps.fromPairs(["a"], [1, 2, 3])
+}

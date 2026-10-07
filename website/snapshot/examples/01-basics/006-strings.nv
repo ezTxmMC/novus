@@ -1,0 +1,13 @@
+package main
+
+// Strings support + for concatenation and a set of methods.
+
+method main {
+    var greeting = "Hello"
+    var who = "Novus"
+    println greeting + ", " + who + "!"
+    println greeting.length()
+    println greeting.toUpper()
+    println greeting.charAt(0)
+    println greeting.substring(1, 4)
+}

@@ -30,7 +30,7 @@ println numbers.length()
 | `join(separator)` | build a string |
 | `clear()` | remove everything |
 
-The [arrays](/stdlib#arrays) module adds `sort`, `reverse`, `unique`,
+The `arrays` module adds `sort`, `reverse`, `unique`,
 `range`, `slice`, `chunk`, `sum`, `min`, `max`, `concat`, `copy` and more.
 
 ```nv

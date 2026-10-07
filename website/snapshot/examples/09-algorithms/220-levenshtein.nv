@@ -1,0 +1,33 @@
+package main
+
+import arrays
+import math
+
+// Edit distance: how many changes turn one word into another.
+
+method distance(string a, string b): integer {
+    var previous = []
+    for (j in arrays.range(0, b.length() + 1)) {
+        previous.append(j)
+    }
+    for (i in arrays.range(1, a.length() + 1)) {
+        var current = [i]
+        for (j in arrays.range(1, b.length() + 1)) {
+            var cost = 1
+            if (a.charAt(i - 1) == b.charAt(j - 1)) {
+                cost = 0
+            }
+            var best = math.min(previous[j] + 1, current[j - 1] + 1)
+            current.append(math.min(best, previous[j - 1] + cost))
+        }
+        previous = current
+    }
+    return previous[b.length()]
+}
+
+method main {
+    println distance("kitten", "sitting")
+    println distance("novus", "novus")
+    println distance("", "abc")
+    println distance("flaw", "lawn")
+}

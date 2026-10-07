@@ -1,0 +1,24 @@
+package main
+
+import arrays
+
+// Swapping the rows and columns of a matrix.
+
+method transpose(array<object> matrix): array<object> {
+    var out = []
+    for (col in arrays.range(0, matrix[0].length())) {
+        var row = []
+        for (line in matrix) {
+            row.append(line[col])
+        }
+        out.append(row)
+    }
+    return out
+}
+
+method main {
+    var matrix = [[1, 2, 3], [4, 5, 6]]
+    for (row in transpose(matrix)) {
+        println row.join(" ")
+    }
+}

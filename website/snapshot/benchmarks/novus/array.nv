@@ -1,0 +1,17 @@
+package main
+
+// Filling a dynamic array with two million values and summing it.
+
+method main {
+    var values = []
+    var i = 0
+    while (i < 2000000) {
+        values.append(i)
+        i = i + 1
+    }
+    var sum = 0
+    for (value in values) {
+        sum = sum + value
+    }
+    println sum
+}

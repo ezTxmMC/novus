@@ -1,0 +1,22 @@
+package main
+
+// Guard clauses keep nesting shallow: check, return, continue.
+
+method describe(integer age): string {
+    if (age < 0) {
+        return "invalid"
+    }
+    if (age < 13) {
+        return "child"
+    }
+    if (age < 20) {
+        return "teenager"
+    }
+    return "adult"
+}
+
+method main {
+    for (age in [-1, 7, 15, 42]) {
+        println "${age} -> ${describe(age)}"
+    }
+}

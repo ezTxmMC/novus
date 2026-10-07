@@ -1,0 +1,24 @@
+package main
+
+import arrays
+import strings
+
+// Pascal's triangle, row by row.
+
+method main {
+    var rows = []
+    for (i in arrays.range(0, 8)) {
+        var row = [1]
+        if (i > 0) {
+            var previous = rows[i - 1]
+            for (j in arrays.range(1, i)) {
+                row.append(previous[j - 1] + previous[j])
+            }
+            row.append(1)
+        }
+        rows.append(row)
+    }
+    for (row in rows) {
+        println strings.padLeft(row.join(" "), 30)
+    }
+}

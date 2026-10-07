@@ -1,0 +1,22 @@
+package main
+
+// Towers of Hanoi: the classic recursive puzzle.
+
+var moves = 0
+
+method hanoi(integer disks, string from, string to, string via) {
+    if (disks == 0) {
+        return
+    }
+    hanoi(disks - 1, from, via, to)
+    moves = moves + 1
+    if (disks >= 3) {
+        println "move disk ${disks} from ${from} to ${to}"
+    }
+    hanoi(disks - 1, via, to, from)
+}
+
+method main {
+    hanoi(4, "A", "C", "B")
+    println "${moves} moves in total"
+}

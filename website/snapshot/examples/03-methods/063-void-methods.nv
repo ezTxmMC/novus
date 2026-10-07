@@ -1,0 +1,18 @@
+package main
+
+// A method without a return type performs an action.
+
+method separator() {
+    println "--------"
+}
+
+method title(string text) {
+    separator()
+    println text
+    separator()
+}
+
+method main {
+    title("Report")
+    println "content"
+}

@@ -1,0 +1,46 @@
+package main
+
+import strings
+
+// A calculator for reverse polish notation: "3 4 + 2 *" is (3 + 4) * 2.
+
+method evaluate(string expression): float {
+    var stack = []
+    for (token in strings.words(expression)) {
+        if (strings.isNumeric(token)) {
+            stack.append(parseFloat(token))
+            continue
+        }
+        if (stack.length() < 2) {
+            eprintln "not enough operands for ${token}"
+            return 0.0
+        }
+        var right = stack.pop()
+        var left = stack.pop()
+        if (token == "+") {
+            stack.append(left + right)
+            continue
+        }
+        if (token == "-") {
+            stack.append(left - right)
+            continue
+        }
+        if (token == "*") {
+            stack.append(left * right)
+            continue
+        }
+        if (token == "/") {
+            stack.append(left / right)
+            continue
+        }
+        eprintln "unknown operator ${token}"
+        return 0.0
+    }
+    return stack.pop()
+}
+
+method main {
+    for (expression in ["3 4 +", "3 4 + 2 *", "10 2 /", "2 3 4 * +"]) {
+        println "${expression} = ${evaluate(expression)}"
+    }
+}

@@ -1,0 +1,16 @@
+package main
+
+import maps
+
+// Sharing a map versus copying it.
+
+method main {
+    var original = { "a": 1 }
+    var shared = original
+    var copied = maps.copy(original)
+    shared["b"] = 2
+    copied["c"] = 3
+    println "original ${original}"
+    println "copied   ${copied}"
+    println maps.isEmpty({})
+}

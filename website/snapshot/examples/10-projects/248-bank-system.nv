@@ -1,0 +1,89 @@
+package main
+
+import fmt
+
+define class Transaction {
+    private final string kind: get
+    private final integer amount: get
+
+    construct(string kind, integer amount) {
+        this.kind = kind
+        this.amount = amount
+    }
+}
+
+define class Account {
+    private final string owner: get
+    private integer balance: get
+    private final array<object> history: get
+
+    construct(string owner) {
+        this.owner = owner
+        this.balance = 0
+        this.history = []
+    }
+
+    method deposit(integer amount): bool {
+        if (amount <= 0) {
+            return false
+        }
+        balance = balance + amount
+        history.append(Transaction("deposit", amount))
+        return true
+    }
+
+    method withdraw(integer amount): bool {
+        if (amount <= 0 || amount > balance) {
+            history.append(Transaction("rejected", amount))
+            return false
+        }
+        balance = balance - amount
+        history.append(Transaction("withdraw", amount))
+        return true
+    }
+
+    method statement() {
+        println "account of ${owner}"
+        for (entry in history) {
+            println "  " + entry.kind() + " " + fmt.thousands(entry.amount())
+        }
+        println "  balance " + fmt.thousands(balance)
+    }
+}
+
+define class Bank {
+    private final map<string, object> accounts: get
+
+    construct() {
+        this.accounts = {}
+    }
+
+    method open(string owner): Account {
+        var account = Account(owner)
+        accounts[owner] = account
+        return account
+    }
+
+    method transfer(string from, string to, integer amount): bool {
+        if (accounts.has(from) == false || accounts.has(to) == false) {
+            return false
+        }
+        if (accounts[from].withdraw(amount) == false) {
+            return false
+        }
+        accounts[to].deposit(amount)
+        return true
+    }
+}
+
+method main {
+    var bank = Bank()
+    var ada = bank.open("Ada")
+    var grace = bank.open("Grace")
+    ada.deposit(150000)
+    grace.deposit(2000)
+    println bank.transfer("Ada", "Grace", 50000)
+    println bank.transfer("Grace", "Ada", 999999)
+    ada.statement()
+    grace.statement()
+}

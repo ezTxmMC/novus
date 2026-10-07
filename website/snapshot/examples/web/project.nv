@@ -1,0 +1,4 @@
+project "github.com/ezTxmMC/novus-web-example"
+version "0.1.0"
+main "main.nv"
+output "webapp"

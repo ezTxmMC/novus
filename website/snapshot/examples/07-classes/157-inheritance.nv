@@ -1,0 +1,45 @@
+package main
+
+// A base class with subclasses that override a method.
+
+define class Animal {
+    private final string name: get
+
+    construct(string name) {
+        this.name = name
+    }
+
+    method sound(): string {
+        return "..."
+    }
+
+    method speak(): string {
+        return "${name} says ${this.sound()}"
+    }
+}
+
+define class Dog based Animal {
+    construct(string name) {
+        this.name = name
+    }
+
+    method sound(): string {
+        return "woof"
+    }
+}
+
+define class Cat based Animal {
+    construct(string name) {
+        this.name = name
+    }
+
+    method sound(): string {
+        return "meow"
+    }
+}
+
+method main {
+    println Dog("Rex").speak()
+    println Cat("Mia").speak()
+    println Animal("Thing").speak()
+}

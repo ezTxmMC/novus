@@ -1,0 +1,23 @@
+package main
+
+import arrays
+
+method zip(array<object> a, array<object> b): array<object> {
+    var out = []
+    var n = a.length()
+    if (b.length() < n) {
+        n = b.length()
+    }
+    for (i in arrays.range(0, n)) {
+        out.append([a[i], b[i]])
+    }
+    return out
+}
+
+method main {
+    var pairs = zip(["a", "b", "c"], [1, 2, 3])
+    println pairs
+    for (pair in pairs) {
+        println "${pair[0]} = ${pair[1]}"
+    }
+}

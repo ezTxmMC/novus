@@ -1,0 +1,16 @@
+package main
+
+// A method has a name, parameters and an optional return type.
+
+method greet(string name): string {
+    return "Hello, ${name}!"
+}
+
+method shout(string text) {
+    println text.toUpper() + "!"
+}
+
+method main {
+    println greet("Ada")
+    shout("novus")
+}

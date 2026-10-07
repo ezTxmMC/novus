@@ -1,0 +1,19 @@
+package main
+
+import log
+
+// Log output goes to stderr; timestamps are off here so the output is stable.
+
+method main {
+    log.setTimestamps(false)
+    log.setLevel("debug")
+    log.debug("starting up")
+    log.info("ready")
+    log.warn("disk almost full")
+    log.error("could not save")
+    println "--- only warnings and above:"
+    log.setLevel("warn")
+    log.debug("hidden")
+    log.info("hidden too")
+    log.warn("still visible")
+}

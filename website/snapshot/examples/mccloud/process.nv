@@ -1,0 +1,72 @@
+package mccloud
+
+import os
+
+// Process backend: a detached `screen` session per server on Linux/macOS,
+// a separate console window per server on Windows (start / tasklist /
+// taskkill). Sessions and window titles are named "mc-<server>".
+
+method sessionName(string server): string {
+    return "mc-" + server
+}
+
+method isWindows(): bool {
+    return platform() == "windows"
+}
+
+// Is the backend available on this machine?
+method backendReady(): bool {
+    if (isWindows()) {
+        return true
+    }
+    return exec("screen -v > /dev/null 2>&1") == 0
+}
+
+method backendName(): string {
+    if (isWindows()) {
+        return "windows console windows"
+    }
+    return "screen"
+}
+
+// Starts `command` inside `dir` as a detached process named after the server.
+method startProcess(string server, string dir, string command): bool {
+    var session = sessionName(server)
+    if (isWindows()) {
+        return exec("start \"" + session + "\" /D \"" + dir + "\" cmd /c \"" + command + "\"") == 0
+    }
+    return exec("cd \"" + dir + "\" && screen -dmS " + session + " " + command) == 0
+}
+
+method isRunning(string server): bool {
+    var session = sessionName(server)
+    if (isWindows()) {
+        var tasks = os.output("tasklist /FI \"WINDOWTITLE eq " + session + "\" /NH")
+        return tasks.contains("No tasks") == false && tasks.trim() != ""
+    }
+    return os.output("screen -ls 2> /dev/null").contains("." + session + chr(9))
+}
+
+// Types a console command into the server (screen only).
+method sendCommand(string server, string command): bool {
+    if (isWindows()) {
+        return false
+    }
+    return exec("screen -S " + sessionName(server) + " -X stuff '" + command + chr(10) + "'") == 0
+}
+
+// Graceful "stop" through the console on screen; the window is killed on Windows.
+method stopProcess(string server): bool {
+    if (isWindows()) {
+        return exec("taskkill /FI \"WINDOWTITLE eq " + sessionName(server) + "\" /T /F > nul") == 0
+    }
+    return sendCommand(server, "stop")
+}
+
+method attachProcess(string server) {
+    if (isWindows()) {
+        println "the server runs in its own console window (title ${sessionName(server)})"
+        return
+    }
+    exec("screen -r " + sessionName(server))
+}

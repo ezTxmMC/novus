@@ -1,0 +1,16 @@
+package main
+
+import os
+
+// Reading, writing, appending and deleting files.
+
+method main {
+    var file = "example-181.txt"
+    os.writeFile(file, "first line\n")
+    os.appendFile(file, "second line\n")
+    println os.readFile(file).trim()
+    println os.fileSize(file)
+    println os.isFile(file)
+    println os.remove(file)
+    println os.exists(file)
+}

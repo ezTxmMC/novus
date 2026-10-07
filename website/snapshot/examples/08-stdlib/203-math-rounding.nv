@@ -1,0 +1,14 @@
+package main
+
+import math
+
+// Rounding to decimals and converting numbers.
+
+method main {
+    println math.roundTo(3.14159, 2)
+    println math.roundTo(2.71828, 4)
+    println math.min(3, 9)
+    println math.max(2.5, 1.5)
+    println math.toInt("42") + 1
+    println math.toFloat(3) / 2.0
+}

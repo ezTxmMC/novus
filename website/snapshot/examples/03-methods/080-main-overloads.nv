@@ -1,0 +1,19 @@
+package main
+
+// Two entry points: with and without command line arguments.
+
+method main {
+    println "started without arguments"
+    report([])
+}
+
+method main(array<string> arguments) {
+    println "started with ${arguments.length()} argument(s)"
+    report(arguments)
+}
+
+method report(array<string> arguments) {
+    for (argument in arguments) {
+        println "  ${argument}"
+    }
+}

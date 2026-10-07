@@ -1,0 +1,65 @@
+package main
+
+import strings
+
+// A recursive descent parser and evaluator for + - * / and parentheses.
+
+var tokens = []
+var position = 0
+
+method parseExpression(): float {
+    var value = parseTerm()
+    while (position < tokens.length() && (tokens[position] == "+" || tokens[position] == "-")) {
+        var operator = tokens[position]
+        position = position + 1
+        var right = parseTerm()
+        if (operator == "+") {
+            value = value + right
+            continue
+        }
+        value = value - right
+    }
+    return value
+}
+
+method parseTerm(): float {
+    var value = parseFactor()
+    while (position < tokens.length() && (tokens[position] == "*" || tokens[position] == "/")) {
+        var operator = tokens[position]
+        position = position + 1
+        var right = parseFactor()
+        if (operator == "*") {
+            value = value * right
+            continue
+        }
+        value = value / right
+    }
+    return value
+}
+
+method parseFactor(): float {
+    var token = tokens[position]
+    position = position + 1
+    if (token == "(") {
+        var value = parseExpression()
+        position = position + 1
+        return value
+    }
+    return parseFloat(token)
+}
+
+method evaluate(string text): float {
+    var spaced = text.replace("(", " ( ").replace(")", " ) ")
+    for (operator in ["+", "-", "*", "/"]) {
+        spaced = spaced.replace(operator, " " + operator + " ")
+    }
+    tokens = strings.words(spaced)
+    position = 0
+    return parseExpression()
+}
+
+method main {
+    for (expression in ["1 + 2 * 3", "(1 + 2) * 3", "10 / 4", "2 * (3 + 4) - 5"]) {
+        println "${expression} = ${evaluate(expression)}"
+    }
+}

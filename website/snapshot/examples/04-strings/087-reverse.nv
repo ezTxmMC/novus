@@ -1,0 +1,17 @@
+package main
+
+import strings
+
+method reverse(string text): string {
+    var out = ""
+    for (c in text) {
+        out = c + out
+    }
+    return out
+}
+
+method main {
+    println reverse("novus")
+    println strings.reverse("stressed")
+    println reverse(reverse("unchanged"))
+}

@@ -1,0 +1,16 @@
+package main
+
+// A loop inside a loop; break only leaves the inner one.
+
+method main {
+    for (row in [1, 2, 3]) {
+        var line = ""
+        for (col in [1, 2, 3]) {
+            if (col > row) {
+                break
+            }
+            line = line + "${row}${col} "
+        }
+        println line.trim()
+    }
+}

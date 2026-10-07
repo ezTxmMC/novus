@@ -1,0 +1,24 @@
+package main
+
+// Looking objects up by key.
+
+define class User {
+    private final string name: get
+    private final string role: get
+
+    construct(string name, string role) {
+        this.name = name
+        this.role = role
+    }
+}
+
+method main {
+    var users = {}
+    users["ada"] = User("Ada", "admin")
+    users["grace"] = User("Grace", "editor")
+    for (key in users) {
+        var user = users[key]
+        println "${key}: ${user.name()} (${user.role()})"
+    }
+    println users.has("alan")
+}

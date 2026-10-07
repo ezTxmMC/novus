@@ -1,0 +1,4 @@
+project "github.com/ezTxmMC/novus/examples/mccloud"
+version "0.1.0"
+main "main.nv"
+output "mccloud"

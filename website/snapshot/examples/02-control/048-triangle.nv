@@ -1,0 +1,16 @@
+package main
+
+import arrays
+import strings
+
+// Drawing triangles with repeated characters.
+
+method main {
+    for (n in arrays.range(1, 6)) {
+        println strings.repeat("*", n)
+    }
+    println ""
+    for (n in arrays.range(1, 6)) {
+        println strings.padLeft(strings.repeat("*", n * 2 - 1), n + 4)
+    }
+}

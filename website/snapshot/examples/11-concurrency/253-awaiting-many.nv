@@ -1,0 +1,23 @@
+package main
+
+import thread
+
+// thread.joinAll waits for a whole array of tasks and keeps the results in
+// the order the tasks were started, however out of order they finished.
+
+method slow(integer n): integer {
+    thread.sleep((10 - n) * 5)
+    return n
+}
+
+method main {
+    var tasks = []
+    var i = 0
+    while (i < 10) {
+        tasks.append(virtual slow(i))
+        i = i + 1
+    }
+    // the slowest task was started first, so this order is proof that the
+    // results come back in the order of the tasks, not of the finishes
+    println thread.joinAll(tasks)
+}

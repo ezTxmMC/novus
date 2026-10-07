@@ -1,0 +1,27 @@
+package main
+
+// A pure method only depends on its arguments and changes nothing.
+
+method doubled(array<integer> numbers): array<integer> {
+    var out = []
+    for (n in numbers) {
+        out.append(n * 2)
+    }
+    return out
+}
+
+method doubleInPlace(array<integer> numbers) {
+    var i = 0
+    while (i < numbers.length()) {
+        numbers[i] = numbers[i] * 2
+        i = i + 1
+    }
+}
+
+method main {
+    var original = [1, 2, 3]
+    println doubled(original)
+    println original
+    doubleInPlace(original)
+    println original
+}

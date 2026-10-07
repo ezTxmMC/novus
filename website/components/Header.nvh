@@ -10,7 +10,6 @@ prop string section = ""
         <nav class="hidden items-center gap-1 md:flex" aria-label="Main">
             <a href="/docs/introduction" class="rounded-lg px-3 py-2 text-sm text-ink-300 no-underline hover:bg-ink-800 hover:text-ink-50" class:bg-ink-800={section == "docs"} class:text-ink-50={section == "docs"}>Docs</a>
             <a href="/examples" class="rounded-lg px-3 py-2 text-sm text-ink-300 no-underline hover:bg-ink-800 hover:text-ink-50" class:bg-ink-800={section == "examples"} class:text-ink-50={section == "examples"}>Examples</a>
-            <a href="/stdlib" class="rounded-lg px-3 py-2 text-sm text-ink-300 no-underline hover:bg-ink-800 hover:text-ink-50" class:bg-ink-800={section == "stdlib"} class:text-ink-50={section == "stdlib"}>Standard library</a>
             <a href="/benchmarks" class="rounded-lg px-3 py-2 text-sm text-ink-300 no-underline hover:bg-ink-800 hover:text-ink-50" class:bg-ink-800={section == "benchmarks"} class:text-ink-50={section == "benchmarks"}>Benchmarks</a>
         </nav>
         <div class="ml-auto flex items-center gap-2">
@@ -27,7 +26,6 @@ prop string section = ""
                 <nav class="absolute top-12 right-0 flex w-56 flex-col rounded-xl border border-ink-600 bg-ink-900 p-2 shadow-glow" aria-label="Menu">
                     <a href="/docs/introduction" class="rounded-lg px-3 py-2 text-ink-200 no-underline hover:bg-ink-800">Docs</a>
                     <a href="/examples" class="rounded-lg px-3 py-2 text-ink-200 no-underline hover:bg-ink-800">Examples</a>
-                    <a href="/stdlib" class="rounded-lg px-3 py-2 text-ink-200 no-underline hover:bg-ink-800">Standard library</a>
                     <a href="/benchmarks" class="rounded-lg px-3 py-2 text-ink-200 no-underline hover:bg-ink-800">Benchmarks</a>
                     <a href="https://github.com/ezTxmMC/novus" class="rounded-lg px-3 py-2 text-ink-200 no-underline hover:bg-ink-800" rel="noreferrer">GitHub</a>
                 </nav>

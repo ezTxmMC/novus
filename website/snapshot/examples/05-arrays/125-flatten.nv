@@ -1,0 +1,20 @@
+package main
+
+method flatten(array<object> nested): array<object> {
+    var out = []
+    for (item in nested) {
+        if (typeOf(item) == "array") {
+            for (inner in flatten(item)) {
+                out.append(inner)
+            }
+            continue
+        }
+        out.append(item)
+    }
+    return out
+}
+
+method main {
+    println flatten([1, [2, 3], [[4, 5], 6]])
+    println flatten([[["deep"]]])
+}

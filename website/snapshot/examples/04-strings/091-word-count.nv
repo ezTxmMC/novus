@@ -1,0 +1,17 @@
+package main
+
+import strings
+
+method main {
+    var text = "  novus  compiles   to c  "
+    var words = strings.words(text)
+    println words
+    println "${words.length()} words"
+    var longest = ""
+    for (word in words) {
+        if (word.length() > longest.length()) {
+            longest = word
+        }
+    }
+    println "longest: ${longest}"
+}

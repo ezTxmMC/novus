@@ -1,0 +1,11 @@
+added: buy milk
+added: walk dog
+0 [ ] buy milk
+1 [ ] walk dog
+done: buy milk
+0 [x] buy milk
+1 [ ] walk dog
+Usage:
+  todo add <text>   - add an item
+  todo list         - show all items
+  todo done <index> - mark an item as done

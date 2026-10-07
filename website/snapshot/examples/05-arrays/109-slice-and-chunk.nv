@@ -1,0 +1,14 @@
+package main
+
+import arrays
+
+// Taking parts of an array and splitting it into chunks.
+
+method main {
+    var numbers = arrays.range(1, 11)
+    println numbers
+    println arrays.slice(numbers, 0, 3)
+    println arrays.slice(numbers, 7, 100)
+    println arrays.chunk(numbers, 4)
+    println arrays.concat([1, 2], [3, 4])
+}

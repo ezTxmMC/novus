@@ -21,9 +21,6 @@ method searchIndex(): string {
     for (example in data.examples()) {
         entries.append(entry(example.title, example.path(), "Example", exampleText(example)))
     }
-    for (module in data.stdModules()) {
-        appendModule(entries, module)
-    }
     return json.stringify(entries)
 }
 
@@ -36,12 +33,4 @@ method documentText(NavItem item): string {
 
 method exampleText(Example example): string {
     return example.chapter + ". " + data.excerpt(example.summary + " " + example.source, EXAMPLE_TEXT_WIDTH)
-}
-
-method appendModule(array<map<string, string>> entries, StdModule module) {
-    var url = "/stdlib#" + module.name
-    entries.append(entry(module.name, url, "Std", module.summary))
-    for (function in module.functions) {
-        entries.append(entry(module.name + "." + function.name, url, "Std", function.signature + " " + function.doc))
-    }
 }

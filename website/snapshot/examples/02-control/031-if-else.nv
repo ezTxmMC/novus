@@ -1,0 +1,15 @@
+package main
+
+// if / else picks one of two branches.
+
+method main {
+    var temperature = 18
+    if (temperature > 25) {
+        println "warm"
+    } else {
+        println "not warm"
+    }
+    if (temperature > 0 && temperature < 25) {
+        println "mild"
+    }
+}

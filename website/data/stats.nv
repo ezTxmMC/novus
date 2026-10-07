@@ -1,60 +1,36 @@
 package data
 
+import json
 import os
-import strings
 
-// The numbers of the landing page, counted when the site is built.
+// The numbers of the landing page, read from snapshot/stats.json (written by tools/sync.sh).
 
-private final VERSION_MARK = "VERSION = \""
+private final STATS_FILE = "snapshot/stats.json"
 private final FALLBACK_VERSION = "0.1.0"
-private final SNAPSHOT_FILE = "../bootstrap/novusc.c"
-private final VERSION_FILE = "../compiler/driver/cli.nv"
-private final COMPILER_FOLDER = "../compiler"
-private final GENERATED_FILES = ["runtime.nv", "stdlib.nv"]
+
+private var loadedStats = {}
+
+method stats(): map<string, object> {
+    if (loadedStats.has("version")) {
+        return loadedStats
+    }
+    loadedStats = { "version": FALLBACK_VERSION, "compilerLines": 0, "snapshotLines": 0 }
+    if (os.isFile(STATS_FILE)) {
+        loadedStats = json.parse(os.readFile(STATS_FILE))
+    }
+    return loadedStats
+}
 
 method compilerVersion(): string {
-    if (os.isFile(VERSION_FILE) == false) {
-        return FALLBACK_VERSION
-    }
-    for (line in os.readFile(VERSION_FILE).split(chr(10))) {
-        var at = line.indexOf(VERSION_MARK)
-        if (at >= 0) {
-            var rest = line.substring(at + VERSION_MARK.length(), line.length())
-            return rest.substring(0, rest.indexOf(chr(34)))
-        }
-    }
-    return FALLBACK_VERSION
+    return stats()["version"]
 }
 
-method lineCount(string file): integer {
-    if (os.isFile(file) == false) {
-        return 0
-    }
-    return os.readFile(file).split(chr(10)).length()
-}
-
-// Lines of the hand written compiler: the embedded runtime and std are generated.
 method compilerLines(): integer {
-    return folderLines(COMPILER_FOLDER)
-}
-
-method folderLines(string folder): integer {
-    var total = 0
-    for (entry in os.listDir(folder)) {
-        var path = folder + "/" + entry
-        if (os.isDir(path)) {
-            total = total + folderLines(path)
-            continue
-        }
-        if (entry.endsWith(".nv") && GENERATED_FILES.contains(entry) == false) {
-            total = total + lineCount(path)
-        }
-    }
-    return total
+    return stats()["compilerLines"]
 }
 
 method snapshotLines(): integer {
-    return lineCount(SNAPSHOT_FILE)
+    return stats()["snapshotLines"]
 }
 
 // 12345 -> "12,345"

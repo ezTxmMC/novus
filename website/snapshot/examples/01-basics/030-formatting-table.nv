@@ -1,0 +1,17 @@
+package main
+
+// Building aligned output by hand.
+
+method pad(string text, integer width): string {
+    var out = text
+    while (out.length() < width) {
+        out = out + " "
+    }
+    return out
+}
+
+method main {
+    println pad("name", 10) + "score"
+    println pad("ada", 10) + 99
+    println pad("grace", 10) + 100
+}

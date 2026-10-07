@@ -134,7 +134,7 @@ method main {
 
 ## The rest of the module
 
-[thread](/stdlib) has tasks (`join`, `joinAll`, `done`), `sleep` and `yield`,
+`thread` has tasks (`join`, `joinAll`, `done`), `sleep` and `yield`,
 locks (`mutex`, `lock`, `unlock`, `tryLock`), channels, counters several
 threads may change without a lock of their own (`counter`, `add`, `get`,
 `compareAndSet`), groups for fan-outs whose tasks nobody kept, and the size

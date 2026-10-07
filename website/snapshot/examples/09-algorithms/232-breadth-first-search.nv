@@ -1,0 +1,43 @@
+package main
+
+// Shortest path in an unweighted graph.
+
+method shortestPath(map<string, object> graph, string from, string to): array<string> {
+    var queue = [[from]]
+    var seen = { }
+    seen[from] = true
+    while (queue.length() > 0) {
+        var path = queue[0]
+        queue.remove(0)
+        var last = path[path.length() - 1]
+        if (last == to) {
+            return path
+        }
+        for (next in graph[last]) {
+            if (seen.has(next)) {
+                continue
+            }
+            seen[next] = true
+            var extended = []
+            for (node in path) {
+                extended.append(node)
+            }
+            extended.append(next)
+            queue.append(extended)
+        }
+    }
+    return []
+}
+
+method main {
+    var graph = {
+        "a": ["b", "c"],
+        "b": ["d"],
+        "c": ["d", "e"],
+        "d": ["f"],
+        "e": ["f"],
+        "f": []
+    }
+    println shortestPath(graph, "a", "f").join(" -> ")
+    println shortestPath(graph, "b", "e")
+}

@@ -1,0 +1,14 @@
+package main
+
+// Replacing an if chain with a lookup table.
+
+method main {
+    var roman = { "1": "I", "5": "V", "10": "X", "50": "L" }
+    for (value in ["1", "10", "50", "100"]) {
+        if (roman.has(value)) {
+            println "${value} = ${roman[value]}"
+            continue
+        }
+        println "${value} = (unknown)"
+    }
+}

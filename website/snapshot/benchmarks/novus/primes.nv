@@ -1,0 +1,29 @@
+package main
+
+// Counting primes below 200000 by trial division.
+
+method isPrime(integer n): bool {
+    if (n < 2) {
+        return false
+    }
+    var i = 2
+    while (i * i <= n) {
+        if (n % i == 0) {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+method main {
+    var count = 0
+    var n = 0
+    while (n < 200000) {
+        if (isPrime(n)) {
+            count = count + 1
+        }
+        n = n + 1
+    }
+    println count
+}

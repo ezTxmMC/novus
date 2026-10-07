@@ -1,0 +1,15 @@
+package main
+
+// for..in walks an array element by element.
+
+method main {
+    var languages = ["novus", "c", "rust"]
+    for (language in languages) {
+        println language.toUpper()
+    }
+    var total = 0
+    for (n in [1, 2, 3, 4]) {
+        total = total + n
+    }
+    println "total ${total}"
+}

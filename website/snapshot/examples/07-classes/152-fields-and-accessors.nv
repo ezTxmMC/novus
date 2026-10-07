@@ -1,0 +1,20 @@
+package main
+
+// `: get` creates a reader, `: get, set` a reader and a writer.
+
+define class Counter {
+    private integer value: get, set
+    private final string label: get
+
+    construct(string label) {
+        this.label = label
+        this.value = 0
+    }
+}
+
+method main {
+    var counter = Counter("clicks")
+    println counter.value()
+    counter.value(5)
+    println "${counter.label()}: ${counter.value()}"
+}

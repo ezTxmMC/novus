@@ -1,0 +1,15 @@
+package main
+
+import path
+
+// Taking a path apart: directory, name, stem, extension.
+
+method main {
+    var file = "/home/user/projects/app/main.nv"
+    println path.dirname(file)
+    println path.basename(file)
+    println path.stem(file)
+    println path.extension(file)
+    println path.isAbsolute(file)
+    println path.isAbsolute("relative/file.nv")
+}

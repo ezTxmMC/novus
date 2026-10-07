@@ -1,0 +1,27 @@
+package main
+
+import os
+import path
+
+// Walking a directory tree recursively.
+
+method walk(string dir, string indent) {
+    for (entry in os.listDir(dir)) {
+        var full = path.join(dir, entry)
+        if (os.isDir(full)) {
+            println indent + entry + "/"
+            walk(full, indent + "  ")
+            continue
+        }
+        println indent + entry
+    }
+}
+
+method main {
+    var root = "example-183"
+    os.mkdir(path.join(root, "src"))
+    os.writeFile(path.join(root, "readme.txt"), "x")
+    os.writeFile(path.join(root, "src", "main.nv"), "y")
+    walk(root, "")
+    os.removeAll(root)
+}

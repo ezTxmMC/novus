@@ -1,0 +1,13 @@
+package main
+
+import json
+
+// Turning values into JSON text.
+
+method main {
+    println json.stringify({ "name": "novus", "version": 1 })
+    println json.stringify([1, 2.5, "three", true])
+    println json.stringify({ "nested": { "deep": [1, 2] } })
+    println json.stringify("plain text")
+    println json.pretty({ "a": 1, "b": [2, 3] })
+}

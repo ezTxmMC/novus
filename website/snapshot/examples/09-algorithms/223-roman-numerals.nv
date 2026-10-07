@@ -1,0 +1,43 @@
+package main
+
+// Converting numbers to roman numerals and back.
+
+method toRoman(integer number): string {
+    var values = [1000, 900, 500, 400, 100, 90, 50, 40, 10, 9, 5, 4, 1]
+    var symbols = ["M", "CM", "D", "CD", "C", "XC", "L", "XL", "X", "IX", "V", "IV", "I"]
+    var rest = number
+    var out = ""
+    var i = 0
+    while (i < values.length()) {
+        while (rest >= values[i]) {
+            out = out + symbols[i]
+            rest = rest - values[i]
+        }
+        i = i + 1
+    }
+    return out
+}
+
+method fromRoman(string roman): integer {
+    var values = { "I": 1, "V": 5, "X": 10, "L": 50, "C": 100, "D": 500, "M": 1000 }
+    var total = 0
+    var i = 0
+    while (i < roman.length()) {
+        var value = values[roman.charAt(i)]
+        if (i + 1 < roman.length() && value < values[roman.charAt(i + 1)]) {
+            total = total - value
+            i = i + 1
+            continue
+        }
+        total = total + value
+        i = i + 1
+    }
+    return total
+}
+
+method main {
+    for (n in [4, 9, 14, 1994, 2026]) {
+        var roman = toRoman(n)
+        println "${n} = ${roman} = ${fromRoman(roman)}"
+    }
+}

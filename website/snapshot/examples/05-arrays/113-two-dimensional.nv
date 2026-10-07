@@ -1,0 +1,14 @@
+package main
+
+// Arrays of arrays as a grid.
+
+method main {
+    var grid = [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
+    println grid
+    println grid[1][2]
+    for (row in grid) {
+        println row.join(" ")
+    }
+    grid[0][0] = 0
+    println grid[0]
+}

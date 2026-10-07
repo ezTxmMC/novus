@@ -1,0 +1,33 @@
+package main
+
+import arrays
+
+// Quicksort: partition around a pivot and recurse.
+
+method quicksort(array<integer> items): array<integer> {
+    if (items.length() < 2) {
+        return items
+    }
+    var pivot = items[items.length() / 2]
+    var less = []
+    var equal = []
+    var greater = []
+    for (n in items) {
+        if (n < pivot) {
+            less.append(n)
+            continue
+        }
+        if (n > pivot) {
+            greater.append(n)
+            continue
+        }
+        equal.append(n)
+    }
+    return arrays.concat(arrays.concat(quicksort(less), equal), quicksort(greater))
+}
+
+method main {
+    println quicksort([33, 10, 55, 71, 29, 3, 18])
+    println quicksort([5, 5, 5])
+    println quicksort([])
+}

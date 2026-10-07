@@ -1,0 +1,17 @@
+package main
+
+import random
+
+// Shuffling, picking and random text.
+
+method main {
+    random.seed(7)
+    var items = [1, 2, 3, 4, 5]
+    var shuffled = random.shuffle(items)
+    println shuffled.length()
+    println items
+    var pick = random.pick(items)
+    println items.contains(pick)
+    println random.string(6, "ab").length()
+    println typeOf(random.bool())
+}

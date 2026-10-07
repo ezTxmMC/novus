@@ -1,0 +1,23 @@
+package main
+
+// Two methods can call each other.
+
+method isEven(integer n): bool {
+    if (n == 0) {
+        return true
+    }
+    return isOdd(n - 1)
+}
+
+method isOdd(integer n): bool {
+    if (n == 0) {
+        return false
+    }
+    return isEven(n - 1)
+}
+
+method main {
+    println isEven(10)
+    println isOdd(7)
+    println isEven(0)
+}

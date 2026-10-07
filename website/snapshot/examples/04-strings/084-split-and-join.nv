@@ -1,0 +1,13 @@
+package main
+
+// Splitting text into parts and joining it back together.
+
+method main {
+    var csv = "red,green,blue"
+    var parts = csv.split(",")
+    println parts
+    println parts.length()
+    println parts.join(" | ")
+    println "a b c".split(" ").join("")
+    println "chars".split("")
+}

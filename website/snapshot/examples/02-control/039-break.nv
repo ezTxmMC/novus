@@ -1,0 +1,13 @@
+package main
+
+// break leaves the innermost loop immediately.
+
+method main {
+    for (n in [3, 7, 12, 5, 20]) {
+        if (n > 10) {
+            println "found ${n}, stopping"
+            break
+        }
+        println "checked ${n}"
+    }
+}

@@ -1,0 +1,25 @@
+package main
+
+import arrays
+
+// Filtering without lambdas: a loop and a helper method.
+
+method isEven(integer n): bool {
+    return n % 2 == 0
+}
+
+method evens(array<integer> numbers): array<integer> {
+    var out = []
+    for (n in numbers) {
+        if (isEven(n)) {
+            out.append(n)
+        }
+    }
+    return out
+}
+
+method main {
+    var numbers = arrays.range(1, 16)
+    println evens(numbers)
+    println evens(numbers).length()
+}

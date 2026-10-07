@@ -1,0 +1,21 @@
+package main
+
+// Name{field=value} builds an object without calling a constructor.
+
+define class Point {
+    private final integer x: get, set
+    private final integer y: get, set
+
+    method describe(): string {
+        return "(${x}, ${y})"
+    }
+}
+
+method main {
+    var origin = Point{x=0, y=0}
+    var p = Point{x=3, y=4}
+    println origin.describe()
+    println p.describe()
+    p.x(10)
+    println p.describe()
+}

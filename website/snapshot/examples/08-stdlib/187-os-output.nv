@@ -1,0 +1,12 @@
+package main
+
+import os
+
+// output captures what a command prints.
+
+method main {
+    var text = os.output("echo captured").trim()
+    println "[${text}]"
+    println text.length()
+    println os.hasCommand("definitely-not-a-real-command")
+}

@@ -1,0 +1,15 @@
+package main
+
+// A running total alongside the original values.
+
+method main {
+    var sales = [120, 80, 200, 50]
+    var total = 0
+    var running = []
+    for (amount in sales) {
+        total = total + amount
+        running.append(total)
+    }
+    println running
+    println "final ${total}"
+}

@@ -1,0 +1,15 @@
+package main
+
+import time
+
+// Fixed timestamps keep the output stable.
+
+method main {
+    println time.iso(0)
+    println time.iso(1000000000)
+    println time.format(1700000000, "%Y-%m-%d %H:%M")
+    var parts = time.parts(1700000000)
+    println parts["year"]
+    println parts["month"]
+    println time.now() > 1600000000
+}

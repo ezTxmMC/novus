@@ -1,0 +1,38 @@
+package main
+
+// An abstract class cannot be created; subclasses fill in the gaps.
+
+define abstract Vehicle {
+    private final string model: get
+
+    abstract method wheels(): integer
+
+    method describe(): string {
+        return "${model} has ${this.wheels()} wheels"
+    }
+}
+
+define class Car based Vehicle {
+    construct(string model) {
+        this.model = model
+    }
+
+    method wheels(): integer {
+        return 4
+    }
+}
+
+define class Motorcycle based Vehicle {
+    construct(string model) {
+        this.model = model
+    }
+
+    method wheels(): integer {
+        return 2
+    }
+}
+
+method main {
+    println Car("sedan").describe()
+    println Motorcycle("racer").describe()
+}

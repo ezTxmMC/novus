@@ -1,0 +1,15 @@
+package main
+
+// Integers are 64 bit. Division truncates towards zero.
+
+method main {
+    var a = 17
+    var b = 5
+    println a + b
+    println a - b
+    println a * b
+    println a / b
+    println a % b
+    println 0 - a
+    println 1000000 * 1000000
+}

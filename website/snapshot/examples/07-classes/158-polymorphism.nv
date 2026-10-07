@@ -1,0 +1,55 @@
+package main
+
+// One loop, many types: every shape answers area().
+
+define class Shape {
+    method area(): float {
+        return 0.0
+    }
+
+    method name(): string {
+        return "shape"
+    }
+}
+
+define class Circle based Shape {
+    private final float radius: get
+
+    construct(float radius) {
+        this.radius = radius
+    }
+
+    method area(): float {
+        return 3.14159 * radius * radius
+    }
+
+    method name(): string {
+        return "circle"
+    }
+}
+
+define class Square based Shape {
+    private final float side: get
+
+    construct(float side) {
+        this.side = side
+    }
+
+    method area(): float {
+        return side * side
+    }
+
+    method name(): string {
+        return "square"
+    }
+}
+
+method main {
+    var shapes = [Circle(1.0), Square(2.0), Circle(0.5)]
+    var total = 0.0
+    for (shape in shapes) {
+        println "${shape.name()}: ${shape.area()}"
+        total = total + shape.area()
+    }
+    println "total ${total}"
+}

@@ -1,0 +1,20 @@
+package main
+
+import strings
+
+// Counting how often each word appears.
+
+method main {
+    var text = "the cat sat on the mat the end"
+    var counts = {}
+    for (word in strings.words(text)) {
+        if (counts.has(word)) {
+            counts[word] = counts[word] + 1
+            continue
+        }
+        counts[word] = 1
+    }
+    for (word in counts) {
+        println "${word}: ${counts[word]}"
+    }
+}

@@ -1,0 +1,15 @@
+package main
+
+// Iterating a string yields one character at a time.
+
+method main {
+    var vowels = 0
+    for (c in "programming") {
+        print c + "."
+        if ("aeiou".contains(c)) {
+            vowels = vowels + 1
+        }
+    }
+    println ""
+    println "${vowels} vowels"
+}

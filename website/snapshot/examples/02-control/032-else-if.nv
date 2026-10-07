@@ -1,0 +1,17 @@
+package main
+
+// else if chains test one condition after another.
+
+method main {
+    for (score in [95, 82, 71, 55]) {
+        if (score >= 90) {
+            println "${score}: A"
+        } else if (score >= 80) {
+            println "${score}: B"
+        } else if (score >= 70) {
+            println "${score}: C"
+        } else {
+            println "${score}: F"
+        }
+    }
+}

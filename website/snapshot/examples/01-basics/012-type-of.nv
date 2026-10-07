@@ -1,0 +1,12 @@
+package main
+
+// typeOf reports the runtime type of a value.
+
+method main {
+    println typeOf(1)
+    println typeOf(1.5)
+    println typeOf("text")
+    println typeOf(true)
+    println typeOf([1, 2])
+    println typeOf({ "k": "v" })
+}

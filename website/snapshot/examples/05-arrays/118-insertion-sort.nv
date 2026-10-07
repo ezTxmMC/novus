@@ -1,0 +1,21 @@
+package main
+
+import arrays
+
+// Insertion sort: place every value where it belongs.
+
+method insertionSort(array<integer> input): array<integer> {
+    var out = []
+    for (value in input) {
+        var at = 0
+        while (at < out.length() && out[at] <= value) {
+            at = at + 1
+        }
+        out.insert(at, value)
+    }
+    return out
+}
+
+method main {
+    println insertionSort([9, 3, 7, 1, 8])
+}

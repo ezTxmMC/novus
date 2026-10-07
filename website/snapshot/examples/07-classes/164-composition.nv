@@ -1,0 +1,31 @@
+package main
+
+// An object can hold other objects.
+
+define class Engine {
+    private final integer power: get
+
+    construct(integer power) {
+        this.power = power
+    }
+}
+
+define class Car {
+    private final string model: get
+    private final Engine engine: get
+
+    construct(string model, Engine engine) {
+        this.model = model
+        this.engine = engine
+    }
+
+    method describe(): string {
+        return "${model} with ${engine.power()} hp"
+    }
+}
+
+method main {
+    var car = Car("coupe", Engine(180))
+    println car.describe()
+    println car.engine().power()
+}

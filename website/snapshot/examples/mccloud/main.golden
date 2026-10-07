@@ -1,0 +1,16 @@
+mccloud - a tiny Minecraft server cloud
+
+usage:
+  mccloud init                                  create the cloud directory
+  mccloud group create <name> <memoryMB> <port> <max>
+  mccloud group list | group delete <name>
+  mccloud template import <group> <server.jar>  set the jar of a group
+  mccloud start <group>                         start a new instance
+  mccloud stop <server>|all                     stop instances
+  mccloud list                                  running instances
+  mccloud cmd <server> <command...>             send a console command (screen)
+  mccloud log <server> [lines]                  show the end of the log
+  mccloud attach <server>                       open the console
+  mccloud delete <server>                       stop and remove the instance
+
+The cloud lives in ./mccloud-data (or $MCCLOUD_HOME).

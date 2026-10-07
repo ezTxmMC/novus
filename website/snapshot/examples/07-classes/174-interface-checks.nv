@@ -1,0 +1,32 @@
+package main
+
+// A class that implements an interface must define every method.
+
+define interface Serializable {
+    serialize(): string
+}
+
+define interface Named {
+    name(): string
+}
+
+define class Product based Serializable {
+    private final string name: get
+    private final float price: get
+
+    construct(string name, float price) {
+        this.name = name
+        this.price = price
+    }
+
+    method serialize(): string {
+        return "${name};${price}"
+    }
+}
+
+method main {
+    var product = Product("book", 12.5)
+    println product.serialize()
+    println product.name()
+    println typeOf(product)
+}

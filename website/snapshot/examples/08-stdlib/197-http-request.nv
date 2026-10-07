@@ -1,0 +1,15 @@
+package main
+
+import http
+
+// request never aborts: it reports transport problems in the result.
+// (This example talks to a closed port so it works offline.)
+
+method main {
+    var response = http.request("GET", "http://127.0.0.1:9/none", "", {})
+    println response["status"]
+    println response["ok"]
+    println response["body"] == ""
+    println response["error"] != ""
+    println typeOf(response["headers"])
+}

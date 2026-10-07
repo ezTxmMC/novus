@@ -1,0 +1,41 @@
+package main
+
+import thread
+
+// A channel hands values from one thread to another. Sending into a full one
+// waits for room, receiving from an empty one waits for a value, and closing
+// it lets the receivers finish.
+
+var work = 0
+
+method produce(integer count) {
+    var i = 1
+    while (i <= count) {
+        thread.send(work, i * i)
+        i = i + 1
+    }
+    thread.close(work)
+}
+
+method consume(): integer {
+    var sum = 0
+    while (true) {
+        var item = thread.recv(work)
+        // a channel may carry any value, so received() is what says whether
+        // there was one or the channel has ended
+        if (thread.received() == false) {
+            break
+        }
+        sum = sum + item
+    }
+    return sum
+}
+
+method main {
+    work = thread.channel(4)
+    var writer = virtual produce(20)
+    var a = virtual consume()
+    var b = virtual consume()
+    await writer
+    println "two consumers received ${await a + await b}"
+}

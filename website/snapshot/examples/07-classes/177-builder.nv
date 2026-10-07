@@ -1,0 +1,45 @@
+package main
+
+// A builder collects values and creates the final object at the end.
+
+define class Pizza {
+    private final string size: get
+    private final array<string> toppings: get
+
+    construct(string size, array<string> toppings) {
+        this.size = size
+        this.toppings = toppings
+    }
+
+    method describe(): string {
+        var list = toppings.join(", ")
+        return "${size} pizza with ${list}"
+    }
+}
+
+define class PizzaBuilder {
+    private string size: get, set
+    private final array<string> toppings: get
+
+    construct() {
+        this.size = "medium"
+        this.toppings = []
+    }
+
+    method add(string topping): PizzaBuilder {
+        toppings.append(topping)
+        return this
+    }
+
+    method build(): Pizza {
+        return Pizza(size, toppings)
+    }
+}
+
+method main {
+    var builder = PizzaBuilder()
+    builder.size("large")
+    builder.add("cheese")
+    builder.add("basil")
+    println builder.build().describe()
+}

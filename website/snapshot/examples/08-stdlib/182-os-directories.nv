@@ -1,0 +1,18 @@
+package main
+
+import os
+import path
+
+// Creating and removing directory trees.
+
+method main {
+    var root = "example-182"
+    os.mkdir(path.join(root, "nested", "deep"))
+    println os.isDir(root)
+    println os.isDir(path.join(root, "nested", "deep"))
+    os.writeFile(path.join(root, "nested", "file.txt"), "content")
+    println os.listDir(root)
+    println os.listDir(path.join(root, "nested"))
+    println os.removeAll(root)
+    println os.exists(root)
+}

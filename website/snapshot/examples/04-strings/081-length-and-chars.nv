@@ -1,0 +1,16 @@
+package main
+
+// The length of a string and its individual characters.
+
+method main {
+    var text = "Novus"
+    println text.length()
+    println text.charAt(0)
+    println text.charAt(text.length() - 1)
+    var i = 0
+    while (i < text.length()) {
+        print text.charAt(i) + "-"
+        i = i + 1
+    }
+    println ""
+}

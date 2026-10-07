@@ -1,0 +1,77 @@
+package main
+
+// Object-oriented Novus: interfaces, abstract classes, inheritance,
+// polymorphism, enums and string interpolation.
+
+method main {
+    var shapes = [Circle(2.0), Rect(3.0, 4.0), Circle(1.5)]
+    var total = 0.0
+    for (s in shapes) {
+        println s.describe()
+        total = total + s.area()
+    }
+    println "total area: ${total}"
+    var unit = Unit.CM
+    println "measured in ${unit.label()}"
+}
+
+define interface IShape {
+    area(): float
+}
+
+define abstract Shape based IShape {
+    abstract method area(): float
+
+    method describe(): string {
+        return "${this.kind()} with area ${this.area()}"
+    }
+
+    method kind(): string {
+        return "shape"
+    }
+}
+
+define class Circle based Shape {
+    private final float radius: get
+
+    construct(float radius) {
+        this.radius = radius
+    }
+
+    method area(): float {
+        return 3.14159 * this.radius * this.radius
+    }
+
+    method kind(): string {
+        return "circle"
+    }
+}
+
+define class Rect based Shape {
+    private final float width: get
+    private final float height: get
+
+    construct(float width, float height) {
+        this.width = width
+        this.height = height
+    }
+
+    method area(): float {
+        return this.width * this.height
+    }
+
+    method kind(): string {
+        return "rect"
+    }
+}
+
+define enum Unit {
+    CM("centimeters"),
+    M("meters");
+
+    private final string label: get
+
+    private construct(string label) {
+        this.label = label
+    }
+}

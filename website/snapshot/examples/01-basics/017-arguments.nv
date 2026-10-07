@@ -1,0 +1,11 @@
+package main
+
+// The array parameter of main holds the command line arguments.
+
+method main {
+    println "no arguments given"
+}
+
+method main(array<string> arguments) {
+    println "got ${arguments.length()} argument(s): ${arguments}"
+}

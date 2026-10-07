@@ -1,0 +1,25 @@
+package main
+
+import arrays
+
+// Collecting every prime below a limit.
+
+method main {
+    var primes = []
+    for (n in arrays.range(2, 60)) {
+        var prime = true
+        var d = 2
+        while (d * d <= n) {
+            if (n % d == 0) {
+                prime = false
+                break
+            }
+            d = d + 1
+        }
+        if (prime) {
+            primes.append(n)
+        }
+    }
+    println primes.join(" ")
+    println "${primes.length()} primes below 60"
+}

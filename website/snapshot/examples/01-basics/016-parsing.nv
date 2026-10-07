@@ -1,0 +1,13 @@
+package main
+
+// Text to numbers and back.
+
+method main {
+    var text = "42"
+    var number = parseInt(text)
+    println number + 1
+    println parseFloat("2.5") * 2
+    println parseInt("7 apples")
+    println "" + number + number
+    println number + number
+}

@@ -1,0 +1,19 @@
+package main
+
+import arrays
+
+method rotate(array<object> items, integer by): array<object> {
+    var n = items.length()
+    if (n == 0) {
+        return items
+    }
+    var shift = ((by % n) + n) % n
+    return arrays.concat(arrays.slice(items, shift, n), arrays.slice(items, 0, shift))
+}
+
+method main {
+    var items = [1, 2, 3, 4, 5]
+    println rotate(items, 2)
+    println rotate(items, -1)
+    println rotate(items, 5)
+}

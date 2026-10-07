@@ -1,0 +1,36 @@
+package main
+
+// Three levels of inheritance and method overriding.
+
+define class Base {
+    method level(): string {
+        return "base"
+    }
+
+    method describe(): string {
+        return "I am " + this.level()
+    }
+}
+
+define class Middle based Base {
+    method level(): string {
+        return "middle"
+    }
+}
+
+define class Leaf based Middle {
+    method level(): string {
+        return "leaf"
+    }
+
+    method both(): string {
+        return this.describe() + " below middle"
+    }
+}
+
+method main {
+    println Base().describe()
+    println Middle().describe()
+    println Leaf().describe()
+    println Leaf().both()
+}

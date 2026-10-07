@@ -1,0 +1,22 @@
+package main
+
+// The longest prefix shared by a list of words.
+
+method longestCommonPrefix(array<string> words): string {
+    if (words.length() == 0) {
+        return ""
+    }
+    var prefix = words[0]
+    for (word in words) {
+        while (word.startsWith(prefix) == false && prefix != "") {
+            prefix = prefix.substring(0, prefix.length() - 1)
+        }
+    }
+    return prefix
+}
+
+method main {
+    println longestCommonPrefix(["interstellar", "internal", "internet"])
+    println longestCommonPrefix(["novus", "nova", "novel"])
+    println longestCommonPrefix(["a", "b"])
+}

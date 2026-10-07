@@ -1,0 +1,12 @@
+package main
+
+// Operator precedence follows the usual rules; parentheses override it.
+
+method main {
+    println 2 + 3 * 4
+    println (2 + 3) * 4
+    println 10 - 4 - 3
+    println 2 * 3 % 4
+    println -3 * -3
+    println 7 / 2 * 2
+}

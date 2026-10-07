@@ -1,0 +1,34 @@
+package main
+
+define enum State {
+    IDLE("waiting"),
+    RUNNING("working"),
+    DONE("finished");
+
+    private final string label: get
+
+    private construct(string label) {
+        this.label = label
+    }
+}
+
+method next(State current): State {
+    if (current == State.IDLE) {
+        return State.RUNNING
+    }
+    if (current == State.RUNNING) {
+        return State.DONE
+    }
+    return State.DONE
+}
+
+method main {
+    var state = State.IDLE
+    var steps = 0
+    while (state != State.DONE && steps < 5) {
+        println "${state} (${state.label()})"
+        state = next(state)
+        steps = steps + 1
+    }
+    println "${state} (${state.label()})"
+}

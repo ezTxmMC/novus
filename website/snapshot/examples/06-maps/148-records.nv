@@ -1,0 +1,17 @@
+package main
+
+// Using maps as lightweight records.
+
+method describe(map<string, object> person): string {
+    var name = person["name"]
+    var age = person["age"]
+    var city = person["city"]
+    return "${name}, ${age} (${city})"
+}
+
+method main {
+    var ada = { "name": "Ada", "age": 36, "city": "London" }
+    println describe(ada)
+    ada["age"] = ada["age"] + 1
+    println describe(ada)
+}

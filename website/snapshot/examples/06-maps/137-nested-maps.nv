@@ -1,0 +1,17 @@
+package main
+
+// Maps inside maps for structured configuration.
+
+method main {
+    var config = {
+        "server": { "host": "localhost", "port": 8080 },
+        "logging": { "level": "info" }
+    }
+    println config["server"]["host"]
+    println config["server"]["port"]
+    config["logging"]["level"] = "debug"
+    println config["logging"]
+    for (section in config) {
+        println "[${section}] ${config[section].length()} setting(s)"
+    }
+}

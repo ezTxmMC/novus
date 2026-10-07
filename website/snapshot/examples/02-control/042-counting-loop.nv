@@ -1,0 +1,14 @@
+package main
+
+import arrays
+
+// arrays.range gives a numeric range to loop over.
+
+method main {
+    for (i in arrays.range(0, 5)) {
+        println "index ${i}"
+    }
+    for (i in arrays.range(1, 4)) {
+        println "${i} squared is ${i * i}"
+    }
+}

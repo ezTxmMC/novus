@@ -1,0 +1,15 @@
+package main
+
+import fmt
+
+// Formatting numbers, sizes and percentages.
+
+method main {
+    println fmt.fixed(3.14159, 2)
+    println fmt.thousands(1234567)
+    println fmt.thousands(-4200)
+    println fmt.bytes(512)
+    println fmt.bytes(2048)
+    println fmt.bytes(1048576 * 3)
+    println fmt.percent(0.4237, 1)
+}

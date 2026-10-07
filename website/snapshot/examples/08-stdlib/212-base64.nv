@@ -1,0 +1,13 @@
+package main
+
+import base64
+
+// Base64 encoding and decoding.
+
+method main {
+    println base64.encode("Novus")
+    println base64.encode("hello world")
+    println base64.decode("Tm92dXM=")
+    println base64.decode(base64.encode("round trip")) == "round trip"
+    println base64.encode("")
+}

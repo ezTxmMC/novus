@@ -1,0 +1,13 @@
+package main
+
+// Inserting and removing elements at any position.
+
+method main {
+    var items = ["a", "b", "d"]
+    items.insert(2, "c")
+    println items
+    items.remove(0)
+    println items
+    items.insert(0, "start")
+    println items
+}

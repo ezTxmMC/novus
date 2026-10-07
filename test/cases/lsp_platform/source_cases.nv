@@ -48,7 +48,7 @@ method runDiskCases() {
     var root = createTempDirectory("lsp-platform-")
     var source = DiskTextSource()
     showDisk("temp root exists", source.exists(root) && source.isDirectory(root))
-    showDisk("temp root is below the temp directory", root.startsWith(temporaryDirectory() + "/lsp-platform-"))
+    showDisk("temp root is below the temp directory", root.startsWith(platformJoinPath(temporaryDirectory(), "lsp-platform-")))
     var second = createTempDirectory("lsp-platform-")
     showDisk("two temp roots differ", second != root && second != "")
     removeTree(second)

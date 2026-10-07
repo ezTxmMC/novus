@@ -68,11 +68,29 @@ jobs:
         include:
           - { name: linux-x86_64, os: ubuntu-latest }
           - { name: macos-arm64, os: macos-latest }
+    defaults:
+      run:
+        working-directory: novus
     steps:
       - uses: actions/checkout@v4
+        with:
+          path: novus
+      # the corpus also covers website/, which needs its two modules next to the checkout (see the website job)
+      - uses: actions/checkout@v4
+        with:
+          repository: ezTxmMC/nvh-markdown
+          path: nvh-markdown
+      - uses: actions/checkout@v4
+        with:
+          repository: ezTxmMC/nvh-tailwindcss
+          path: nvh-tailwindcss
 
       - name: Bootstrap
         run: scripts/bootstrap.sh
+
+      # the corpus counts the generated website/content/**/*.nvh as well
+      - name: Generate website content
+        run: make -C website content
 
       - name: Build novus-lsp
         run: make lsp
@@ -86,7 +104,11 @@ jobs:
       - name: Protocol scenarios
         run: test/run_lsp.sh
 
+      # the golden counters expect the whole corpus to be fuzzed, which a CI runner needs more time for
       - name: Corpus
+        env:
+          FUZZ_TOOL_CAP_SECONDS: 900
+          CORPUS_FUZZ_TIMEOUT: 1200
         run: test/run_lsp_corpus.sh
 
       - name: Snippets
@@ -100,7 +122,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: novus-lsp-${{ matrix.name }}
-          path: artifact/*
+          path: novus/artifact/*
 
   website:
     name: docs site
